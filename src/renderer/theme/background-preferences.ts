@@ -51,13 +51,15 @@ const DATA_URL_PATTERN = /^data:([^;,\s]+);base64,([a-z0-9+/]*={0,2})$/iu;
 /** Panel tint over the wallpaper; floor keeps text legible. */
 export const MIN_PANEL_OPACITY = 0.3;
 export const DEFAULT_PANEL_OPACITY = 0.72;
+export const DEFAULT_BACKGROUND_OPACITY = 0.4;
 
 const defaultPreferences = (): BackgroundPreferences => ({
   version: BACKGROUND_PREFERENCES_VERSION,
   imageDataUrl: null,
   imageSource: null,
   mode: 'cover',
-  imageOpacity: 0.7,
+  imageOpacity: DEFAULT_BACKGROUND_OPACITY,
+  themeOpacity: DEFAULT_BACKGROUND_OPACITY,
   showInMainPanel: false,
   panelOpacity: DEFAULT_PANEL_OPACITY,
   enabled: true,
@@ -129,8 +131,12 @@ export const backgroundPreferencesSchema = z.strictObject({
   imageSource: backgroundImageSourceSchema.nullable(),
   mode: backgroundDisplayModeSchema,
   imageOpacity: z.number().finite().min(0).max(1),
+  /** Built-in illustrated skins keep a separate choice from personal images. */
+  themeOpacity: z.number().finite().min(0).max(1).optional(),
   /** Also paint the wallpaper behind the centre (main) panel. Default off. */
   showInMainPanel: z.boolean().default(false),
+  /** Distinguish upgraded wallpaper defaults from subsequent explicit choices. */
+  panelVisibilityVersion: z.literal(1).optional(),
   /** Opacity of the three panels when they show the wallpaper. */
   /** Show the wallpaper. Off hides it without deleting the image. */
   enabled: z.boolean().default(true),
@@ -171,7 +177,7 @@ export function normalizeBackgroundDisplayMode(
  * Normalize the image-opacity slider value. Legacy v1/v2 records stored the
  * inverse semantics (readability-overlay opacity, where 1 hid the image), so
  * they migrate to `1 - overlayOpacity` — e.g. the old default 0.2 becomes the
- * value 0.8, keeping the same rendered wallpaper. Fresh defaults are 0.7.
+ * value 0.8, keeping the same rendered wallpaper. Fresh defaults are 0.4.
  */
 export function normalizeBackgroundImageOpacity(
   value: unknown,
@@ -216,7 +222,9 @@ export function normalizeBackgroundPreferences(
       record.imageOpacity,
       record.overlayOpacity,
     ),
+    themeOpacity: normalizeBackgroundImageOpacity(record.themeOpacity),
     showInMainPanel: record.showInMainPanel === true,
+    ...(record.panelVisibilityVersion === 1 ? { panelVisibilityVersion: 1 as const } : {}),
     // Records from before the toggle existed: on (the image was showing).
     enabled: record.enabled !== false,
     panelOpacity: typeof record.panelOpacity === 'number' && Number.isFinite(record.panelOpacity)

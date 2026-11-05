@@ -1,0 +1,22 @@
+.bot-modal.bot-companion-editor.has-personas { display:flex;flex-direction:column;width:min(1040px,100%);height:min(760px,100%);padding:0;overflow:hidden; }
+.bot-editor-header { display:flex;align-items:center;gap:12px;flex:none;padding:20px 24px 16px; }
+.bot-editor-header .bot-avatar { width:43px;height:43px;flex:none;border-radius:50%; }
+.bot-editor-header>div { min-width:0;flex:1; }
+.bot-modal .bot-editor-header h2 { margin:0;font-size:17px; }
+.bot-editor-header p { margin:4px 0 0;font-size:11px;color:var(--ui-content-tertiary);line-height:1.7; }
+.bot-modal .bot-editor-close { display:grid;place-items:center;flex:none;width:30px;height:30px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--ui-content-secondary);font-size:23px;line-height:1; }
+.bot-modal .bot-editor-close:hover { background:var(--ui-surface-hover); }
+.bot-editor-tabs { display:flex;align-items:center;gap:24px;flex:none;padding:0 24px; }
+.bot-modal .bot-editor-tabs button { border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--ui-content-secondary);padding:10px 1px 12px;font-size:12px; }
+.bot-modal .bot-editor-tabs button.is-active { border-bottom-color:var(--ui-border-focus);color:var(--ui-content-primary);font-weight:600; }
+.bot-editor-tabpanel { display:flex;flex:1;min-height:0;overflow:hidden; }
+.bot-editor-tabpanel[hidden],.bot-editor-basics[hidden] { display:none; }
+.bot-editor-basics { flex:1;min-height:0;overflow:auto;padding:24px;border-top:1px solid var(--ui-border-subtle); }
+.bot-editor-basics>label { display:grid;gap:8px;font-size:12px;max-width:520px; }
+.bot-editor-basics .bot-character-reference { margin-top:24px; }
+.bot-editor-basics .bot-character-reference figure { max-width:720px; }
+.bot-editor-basics footer { position:sticky;bottom:0;background:var(--ui-surface-pane);padding:18px 0 0;margin-top:24px; }
+.bot-editor-basics .bot-profile-preview { margin:0 0 24px; }
+.bot-editor-basics .bot-profile-preview .bot-avatar { border-radius:50%; }
+.bot-editor-basics .bot-profile-preview p { margin:5px 0 0; }
+@media(max-width:560px) { .bot-editor-header { padding:16px; }.bot-editor-tabs { padding:0 16px; }.bot-editor-basics { padding:16px; } }

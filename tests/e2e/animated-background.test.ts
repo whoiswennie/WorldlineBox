@@ -45,7 +45,7 @@ test('global wallpapers retain playback across modules and support decoding, pau
       await settings.getByRole('radio', { name, exact: true }).click();
       const video = window.locator('.app-animated-background-video');
       await expect(video).toHaveCount(1);
-      expect(await window.locator('.app-animated-background').evaluate((element) => getComputedStyle(element).opacity)).toBe('0.7');
+      expect(await window.locator('.app-animated-background').evaluate((element) => getComputedStyle(element).opacity)).toBe('0.4');
       await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
       expect(await video.evaluate((element: HTMLVideoElement) => element.duration)).toBeCloseTo(duration, 2);
       expect(await video.evaluate((element: HTMLVideoElement) => element.videoWidth)).toBe(width);
@@ -100,13 +100,13 @@ test('global wallpapers retain playback across modules and support decoding, pau
       settings = await openAppearance(window);
     }
 
-    await settings.getByRole('button', { name: /^应用背景/ }).click();
-    const opacity = settings.getByRole('slider', { name: '背景不透明度' });
-    await expect(opacity).toHaveValue('0.7');
+    const opacity = settings.getByRole('slider', { name: '皮肤不透明度' });
+    await expect(opacity).toHaveValue('0.4');
     await opacity.press('Home');
     for (let step = 0; step < 7; step++) await opacity.press('ArrowRight');
     await expect.poll(() => window.locator('.app-animated-background').evaluate((element) => getComputedStyle(element).opacity)).toBe('0.35');
-    expect(await window.evaluate(() => JSON.parse(localStorage.getItem('worldlinebox.background-preferences.v3') ?? '{}').imageOpacity)).toBe(0.35);
+    expect(await window.evaluate(() => JSON.parse(localStorage.getItem('worldlinebox.background-preferences.v3') ?? '{}').themeOpacity)).toBe(0.35);
+    await settings.getByRole('button', { name: /^应用背景/ }).click();
     const motion = settings.getByRole('switch', { name: '播放背景动画' });
     await motion.uncheck();
     await expect(window.locator('.app-animated-background-video')).toHaveAttribute('data-ready', 'false');

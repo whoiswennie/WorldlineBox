@@ -49,7 +49,8 @@ describe('background preferences contract v3', () => {
       imageDataUrl: null,
       imageSource: null,
       mode: 'cover',
-      imageOpacity: 0.7,
+      imageOpacity: 0.4,
+      themeOpacity: 0.4,
       showInMainPanel: false,
       panelOpacity: 0.72,
       enabled: true,
@@ -227,7 +228,7 @@ describe('background preferences contract v3', () => {
 
     expect(saveBackgroundPreferences(preferences, storage)).toBe(true);
     expect(storage.memory.get(BACKGROUND_PREFERENCES_KEY)).toContain('"version":3');
-    expect(loadBackgroundPreferences(storage)).toEqual(preferences);
+    expect(loadBackgroundPreferences(storage)).toEqual({ ...preferences, themeOpacity: 0.4 });
   });
 
   it('migrates a v2 record to the v3 key and drops the legacy entry', () => {

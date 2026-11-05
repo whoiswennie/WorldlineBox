@@ -7,7 +7,7 @@ export type BotEventStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancell
 export type BotSource = 'user' | 'companion' | 'group' | 'world' | 'task' | 'gateway';
 export type BotSenderType = 'user' | 'companion' | 'service' | 'world';
 export interface BotCompanion {
-  id: string; name: string; persona: string; createdAt: string; updatedAt: string;
+  id: string; name: string; persona: string; createdAt: string; updatedAt: string; activePersonaId?: string;
 }
 export interface BotConversation {
   id: string; title: string; kind: BotConversationKind; memberIds: string[];

@@ -30,7 +30,7 @@ const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 void app.whenReady().then(async () => {
   const protocolMemory = process.env.WORLDLINEBOX_BOT_PEER_MEMORY_PROTOCOL === '1';
-  const requestBudget = process.env.WORLDLINEBOX_BOT_PEER_MAX_POSTS === '8' ? 8 : 3;
+  const requestBudget = process.env.WORLDLINEBOX_BOT_PEER_MAX_POSTS === '8' ? 8 : 4;
   const http: Row[] = [], tools: Row[] = [], errors: Row[] = [], stages: Row[] = [], invocations: Row[] = [], wireReads: Promise<void>[] = [];
   const report: Row = { kind: 'bot-peer-real-result', runId: path.basename(root), passed: false, createdAt: new Date().toISOString(),
     boundary: protocolMemory ? 'Fresh isolated BotService + actual AppBrain/provider + actual original VCP + local 768-dimensional vector protocol fixture. No EmbeddingGemma inference, memory-quality/latency claim, production chat history, DSH, or automatic diary-encoding model calls.'
@@ -137,7 +137,7 @@ void app.whenReady().then(async () => {
         report.inbox = safe(inbox);
         report.idle = { pendingInbox: pendingInbox.length, activeLanes: current.runtime.activeLanes, stableMs: idleSince === undefined ? 0 : Date.now() - idleSince };
         report.maximumCausalHopObserved = Math.max(0, ...inbox.map(event => Number(row(JSON.parse(String(event.payload_json))).hop ?? 0)));
-        const peers = current.conversations.filter(room => room.peerConversation && room.memberIds.includes(gpt.id) && room.memberIds.includes(DEFAULT_BOT_COMPANION_ID));
+        const peers = current.conversations.filter(room => room.kind === 'peer' && room.memberIds.includes(gpt.id) && room.memberIds.includes(DEFAULT_BOT_COMPANION_ID));
         const originDone = current.messages.some(message => message.senderId === gpt.id && ['sent', 'failed', 'cancelled'].includes(message.status));
         if (originDone && !peers.length) { report.sourceSnapshot = safe(current); throw Error('REAL_MODEL_DID_NOT_CREATE_PEER_CONTACT'); }
         if (peers.length) {
@@ -146,10 +146,15 @@ void app.whenReady().then(async () => {
           const replies = peer.messages.filter(message => message.senderId === DEFAULT_BOT_COMPANION_ID && ['sent', 'failed', 'cancelled'].includes(message.status));
           if (originDone && replies.length && idleSince !== undefined && Date.now() - idleSince >= 500) {
             report.totalContactMs = performance.now() - started; report.sourceSnapshot = safe(current); report.peerSnapshot = safe(peer);
-            const target = replies.find(message => message.status === 'sent' && /晚安/.test(message.content));
+            const userRoom = current.conversations.find(room => room.kind === 'direct' && room.memberIds.includes(DEFAULT_BOT_COMPANION_ID));
+            const userReply = userRoom ? (await service!.handle({ type: 'state', conversationId: userRoom.id })).snapshot! : undefined;
+            report.targetUserSnapshot = safe(userReply ?? {});
+            const target = userReply?.messages.find(message => message.senderId === DEFAULT_BOT_COMPANION_ID && message.status === 'sent' && /晚安/.test(message.content));
             const actualContact = tools.some(tool => tool.name === 'companion_contact' && row(tool.args).companionId === DEFAULT_BOT_COMPANION_ID);
             report.checks = { naturalInputUnchanged: true, actualContactTool: actualContact, separateVisibleRoom: peers[0]!.id !== direct.conversationId,
-              userCanWatch: peers[0]!.memberIds.includes('user'), targetOwnResponse: target?.senderName === '大肥鱼',
+              userCanWatch: peers[0]!.userRole === 'observer' && !peers[0]!.memberIds.includes('user'), targetOwnResponse: target?.senderName === '大肥鱼',
+              actualUserReplyTool: tools.some(tool => tool.name === 'companion_reply_user'),
+              originAbsentFromTargetDirect: !!userReply && !userReply.messages.some(message => message.senderId === gpt.id),
               targetTurnComplete: peer.messages.some(message => message.senderId === DEFAULT_BOT_COMPANION_ID && message.id.startsWith('reply-') && message.status === 'sent'),
               targetTurnHasNoFailedPlaceholder: !peer.messages.some(message => message.senderId === DEFAULT_BOT_COMPANION_ID && message.id.startsWith('reply-') && message.status === 'failed'),
               allConversationEventsComplete: inbox.every(event => event.status === 'done'), allVisibleRepliesSuccessful: [...current.messages, ...peer.messages].every(message => message.senderId === 'user' || message.status === 'sent'),

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { buildBotContext } from '../../src/main/companion-bot/context';
+import { botClock, botLocalTimestamp, buildBotContext } from '../../src/main/companion-bot/context';
 import { appBrainRequest, fitsAppBrainRequest } from '../../src/main/companion-bot/app-brain-budget';
 import { BOT_TOOLS } from '../../src/main/companion-bot/tools';
 import type { BotCompanion, BotEvent, BotMessage, BotTask } from '../../src/main/companion-bot/types';
@@ -11,6 +11,20 @@ const event: BotEvent = { id: 'e1', eventId: 'e1', companionId: 'alice', convers
   replyMessageId: 'reply', status: 'running', attempts: 1, occurredAt: '2026-11-02', receivedAt: '2026-11-02' };
 const message = (id: string, sequence: number, content: string, overrides: Partial<BotMessage> = {}): BotMessage => ({ id, eventId: id,
   conversationId: 'c1', senderId: 'user', senderName: '我', senderType: 'user', content, status: 'sent', sequence, kind: 'message', correlationId: 'root', createdAt: '2026-11-02', ...overrides });
+it('provides a host-formatted Shanghai clock across the UTC date boundary instead of asking the model to convert it', () => {
+  expect(botClock(new Date('2026-11-05T00:34:37.000Z'))).toEqual({ now: '2026-11-05T00:34:37.000Z', timeZone: 'Asia/Shanghai', utcOffset: '+08:00', localDateTime: '2026-11-05T08:34:37+08:00', timeOfDay: '早上' });
+  expect(botClock(new Date('2026-11-04T16:01:02.000Z')).localDateTime).toBe('2026-11-05T00:01:02+08:00');
+  const built = buildBotContext({ companion, event, messages: [] }), clock = JSON.parse(built.user).clock;
+  expect(clock.localDateTime).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/);
+  expect(built.system).toContain('clock.now是UTC原值');
+});
+it('provides local historical and trigger instants so 08:34 cannot be read as 00:34 while preserving source records', () => {
+  const source = { ...event, occurredAt: '2026-11-05T02:33:00Z' }, old = message('morning', 1, '旧回复误称凌晨', { createdAt: '2026-11-05T00:34:39.000Z' });
+  const body = JSON.parse(buildBotContext({ companion, event: source, messages: [old] }).user);
+  expect(body.trigger.occurredAt).toBe('2026-11-05T10:33:00+08:00'); expect(body.history[0].createdAt).toBe('2026-11-05T08:34:39+08:00');
+  expect(old.createdAt).toBe('2026-11-05T00:34:39.000Z'); expect(botLocalTimestamp('2026-11-05')).toBe('2026-11-05');
+  expect(botLocalTimestamp('invalid')).toBe('invalid'); expect(botClock(new Date('2026-11-05T02:33:00Z')).timeOfDay).toBe('上午');
+});
 it('gives an empty group its real peer IDs without exposing unrelated contacts or their personas', () => {
   const conversation = { id: 'c1', title: '伙伴群', kind: 'group' as const, memberIds: ['user', 'alice', 'bob'] };
   const input = { companion, event, conversation, messages: [], participants: [{ id: 'alice', name: 'Alice' }, { id: 'bob', name: 'Bob' }, { id: 'private-other', name: '私域联系人' }] };

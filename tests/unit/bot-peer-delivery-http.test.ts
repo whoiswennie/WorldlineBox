@@ -18,11 +18,11 @@ class Memory extends BotMemoryService {
   override async finishTurn() { return { recorded: true }; }
   override async close() {}
 }
-type Envelope = { envelope?: { companionId: string; conversationId: string }; trigger?: { senderId: string; content: string; senderType: string }; room?: { kind: string; members: Array<{ id: string }> }; peerContact?: unknown };
+type Envelope = { envelope?: { companionId: string; conversationId: string }; trigger?: { senderId: string; content: string; senderType: string }; room?: { kind: string; members: Array<{ id: string }> }; peerContact?: { responseDestination?: string } };
 type Body = { messages: Array<{ role: string; content?: string }>; tools?: unknown[] };
 async function until(check: () => boolean) { const deadline = Date.now() + 15000; while (!check()) { if (Date.now() > deadline) throw Error('Peer HTTP delivery did not settle.'); await new Promise(resolve => setTimeout(resolve, 10)); } }
 
-it('uses real App HTTP tool callbacks to deliver a greeting into the target user direct and a separate two-partner private transcript', async () => {
+it('uses real App HTTP callbacks for pair-channel contact and a recipient-authored user reply without cross-direct relay messages', async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'wlb-peer-http-')), requests: Array<{ body: Body; envelope?: Envelope; kind: string }> = [], errors: string[] = [];
   const server = createServer((request, response) => { void (async () => {
     let raw = ''; for await (const chunk of request) raw += chunk;
@@ -34,10 +34,12 @@ it('uses real App HTTP tool callbacks to deliver a greeting into the target user
     const destination = envelope?.trigger?.content.includes('HTTP_REQUEST_USER_GREETING') ? 'user' : envelope?.trigger?.content.includes('HTTP_REQUEST_PEER_CHAT') ? 'peer' : undefined;
     const completedTool = body.messages.slice(envelopeIndex + 1).findLast(message => message.role === 'tool');
     const call = kind === 'reply' && envelope?.envelope?.companionId === 'alice' && destination && !completedTool;
+    const replyCall = kind === 'reply' && envelope?.envelope?.companionId === 'bob' && envelope.peerContact?.responseDestination === 'user-direct' && !completedTool;
     const content = kind === 'judge' ? '{"recipients":[],"reason":"本地协议夹具不触发额外自动回复"}' : kind === 'memory' ? '{"notes":[]}'
       : completedTool ? '已按指定目的投递。' : envelope?.envelope?.companionId === 'bob' ? envelope.room?.kind === 'peer' ? '你好 Alice，这是伙伴私聊。' : '下午好，用户。' : '本地协议响应。';
-    const message = call ? { content: '', tool_calls: [{ id: `contact-${destination}`, type: 'function', function: { name: 'companion_contact', arguments: JSON.stringify({ companionId: 'bob', destination, message: destination === 'user' ? '请向用户说下午好。' : '你好 GPT，聊聊今天的创作。' }) } }] } : { content };
-    response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ choices: [{ finish_reason: call ? 'tool_calls' : 'stop', message }] }));
+    const message = call ? { content: '', tool_calls: [{ id: `contact-${destination}`, type: 'function', function: { name: 'companion_contact', arguments: JSON.stringify({ companionId: 'bob', destination, message: destination === 'user' ? '请向用户说下午好。' : '你好 GPT，聊聊今天的创作。' }) } }] }
+      : replyCall ? { content: '', tool_calls: [{ id: 'recipient-answer-user', type: 'function', function: { name: 'companion_reply_user', arguments: JSON.stringify({ message: '下午好，用户。' }) } }] } : { content };
+    response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ choices: [{ finish_reason: call || replyCall ? 'tool_calls' : 'stop', message }] }));
   })().catch(error => { errors.push(String(error)); response.writeHead(500).end(); }); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw Error('No local HTTP address.');
@@ -61,13 +63,17 @@ it('uses real App HTTP tool callbacks to deliver a greeting into the target user
   await dispatch('HTTP_REQUEST_USER_GREETING 请让 GPT 私聊我说下午好。', 'greeting');
   await until(() => service.store.messagesPage(target.id).items.some(message => message.senderId === 'bob' && message.content === '下午好，用户。'));
   const directRows = service.store.messagesPage(target.id).items;
-  const relayed = directRows.find(message => message.senderId === 'alice')!;
+  expect(directRows.some(message => message.senderId === 'alice')).toBe(false);
+  const firstPeer = service.store.conversations().find(room => room.kind === 'peer')!;
+  const relayed = service.store.messagesPage(firstPeer.id).items.find(message => message.senderId === 'alice')!;
   expect(relayed.content).toContain('下午好'); expect(relayed.content).not.toContain('ALICE_PRIVATE_SECRET');
   expect(service.store.getConversation(target.id)!.memberIds.sort()).toEqual(['bob', 'user']);
-  expect(service.store.conversations().filter(room => room.kind === 'group' || room.kind === 'peer')).toHaveLength(0);
-  const directHttp = requests.find(item => item.kind === 'reply' && item.envelope?.envelope?.conversationId === target.id)!;
-  expect(directHttp.envelope?.trigger).toMatchObject({ senderId: 'alice', senderType: 'companion' });
-  expect(JSON.stringify(directHttp.body)).not.toContain('ALICE_PRIVATE_SECRET_NOT_FOR_BOB');
+  expect(service.store.conversations().filter(room => room.kind === 'group' || room.kind === 'peer')).toHaveLength(1);
+  expect(requests.some(item => item.kind === 'reply' && item.envelope?.envelope?.conversationId === target.id)).toBe(false);
+  const recipientHttp = requests.find(item => item.kind === 'reply' && item.envelope?.envelope?.companionId === 'bob')!;
+  expect(recipientHttp.envelope?.trigger).toMatchObject({ senderId: 'alice', senderType: 'companion' });
+  expect(recipientHttp.envelope?.peerContact).toMatchObject({ responseDestination: 'user-direct' });
+  expect(JSON.stringify(recipientHttp.body)).not.toContain('ALICE_PRIVATE_SECRET_NOT_FOR_BOB');
   await dispatch('HTTP_REQUEST_PEER_CHAT 你和 GPT 私下聊聊。', 'private-chat');
   await until(() => service.store.conversations().some(room => room.kind === 'peer'));
   const peer = service.store.conversations().find(room => room.kind === 'peer')!;
@@ -81,6 +87,6 @@ it('uses real App HTTP tool callbacks to deliver a greeting into the target user
   expect(errors).toEqual([]); expect(host).not.toHaveBeenCalled();
   const output = path.resolve('artifacts/superagent-bot-development/peer-delivery-http-proof.json'); await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify({ passed: true, actualLocalHttp: true, scriptedModel: true, realProviderQualityMeasured: false, paidCalls: 0,
-    direct: { conversationId: target.id, members: service.store.getConversation(target.id)!.memberIds, relaySender: relayed.senderId, replySender: 'bob', context: directHttp.envelope },
+    direct: { conversationId: target.id, members: service.store.getConversation(target.id)!.memberIds, relayInUserDirect: false, replySender: 'bob' },
     peer: { conversationId: peer.id, members: peer.memberIds, userRole: peer.userRole, requestCount: peerRequests.length }, sourceSecretsExcluded: true, dshCalls: host.mock.calls.length, requestCount: requests.length }, null, 2));
 });

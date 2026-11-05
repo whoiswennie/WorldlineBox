@@ -32,6 +32,12 @@
 .bot-workspace .bot-contact:hover { background:var(--ui-surface-hover); }
 .bot-workspace .bot-contact.selected { background:color-mix(in srgb,var(--ui-action-accent) 9%,transparent); }
 .bot-contact.selected strong { font-weight:600; }
+.bot-task-followup { display:flex;align-items:center;gap:9px;padding:9px 12px;margin-bottom:8px;border:1px solid var(--ui-border-control);border-radius:10px;background:var(--ui-surface-raised); }
+.bot-task-followup>.bot-icon { flex-shrink:0;color:var(--ui-action-accent);width:16px;height:16px; }
+.bot-task-followup>div { display:grid;gap:3px;flex:1;min-width:0; }
+.bot-task-followup strong { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:550; }
+.bot-task-followup small { font-size:10px;line-height:1.6;color:var(--ui-content-secondary); }
+.bot-task-followup>button { flex-shrink:0;width:26px;height:26px;padding:0;border:0;background:transparent;color:var(--ui-content-secondary);font-size:18px; }
 .bot-contact>span:last-child { display:grid;gap:4px;min-width:0; }
 .bot-contact strong { font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .bot-contact small { color:var(--ui-content-tertiary);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.5; }

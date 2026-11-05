@@ -1,0 +1,19 @@
+Pinned ONNX conversion repository (revision 2365baeacb507f821a0c8120fcee3d484dba7a07):
+https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
+
+Its LICENSE file states:
+Ref to https://github.com/modelscope/FunASR?tab=readme-ov-file#license
+
+Original model and model terms:
+https://huggingface.co/FunAudioLLM/SenseVoiceSmall
+https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE
+
+sherpa-onnx native runtime: Apache-2.0
+https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE
+
+Silero VAD: MIT
+https://github.com/snakers4/silero-vad/blob/master/LICENSE
+
+Recognition integration adapted from DeepSeek Harness: MIT
+https://github.com/deepseek-ai/deepseek-harness
+See DSH_LICENSE.txt for the retained notice.

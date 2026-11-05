@@ -110,12 +110,12 @@ test('real sticker packs and scoped on-demand media previews support playback, p
     });
     await expect(page.locator('.bot-draft-attachments')).toContainText('实际附件.bin');
     await page.getByRole('button', { name: '发送 ↑', exact: true }).click();
-    const onlyAttachmentMessage = page.locator('.bot-message').filter({ has: fileToggle(1) });
-    await expect(fileToggle(1)).toHaveAttribute('aria-expanded', 'false');
+    const onlyAttachmentMessage = page.locator('.bot-message').filter({ has: page.getByRole('button', { name: '系统打开 实际附件.bin', exact: true }).first() });
+    await expect(fileToggle(1)).toHaveCount(0);
     await expect(onlyAttachmentMessage.locator('.bot-message-bubble')).toHaveCount(1);
     await expect(onlyAttachmentMessage.locator('.bot-message-bubble .bot-message-text')).toHaveCount(0);
-    await expect(onlyAttachmentMessage.locator('.bot-message-bubble').locator('.bot-attachment,video,audio,img')).toHaveCount(0);
-    await expandFiles(1);
+    await expect(onlyAttachmentMessage.locator('.bot-message-bubble .bot-attachment-card')).toHaveCount(1);
+    await expect(onlyAttachmentMessage.locator('.bot-message-bubble').locator('video,audio,img')).toHaveCount(0);
     await expect(page.locator('.bot-message .bot-attachment-meta')).toContainText('实际附件.bin');
     await page.locator('.bot-message .bot-file-save').click(); await expect.poll(async () => readFile(savedFile).then(value => value.equals(bytes)).catch(() => false)).toBe(true);
     await app.evaluate(({ shell }) => { shell.openPath = async value => { Reflect.set(globalThis, '__botMediaOpenedFixture', value); return ''; }; });
@@ -245,8 +245,9 @@ test('real sticker packs and scoped on-demand media previews support playback, p
     await page.reload(); await page.locator('[data-application-module="companions"]').click();
     await page.locator('.bot-contact').filter({ hasText: '大肥鱼' }).click();
     await expect(page.locator('.bot-message .is-sticker img')).toHaveCount(1);
-    await expect(fileToggle(1)).toHaveAttribute('aria-expanded', 'false'); await expect(fileToggle(12)).toHaveAttribute('aria-expanded', 'false');
-    await expect(page.locator('.bot-transcript').locator('.bot-attachment-card,.bot-attachment-bundle,video,audio')).toHaveCount(0);
+    await expect(fileToggle(1)).toHaveCount(0); await expect(fileToggle(12)).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.locator('.bot-transcript').locator('.bot-attachment-card')).toHaveCount(1);
+    await expect(page.locator('.bot-transcript').locator('.bot-attachment-bundle,video,audio')).toHaveCount(0);
     await expect(mixedMessage).toContainText('这些是本次资料与参考附件');
     await expandFiles(12); await expect(mixedMessage.locator('.bot-attachment-tile')).toHaveCount(6);
     await capture('media-expanded-message-light.png'); await fileToggle(12).click();
@@ -267,13 +268,14 @@ test('real sticker packs and scoped on-demand media previews support playback, p
     }).toBeTruthy();
     const singleImage = page.locator(`[data-bot-message="${imageMessageId}"]`);
     await expect(singleImage.locator('.bot-message-bubble')).toHaveCount(1);
-    await expect(singleImage.locator('.bot-message-bubble img,.bot-attachment')).toHaveCount(0);
-    await singleImage.getByRole('button', { name: '展开 1 个附件', exact: true }).click();
+    await expect(singleImage.locator('.bot-attachment-card')).toHaveCount(1);
+    // A thumbnail may not be available yet; the card must still offer direct
+    // preview without mounting the original full-size image or player.
+    await expect(page.locator('.bot-attachment-picture')).toHaveCount(0);
     await singleImage.getByRole('button', { name: '打开预览 参考图.png', exact: true }).click();
     await expect.poll(() => page.locator('.bot-attachment-picture img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
     await page.getByRole('button', { name: '关闭预览', exact: true }).click();
-    await singleImage.getByRole('button', { name: '收起 1 个附件', exact: true }).click();
-    await expect(singleImage.locator('.bot-message-bubble img,.bot-attachment')).toHaveCount(0);
+    await expect(page.locator('.bot-attachment-picture')).toHaveCount(0);
     const evidence = path.resolve('artifacts/superagent-bot-development/ui'); await mkdir(evidence, { recursive: true });
     const screenshot = await capture('chat-real-media.png');
     await copyFile(screenshot, path.join(evidence, 'chat-real-media.png')); await testInfo.attach('chat-real-media', { path: screenshot, contentType: 'image/png' });
@@ -281,7 +283,7 @@ test('real sticker packs and scoped on-demand media previews support playback, p
     expect(bridge).toBe('function');
     const finalHash = identity.packaged ? await hashFile(identity.appPath) : undefined;
     expect(finalHash).toBe(initialHash);
-    await writeFile(testInfo.outputPath('media-preview-evidence.json'), JSON.stringify({ identity, initialHash, finalHash, captures, actualIpc: true, attachmentOnlyAndMixedBubbles: true, singleImageStartsCollapsed: true, collapsedAttachmentsMountNoMedia: true, collapsedAfterColdReload: true, pagesReplaceContent: true, unicodeBoundaryPreserved: true, nativePlayersOnDemand: true, oversizedSystemOpen: true, crossRoomReadRejected: true }, null, 2));
+    await writeFile(testInfo.outputPath('media-preview-evidence.json'), JSON.stringify({ identity, initialHash, finalHash, captures, actualIpc: true, attachmentOnlyAndMixedBubbles: true, singleAttachmentDirectActions: true, singleImageOriginalOnDemand: true, collectionOriginalsOnDemand: true, collectionsCollapsedAfterColdReload: true, pagesReplaceContent: true, unicodeBoundaryPreserved: true, nativePlayersOnDemand: true, oversizedSystemOpen: true, crossRoomReadRejected: true }, null, 2));
   } finally {
     await app?.close();
     await rm(resolved, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -9,6 +9,8 @@ export interface BotSchedulerOptions {
   leaseMs?: number;
   pollMs?: number;
   turnTimeoutMs?: number;
+  /** One companion makes one coordination decision at a time across rooms. */
+  serialCompanions?: boolean;
   onChange?(): void;
   onError?(error: Error): void;
 }
@@ -50,7 +52,8 @@ export class BotScheduler {
       const automatic = [...this.active.values()].filter(value => !isInteractiveBotSource(value.claim.event.source)).length;
       const reserved = this.concurrency > 1 && automatic >= this.concurrency - 1;
       const claim = this.store.claim({ workerId: this.workerId, leaseMs: this.leaseMs,
-        excludeLaneIds: [...this.active.values()].map(active => active.claim.event.laneId), preferInteractive: true, interactiveOnly: reserved });
+        excludeLaneIds: [...this.active.values()].map(active => active.claim.event.laneId), preferInteractive: true, interactiveOnly: reserved,
+        serialCompanions: this.options.serialCompanions ?? true });
       if (!claim) break;
       const controller = new AbortController();
       const active: Active = { claim, controller, promise: Promise.resolve() };

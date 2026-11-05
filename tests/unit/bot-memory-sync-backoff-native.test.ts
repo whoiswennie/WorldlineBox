@@ -10,7 +10,7 @@ const packageRoot = path.resolve('.tools/bot-memory-release/vcp-memory');
 const nodePath = process.env.WORLDLINEBOX_BOT_NODE || path.resolve('.tools/node-v24.15.0-win-x64/node.exe');
 const enabled = existsSync(nodePath) && existsSync(path.join(packageRoot, 'lib/runtime.cjs'));
 
-// Real preserved VCP ingestion scheduler/Rust index + source-owned Host wrapper.
+// Real VCP ingestion algorithms/Rust index + version-pinned host timer ownership.
 // The HTTP encoder is a deliberate 64-dimension protocol boundary, not a model
 // quality/performance test; no production memory or paid provider is accessed.
 it.skipIf(!enabled)('keeps failed native indexing pending without forced-flush hot loops, aborts its observer and later accepts only a real complete receipt', async () => {
@@ -50,7 +50,9 @@ it.skipIf(!enabled)('keeps failed native indexing pending without forced-flush h
       const flushes=[],flush=runtime.kb._flushBatch.bind(runtime.kb);
       runtime.kb._flushBatch=async(...args)=>{flushes.push(Date.now());return flush(...args)};
       const note=await host.remember(runtime,{sourceEventId:'backoff-source',sourceMessageIds:['backoff-message'],content:'唯一隔离事实：保持原始日记待索引。',tags:'事实'});
-      await fetch(base+'/fixture/sync',{method:'POST'});const failureAt=Date.now(),beforeFlush=flushes.length;
+      // Deterministically overlap the legitimate watcher deadline with the
+      // explicit host kick; an unowned repair timer otherwise makes this race flaky.
+      await fetch(base+'/fixture/sync',{method:'POST'});runtime.kb._scheduleBatch();const failureAt=Date.now(),beforeFlush=flushes.length;
       let failure;try{await host.sync(runtime,{id:note.id,timeoutMs:2200})}catch(error){failure={code:error.code,diagnostics:error.diagnostics}};
       if(failure?.code!=='MEMORY_SYNC_TIMEOUT'||failure.diagnostics?.forcedFlushes!==1)throw Error('Missing explicit pending timeout: '+JSON.stringify(failure));
       const failureWindow={elapsedMs:Date.now()-failureAt,flushAttempts:flushes.length-beforeFlush,probes:failure.diagnostics.probes};
@@ -65,7 +67,7 @@ it.skipIf(!enabled)('keeps failed native indexing pending without forced-flush h
       const indexed=await host.readNote({id:note.id}),relative=host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(note.id).note_path;
       const [probe]=await runtime.kb.probeIngestionFiles([relative]);
       if(indexed.indexState!=='indexed'||!probe.completeVectors||!probe.completeTags||probe.checksum!==note.checksum)throw Error('No real complete repaired receipt');
-      process.stdout.write('WLB_SYNC_BACKOFF:'+JSON.stringify({failure,failureWindow,pendingState:pending.indexState,abortMs,abortLatencyMs,aborted,repairedState:indexed.indexState,probe})+'\\n');
+      process.stdout.write('WLB_SYNC_BACKOFF:'+JSON.stringify({failure,failureWindow,ingestionScheduler:runtime.ingestionScheduler,pendingState:pending.indexState,abortMs,abortLatencyMs,aborted,repairedState:indexed.indexState,probe})+'\\n');
     }finally{host.close();await runtime.close()}})().catch(error=>{console.error(error);process.exitCode=1});
   `;
   try {
@@ -80,6 +82,7 @@ it.skipIf(!enabled)('keeps failed native indexing pending without forced-flush h
     expect(proof, result.stderr + result.stdout).toBeDefined();
     const evidence = JSON.parse(proof!.slice('WLB_SYNC_BACKOFF:'.length));
     expect(evidence).toMatchObject({ pendingState: 'pending', aborted: true, repairedState: 'indexed' });
+    expect(evidence.ingestionScheduler).toMatchObject({ timerOwner: 'single-ingestion-batch', originalSnapshotChanged: false });
     // Startup, timed sync and the second abort observer are separate windows.
     // Under parallel build load the actual elapsed interval can exceed the
     // requested 2.2s, so a fixed *global* HTTP count is not a valid rate limit.

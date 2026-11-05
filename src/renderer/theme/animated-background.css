@@ -19,7 +19,7 @@
   z-index: -1;
   overflow: hidden;
   pointer-events: none;
-  opacity: var(--ui-background-image-opacity, 0.7);
+  opacity: var(--ui-background-image-opacity, 0.4);
 }
 
 .app-theme-background > .app-animated-background {
@@ -51,7 +51,7 @@
 }
 
 [data-theme='light'] .app-animated-background-scrim {
-  background: linear-gradient(180deg, #f6f8fdbd, #eff3fbc7);
+  background: linear-gradient(180deg, #f6f8fd24, #eff3fb40);
 }
 
 /* A single root layer owns both static and animated wallpaper. */
@@ -107,4 +107,13 @@
   margin: 0;
   color: var(--ui-content-secondary);
   font-size: var(--ui-font-size-caption);
+}
+
+.app-settings-opacity-control {
+  margin-top: 18px;
+  gap: 10px;
+}
+
+.app-settings-opacity-control > .ui-slider {
+  width: min(420px, 100%);
 }

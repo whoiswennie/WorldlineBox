@@ -7,6 +7,8 @@ import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import type { BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import type { NativeHostEvent } from '../../src/main/dsh/native-host-client';
 import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
+import { BotAppBrainStore } from '../../src/main/companion-bot/app-brain-store';
+import BetterSqlite3 from 'better-sqlite3';
 
 const roots: string[] = [], brains: BotAppBrain[] = [];
 afterEach(async () => {
@@ -40,6 +42,11 @@ function toolFrames(id = 'provider-tool-1') {
 const stickerTool = { name: 'chat_send_sticker', description: '发送已查询到的真实表情', parameters: { type: 'object', properties: { stickerId: { type: 'string' } }, required: ['stickerId'], additionalProperties: false } };
 type RequestBody = { messages: Array<{ role: string; content: unknown; tool_call_id?: string; tool_calls?: unknown[] }>; stream?: boolean; tools?: unknown[]; max_tokens?: number };
 const requestBody = (init?: RequestInit) => JSON.parse(String(init?.body)) as RequestBody;
+function legacyWithoutBinding(root: string, eventId: string) {
+  const Database = BetterSqlite3 as { new(filename: string): { prepare(sql: string): { run(...values: unknown[]): unknown }; close(): void } };
+  const database = new Database(path.join(root, 'app-brain.sqlite'));
+  try { database.prepare('UPDATE app_turns SET binding_json=NULL WHERE event_id=?').run(eventId); } finally { database.close(); }
+}
 
 /** A separate process really exits after an external write, before the caller
  * can save its tool receipt. Recovery is not simulated by editing SQLite. */
@@ -132,6 +139,9 @@ it('reopens durable app state and replays a completed tool turn without another 
   await first.close(); brains.splice(brains.indexOf(first), 1);
   const reopened = own(new BotAppBrain({ root, fetchFn, callTool }));
   expect(await reopened.run(event)).toEqual(result);
+  expect(await reopened.run({ ...event, tools: [{ ...stickerTool, description: '工具说明已升级' },
+    { name: 'new_capability', description: '新增能力不能改变已接纳事件', parameters: { type: 'object', properties: {} } }] })).toEqual(result);
+  await expect(reopened.run({ ...event, prompt: event.prompt + '不同的请求' })).rejects.toThrow('其他输入');
   expect(fetchFn).toHaveBeenCalledTimes(2); expect(callTool).toHaveBeenCalledTimes(1);
 });
 
@@ -172,7 +182,9 @@ it('recovers an externally committed write after a real process exit without sen
     return stream([text('表情已经在聊天中，继续吧。', 'stop')]);
   });
   const brain = own(new BotAppBrain({ root, callTool, reconcileTool, fetchFn }));
-  expect(await brain.run({ ...input(root, 'crash-window'), tools: [stickerTool] })).toMatchObject({ status: 'succeeded' });
+  expect(await brain.run({ ...input(root, 'crash-window'), tools: [{ ...stickerTool, description: '升级后的说明' },
+    { name: 'new_capability', description: '不能改变已接纳执行的工具权限', parameters: { type: 'object', properties: {} } }] })).toMatchObject({ status: 'succeeded' });
+  expect(requestBody(fetchFn.mock.calls[0]?.[1]).tools?.some(tool => (tool as { function?: { name?: string } }).function?.name === 'new_capability')).toBe(false);
   expect(reconcileTool).toHaveBeenCalledTimes(1); expect(callTool).not.toHaveBeenCalled(); expect(fetchFn).toHaveBeenCalledTimes(1);
 });
 
@@ -186,14 +198,55 @@ it('keeps an unknown interrupted write fenced instead of guessing that it was ab
   expect(reconcileTool).toHaveBeenCalledTimes(1); expect(callTool).not.toHaveBeenCalled(); expect(fetchFn).not.toHaveBeenCalled();
 });
 
-it('can repeat an interrupted read when reconciliation has no receipt instead of fencing it as a write', async () => {
+it('reuses a legacy terminal receipt after a tool upgrade while rejecting a different input', async () => {
+  const root = await workspace(), firstFetch = vi.fn(async () => stream([text('已完成原请求', 'stop')]));
+  const first = own(new BotAppBrain({ root, fetchFn: firstFetch })), original = { ...input(root, 'legacy-terminal'), tools: [stickerTool] };
+  const result = await first.run(original); await first.close(); brains.splice(brains.indexOf(first), 1); legacyWithoutBinding(root, original.eventId);
+  const fetchFn = vi.fn(async () => { throw Error('A completed legacy receipt must not invoke another model'); });
+  const reopened = own(new BotAppBrain({ root, fetchFn })), upgraded = { ...original, tools: [{ ...stickerTool, description: '升级工具说明' }] };
+  expect(await reopened.run(upgraded)).toEqual(result);
+  await expect(reopened.run({ ...upgraded, prompt: '不同请求' })).rejects.toThrow('其他输入');
+  await expect(reopened.run({ ...upgraded, laneId: 'different-lane' })).rejects.toThrow('其他输入');
+  expect(fetchFn).not.toHaveBeenCalled();
+});
+
+it('retires an unfinished legacy tool version through proven original effects without replay and lets the same lane continue', async () => {
+  const root = await workspace(), receipt = await crashAfterPublication(root); legacyWithoutBinding(root, 'crash-window');
+  const callTool = vi.fn(async () => { throw Error('Legacy writes must never be resent with new tools'); });
+  const reconcileTool = vi.fn(async (call: BotToolCall) => { expect(call.name).toBe('chat_send_sticker'); return { state: 'committed' as const, result: receipt }; });
+  const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    expect(JSON.stringify(requestBody(init))).toContain('published-before-crash'); return stream([text('新消息正常回复', 'stop')]);
+  });
+  const brain = own(new BotAppBrain({ root, fetchFn, callTool, reconcileTool }));
+  const upgraded = { ...input(root, 'crash-window'), tools: [{ ...stickerTool, description: '新版工具表' }] };
+  await expect(brain.run(upgraded)).rejects.toMatchObject({ code: 'BOT_ABORT_ACKNOWLEDGED', result: { status: 'cancelled', inputContextCommitted: true } });
+  expect(fetchFn).not.toHaveBeenCalled(); expect(callTool).not.toHaveBeenCalled(); expect(reconcileTool).toHaveBeenCalledTimes(1);
+  expect(await brain.run({ ...upgraded, eventId: 'after-legacy', prompt: '新的聊天消息' })).toMatchObject({ status: 'succeeded', text: '新消息正常回复' });
+  expect(fetchFn).toHaveBeenCalledTimes(1); expect(callTool).not.toHaveBeenCalled();
+});
+
+it('keeps an unverified legacy write fenced after a tool upgrade and refuses a newer event on its lane', async () => {
+  const root = await workspace(); await crashAfterPublication(root); legacyWithoutBinding(root, 'crash-window');
+  const fetchFn = vi.fn(async () => { throw Error('Legacy reconciliation cannot replay the model'); });
+  const callTool = vi.fn(async () => { throw Error('Unknown old write cannot be repeated'); });
+  const reconcileTool = vi.fn(async () => ({ state: 'unknown' as const }));
+  const brain = own(new BotAppBrain({ root, fetchFn, callTool, reconcileTool }));
+  const upgraded = { ...input(root, 'crash-window'), tools: [{ ...stickerTool, description: '新版工具表' }] };
+  await expect(brain.run({ ...upgraded, prompt: '不同的旧请求' })).rejects.toThrow('其他输入');
+  expect(reconcileTool).not.toHaveBeenCalled();
+  await expect(brain.run(upgraded)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
+  await expect(brain.run({ ...upgraded, eventId: 'newer-blocked', prompt: '新的聊天消息' })).rejects.toMatchObject({ code: 'BOT_LANE_BUSY' });
+  expect(fetchFn).not.toHaveBeenCalled(); expect(callTool).not.toHaveBeenCalled();
+});
+
+it.each(['memory_history', 'agent_memory_scopes'])('can repeat an interrupted %s read when reconciliation has no receipt instead of fencing it as a write', async name => {
   const root = await workspace();
-  const tool = { name: 'memory_history', description: '回查当前受众的原话', parameters: { type: 'object', properties: { keyword: { type: 'string' } }, required: ['keyword'], additionalProperties: false } };
+  const tool = { name, description: '回查当前受众的原话或可读范围', parameters: { type: 'object', properties: { keyword: { type: 'string' } }, required: ['keyword'], additionalProperties: false } };
   const args = { keyword: '20分钟' };
   await crashAfterPublication(root, tool, args);
   const receipt = { sources: [{ messageId: 'original-source', content: '今晚我只有20分钟。' }] };
   const reconcileTool = vi.fn(async () => ({ state: 'unknown' as const }));
-  const callTool = vi.fn(async (call: BotToolCall) => { expect(call).toMatchObject({ name: 'memory_history', args }); return receipt; });
+  const callTool = vi.fn(async (call: BotToolCall) => { expect(call).toMatchObject({ name, args }); return receipt; });
   const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
     expect(JSON.parse(String(requestBody(init).messages.find(message => message.role === 'tool')?.content))).toEqual(receipt);
     return stream([text('查到原话了，今晚只有20分钟。', 'stop')]);
@@ -213,6 +266,45 @@ it('blocks newer events behind an unresolved write in the same lane while anothe
   expect(fetchFn).toHaveBeenCalledTimes(1); expect(callTool).toHaveBeenCalledTimes(1);
   expect(await brain.run({ ...input(root, 'other-companion'), laneId: 'independent-companion-lane' })).toMatchObject({ status: 'succeeded', text: '另一位伙伴仍然可以正常回应。' });
   expect(fetchFn).toHaveBeenCalledTimes(2); expect(callTool).toHaveBeenCalledTimes(1);
+});
+
+it('returns a proven rejected write to the model without poisoning the conversation or replaying the call', async () => {
+  const root = await workspace(); let requests = 0;
+  const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+    if (++requests === 1) return stream(toolFrames());
+    expect(JSON.parse(String(requestBody(init).messages.find(message => message.role === 'tool')?.content))).toMatchObject({
+      executed: false, error: 'The requested sticker does not exist',
+    });
+    return stream([text('这张表情不存在，我换一个。', 'stop')]);
+  });
+  const callTool = vi.fn(async () => { throw new Error('The requested sticker does not exist'); });
+  const reconcileTool = vi.fn(async () => ({ state: 'absent' as const }));
+  const brain = own(new BotAppBrain({ root, fetchFn, callTool, reconcileTool }));
+  expect(await brain.run({ ...input(root, 'rejected-tool'), tools: [stickerTool] })).toMatchObject({ status: 'succeeded' });
+  expect(callTool).toHaveBeenCalledTimes(1); expect(reconcileTool).toHaveBeenCalledTimes(1); expect(fetchFn).toHaveBeenCalledTimes(2);
+});
+
+it('keeps cancellation unresolved until proof arrives, then retires the original turn and unblocks the lane', async () => {
+  const root = await workspace(), abort = new AbortController(); let entered!: () => void, proven = false, requests = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const callTool = vi.fn(async (_call: BotToolCall, signal: AbortSignal) => {
+    entered(); await new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+  });
+  const reconcileTool = vi.fn(async () => ({ state: proven ? 'absent' as const : 'unknown' as const }));
+  const fetchFn = vi.fn(async () => ++requests === 1 ? stream(toolFrames()) : stream([text('连接已恢复，可以继续聊天。', 'stop')]));
+  const brain = own(new BotAppBrain({ root, fetchFn, callTool, reconcileTool })), prior = { ...input(root, 'cancelled-tool'), tools: [stickerTool] };
+  const running = brain.run({ ...prior, signal: abort.signal });
+  const failed = expect(running).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
+  await started; abort.abort(new Error('Cancel while awaiting the original tool receipt')); await failed;
+  await expect(brain.cancelDurable(prior)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN' });
+  const journal = new BotAppBrainStore(path.join(root, 'app-brain.sqlite'));
+  try { expect(journal.get(prior.eventId)).toMatchObject({ state: 'tool_unknown', cancelRequested: true, leasePid: 0, leaseUntil: 0 }); }
+  finally { journal.close(); }
+  await expect(brain.run(input(root, 'newer-after-cancel'))).rejects.toMatchObject({ code: 'BOT_LANE_BUSY' });
+  proven = true;
+  expect(await brain.cancelDurable(prior)).toMatchObject({ accepted: true, result: { status: 'cancelled' } });
+  expect(await brain.run(input(root, 'newer-after-cancel'))).toMatchObject({ status: 'succeeded' });
+  expect(callTool).toHaveBeenCalledTimes(1); expect(fetchFn).toHaveBeenCalledTimes(2);
 });
 
 it('bounds repeated-turn model context with durable summaries while preserving the current request', async () => {

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const captureJobId = (eventId: string) => 'memory-' + createHash('sha256').update(JSON.stringify(['capture', `capture:${eventId}`])).digest('hex');
+export const captureJobId = (eventId: string, policyVersion: 1 | 2 = 2) => 'memory-' + createHash('sha256').update(JSON.stringify(['capture', policyVersion === 2 ? `capture:v2:${eventId}` : `capture:${eventId}`])).digest('hex');
 interface CaptureNote { id: string; content: string; sourceEventId?: string; sourceMessageIds: string[]; indexState: string }
 interface CaptureJob { kind: string; status: string; payload: Record<string, unknown> }
 /** These assertions are for one explicit acceptance case. They do not score
@@ -8,7 +8,8 @@ interface CaptureJob { kind: string; status: string; payload: Record<string, unk
 export function assertPreferenceCapture(input: { eventId: string; sourceMessageId: string; replyMessageId: string; job: CaptureJob | undefined; notes: CaptureNote[] }) {
   const { eventId, job } = input;
   if (!job || job.kind !== 'capture' || job.status !== 'done' || job.payload.sourceEventId !== eventId) throw new Error('AUTOMATIC_CAPTURE_JOB_NOT_COMPLETED');
-  const expected = new Set(Array.from({ length: 6 }, (_, i) => createHash('sha256').update(`${eventId}:capture:${i}`).digest('hex')));
+  const prefix = job.payload.policyVersion === 2 ? 'v2:' : '';
+  const expected = new Set(Array.from({ length: 6 }, (_, i) => createHash('sha256').update(`${eventId}:capture:${prefix}${i}`).digest('hex')));
   const notes = input.notes.filter(note => expected.has(note.id) && note.sourceEventId === eventId);
   if (!notes.length) throw new Error('AUTOMATIC_CAPTURE_HAS_NO_CAPTURE_SOURCE_RECEIPT');
   if (notes.some(note => note.indexState !== 'indexed' || !note.sourceMessageIds.includes(input.sourceMessageId) || !note.sourceMessageIds.includes(input.replyMessageId))) {

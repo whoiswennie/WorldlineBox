@@ -1,25 +1,33 @@
 # Super Agent 伙伴运行说明
 
-基线更新：2026年11月3日，主脑改由世界线盒子自身运行，DSH仅作为委派执行器。早期[实施方案](superagent-bot-implementation-plan-2026-11-02.md)与[调研报告](superagent-bot-research-2026-11-02.md)保留为历史记录，不再据其DSH承载主脑的决定解释新实现。质量与长期运行以对应版本专项验收为准。
+基线更新：2026年11月5日。主脑由世界线盒子自身运行，DSH仅作委派执行器；新增每伙伴统一事件账本、授权任务与结构化业务报告。当前重构范围和验收见[伙伴持续主脑重构方案](companion-superagent-refactor-2026-11-05.md)。早期[实施方案](superagent-bot-implementation-plan-2026-11-02.md)与[调研报告](superagent-bot-research-2026-11-02.md)保留为历史记录，不再据其DSH承载主脑的决定解释新实现。
 
-当前成品的436项相关单测、5项功能与2项渲染性能检查及全部边界，统一见[当前实现与验收](companion-superagent-current-2026-11-03.md)；旧原生成品的统计不代表本轮App主脑。
+此前版本的436项相关单测、5项功能与2项渲染性能检查及其边界见[历史实现与验收](companion-superagent-current-2026-11-03.md)。下文保留的旧版性能样本不代表11月5日重构后的分布。
 
 ## 所有者与数据
 
 | 组件 | 责任 |
 | --- | --- |
 | `src/main/companion-bot/store.ts` | 新 SQLite 消息、Inbox/Outbox、lane、任务、记忆作业、撤回来源与物理世界元数据；小事务在 Main 执行。 |
-| `scheduler.ts` | 同lane FIFO、跨lane并发、lease、恢复与取消。 |
+| `scheduler.ts` | 同伙伴跨会话串行接纳、同lane FIFO、不同伙伴并发、lease、恢复与取消。 |
+| `companion-runtime.ts` | 每伙伴稳定身份、统一事件序列、获准协调视图、任务Mandate、订阅与跟进账本；无授权自动工作只记录候选。 |
 | `service.ts` | 可信入口、主脑准备、工具回调、任务与世界事件投递、后台记忆作业。 |
 | `app-brain.ts` / `app-brain-store.ts` | 应用内主脑：直接模型流、工具循环、有界历史与摘要、SQLite耐久事件/步骤/回执、取消与恢复；没有DSH Session。 |
 | `brain-router.ts` | 主脑及记忆编码器走应用Agent；执行任务及其检查/指导走DSH；不做出错后跨引擎重发。 |
 | `dsh-brain.ts` / 原生DSH Host | 仅负责委派Worker的原生Session、工具执行、取消、效果核实与恢复。 |
+| `task-report.ts` | 校验根执行器的结构化业务报告及原生执行前回执；执行轮次成功不直接成为业务任务成功。 |
 | `memory-service.ts` / `resources/vcp-memory` | 常驻 Node 24 Worker、VCP 检索与日记、历史适配、预处理／response 闭环、来源撤回。 |
 | `retention.ts` | 主脑活动代际计量、应用摘要交接与CAS提交；兼容原回执格式。 |
 | `world.ts` / `world-physics.ts` | 物理位置、A* 路径、出入口、家具占用、动作和见证者事件。 |
 | `src/renderer/companion-bot` | 会话投影、有限流式覆盖、任务／记忆面板和世界视图。 |
 
 数据根为 `app.getPath('userData')/companion-bot-v2`。`bot.sqlite`管理消息/任务，`router/app-brain.sqlite`管理主脑turn/step/tool journal，均独立于资产库；`memory/`按伙伴和受众安全域隔离。DSH只管理执行任务的原生会话/日志。主脑逻辑session哈希沿用旧回执格式，不表示创建同名DSH Session。
+
+同一伙伴跨聊天保持同一个brain ID和事件序列。各lane保留自己的原话、模型摘要及VCP资料，作为该主脑按受众裁剪的视图。用户私聊可协调该伙伴在用户参与的direct/group中的任务；群、伙伴私聊和世界仅提供当前受众视图，跨会话元数据不授予新的工作权限。
+
+伙伴联系先进入双方独立peer会话。请求对方向用户发消息时，目标伙伴凭宿主绑定的一次性reply grant自行发布本人消息；发送者不会写入用户与目标的direct。真实peer消息自动出现在聊天列表，浏览入口只筛选已有记录，用户保持旁观只读。
+
+任务工作台的跟进入口将用户消息绑定原taskId；执行器问题还绑定该轮原questionId。明确跟进不会变成第二份同目标任务。Worker用worker_report提交progress/waiting/ready/blocked/failed/dropped，宿主结合真实效果回执结算；缺报告保持等待。续投沿原任务和原DSH Session，原始请求及已完成效果不重发。
 
 启动器只预热默认实例，所有伙伴委派的任务复用该Host，普通主脑对话不连接它。玩家停止实例后，普通聊天保持独立，下一次真正委派任务才沿原ID/home恢复Host。VCP使用软件内置Node24，不经DSH解析Node或启动Host。伙伴有可读目录、受众子目录与独立任务工作区。
 

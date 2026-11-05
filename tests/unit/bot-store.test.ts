@@ -50,15 +50,15 @@ it('upgrades v14 lifecycle metadata atomically and refuses data from a future ta
     DROP INDEX bot_tasks_visible_activity; DROP INDEX bot_tasks_visible_global_activity;
     DROP INDEX bot_tasks_presence_active_v2; DROP INDEX bot_inbox_presence_active; PRAGMA user_version=14`);
   legacy.close(); store = new BotStore(filename);
-  expect(store.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toMatchObject({ user_version: 17 });
+  expect(store.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toMatchObject({ user_version: 18 });
   expect(store.getTask(queued.id)).toMatchObject({ status: 'queued', goal: queued.goal, extra: { workerPrompt: '原始输入' } });
   expect(store.companionPresence([{ id: 'alice', updatedAt: store.getCompanion('alice')!.updatedAt }], true).alice!.counts.activeTasks).toBe(1);
   expect(store.taskTransaction(sql => sql.prepare("SELECT name FROM sqlite_master WHERE name IN ('bot_task_presence_events','bot_task_history_clear_targets','bot_tasks_visible_scope_status')").all())).toHaveLength(3);
   const futurePath = path.join(root, 'future.sqlite'), future = new LifecycleDatabase(futurePath);
-  future.pragma('user_version=18'); future.close();
+  future.pragma('user_version=19'); future.close();
   expect(() => new BotStore(futurePath)).toThrow('拒绝降级');
   const unchanged = new LifecycleDatabase(futurePath, { readonly: true });
-  try { expect(unchanged.pragma('user_version', { simple: true })).toBe(18); } finally { unchanged.close(); }
+  try { expect(unchanged.pragma('user_version', { simple: true })).toBe(19); } finally { unchanged.close(); }
 });
 it('filters task backoff before limiting and gives ready cancellations precedence without spinning native retries', () => {
   const conversation = store.openDirect('alice');

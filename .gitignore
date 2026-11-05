@@ -26,8 +26,8 @@ __pycache__/
 !.env.example
 embedding-gemma.local.json
 
-# Verified local embedding weights/runtime are staged into release resources.
-resources/embedding-models/*.gguf
+# Model source weights are tracked by Git LFS; platform runtimes are staged
+# from checksum-pinned releases rather than committed build outputs.
 resources/embedding-models/runtime-cpu/
 resources/embedding-models/runtime-vulkan/
 
@@ -62,5 +62,11 @@ resources/media-binaries/*/
 # main 侧的剥离仍由合并流程（git rm --cached docs/internal）与 pre-commit 钩子负责。
 AGENTS.md
 CLAUDE.md
+# Companion runtime model/audio are source assets with retained licenses.
+# Their MOC3/textures use narrow Git LFS rules; original archives/PSD are not staged.
 .beads/
 .github/
+# Speech model weights use Git LFS; vocabulary/manifest/licenses use ordinary Git.
+resources/speech-models/*.part
+resources/speech-models/*.range-*
+resources/speech-models/*.download-*

@@ -1,0 +1,14 @@
+.browser-markdown .browser-chat-link { max-width:100%;white-space:normal;vertical-align:baseline; }
+.browser-link-inline-arrow { display:inline;margin-left:3px;font-size:.8em;opacity:.65;text-decoration:none; }
+.browser-markdown button.browser-chat-link.browser-markdown-link-card[type=button] { display:inline-flex;align-items:flex-start;gap:13px;width:360px;max-width:100%;padding:14px;border:1px solid color-mix(in srgb,var(--ui-border-subtle) 70%,transparent);border-radius:13px;background:color-mix(in srgb,var(--ui-surface-pane) 70%,transparent);color:var(--ui-content-primary);font:inherit;text-align:left;text-decoration:none;box-shadow:0 2px 5px #00000003;cursor:pointer; }
+.browser-markdown button.browser-chat-link.browser-markdown-link-card[type=button]:hover { background:color-mix(in srgb,var(--ui-action-accent) 5%,var(--ui-surface-pane));border-color:color-mix(in srgb,var(--ui-content-accent) 30%,var(--ui-border-subtle)); }
+.browser-markdown .browser-link-symbol { display:grid;place-items:center;flex:0 0 36px;height:40px;border-radius:10px;background:color-mix(in srgb,var(--ui-action-accent) 9%,transparent);color:var(--ui-content-accent); }
+.browser-link-caption { display:grid;gap:5px;min-width:0;flex:1; }
+.browser-markdown .browser-link-caption strong { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:550;line-height:1.5; }
+.browser-markdown .browser-link-caption small { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;line-height:1.6;color:var(--ui-content-tertiary); }
+.browser-link-footer { display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:6px;font-size:10px;line-height:1.5; }
+.browser-link-footer>span:first-child { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ui-content-secondary); }
+.browser-link-footer>span:last-child { flex-shrink:0;color:var(--ui-content-accent); }
+.browser-link-footer i { font-style:normal;margin-left:2px; }
+.browser-markdown .browser-chat-link:focus-visible { outline:2px solid var(--ui-border-focus);outline-offset:3px; }
+@media(max-width:850px) { .browser-markdown button.browser-chat-link.browser-markdown-link-card[type=button] { padding:12px;gap:10px; }.browser-link-footer { flex-wrap:wrap;gap:5px; } }

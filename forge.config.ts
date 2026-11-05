@@ -60,6 +60,7 @@ const config: ForgeConfig = {
       runNodeGate('scripts/stage-bot-memory.mjs', []);
       runNodeGate('scripts/verify-bot-stickers.mjs', []);
       runNodeGate('scripts/stage-bundled-embedding.mjs', ['--acquire']);
+      runNodeGate('scripts/stage-local-speech.mjs', []);
       // Recover ignored media executables from the pinned WorldlineBox-Build
       // release when a clean checkout or a local replacement fails the gate.
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
@@ -100,6 +101,7 @@ const config: ForgeConfig = {
     // The Windows launcher verifies and reuses its portable Electron ZIP.
     electronZipDir: process.env.WORLDLINEBOX_ELECTRON_ZIP_DIR,
     icon: appIconBase,
+    extendInfo: { NSMicrophoneUsageDescription: '将你的语音在本机转成文字，用于与伙伴聊天。' },
     asar: {
       unpack:
         '**/node_modules/7zip-bin/**,' +
@@ -114,7 +116,8 @@ const config: ForgeConfig = {
         // Sharp 0.35 ships prebuilt natives under @img/* (e.g.
         // @img/sharp-darwin-arm64/lib/*.node); native modules cannot load
         // from inside app.asar, so they must stay unpacked.
-        '**/node_modules/@img/**',
+        '**/node_modules/@img/**,' +
+        '**/node_modules/sherpa-onnx-*/**',
     },
     // WorldlineBox 初版不购买签名证书。Apple Silicon 上只有链接器签名、没有
     // _CodeSignature 时，隔离后的应用会被 Gatekeeper 说成「已损坏」。
@@ -149,6 +152,8 @@ const config: ForgeConfig = {
       path.join(projectRoot, 'resources', 'dsh-bridge'),
       path.join(projectRoot, '.tools', 'bot-memory-release', 'vcp-memory'),
       path.join(projectRoot, 'resources', 'embedding-models'),
+      path.join(projectRoot, 'resources', 'speech-models'),
+      path.join(projectRoot, 'resources', 'speech-runtime'),
       path.join(projectRoot, 'resources', 'bot-stickers'),
       packagedResourcesRoot,
       // Browser extension bundle (manual-load distribution): installed at

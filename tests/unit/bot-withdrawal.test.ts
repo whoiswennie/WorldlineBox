@@ -7,6 +7,7 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, BotDshAbortAcknowledgedError, BotDshDeliveryUnknownError, type BotDshRun, type BotDshResult, type BotDshCancelAck } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryForget, type BotMemoryPrepared, type BotMemoryScope, type BotMemoryWrite } from '../../src/main/companion-bot/memory-service';
 import type { BotActivityBudgetPolicy } from '../../src/main/companion-bot/activity-budget';
+import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 
 type Withdrawal = Pick<BotMemoryForget, 'revision' | 'sourceEventIds' | 'sourceMessageIds'>;
 /** A narrow VCP boundary fixture. Its committed tombstone state survives host restarts. */
@@ -62,6 +63,7 @@ class BrainBoundary extends BotDshBrain {
     this.calls.push(input);
     const text = await (input.laneId.startsWith('memory-encoder-') ? this.encoder?.(input) ?? Promise.resolve('{"notes":[]}') : this.handler(input));
     if (input.signal?.aborted) throw new BotDshAbortAcknowledgedError({ text: '', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'cancelled' });
+    if (input.role === 'worker') await reportWorkerOutcome(input, { state: 'ready', summary: text.slice(0, 16000) || '撤回测试场景已完成', verification: ['受控Worker已完成当前授权目标并明确报告。'] });
     input.onEvent?.({ type: 'text', text, sequence: 1, receivedAt: new Date().toISOString() });
     return { text, sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded' };
   }

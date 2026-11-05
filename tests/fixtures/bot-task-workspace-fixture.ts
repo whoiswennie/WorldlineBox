@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { BotStore } from '../../src/main/companion-bot/store';
+import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runtime';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 
 /** Human-authored presentation fixtures written through the actual Main store.
@@ -31,7 +32,20 @@ export function seedTaskWorkspace(profile: string, conversationId: string) {
     store.enqueueTaskNotice({ conversationId, senderId: 'task-service', senderName: '任务回执', source: 'task', sourceMessageId: 'task-ui-already-reported', recipientIds: [DEFAULT_BOT_COMPANION_ID], kind: 'task_done', payload: { taskId: ids[16] }, content: `任务 ${ids[16]} 状态：succeeded\nALREADY REPORTED TRANSPORT RECEIPT` });
     const reply = store.claim({ workerId: 'human-authored-task-presentation' });
     if (!reply || reply.event.source !== 'task' || !store.settle({ eventId: reply.event.id, leaseToken: reply.leaseToken, status: 'done', content: '界面测试：我已经把整理结果带回来啦。执行过程和原始回执放在任务里，需要时可以展开查看。' })) throw new Error('Could not settle the human-authored natural response fixture');
-    return { ids, tasks: ids.length, scope: conversationId, synthetic: true, settledReplyId: reply.event.replyMessageId };
+    const runtime = new BotCompanionRuntime(store), followed = store.getTask(ids[0]!)!;
+    // activeDomainEvents deliberately excludes never-admitted queued events.
+    // Retire the remaining human-authored notice before claiming our guidance.
+    const pendingNotices = store.taskTransaction(sql => sql.prepare("SELECT id FROM bot_inbox WHERE conversation_id=? AND companion_id=? AND source='task' AND status='queued'").all(conversationId, DEFAULT_BOT_COMPANION_ID)) as Array<{ id: string }>;
+    for (const pending of pendingNotices) store.cancelEvent(pending.id);
+    const guidance = store.enqueue({ conversationId, senderId: 'user', recipientIds: [DEFAULT_BOT_COMPANION_ID], sourceMessageId: 'ui-guidance-receipt',
+      content: '请同时提供一份 HTML，保留原有文件。', payload: { taskFollowup: { taskId: followed.id } } });
+    const followupClaim = store.claim({ workerId: 'human-authored-followup-receipt' });
+    if (!followupClaim || followupClaim.event.id !== guidance.events[0]?.id) throw Error(`Unexpected guidance claim: ${followupClaim?.event.sourceMessageId ?? 'none'}; expected ${guidance.events[0]?.sourceMessageId ?? 'none'}`);
+    runtime.boundFollowup(followupClaim.event); runtime.deliveredFollowup(followupClaim.event, followed.id);
+    store.settle({ eventId: followupClaim.event.id, leaseToken: followupClaim.leaseToken, status: 'done', content: '' });
+    const link = store.enqueue({ conversationId, senderId: DEFAULT_BOT_COMPANION_ID, source: 'companion', recipientIds: [], sourceMessageId: 'ui-link-presentation',
+      content: '链接放在这里，需要时直接打开。\n\nhttps://www.bilibili.com/video/BV1YgHq62EN6\n\n也可以打开[视频页面](https://www.bilibili.com/video/BV1YgHq62EN6)继续查看。' });
+    return { ids, tasks: ids.length, scope: conversationId, synthetic: true, settledReplyId: reply.event.replyMessageId, followupMessageId: guidance.message.id, linkMessageId: link.message.id };
   } finally { store.close(); }
 }
 

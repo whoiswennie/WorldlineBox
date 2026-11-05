@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import { BotIcon } from './BotIcon';
 import { BotMediaPreview } from './BotMediaPreview';
 import { formatBotFileSize } from './media-presentation';
 import { botAttachmentDetails, type BotAttachmentKind } from './attachment-presentation';
 import './bot-attachment.css';
+import { BotVoiceMessage } from './BotVoiceMessage';
 export { formatBotFileSize } from './media-presentation';
 
 export interface BotAttachmentProps { media: BotMediaRef; api?: WorldlineBoxBotMediaApi; conversationId: string; locale: 'zh-CN' | 'en'; onOpenUrl?(url: string): void; variant?: 'row' | 'tile' | 'list' }
@@ -18,6 +19,7 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
   const zh = locale === 'zh-CN', [preview, setPreview] = useState(false), [saving, setSaving] = useState(false), [opening, setOpening] = useState(false), [error, setError] = useState(''), [thumbnailFailed, setThumbnailFailed] = useState(false);
   const { name, kind, canPreview, policy, extension, imageUrl } = botAttachmentDetails(media, !!api);
   const eligibility = policy.previewEligibility;
+  const closePreview = useCallback(() => setPreview(false), []);
   const tile = variant === 'tile', sticker = variant === 'row' && media.kind === 'sticker' && kind === 'image' && eligibility === 'inline';
   const typeLabel = kind === 'image' ? zh ? '图片' : 'Image' : kind === 'video' ? zh ? '视频' : 'Video' : kind === 'audio' ? zh ? '音频' : 'Audio' : extension;
   // Opening an original, AV stream or text page requires an explicit click.
@@ -35,8 +37,10 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
       : <><button className="bot-attachment-main" type="button" title={name} disabled={saving || opening || !canPreview && !api} aria-label={zh ? `${canPreview ? '打开预览' : '系统打开'} ${name}` : `${canPreview ? 'Preview' : 'Open'} ${name}`} onClick={() => { setError(''); if (canPreview) setPreview(true); else void perform('attachment.open'); }}>
         <span className="bot-attachment-cover">{thumbnail ? <img alt="" src={thumbnail} loading="lazy" onError={() => setThumbnailFailed(true)} /> : <><AttachmentKindIcon kind={kind} /><small>{kind === 'audio' ? 'AUDIO' : kind === 'video' ? 'VIDEO' : extension}</small></>}</span>
         <span className="bot-attachment-meta"><strong title={name}>{name}</strong><span>{typeLabel} · {formatBotFileSize(media.size)}</span>{eligibility === 'external-only' && <em>{zh ? '超过 200 MiB · 系统打开' : 'Over 200 MiB · System app'}</em>}</span>
+        {!tile && <span className="bot-attachment-open-hint">{canPreview ? zh ? '预览' : 'Preview' : zh ? '打开' : 'Open'}<BotIcon name="chevron-right" /></span>}
       </button>{!tile && <footer className="bot-attachment-actions">{api && <><button className="bot-file-save" type="button" disabled={saving || opening} title={zh ? '保存' : 'Save'} aria-label={`${zh ? '保存' : 'Save'} ${name}`} onClick={() => void perform('attachment.save')}><BotIcon name="download" /><span className="bot-attachment-action-label">{zh ? '保存' : 'Save'}</span></button><button className="bot-file-open" type="button" disabled={saving || opening} title={zh ? '系统打开' : 'System app'} aria-label={`${zh ? '系统打开' : 'System app'} ${name}`} onClick={() => void perform('attachment.open')}><BotIcon name="external" /><span className="bot-attachment-action-label">{zh ? '系统打开' : 'System app'}</span></button></>}</footer>}</>}
     {error && !preview && <small className="bot-attachment-action-error" role="alert">{error}</small>}
-    {preview && kind !== 'file' && <BotMediaPreview media={media} api={api} conversationId={conversationId} locale={locale} kind={kind} imageUrl={imageUrl} onClose={() => setPreview(false)} onOpenUrl={onOpenUrl} busy={saving || opening} actionError={error} onSave={api ? () => perform('attachment.save') : undefined} onSystemOpen={api ? () => perform('attachment.open') : undefined} />}
+    {kind === 'audio' && eligibility === 'inline' && variant === 'row' && <BotVoiceMessage media={media} conversationId={conversationId} locale={locale} transcriptOnly />}
+    {preview && kind !== 'file' && <BotMediaPreview media={media} api={api} conversationId={conversationId} locale={locale} kind={kind} imageUrl={imageUrl} onClose={closePreview} onOpenUrl={onOpenUrl} busy={saving || opening} actionError={error} onSave={api ? () => perform('attachment.save') : undefined} onSystemOpen={api ? () => perform('attachment.open') : undefined} />}
   </div>;
 }

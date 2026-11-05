@@ -30,11 +30,11 @@ export class BotActivityBudget {
     }
     const value: State = { startedAt: now, events: 0, actions: 0, tasks: 0 }; this.store.setMetadata(key, JSON.stringify(value)); return { key, value };
   }
-  reserve(correlationId: string, kind: 'events' | 'actions' | 'tasks', operationId: string, amount = 1, now = Date.now()): void {
+  reserve(correlationId: string, kind: 'events' | 'actions' | 'tasks', operationId: string, amount = 1, now = Date.now(), options: { authorizedWork?: boolean } = {}): void {
     const receipt = `activity-use:${digest(JSON.stringify([correlationId, kind, operationId]))}`;
     if (this.store.getMetadata(receipt)) return;
     const { key, value } = this.state(correlationId, now), limit = kind === 'events' ? this.policy.maxDerivedEvents : kind === 'actions' ? this.policy.maxActions : this.policy.maxTasks;
-    if (!Number.isSafeInteger(amount) || amount < 0 || now - value.startedAt >= this.policy.maxElapsedMs || value[kind] + amount > limit) throw new BotActivityLimitError('本次活动的时间或资源预算已用尽，等待新的用户输入。');
+    if (!Number.isSafeInteger(amount) || amount < 0 || !options.authorizedWork && now - value.startedAt >= this.policy.maxElapsedMs || value[kind] + amount > limit) throw new BotActivityLimitError('本次活动的时间或资源预算已用尽，等待新的用户输入。');
     this.store.setMetadata(key, JSON.stringify({ ...value, [kind]: value[kind] + amount })); this.store.setMetadata(receipt, '1');
   }
 }

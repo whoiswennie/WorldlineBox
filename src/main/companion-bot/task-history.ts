@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { setImmediate as yieldToRuntime } from 'node:timers/promises';
-import type { BotStore } from './store';
+import type { BotStore, BotTaskSql } from './store';
 
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const attachments = (value: unknown) => [...new Set(Array.isArray(value) ? value : [])].sort();
@@ -10,6 +10,20 @@ export function botTaskRemovalFingerprint(input: { sourceEventId: string; goal: 
 export interface BotTaskHistoryClearResult { cleared: number; remaining: number; recordsOnly: true }
 interface ClearReceipt { fingerprint: string; input: ClearInput; cleared: number; stamp: string; result?: BotTaskHistoryClearResult }
 const running = new WeakMap<BotStore, Map<string, { fingerprint: string; promise: Promise<BotTaskHistoryClearResult> }>>();
+
+/** Keep only an admission tombstone after the task's business text is cleared.
+ * Older stores may not have initialized the companion runtime tables yet. */
+function clearTaskMandateBody(sql: BotTaskSql, taskId: string): void {
+  if (!sql.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_task_mandates'").get()) return;
+  const saved = sql.prepare('SELECT id,record_json,fingerprint FROM bot_task_mandates WHERE task_id=?').get(taskId) as { id: string; record_json: string; fingerprint: string } | undefined;
+  if (!saved) return;
+  const previous = JSON.parse(saved.record_json) as { sourceEventId?: string; authorizingEventId?: string; originalFingerprint?: string };
+  const tombstone = { removed: true, taskId, id: saved.id, sourceEventId: previous.sourceEventId, authorizingEventId: previous.authorizingEventId,
+    originalFingerprint: previous.originalFingerprint ?? saved.fingerprint };
+  sql.prepare("UPDATE bot_task_mandates SET record_json=?,state='withdrawn' WHERE task_id=?").run(JSON.stringify(tombstone), taskId);
+  if (sql.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_task_subscriptions'").get())
+    sql.prepare("UPDATE bot_task_subscriptions SET state='stopped' WHERE task_id=?").run(taskId);
+}
 type ClearInput = { conversationId: string; requestId: string; taskId?: string; companionId?: string };
 
 /** Removes ended-task bodies from the catalog while preserving the minimum
@@ -76,6 +90,9 @@ async function clearHistory(store: BotStore, input: ClearInput, key: string, fin
         sql.prepare('DELETE FROM bot_task_controls WHERE task_id=?').run(task.id);
         sql.prepare('DELETE FROM bot_task_answer_receipts WHERE task_id=?').run(task.id);
         sql.prepare('DELETE FROM bot_task_questions WHERE task_id=?').run(task.id);
+        clearTaskMandateBody(sql, task.id);
+        const reportPrefix = `task-report:${task.id}:`;
+        sql.prepare('DELETE FROM bot_metadata WHERE substr(key,1,length(?))=?').run(reportPrefix, reportPrefix);
         // Effects retain their identities and outcome, never their old inputs.
         sql.prepare("UPDATE bot_task_effects SET preview='' WHERE task_id=?").run(task.id);
         sql.prepare('DELETE FROM bot_task_history_clear_targets WHERE request_key=? AND task_id=?').run(key, task.id);

@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { TelemetryCollector, attachKnowledge, attachPlugin, attachCold, requestSummary } = require('./telemetry.cjs');
 const { waitForIndex } = require('./index-wait.cjs');
+const { prepareManagedIngestionScheduler } = require('./ingestion-scheduler.cjs');
 
 const TOOLS = Object.freeze({
   DailyNote: 'Plugin/DailyNote/dailynote.js',
@@ -132,6 +133,7 @@ class MemoryRuntime {
   }
 
   async _startVectors() {
+    this.ingestionScheduler = prepareManagedIngestionScheduler(this.runtimeDir);
     this.kb = this._require('KnowledgeBaseManager.js');
     this.modules.set('KnowledgeBaseManager', this.kb);
     this.kb.config.apiUrl = process.env.MEMORY_DOCUMENT_API_URL || this.kb.config.apiUrl;

@@ -7,6 +7,7 @@ import type { BotTask as BotTaskCard, BotTaskSummary } from '../../shared/compan
 import type { BotStore, BotTaskSql } from './store';
 import type { BotSource, BotTask } from './types';
 import { BotDshBrain } from './dsh-brain';
+import type { BotStoredWorkerReport } from './task-report';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 type Row = Record<string, string | number | null>;
@@ -30,7 +31,7 @@ export interface BotTaskControlInput { requestId: string; text?: string; questio
 /** Task facts survive native Session restore. Only durable native results or
  * explicit, individually recorded user decisions can resolve an unknown effect. */
 export class BotTaskRuntime {
-  constructor(private readonly store: BotStore) {}
+  constructor(private readonly store: BotStore, private readonly options: { followupAvailable?(task: BotTask): boolean } = {}) {}
   private nativeRef(taskId: string, callId: string, input: NativeRef): Required<NativeRef> {
     const root = BotDshBrain.sessionId(`worker-${taskId}`), nativeSessionId = input.nativeSessionId ?? root, nativeCallId = input.nativeCallId ?? callId;
     const expected = nativeSessionId === root ? nativeCallId : 'child-' + digest(`${nativeSessionId}:${nativeCallId}`).slice(0, 48);
@@ -63,6 +64,9 @@ export class BotTaskRuntime {
     });
   }
   card(task: BotTask, details = true): BotTaskCard {
+    const priorReport = task.extra.workerReport as BotStoredWorkerReport | undefined;
+    const report = priorReport?.callId === task.extra.reportBaseline ? undefined : priorReport;
+    const turn = task.extra.turnOutcome as { status: string; receivedAt: string } | undefined;
     const recoveryMessage = typeof task.extra.lastRecoveryError === 'string' ? redactDiagnostic(task.extra.lastRecoveryError) : undefined;
     const recoveryStage = typeof task.extra.lastRecoveryStage === 'string' ? redactDiagnostic(task.extra.lastRecoveryStage).slice(0, 100) : undefined;
     const attempts = Number(task.extra.cancelRequested === true ? task.extra.cancelRecoveryAttempts ?? 0 : task.extra.pauseRequested === true ? task.extra.pauseRecoveryAttempts ?? 0 : task.extra.retryAttempts ?? 0);
@@ -71,10 +75,13 @@ export class BotTaskRuntime {
       title: typeof task.extra.title === 'string' ? task.extra.title.slice(0, 120) : undefined,
       createdAt: task.createdAt, startedAt: typeof task.extra.presenceStartedAt === 'string' ? task.extra.presenceStartedAt : undefined,
       updatedAt: task.updatedAt, sessionId: task.sessionId, cancelRequested: task.extra.cancelRequested === true,
+      humanStopped: task.extra.humanStopped === true, followupAvailable: this.options.followupAvailable?.(task),
       stopRequestedAt: typeof task.extra.cancelRequestedAt === 'string' ? task.extra.cancelRequestedAt : undefined,
       pauseRequested: task.extra.pauseRequested === true, pauseRequestedAt: typeof task.extra.pauseRequestedAt === 'string' ? task.extra.pauseRequestedAt : undefined,
       pausedAt: typeof task.extra.pausedAt === 'string' ? task.extra.pausedAt : undefined,
       continuationAvailable: task.status === 'waiting' && task.extra.cancelRequested !== true && Number.isSafeInteger(task.extra.outputCheckpoint),
+      report: details && report ? { state: report.state, summary: report.summary, verification: report.verification, receivedAt: report.receivedAt } : undefined,
+      executionTurn: details && turn ? { status: turn.status, receivedAt: turn.receivedAt } : undefined,
       diagnostic: details && (recoveryMessage || recoveryStage || attempts > 0) ? { attempts: Number.isSafeInteger(attempts) && attempts >= 0 ? attempts : 0, stage: recoveryStage, message: recoveryMessage ?? '此前没有保留更详细的连接错误。' } : undefined,
       activity: details && Array.isArray(task.extra.activity) ? task.extra.activity as BotTaskCard['activity'] : undefined,
       progress: task.extra.progress && typeof task.extra.progress === 'object' ? task.extra.progress as BotTaskCard['progress'] : undefined,

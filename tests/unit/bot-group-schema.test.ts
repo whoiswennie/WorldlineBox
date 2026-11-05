@@ -36,7 +36,7 @@ it('upgrades v15 peer groups to include their user owner while preserving histor
   original.close();
   const legacy = new LegacyDatabase(filename); legacy.exec('PRAGMA user_version=15'); legacy.close();
   item.store = new BotStore(filename); const migrated = item.store;
-  expect(migrated.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toEqual({ user_version: 17 });
+  expect(migrated.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toEqual({ user_version: 18 });
   expect(migrated.getConversation(visible.id)).toMatchObject({ ownerId: 'user', revision: visible.revision, securityDomainId: visible.securityDomainId });
   expect(migrated.getConversation(visible.id)!.memberIds.sort()).toEqual(['alice', 'bob', 'user']);
   expect(migrated.getEvent(source.events[0]!.id)).toEqual(source.events[0]);

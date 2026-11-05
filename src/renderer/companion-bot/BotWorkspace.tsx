@@ -1,21 +1,24 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { BotCompanion, BotMessage, BotParticipationMode, BotRequest, BotResponse, BotSnapshot, WorldlineBoxBotApi } from '../../shared/companion-bot';
+import type { BotCompanion, BotMessage, BotParticipationMode, BotRequest, BotResponse, BotSnapshot, BotTask, WorldlineBoxBotApi } from '../../shared/companion-bot';
 import { useLocale } from '../i18n';
 import './bot-workspace.css';
 import './bot-group-chat.css';
 import './bot-atmosphere.css';
 import { BotWorldScene } from './BotWorldScene';
 import { BotMessageBody } from './BotMessageBody';
+import { BotTaskFollowupReceipt } from './BotTaskFollowupReceipt';
 import { BotTaskPanel } from './BotTaskPanel';
 import { BotTaskNotice, botTaskNoticeVisible } from './BotTaskNotice';
 import { BotPeerAvatar } from './BotPeerAvatar';
 import { BotAvatar } from './BotAvatar';
+import { BotCallWindow, type BotCallComposerOptions, type BotCallComposerSendBridge } from './BotCallWindow';
 import { BotPresenceSummary, BotPresenceText, useBotTaskUpdates } from './BotPresence';
-import { botTaskActive } from './task-presentation';
+import { botTaskActive, botTaskCanFollow, botTaskTitle } from './task-presentation';
 import { builtinBotCompanion } from '../../shared/builtin-bot-companions';
 import { BotCompanionEditor, type BotCompanionEditorDraft } from './BotCompanionEditor';
 import { BotGroupMembers } from './BotGroupMembers';
-import { BotPeerConversationPicker } from './BotPeerConversationPicker';
+import { useBotConversationUpdates } from './BotConversationActivity';
+import './bot-peer-observation.css';
 import { BotComposer } from './BotComposer';
 import { BotIcon } from './BotIcon';
 import { BotHistoryDialog } from './BotHistoryPanel';
@@ -23,10 +26,12 @@ import { BotReplyTiming } from './BotReplyTiming';
 import { BotReplyProgressIndicator, botReplyProgressLabel } from './BotReplyProgress';
 import { BotMemoryWorkspace } from './BotMemoryWorkspace';
 import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
+import type { WorldlineBoxBotSpeechApi } from '../../shared/companion-bot-speech';
 import { BotChatContext } from './BotChatContext';
 const ignoreLink = () => undefined;
 const MESSAGE_WINDOW_LIMIT = 400;
 const SIDEBAR_PAGE_SIZE = 40;
+interface TaskFollowup { id: string; title: string; ownerName?: string; resuming?: boolean; unavailable?: boolean }
 const messageDay = (createdAt: string, locale: 'zh-CN' | 'en') => {
   const date = new Date(createdAt);
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' });
@@ -70,7 +75,7 @@ const copy = {
 };
 
 /** A conversation UI backed by one durable event runtime, with no legacy topic/job controllers. */
-export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive = true }: { api?: WorldlineBoxBotApi; mediaApi?: WorldlineBoxBotMediaApi; onOpenSettings(): void; onOpenUrl?(url: string): void; isActive?: boolean }) {
+export function BotWorkspace({ api, mediaApi, speechApi, onOpenUrl = ignoreLink, isActive = true }: { api?: WorldlineBoxBotApi; mediaApi?: WorldlineBoxBotMediaApi; speechApi?: WorldlineBoxBotSpeechApi; onOpenSettings(): void; onOpenUrl?(url: string): void; isActive?: boolean }) {
   const { locale } = useLocale(), t = copy[locale];
   const [snapshot, setSnapshot] = useState<BotSnapshot>(), [selected, setSelected] = useState(''), [error, setError] = useState('');
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [busy, setBusy] = useState(false), [streams, setStreams] = useState<Record<string, string>>({});
@@ -79,10 +84,16 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
   const dialogEpoch = useRef(0);
   const [panel, setPanel] = useState<'memory' | 'tasks' | 'history' | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string>();
+  const [followups, setFollowups] = useState<Record<string, TaskFollowup>>({});
+  const [callTarget, setCallTarget] = useState<{ conversationId: string; companionId: string }>();
+  const composerSend = useRef<BotCallComposerSendBridge>(undefined);
+  const registerComposerSend = useCallback((bridge?: BotCallComposerSendBridge) => { composerSend.current = bridge; }, []);
+  const closeCall = useCallback(() => { composerSend.current = undefined; setCallTarget(undefined); }, []);
+  const openCallUrl = useCallback((url: string) => { closeCall(); onOpenUrl(url); }, [closeCall, onOpenUrl]);
   const openTask = (taskId?: string) => { setFocusedTaskId(taskId); setPanel('tasks'); };
   const [showWorld, setShowWorld] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
-  const [showPeerPicker, setShowPeerPicker] = useState(false), [joiningPeer, setJoiningPeer] = useState('');
+  const [peerOnly, setPeerOnly] = useState(false), [joiningPeer, setJoiningPeer] = useState('');
   const joiningPeers = useRef(new Set<string>());
   const [showContext, setShowContext] = useState(true);
   const [contactQuery, setContactQuery] = useState('');
@@ -94,7 +105,7 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
   const [browsingHistory, setBrowsingHistory] = useState(false), [newMessages, setNewMessages] = useState(false), [loadingLatest, setLoadingLatest] = useState(false);
   const selectedRef = useRef(selected), generation = useRef(0), refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const snapshotRef = useRef(snapshot), selectionEpoch = useRef(0), opening = useRef(0), sending = useRef(false), paging = useRef(false);
-  const sendAttempts = useRef(new Map<string, { content: string; requestId: string; kind: 'message' | 'world'; attachmentIds: string[] }>());
+  const sendAttempts = useRef(new Map<string, { content: string; requestId: string; kind: 'message' | 'world'; attachmentIds: string[]; replyToTaskId?: string }>());
   const windowEpoch = useRef(0), historyMode = useRef(false), latestSeen = useRef(0), jumping = useRef(false), refreshAfterJump = useRef(false);
   const preserveScroll = useRef<{ messageId?: string; offset: number; top: number } | undefined>(undefined);
   const scroll = useRef<HTMLDivElement>(null);
@@ -104,18 +115,26 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
   const invalidate = useCallback(() => { ++generation.current; }, []);
   const selectConversation = useCallback((id: string) => {
     if (id === selectedRef.current) return;
+    closeCall();
     selectedRef.current = id; ++selectionEpoch.current; ++generation.current;
     ++windowEpoch.current; historyMode.current = false; latestSeen.current = 0; jumping.current = false; refreshAfterJump.current = false; paging.current = false; preserveScroll.current = undefined;
     setBrowsingHistory(false); setNewMessages(false); setLoadingLatest(false);
     setSnapshot(current => current ? { ...current, messages: [], brainContexts: undefined, taskSummary: undefined, hasMore: false } : current);
-    setSelected(id); setStreams({}); setPanel(null); setShowWorld(false); setShowMembers(false); setShowPeerPicker(false); setError(''); setDraggingFiles(false); locateAfterRender.current = undefined;
-  }, []);
+    setSelected(id); setStreams({}); setPanel(null); setShowWorld(false); setShowMembers(false); setError(''); setDraggingFiles(false); locateAfterRender.current = undefined;
+  }, [closeCall]);
   const openPresenceTask = (conversationId?: string, taskId?: string) => { if (conversationId) selectConversation(conversationId); openTask(taskId); };
   const request = useCallback(async (input: BotRequest): Promise<BotResponse> => {
     if (!api) return { ok: false, error: t.unavailable };
     const origin = 'conversationId' in input ? input.conversationId ?? '' : selectedRef.current;
-    const scopedDialogRequest = input.type.startsWith('task.') || input.type === 'conversation.members' || input.type === 'conversation.dissolve' || input.type === 'conversation.announcement' || input.type === 'conversation.peer.open';
-    try { const result = await api.request(input); if (!result.ok && !scopedDialogRequest && origin === selectedRef.current) setError(result.error ?? t.error); return result; }
+    const scopedDialogRequest = input.type.startsWith('task.') || input.type === 'conversation.members' || input.type === 'conversation.dissolve' || input.type === 'conversation.announcement';
+    try {
+      const result = await api.request(input);
+      if (result.ok && input.type === 'task.control' && input.operation === 'remove') setFollowups(current => {
+        const target = current[input.conversationId]; return target?.id === input.taskId ? { ...current, [input.conversationId]: { ...target, unavailable: true } } : current;
+      });
+      if (!result.ok && !scopedDialogRequest && origin === selectedRef.current) setError(result.error ?? t.error);
+      return result;
+    }
     catch { if (!scopedDialogRequest && origin === selectedRef.current) setError(t.error); return { ok: false, error: t.error }; }
   }, [api, t]);
   const refresh = useCallback(async (conversationId = selectedRef.current) => {
@@ -181,16 +200,27 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
   }, [selected, snapshot?.messages, streams]);
   const conversation = snapshot?.conversations.find(item => item.id === selected);
   const observing = conversation?.kind === 'peer';
+  const followedTask = followups[selected], currentFollowedTask = snapshot?.tasks.find(task => task.id === followedTask?.id && task.conversationId === selected);
+  const followupUnavailable = followedTask?.unavailable === true || !!currentFollowedTask && !botTaskCanFollow(currentFollowedTask);
+  const followTask = (task: BotTask) => {
+    if (observing || task.conversationId !== selectedRef.current || !botTaskCanFollow(task)) return;
+    setFollowups(current => ({ ...current, [task.conversationId]: { id: task.id, title: botTaskTitle(task), ownerName: task.companionName ?? snapshot?.companions.find(person => person.id === task.companionId)?.name,
+      resuming: ['succeeded', 'failed'].includes(task.status) } }));
+    setPanel(null); setDraggingFiles(false);
+  };
   const taskUpdates = useBotTaskUpdates({ presence: snapshot?.presence, conversations: snapshot?.conversations ?? [],
-    readConversationId: isActive && panel === 'tasks' && conversation && !observing && !dialog && !showMembers && !showPeerPicker ? selected : undefined });
+    readConversationId: isActive && panel === 'tasks' && conversation && !observing && !dialog && !showMembers ? selected : undefined });
+  const conversationUpdates = useBotConversationUpdates({ activity: snapshot?.conversationActivity, conversations: snapshot?.conversations,
+    readConversationId: isActive && conversation && !dialog && !showMembers && panel !== 'history' && panel !== 'memory' && !browsingHistory && !loadingLatest ? selected : undefined });
   const unreadTaskUpdates = taskUpdates.count(selected);
   const participants = conversation?.memberIds.flatMap(id => snapshot?.companions.find(item => item.id === id) ?? []) ?? [];
   const companion = participants[0];
   const matchesContact = (name: string) => name.toLocaleLowerCase().includes(contactQuery.trim().toLocaleLowerCase());
-  const matchingConversations = snapshot?.conversations.filter(item => matchesContact(item.title)) ?? [];
+  const matchingConversations = [...(snapshot?.conversations.filter(item => (!peerOnly || item.kind === 'peer') && matchesContact(item.title)) ?? [])]
+    .sort((left, right) => (snapshot?.conversationActivity?.[right.id]?.sequence ?? 0) - (snapshot?.conversationActivity?.[left.id]?.sequence ?? 0));
   const matchingCompanions = snapshot?.companions.filter(item => matchesContact(item.name)) ?? [];
   const sidebarCount = sidebarView === 'chats' ? matchingConversations.length : matchingCompanions.length;
-  const sidebarKey = `${sidebarView}:${contactQuery.trim().toLocaleLowerCase()}`;
+  const sidebarKey = `${sidebarView}:${peerOnly}:${contactQuery.trim().toLocaleLowerCase()}`;
   const sidebarPages = Math.max(1, Math.ceil(sidebarCount / SIDEBAR_PAGE_SIZE));
   const sidebarPage = Math.min(sidebarPaging.key === sidebarKey ? sidebarPaging.page : 0, sidebarPages - 1);
   const visibleConversations = matchingConversations.slice(sidebarPage * SIDEBAR_PAGE_SIZE, (sidebarPage + 1) * SIDEBAR_PAGE_SIZE);
@@ -201,13 +231,7 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
     const requestNumber = ++opening.current, epoch = selectionEpoch.current;
     const result = await request({ type: 'conversation.open', companionId });
     if (requestNumber !== opening.current || epoch !== selectionEpoch.current || !result.conversationId) return;
-    setSidebarView('chats'); selectConversation(result.conversationId); await refresh(result.conversationId);
-  };
-  const openPeer = async (memberIds: [string, string]) => {
-    const requestNumber = ++opening.current, epoch = selectionEpoch.current;
-    const result = await request({ type: 'conversation.peer.open', memberIds });
-    if (requestNumber !== opening.current || epoch !== selectionEpoch.current || !result.conversationId) return result;
-    setShowPeerPicker(false); setSidebarView('chats'); selectConversation(result.conversationId); await refresh(result.conversationId); return result;
+    setPeerOnly(false); setSidebarView('chats'); selectConversation(result.conversationId); await refresh(result.conversationId);
   };
   const joinPeer = async () => {
     const origin = selectedRef.current, epoch = selectionEpoch.current;
@@ -216,35 +240,59 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
     try {
       const result = await request({ type: 'conversation.peer.join', conversationId: origin });
       if (!result.ok || !result.conversationId || selectedRef.current !== origin || selectionEpoch.current !== epoch) return;
-      setSidebarView('chats'); selectConversation(result.conversationId); await refresh(result.conversationId);
+      setPeerOnly(false); setSidebarView('chats'); selectConversation(result.conversationId); await refresh(result.conversationId);
     } finally { joiningPeers.current.delete(origin); setJoiningPeer(current => current === origin ? '' : current); }
   };
-  const send = async (kind: 'message' | 'world' = 'message', sticker?: BotMediaRef) => {
-    const files = sticker ? [sticker] : draftFiles[selected] ?? [], attachmentIds = files.map(file => file.id);
-    const content = sticker ? '' : draft, conversationId = selected;
-    if (observing || (!content.trim() && !files.length) || !selected || busy || sending.current || activeImports.current.has(selected)) return;
-    if (files.length > 16) { setError(locale === 'zh-CN' ? '每条消息最多发送16个附件，请分批发送。' : 'Send up to 16 attachments per message.'); return; }
+  const sendMessage = async (kind: 'message' | 'world' = 'message', sticker?: BotMediaRef, override?: { content: string; requestId: string; attachments: readonly BotMediaRef[]; bypassCallBridge: true }): Promise<BotResponse> => {
+    const files = override ? override.attachments : sticker ? [sticker] : draftFiles[selected] ?? [], attachmentIds = files.map(file => file.id);
+    const content = override ? override.content : sticker ? '' : draft, conversationId = selected;
+    const target = kind === 'message' && !sticker ? followups[conversationId] : undefined;
+    const replyToTaskId = target?.id;
+    if (observing || (!content.trim() && !files.length) || !selected || busy || sending.current || activeImports.current.has(selected)) return { ok: false };
+    if (target && (followupUnavailable || files.length || !content.trim() || content.length > 16000)) return { ok: false };
+    if (files.length > 16) { setError(locale === 'zh-CN' ? '每条消息最多发送16个附件，请分批发送。' : 'Send up to 16 attachments per message.'); return { ok: false }; }
     const previous = sendAttempts.current.get(conversationId);
-    const requestId = previous?.content === content && previous.kind === kind && JSON.stringify(previous.attachmentIds) === JSON.stringify(attachmentIds) ? previous.requestId : crypto.randomUUID();
-    sendAttempts.current.set(conversationId, { content, requestId, kind, attachmentIds });
-    sending.current = true; setBusy(true); setError('');
-    const result = await request(kind === 'world' ? { type: 'world.event', conversationId, content, requestId }
-      : { type: 'message.send', conversationId, content, requestId, ...(attachmentIds.length ? { attachmentIds } : {}) });
-    sending.current = false; setBusy(false);
-    if (result.ok) {
-      sendAttempts.current.delete(conversationId);
-      if (!sticker) {
-        setDrafts(current => current[conversationId] === content ? { ...current, [conversationId]: '' } : current);
-        setDraftFiles(current => ({ ...current, [conversationId]: (current[conversationId] ?? []).filter(file => !attachmentIds.includes(file.id)) }));
-      }
-      if (selectedRef.current === conversationId) {
-        if (historyMode.current) await jumpToLatest(); else await refresh(conversationId);
-      }
-    }
+    const requestId = override?.requestId ?? (previous?.content === content && previous.kind === kind && previous.replyToTaskId === replyToTaskId && JSON.stringify(previous.attachmentIds) === JSON.stringify(attachmentIds) ? previous.requestId : crypto.randomUUID());
+    sendAttempts.current.set(conversationId, { content, requestId, kind, attachmentIds, replyToTaskId });
+    const input: BotRequest = kind === 'world' ? { type: 'world.event', conversationId, content, requestId }
+      : { type: 'message.send', conversationId, content, requestId, ...(attachmentIds.length ? { attachmentIds } : {}), ...(replyToTaskId ? { replyToTaskId } : {}) };
+    let result: BotResponse = { ok: false };
+    let dispatching: Promise<BotResponse> | undefined;
+    // Voice retry retains this complete original action, including its native
+    // composer lifecycle, after the first sendMessage invocation has returned.
+    const perform = (): Promise<BotResponse> => {
+      if (dispatching) return dispatching;
+      if (sending.current) return Promise.resolve({ ok: false, error: t.error });
+      sending.current = true; setBusy(true); setError('');
+      dispatching = (async () => {
+        try {
+          result = await request(input);
+          if (result.ok) {
+            if (sendAttempts.current.get(conversationId)?.requestId === requestId) sendAttempts.current.delete(conversationId);
+            if (target) setFollowups(current => { if (current[conversationId] !== target) return current; const next = { ...current }; delete next[conversationId]; return next; });
+            if (!sticker) {
+              setDrafts(current => current[conversationId] === content ? { ...current, [conversationId]: '' } : current);
+              setDraftFiles(current => ({ ...current, [conversationId]: (current[conversationId] ?? []).filter(file => !attachmentIds.includes(file.id)) }));
+            }
+            if (selectedRef.current === conversationId) {
+              if (historyMode.current) await jumpToLatest(); else await refresh(conversationId);
+            }
+          }
+          return result;
+        } finally { sending.current = false; setBusy(false); dispatching = undefined; }
+      })();
+      return dispatching;
+    };
+    try {
+      if (!override?.bypassCallBridge && composerSend.current) await composerSend.current.send(content, requestId, perform);
+      else await perform();
+    } catch { if (!result.ok) setError(t.error); }
+    return result;
   };
+  const send = async (kind: 'message' | 'world' = 'message', sticker?: BotMediaRef) => (await sendMessage(kind, sticker)).ok;
   const addFiles = async (paths?: string[]) => {
     const origin = selectedRef.current;
-    if (!mediaApi || !origin || snapshotRef.current?.conversations.find(item => item.id === origin)?.kind === 'peer' || activeImports.current.has(origin)) return;
+    if (!mediaApi || !origin || followups[origin] || snapshotRef.current?.conversations.find(item => item.id === origin)?.kind === 'peer' || activeImports.current.has(origin)) return;
     activeImports.current.add(origin); setImports(current => ({ ...current, [origin]: true }));
     try {
       const result = await mediaApi.request(paths ? { type: 'files.import', conversationId: origin, paths } : { type: 'files.pick', conversationId: origin });
@@ -259,7 +307,7 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
   const closeDialog = () => { ++dialogEpoch.current; setDialog(null); setEditing(undefined); };
   const saveDialog = async ({ name, persona, members, groupMode }: BotCompanionEditorDraft, epoch: number): Promise<BotResponse> => {
     const input: BotRequest = dialog === 'companion'
-      ? editing ? { type: 'companion.update', companionId: editing.id, name, persona } : { type: 'companion.create', name, persona }
+      ? editing ? { type: 'companion.update', companionId: editing.id, name, ...(persona !== undefined ? { persona } : {}) } : { type: 'companion.create', name, persona: persona ?? '' }
       : { type: 'conversation.create', title: name, kind: dialog === 'world' ? 'world' : 'group', memberIds: members,
         ...(dialog === 'group' ? { participationMode: groupMode } : {}) };
     let result: BotResponse;
@@ -324,17 +372,21 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
     setSnapshot({ ...result.snapshot, messages: result.snapshot.messages.filter(item => item.conversationId === origin).slice(-MESSAGE_WINDOW_LIMIT) });
   };
   const currentTaskCount = snapshot?.taskSummary?.activeCount ?? snapshot?.tasks.filter(task => task.conversationId === selected && botTaskActive(task)).length ?? 0;
-  return <div className={`bot-workspace bot-atmosphere${conversation ? ` has-context${showContext ? '' : ' context-collapsed'}` : ''}${dialog || panel === 'memory' ? ' is-modal-open' : ''}`}>
+  const callCompanion = callTarget && snapshot?.companions.find(item => item.id === callTarget.companionId);
+  const renderComposer = (options?: BotCallComposerOptions) => <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={next => { if (next && callTarget) closeCall(); setPanel(next); }} send={send}
+    followup={followedTask ? { ...followedTask, unavailable: followupUnavailable } : undefined} onClearFollowup={() => setFollowups(current => { const next = { ...current }; delete next[selected]; return next; })} mediaApi={mediaApi} conversationId={selected} attachments={draftFiles[selected] ?? []} addingFiles={imports[selected]} addFiles={() => addFiles()} removeFile={id => setDraftFiles(current => ({ ...current, [selected]: (current[selected] ?? []).filter(file => file.id !== id) }))} sendSticker={async media => { await send('message', media); }} sendVoice={async media => { if (!await send('message', media)) throw Error(locale === 'zh-CN' ? '语音未发送，请重试。录音已保留。' : 'Voice message was not sent. Your recording is retained.'); }}
+    extraTools={options?.toolbar} cornerControl={options?.corner} status={options && <>{options.status}{error && <p className="bot-call-send-error" role="alert">{error}</p>}</>} onVoiceInputStart={options?.onVoiceInputStart} onVoiceInputActivity={options?.onVoiceInputActivity} returnToChatOnPanel={!!options} />;
+  return <div className={`bot-workspace bot-atmosphere${conversation ? ` has-context${showContext ? '' : ' context-collapsed'}` : ''}${dialog || panel === 'memory' || callTarget ? ' is-modal-open' : ''}`}>
     <div className="bot-window-chrome"><span>WorldlineBox <span>/</span> {t.space}</span></div>
     <aside className="bot-sidebar">
       <header><h1>{t.title}</h1><button onClick={() => startDialog('companion')} title={t.add} aria-label={t.add}><BotIcon name="plus" /></button></header>
       <div className="bot-contact-search"><BotIcon name="search" /><input aria-label={t.find} placeholder={t.find} value={contactQuery} onChange={event => setContactQuery(event.target.value)} /></div>
-      <div className="bot-sidebar-shortcuts"><button onClick={() => startDialog('group')}><BotIcon name="users" />{t.group}</button><button onClick={() => { setShowPeerPicker(true); setError(''); }}><BotIcon name="profile" />{locale === 'zh-CN' ? '伙伴私聊' : 'Companion chats'}</button></div>
-      <div className="bot-sidebar-tabs" role="tablist" aria-label={t.title}><button role="tab" aria-selected={sidebarView === 'chats'} onClick={() => setSidebarView('chats')}>{t.chats}</button><button role="tab" aria-selected={sidebarView === 'contacts'} onClick={() => setSidebarView('contacts')}>{t.contacts}<span>{snapshot?.companions.length ?? 0}</span></button></div>
+      <div className="bot-sidebar-shortcuts"><button onClick={() => startDialog('group')}><BotIcon name="users" />{t.group}</button><button aria-pressed={sidebarView === 'chats' && peerOnly} onClick={() => { setSidebarView('chats'); setPeerOnly(current => sidebarView === 'chats' ? !current : true); setContactQuery(''); }}><BotIcon name="profile" />{locale === 'zh-CN' ? '伙伴私聊' : 'Companion chats'}{conversationUpdates.hasPeerUpdates && <span className="bot-peer-unread-dot" aria-label={locale === 'zh-CN' ? '伙伴私聊有新消息' : 'New companion messages'} />}</button></div>
+      <div className="bot-sidebar-tabs" role="tablist" aria-label={t.title}><button role="tab" aria-selected={sidebarView === 'chats'} onClick={() => { setSidebarView('chats'); setPeerOnly(false); }}>{t.chats}</button><button role="tab" aria-selected={sidebarView === 'contacts'} onClick={() => setSidebarView('contacts')}>{t.contacts}<span>{snapshot?.companions.length ?? 0}</span></button></div>
       <div className="bot-scroll">{sidebarView !== 'contacts' ? visibleConversations.map(item => <button key={item.id} className={`bot-contact bot-conversation ${selected === item.id ? 'selected' : ''}`} aria-current={selected === item.id ? 'page' : undefined} onClick={() => selectConversation(item.id)}>
-        {item.kind === 'group' || item.kind === 'peer' ? <BotPeerAvatar companions={item.memberIds.flatMap(id => snapshot?.companions.find(person => person.id === id) ?? [])} presence={snapshot?.presence} locale={locale} /> : <BotAvatar companion={item.kind === 'direct' ? snapshot?.companions.find(person => item.memberIds.includes(person.id)) : undefined} presence={item.kind === 'direct' ? snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? ''] : undefined} locale={locale} name={item.title} symbol={item.kind === 'world' ? '◎' : undefined} />}<span><strong>{item.title}</strong>{item.kind === 'direct' && snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? ''] && <small className="bot-contact-status"><BotPresenceText presence={snapshot.presence[item.memberIds.find(id => id !== 'user') ?? '']!} locale={locale} /></small>}{item.kind !== 'direct' && <small>{item.kind === 'peer' ? locale === 'zh-CN' ? '伙伴私聊 · 旁观' : 'Companion chat · Observing' : locale === 'zh-CN' ? `${item.memberIds.length} 位成员${item.kind === 'world' ? ' · 世界记录' : ''}` : `${item.memberIds.length} members${item.kind === 'world' ? ' · World record' : ''}`}</small>}</span>
-      </button>) : visibleCompanions.map(item => <button className="bot-contact" key={item.id} onClick={() => void open(item.id)}><BotAvatar companion={item} presence={snapshot?.presence?.[item.id]} locale={locale} /><span><strong>{item.name}</strong>{snapshot?.presence?.[item.id] && <small className="bot-contact-status"><BotPresenceText presence={snapshot.presence[item.id]!} locale={locale} /></small>}<small>{builtinBotCompanion(item.id)?.summary ?? item.persona.slice(0, 42)}</small></span></button>)}</div>
-      {!sidebarCount && snapshot && <p className="bot-sidebar-no-results">{locale === 'zh-CN' ? '没有匹配的聊天或伙伴' : 'No matching chats or companions'}</p>}
+        {item.kind === 'group' || item.kind === 'peer' ? <BotPeerAvatar companions={item.memberIds.flatMap(id => snapshot?.companions.find(person => person.id === id) ?? [])} presence={snapshot?.presence} locale={locale} /> : <BotAvatar companion={item.kind === 'direct' ? snapshot?.companions.find(person => item.memberIds.includes(person.id)) : undefined} presence={item.kind === 'direct' ? snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? ''] : undefined} locale={locale} name={item.title} symbol={item.kind === 'world' ? '◎' : undefined} />}<span className="bot-conversation-copy"><span className="bot-conversation-title"><strong>{item.title}</strong>{conversationUpdates.unread(item.id) && <i className="bot-conversation-unread" aria-label={locale === 'zh-CN' ? '有新消息' : 'New messages'} />}</span>{item.kind === 'direct' && snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? ''] && <small className="bot-contact-status"><BotPresenceText presence={snapshot.presence[item.memberIds.find(id => id !== 'user') ?? '']!} locale={locale} /></small>}{item.kind !== 'direct' && <small>{item.kind === 'peer' ? locale === 'zh-CN' ? '伙伴私聊 · 旁观' : 'Companion chat · Observing' : locale === 'zh-CN' ? `${item.memberIds.length} 位成员${item.kind === 'world' ? ' · 世界记录' : ''}` : `${item.memberIds.length} members${item.kind === 'world' ? ' · World record' : ''}`}</small>}{snapshot?.conversationActivity?.[item.id] && <small className="bot-conversation-preview">{snapshot?.conversationActivity?.[item.id]?.senderName}：{snapshot?.conversationActivity?.[item.id]?.preview}</small>}</span>
+      </button>) : visibleCompanions.map(item => <button className="bot-contact" key={item.id} onClick={() => void open(item.id)}><BotAvatar companion={item} presence={snapshot?.presence?.[item.id]} locale={locale} /><span><strong>{item.name}</strong>{snapshot?.presence?.[item.id] && <small className="bot-contact-status"><BotPresenceText presence={snapshot.presence[item.id]!} locale={locale} /></small>}<small>{builtinBotCompanion(item.id)?.summary ?? item.persona.slice(0, 42)}</small></span></button>)}
+      {!sidebarCount && snapshot && !(sidebarView === 'chats' && peerOnly && !contactQuery) && <p className="bot-sidebar-no-results">{locale === 'zh-CN' ? '没有匹配的聊天或伙伴' : 'No matching chats or companions'}</p>}</div>
       {sidebarPages > 1 && <nav className="bot-sidebar-pagination" aria-label={locale === 'zh-CN' ? '聊天列表分页' : 'Chat list pages'}><span>{locale === 'zh-CN' ? `${sidebarCount} 项` : `${sidebarCount} items`}</span><button type="button" disabled={!sidebarPage} aria-label={locale === 'zh-CN' ? '上一页聊天' : 'Previous chats'} onClick={() => setSidebarPaging({ key: sidebarKey, page: sidebarPage - 1 })}>‹</button><small>{sidebarPage + 1} / {sidebarPages}</small><button type="button" disabled={sidebarPage + 1 >= sidebarPages} aria-label={locale === 'zh-CN' ? '下一页聊天' : 'Next chats'} onClick={() => setSidebarPaging({ key: sidebarKey, page: sidebarPage + 1 })}>›</button></nav>}
     </aside>
     <main className={`bot-main${conversation?.kind === 'group' ? ' is-group-conversation' : ''}`}>
@@ -346,6 +398,7 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
           });
         }}><option value="automatic">{t.automatic}</option><option value="all">{t.all}</option><option value="mentions">{t.mentions}</option></select></label>}
         {conversation?.kind === 'world' && <button aria-pressed={showWorld} onClick={() => setShowWorld(!showWorld)}>{t.scene}</button>}
+        {companion && conversation?.kind === 'direct' && conversation.memberIds.includes('user') && <button className="bot-call-entry" aria-label={locale === 'zh-CN' ? '拨打伙伴电话' : 'Call companion'} title={locale === 'zh-CN' ? '发起文字会面' : 'Start a text conversation'} onClick={() => setCallTarget({ conversationId: selected, companionId: companion.id })}><BotIcon name="phone" /><span>{locale === 'zh-CN' ? '拨号' : 'Call'}</span></button>}
         {conversation && !observing && <button className="bot-chat-tasks" aria-pressed={panel === 'tasks'} title={unreadTaskUpdates ? locale === 'zh-CN' ? '本次打开后收到的任务更新；打开工作台查看' : 'Task updates received since opening; view in the task workspace' : conversation.kind === 'group' ? locale === 'zh-CN' ? '查看本群各位伙伴的任务' : 'Tasks owned by companions in this group' : undefined} onClick={() => panel === 'tasks' ? setPanel(null) : openTask()}><BotIcon name="tasks" />{conversation.kind === 'group' ? locale === 'zh-CN' ? '群任务' : 'Group tasks' : t.tasks}{currentTaskCount > 0 && <span>{currentTaskCount}</span>}{unreadTaskUpdates > 0 && <span className="bot-task-updates" data-count={unreadTaskUpdates} aria-label={locale === 'zh-CN' ? `${unreadTaskUpdates} 项任务有新动态` : `${unreadTaskUpdates} tasks with new updates`}>{locale === 'zh-CN' ? '新动态' : 'Updates'} <b>{unreadTaskUpdates > 99 ? '99+' : unreadTaskUpdates}</b></span>}</button>}
         {conversation && <button className="bot-context-toggle" aria-label={locale === 'zh-CN' ? '切换聊天信息' : 'Toggle chat information'} aria-expanded={showContext} onClick={() => setShowContext(!showContext)}><BotIcon name={showContext ? 'panel-collapse' : 'panel-expand'} /></button>}
         {companion && conversation?.kind === 'direct' && <button onClick={() => startDialog('companion', companion)}><BotIcon name="profile" />{t.edit}</button>}
@@ -354,9 +407,9 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
       {showWorld && conversation?.kind === 'world' && api && companion && <BotWorldScene key={`${selected}:${companion.id}`} api={api} conversationId={selected} companionId={companion.id} isActive={isActive} />}
       <div className="bot-chat-body">
         <section className={`bot-thread-column${draggingFiles ? ' is-file-drag' : ''}`} aria-label={conversation?.title ?? t.title}
-          onDragOver={event => { if (mediaApi && selected && event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = observing ? 'none' : 'copy'; if (!observing) setDraggingFiles(true); } }}
+          onDragOver={event => { if (mediaApi && selected && event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.dataTransfer.dropEffect = observing || followedTask ? 'none' : 'copy'; if (!observing && !followedTask) setDraggingFiles(true); } }}
           onDragLeave={event => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDraggingFiles(false); }}
-          onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDraggingFiles(false); if (observing) return; const paths = mediaApi?.getDroppedFilePaths([...event.dataTransfer.files]) ?? []; if (paths.length) void addFiles(paths); }}>
+          onDrop={event => { if (!event.dataTransfer.files.length) return; event.preventDefault(); setDraggingFiles(false); if (observing || followedTask) return; const paths = mediaApi?.getDroppedFilePaths([...event.dataTransfer.files]) ?? []; if (paths.length) void addFiles(paths); }}>
         {draggingFiles && <div className="bot-file-drop-hint">{locale === 'zh-CN' ? '松开鼠标，添加到当前聊天' : 'Drop files into this chat'}</div>}
         <div className="bot-transcript" role="log" aria-live="polite" ref={scroll}>
           {!snapshot ? <div className="bot-empty">{api ? t.loading : t.unavailable}</div> : !conversation ? <div className="bot-empty"><h2>{t.empty}</h2><p>{t.intro}</p><button onClick={() => startDialog('companion')}>{t.add}</button></div> : <>
@@ -368,20 +421,20 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
               <div className="bot-message-avatar"><BotAvatar companion={snapshot.companions.find(item => item.id === message.senderId)} name={message.senderId === 'user' ? t.user : message.senderName} /></div>
               <div className="bot-message-content"><div className="bot-message-author">{message.senderId === 'user' ? t.user : message.senderName}<time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString(locale)}>{new Date(message.createdAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })}</time>{message.senderId !== 'user' && !['queued', 'running'].includes(message.status) && <BotReplyTiming timing={message.timing} locale={locale} />}</div>
               <BotMessageBody message={message} streamedText={streams[message.id]} statusText={status(message)} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
+              {message.senderId === 'user' && message.taskFollowup && <BotTaskFollowupReceipt receipt={message.taskFollowup} locale={locale} onOpen={openTask} />}
               {message.error && <small className="bot-message-error">{message.error}</small>}
               {message.senderId !== 'user' && ['queued', 'running'].includes(message.status) && (observing ? <p role="status" className="bot-peer-observer-progress"><BotIcon name="clock" />{botReplyProgressLabel(message.status, message.progress, locale)}</p> : <BotReplyProgressIndicator message={message} locale={locale} onStop={() => void request({ type: 'reply.cancel', messageId: message.id }).then(() => refresh())} />)}
               </div>
             </article>}</Fragment>)}
           </>}
         </div>
-        {observing ? <div className="bot-peer-observer-dock"><div><BotIcon name="profile" /><span><strong>{locale === 'zh-CN' ? '正在旁观伙伴私聊' : 'Observing a companion conversation'}</strong><small>{locale === 'zh-CN' ? '这里仅有两位伙伴，用户不能代替他们发言。' : 'Only the two companions are members. You cannot speak on their behalf.'}</small></span></div><button type="button" aria-pressed={panel === 'history'} onClick={() => setPanel(panel === 'history' ? null : 'history')}><BotIcon name="history" />{locale === 'zh-CN' ? '聊天记录' : 'History'}</button><button type="button" disabled={joiningPeer === selected} onClick={() => void joinPeer()}>{locale === 'zh-CN' ? '创建群聊，一起参与' : 'Create a group to participate'}</button></div> : conversation?.kind === 'group' && !conversation.memberIds.includes('user') ? <div className="bot-peer-viewing"><BotIcon name="users" />{locale === 'zh-CN' ? '当前聊天仅可查看。' : 'This chat is view only.'}</div> : <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={setPanel} send={send}
-          mediaApi={mediaApi} conversationId={selected} attachments={draftFiles[selected] ?? []} addingFiles={imports[selected]} addFiles={() => addFiles()} removeFile={id => setDraftFiles(current => ({ ...current, [selected]: (current[selected] ?? []).filter(file => file.id !== id) }))} sendSticker={media => send('message', media)} />}
+        {observing ? <div className="bot-peer-observer-dock"><div><BotIcon name="profile" /><span><strong>{locale === 'zh-CN' ? '正在旁观伙伴私聊' : 'Observing a companion conversation'}</strong><small>{locale === 'zh-CN' ? '这里仅有两位伙伴，用户不能代替他们发言。' : 'Only the two companions are members. You cannot speak on their behalf.'}</small></span></div><button type="button" aria-pressed={panel === 'history'} onClick={() => setPanel(panel === 'history' ? null : 'history')}><BotIcon name="history" />{locale === 'zh-CN' ? '聊天记录' : 'History'}</button><button type="button" disabled={joiningPeer === selected} onClick={() => void joinPeer()}>{locale === 'zh-CN' ? '创建群聊，一起参与' : 'Create a group to participate'}</button></div> : conversation?.kind === 'group' && !conversation.memberIds.includes('user') ? <div className="bot-peer-viewing"><BotIcon name="users" />{locale === 'zh-CN' ? '当前聊天仅可查看。' : 'This chat is view only.'}</div> : !callTarget && renderComposer()}
         </section>
       </div>
     </main>
     {showContext && conversation && <BotChatContext key={selected} conversation={conversation} companions={participants} presence={snapshot?.presence} tasks={snapshot?.tasks.filter(task => task.conversationId === selected) ?? []} taskSummary={snapshot?.taskSummary} brainContexts={snapshot?.brainContexts} locale={locale} onClose={() => setShowContext(false)} onEdit={person => startDialog('companion', person)} onMemory={() => setPanel('memory')} onTask={openTask} onMembers={() => setShowMembers(true)} onContact={id => void open(id)} onJoinPeer={() => void joinPeer()} joiningPeer={joiningPeer === selected} request={request} onChanged={() => void refresh(selected)} />}
     {!showContext && conversation && <div className="bot-context-collapsed"><button type="button" onClick={() => setShowContext(true)} aria-expanded="false" aria-label={locale === 'zh-CN' ? '展开聊天信息' : 'Expand chat information'} title={locale === 'zh-CN' ? '展开聊天摘要' : 'Expand chat summary'}><BotIcon name="panel-expand" /></button></div>}
-        {panel === 'tasks' && !observing && <BotTaskPanel key={selected} conversationId={selected} tasks={snapshot?.tasks.filter(task => task.conversationId === selected) ?? []} group={conversation?.kind === 'group'} companions={participants} refreshVersion={snapshot} locale={locale} focusedTaskId={focusedTaskId} onFocus={setFocusedTaskId} onClose={() => setPanel(null)} request={request} changed={() => refresh(selected)}>
+        {panel === 'tasks' && !observing && <BotTaskPanel key={selected} conversationId={selected} tasks={snapshot?.tasks.filter(task => task.conversationId === selected) ?? []} group={conversation?.kind === 'group'} companions={participants} refreshVersion={snapshot} locale={locale} focusedTaskId={focusedTaskId} onFollowTask={followTask} onFocus={setFocusedTaskId} onClose={() => setPanel(null)} request={request} changed={() => refresh(selected)}>
           {snapshot?.runtime && <section className="bot-runtime"><h4>{t.runtime}</h4><p>{t.brainEngine} · {t.taskEngine}</p><p>{t.memoryEngine} · {snapshot.runtime.embedding}</p>
             {snapshot.runtime.modelContext && <div className="bot-model-context"><p>{snapshot.runtime.modelContext.source === 'unknown' ? t.estimatedWindow : t.modelWindow}：{new Intl.NumberFormat(locale).format(snapshot.runtime.modelContext.window)} tokens</p>
               <p>{t.windowSource}：{modelContextSources[locale][snapshot.runtime.modelContext.source]}</p><p>{t.capacityEstimate}</p></div>}
@@ -391,8 +444,11 @@ export function BotWorkspace({ api, mediaApi, onOpenUrl = ignoreLink, isActive =
     {panel === 'history' && api && <BotHistoryDialog key={selected} api={api} conversationId={selected} locale={locale} companions={snapshot?.companions}
       title={conversation?.title ?? t.title} onClose={() => setPanel(null)} onLocate={message => { setPanel(null); void locateMessage(message); }} />}
     {showMembers && conversation?.kind === 'group' && <BotGroupMembers conversation={conversation} companions={snapshot?.companions ?? []} presence={snapshot?.presence} locale={locale} request={request} onChanged={() => refresh()} onClose={() => setShowMembers(false)} onDissolved={() => { setShowMembers(false); selectConversation(''); void refresh(''); }} />}
-    {showPeerPicker && <BotPeerConversationPicker companions={snapshot?.companions ?? []} locale={locale} onOpen={openPeer} onClose={() => { ++opening.current; setShowPeerPicker(false); }} />}
-    {dialog && <BotCompanionEditor key={editorEpoch} kind={dialog} companion={editing} companions={snapshot?.companions ?? []} locale={locale}
+    {dialog && <BotCompanionEditor key={editorEpoch} kind={dialog} companion={editing} companions={snapshot?.companions ?? []} locale={locale} api={api} onPersonaChanged={() => { if (dialogEpoch.current === editorEpoch) void refresh(); }}
       onSave={draft => saveDialog(draft, editorEpoch)} onCancel={closeDialog} />}
+    {callTarget && callCompanion && callTarget.conversationId === selected && <BotCallWindow key={`${callTarget.conversationId}:${callTarget.companionId}`} conversationId={callTarget.conversationId} companion={callCompanion} messages={snapshot?.messages.filter(message => message.conversationId === callTarget.conversationId) ?? []} streams={streams} mediaApi={mediaApi} speechApi={speechApi} locale={locale} onHangup={closeCall} onOpenUrl={openCallUrl} composer={renderComposer} registerComposerSend={registerComposerSend} hasPendingDraft={!!draft.trim() || !!draftFiles[selected]?.length || !!followedTask || !!imports[selected]} sendError={error}
+      onEditText={text => setDrafts(current => ({ ...current, [selected]: current[selected] ? `${current[selected]}\n${text}` : text }))}
+      onDropFiles={files => { if (observing || followedTask) return; const paths = mediaApi?.getDroppedFilePaths(files) ?? []; if (paths.length) void addFiles(paths); }}
+      send={(content, requestId) => sendMessage('message', undefined, { content, requestId, attachments: [], bypassCallBridge: true })} />}
   </div>;
 }

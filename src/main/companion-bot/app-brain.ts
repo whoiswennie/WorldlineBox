@@ -29,7 +29,7 @@ const row = (value: unknown): Row => value && typeof value === 'object' && !Arra
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const terminal = (state: string) => ['succeeded', 'failed', 'cancelled'].includes(state);
-const safeRead = (call: BotToolCall) => ['memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
+const safeRead = (call: BotToolCall) => ['agent_state', 'agent_memory_scopes', 'memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
   || call.name === 'memory_maintenance' && call.args.operation === 'status'
   || call.name === 'dsh_task_result_read' || call.name === 'dsh_task_control' && ['status', 'list'].includes(String(call.args.operation)) || call.name === 'world' && call.args.operation === 'observe';
 const capacity = () => Object.assign(new Error('当前主脑输入超过有界上下文容量，请缩小本次输入或工具查询。'), { code: 'BOT_CONTEXT_CAPACITY' });
@@ -117,7 +117,10 @@ export class BotAppBrain {
     if (!this.fits(input, input.system, current, true)) current = this.store.messages(turn, 250, 'all');
     if (!this.fits(input, input.system, current, true)) throw capacity();
     let messages = [...this.summaryMessage(summary.text), ...history.flatMap(item => item.messages), ...current];
-    if (this.fits(input, input.system, messages, true, 0.85)) return messages;
+    // For the first few short turns the fixed tool catalog dominates the
+    // wire budget. Do not pay for a summary just to reserve a second margin;
+    // fits() already reserves the complete output and protocol allowance.
+    if (this.fits(input, input.system, messages, true, history.length <= 2 ? 1 : 0.85)) return messages;
     // Only complete past turns are compacted. Current request and complete
     // assistant/tool pairs are never cut to make a request fit.
     const keep = history.length > 2 ? history.slice(-2) : [], older = history.slice(0, history.length - keep.length);
@@ -203,10 +206,16 @@ export class BotAppBrain {
       signal.throwIfAborted();
       if (typeof call.args.callId !== 'string' || !call.args.callId || call.args.callId.length > 200) return { error: '工具回执callId无效。' };
       const receipt = this.store.durableResult(input.laneId, this.store.get(input.eventId)!.seq, call.args.callId);
-      const baseline = this.request(input, input.system, [{ role: 'user', content: input.prompt }], true), serialized = JSON.stringify(baseline);
-      const pageBudget = Math.max(512, Math.min(7000, resolveBotModelLimits(input.model).window - Buffer.byteLength(serialized, 'utf8') - baseline.max_tokens - 256 - 2000,
-        (this.options.maxContextChars ?? Number.POSITIVE_INFINITY) - serialized.length - 2000));
-      return receipt.found ? toolResultPage(receipt.value, call.args as unknown as ToolResultPageInput, pageBudget) : { error: '当前上下文没有可读取的已确认工具回执。' };
+      if (!receipt.found) return { error: '当前上下文没有可读取的已确认工具回执。' };
+      // Include the actual confirmed-step ledger and pending reader call in
+      // the wire budget. A prompt-only estimate can return a page that the
+      // very next context build must hide again, preventing forward progress.
+      const turn = this.store.get(input.eventId)!, messages = this.store.messages(turn, 250, true);
+      for (const pageBudget of [6500, 4000, 2000, 1000, 512, 256]) {
+        const page = toolResultPage(receipt.value, call.args as unknown as ToolResultPageInput, pageBudget);
+        if (this.fits(input, input.system, [...messages, { role: 'tool', tool_call_id: call.callId, content: JSON.stringify(page) }], true)) return page;
+      }
+      return { error: '当前上下文没有足够空间回读原件；请缩小请求或先完成当前步骤。' };
     }
     if (this.options.callTool) return this.options.callTool(call, signal);
     const url = new URL(input.callback.url);
@@ -233,7 +242,28 @@ export class BotAppBrain {
     input.signal?.throwIfAborted();
     if (this.active.has(input.laneId)) throw new BotDshLaneBusyError();
     const fingerprint = digest(JSON.stringify([input.laneId, input.system, input.cwd, input.prompt, input.tools]));
-    const turn = this.store.admit({ ...input, fingerprint });
+    const existing = this.store.get(input.eventId);
+    if (existing && existing.fingerprint !== fingerprint && !this.store.binding(input.eventId)) {
+      if (existing.laneId !== input.laneId || existing.prompt !== input.prompt) throw new Error('App主脑事件标识对应其他输入。');
+      // Legacy journals did not preserve their tool catalog. A completed
+      // receipt needs no model replay. An unfinished event can only retire
+      // through its original effects; today's tools cannot reconstruct it.
+      let result = this.result(existing);
+      if (!terminal(existing.state)) {
+        const retired = await this.cancelDurable(input);
+        if (!retired.result) throw new BotDshDeliveryUnknownError('旧主脑事件的取消结果尚未核实，保留原通道栅栏。');
+        result = retired.result;
+        if (result.status === 'cancelled') throw new BotDshAbortAcknowledgedError(result);
+      }
+      if (result.status === 'failed') throw new BotDshTurnFailedError(existing.eventId, existing.error ?? result.error ?? '旧App主脑事件此前失败。', result.text, result.inputContextCommitted ?? false);
+      return result;
+    }
+    const turn = this.store.admit({ ...input, fingerprint, binding: { system: input.system, cwd: input.cwd, tools: input.tools } });
+    const binding = this.store.binding(input.eventId);
+    if (binding) {
+      if (digest(JSON.stringify([input.laneId, binding.system, binding.cwd, turn.prompt, binding.tools])) !== turn.fingerprint) throw new Error('主脑原始工具绑定校验失败，保留事件待核实。');
+      input = { ...input, ...binding };
+    }
     if (terminal(turn.state)) { const result = this.result(turn); if (turn.state === 'failed') throw new BotDshTurnFailedError(turn.eventId, turn.error ?? 'App主脑此前失败。', turn.text, result.inputContextCommitted ?? false); return result; }
     this.store.claim(input.eventId);
     const controller = new AbortController(), signal = input.signal ? AbortSignal.any([input.signal, controller.signal]) : controller.signal;
@@ -289,7 +319,22 @@ export class BotAppBrain {
             this.emit(input, { type: 'tool_result', toolName: call.name, callId: call.id });
           } catch (error) {
             if (safeRead(wire) && !signal.aborted) this.store.commitTool(input.eventId, call.id, { error: error instanceof Error ? error.message : '查询工具失败。' });
-            else throw new BotDshDeliveryUnknownError(error);
+            else {
+              // A transport/application error is not proof that a write failed.
+              // Reconcile the original call before deciding whether the model
+              // can correct a rejected operation or must wait for its receipt.
+              if (!signal.aborted) {
+                const proof = await this.reconcile(input, call, signal);
+                signal.throwIfAborted();
+                if (proof.state !== 'unknown') {
+                  this.store.commitTool(input.eventId, call.id, proof.state === 'committed' ? proof.result
+                    : { error: error instanceof Error ? error.message : '工具请求未执行。', executed: false });
+                  this.emit(input, { type: 'tool_result', toolName: call.name, callId: call.id });
+                  continue;
+                }
+              }
+              throw new BotDshDeliveryUnknownError(error);
+            }
           }
         }
       }
@@ -316,21 +361,32 @@ export class BotAppBrain {
     const turn = this.store.get(input.eventId); if (!turn) return { accepted: false, absent: true };
     if (turn.laneId !== input.laneId) throw new Error('App取消回执不属于当前通道。');
     if (terminal(turn.state)) return { accepted: true, result: this.result(turn) };
-    this.store.requestCancel(turn.eventId); await this.cancel(input.laneId);
+    input.signal?.throwIfAborted();
+    this.store.requestCancel(turn.eventId);
+    if (this.active.get(input.laneId)?.eventId === turn.eventId) await this.cancel(input.laneId);
     let latest = this.store.get(turn.eventId)!;
     if (terminal(latest.state)) return { accepted: true, result: this.result(latest) };
     this.store.claim(turn.eventId);
     try {
       const signal = input.signal ?? AbortSignal.timeout(30000);
+      signal.throwIfAborted();
       for (const step of this.store.steps(turn.eventId)) for (const call of step.calls) if (call.state === 'invoking' && !safeRead(this.wire({ ...input, prompt: turn.prompt }, call))) {
         const proof = await this.reconcile({ ...input, prompt: turn.prompt }, call, signal);
+        signal.throwIfAborted();
         if (proof.state === 'unknown') throw new BotDshDeliveryUnknownError('工具效果未确认，不能伪造取消回执。');
         this.store.commitTool(turn.eventId, call.id, proof.state === 'committed' ? proof.result : { cancelled: true, executed: false });
       }
       for (const step of this.store.steps(turn.eventId)) for (const call of step.calls) if (call.state !== 'committed') this.store.commitTool(turn.eventId, call.id,
         call.state === 'planned' ? { status: 'not-dispatched', cancelled: true } : { status: 'interrupted', effects: 'read-only', resultUnavailable: true });
+      signal.throwIfAborted();
       latest = this.store.finish(turn.eventId, 'cancelled', latest.text);
       return { accepted: true, result: this.result(latest) };
+    } catch (error) {
+      // Cancellation recovery owns a lease too. An unavailable receipt must
+      // remain explicitly unresolved, never a phantom running turn after release.
+      this.store.finish(turn.eventId, this.store.steps(turn.eventId).some(step => step.calls.some(call => call.state === 'invoking'))
+        ? 'tool_unknown' : 'suspended', this.store.get(turn.eventId)!.text);
+      throw error;
     } finally { this.store.release(turn.eventId); }
   }
   async handoff(input: Omit<BotDshRun, 'prompt' | 'onEvent'>): Promise<BotDshHandoff> {

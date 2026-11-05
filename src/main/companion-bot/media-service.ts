@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import mime from 'mime-types';
 import {botMediaPreviewPolicy,botMediaTextFormat,BOT_MEDIA_PREVIEW_LIMITS,normalizeBotMediaMime,type BotMediaRef,type BotStickerPack,type BotMediaTextPage} from '../../shared/companion-bot-media';
 import { readBotTextPage } from './media-text';
+import { validateSpeechWave, SPEECH_MAX_TRANSCRIPT, type LocalSpeechTranscript } from '../../shared/local-speech';
 
 type ExternalSource={path:string;size:number;mtimeMs:number;ctimeMs:number;ino:number;dev:number};
 type StoredMedia = BotMediaRef & { object?: string; externalSource?:ExternalSource; previewObject?:string; previewSha256?:string; previewSize?:number };
@@ -101,6 +102,8 @@ export class BotMediaService {
         if(item.id!=='e_'+hash(JSON.stringify(signature)))throw new Error('外部附件 ID 与授权文件元数据不匹配。');
       }else if(!/^[a-f0-9]{64}$/.test(item.sha256||'')||!item.object||!/^objects\/[a-f0-9]{64}(?:\.[a-z0-9]{1,8})?$/.test(item.object)||item.object.split('/')[1]!.split('.')[0]!==item.sha256)throw new Error('媒体对象清单无效。');
       ids.add(item.id);
+      if(item.voice&&(!Number.isFinite(item.voice.durationSeconds)||item.voice.durationSeconds<=0||item.voice.durationSeconds>60||item.mimeType!=='audio/wav'))throw Error('语音消息清单无效。');
+      if(item.transcript&&(typeof item.transcript.text!=='string'||item.transcript.text.length>SPEECH_MAX_TRANSCRIPT||item.transcript.engine!=='sensevoice-int8-cpu'||!Number.isFinite(item.transcript.audioSeconds)||item.transcript.audioSeconds<0))throw Error('音频转写清单无效。');
       if(item.previewObject&&(!/^objects\/[a-f0-9]{64}\.webp$/.test(item.previewObject)||!/^[a-f0-9]{64}$/.test(item.previewSha256||'')||item.previewObject!==`objects/${item.previewSha256}.webp`||!Number.isSafeInteger(item.previewSize)||(item.previewSize??-1)<0))throw new Error('表情预览清单无效。');
     }
     for(const pack of data.packs)if(!pack||!safeId(pack.id)||typeof pack.name!=='string'||!Array.isArray(pack.ids)||pack.ids.some(id=>!ids.has(id)))throw new Error('表情包清单无效。');
@@ -187,6 +190,26 @@ export class BotMediaService {
         let item=manifest.media.find(item=>item.id===id);if(!item){let mimeType=declaredMime;if(mimeType.startsWith('image/'))try{mimeType=(await inspectBotSticker(path.join(home,object.object))).mimeType;}catch{/* Unknown binaries keep their declared extension type; response is sandboxed attachment. */}
           item={...object,id,name:fileName(source),originalName:fileName(source),mimeType,url:'',kind:'file'};manifest.media.push(item);}result.push(item);}
       await atomicManifest(path.join(home,'manifest.json'),manifest);return result.map(item=>this.reference(item,conversationId));
+    });
+  }
+  /** Persist only canonical, bounded microphone recordings; no renderer-supplied paths or transcript. */
+  async importVoice(conversationId:string,bytes:Buffer,transcript:LocalSpeechTranscript):Promise<BotMediaRef>{
+    const durationSeconds=validateSpeechWave(bytes),sha256=createHash('sha256').update(bytes).digest('hex');
+    return this.serial(conversationId,async(manifest,home)=>{
+      const id='v_'+sha256,object='objects/'+sha256;let item=manifest.media.find(item=>item.id===id);
+      if(!item){
+        try{await writeFile(path.join(home,object),bytes,{flag:'wx',mode:0o600});}
+        catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;await this.verifyObject(home,{object,sha256,size:bytes.length} as StoredMedia);}
+        item={id,object,sha256,size:bytes.length,name:'语音消息.wav',mimeType:'audio/wav',kind:'file',url:'',voice:{durationSeconds},transcript};manifest.media.push(item);
+      }
+      await atomicManifest(path.join(home,'manifest.json'),manifest);return this.reference(item,conversationId);
+    });
+  }
+  async setTranscript(conversationId:string,id:string,transcript:LocalSpeechTranscript):Promise<BotMediaRef>{
+    if(transcript.text.length>SPEECH_MAX_TRANSCRIPT||!Number.isFinite(transcript.audioSeconds)||transcript.audioSeconds<0)throw Error('转写结果无效。');
+    return this.serial(conversationId,async(manifest,home)=>{
+      const item=manifest.media.find(item=>item.id===id);if(!item||!item.mimeType.startsWith('audio/'))throw Error('音频不属于当前会话。');
+      item.transcript=transcript;await atomicManifest(path.join(home,'manifest.json'),manifest);return this.reference(item,conversationId);
     });
   }
   async importStickerPack({conversationId,directory}:{conversationId:string;directory:string}):Promise<BotStickerPack>{

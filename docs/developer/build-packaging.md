@@ -31,6 +31,8 @@ Windows Forge 构建会将已锁定工具导出至 `.tools/portable-release/<UUI
 
 `03-Build-Installer.bat` 封装独立 VCP Memory 模块与唯一内置的 EmbeddingGemma 2 量化模型。`resources/vcp-memory` 是当前记忆源模块；`stage-bot-memory.mjs` 核验模块清单，使用 Node 24 独立安装生产依赖并检查原生 ABI，生成 `.tools/bot-memory-release/vcp-memory`。它不复用 Electron 重编译的 SQLite 模块，也不另带一套向量权重。`stage-bundled-embedding.mjs --acquire` 获取锁定 GGUF、projector 和 CPU/Vulkan 组件，校验后才进入包；已有合格资源时不再下载。
 
+源模型使用窄范围 Git LFS 规则保存：`resources/embedding-models/*.gguf`、`resources/speech-models/*.onnx`、伙伴 Live2D 的 MOC3 与 PNG 纹理。克隆后先运行 `git lfs pull`，确认权重已实际下载，再运行构建脚本；语音词表、资源清单与许可使用普通 Git。模型校验门禁会拒绝尚未 materialize 的 LFS 指针。平台运行时、媒体工具、依赖、缓存与 `out/` 仍按锁定清单生成或取得，不作为源模型提交。
+
 量化权重约 696.65 MiB；当前 Windows x64 模型及两套运行组件共 105 文件、875,022,906 字节。模型直接从安装资源读取，不向用户配置目录复制大权重，最终用户离线即可运行。资产的文本、图片、音频、视频和伙伴记忆统一使用这套模型，设置不提供外部向量 API 或模型切换。其他平台尚未提供这套 Windows 组件，必须补齐相应平台的固定资源与实机验证后发布。
 
 `verify:package` 检查最终包的内置模型、独立 VCP 模块、依赖完整性与运行组件，并拒绝旧 `vcp-memory-host`。伙伴的新数据位于应用用户目录的 `companion-bot-v2`，与资产库数据库分开；模块代码和大模型权重从安装资源读取，不把用户数据写入安装目录。运行边界和验证命令见 [Super Agent 运行说明](superagent-bot-runtime-guide.md)。

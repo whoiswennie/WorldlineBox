@@ -3,7 +3,7 @@ import path from 'node:path';
 import { BotDshBrain, BotDshDeliveryUnknownError, type BotDshCallback, type BotDshHandoff, type BotDshModel, type BotDshResult } from './dsh-brain';
 import { botLaneRetentionKey, type BotStore, type BotNativeAdmission } from './store';
 import type { BotEvent } from './types';
-import { BOT_TOOLS } from './tools';
+import { BOT_ROUTER_TOOLS as BOT_TOOLS } from './tools';
 import type { BotBrain } from './brain-router';
 
 export interface BotRetentionOptions {

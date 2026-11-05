@@ -30,12 +30,11 @@ it('keeps the actual text and default-collapsed attachment summary inside one me
   expect(document.getElementById(control.getAttribute('aria-controls')!)?.hidden).toBe(true);
   expect(bubble.querySelector('img,audio,video,.bot-attachment-card,.bot-attachment-bundle')).toBeNull(); expect(request).not.toHaveBeenCalled();
 });
-it('renders an attachment-only message as a complete accessible bubble, expands existing operations and unmounts them when collapsed', async () => {
+it('renders one attachment as a directly actionable card without an extra expansion step or automatic file reads', async () => {
   await render({ ...message, content: '', attachments: [textFile] }); expect(host.querySelector('.bot-message-text')).toBeNull();
-  expect(host.querySelector('.bot-message-bubble')).not.toBeNull(); await click('展开 1 个附件');
+  expect(host.querySelector('.bot-message-bubble')).not.toBeNull(); expect(host.querySelector('.bot-message-file-toggle')).toBeNull(); expect(request).not.toHaveBeenCalled();
   expect(host.querySelector('.bot-attachment-card strong')?.textContent).toBe(textFile.name); await click('保存 ' + textFile.name);
   expect(request).toHaveBeenLastCalledWith({ type: 'attachment.save', conversationId: 'room-a', id: textFile.id });
-  await click('收起 1 个附件'); expect(host.querySelector('.bot-attachment-card')).toBeNull(); expect(host.querySelector('.bot-message-expanded-files')?.hasAttribute('hidden')).toBe(true);
 });
 it('reuses the real bundle explorer and its bounded file list only after explicit expansion', async () => {
   const files = Array.from({ length: 12 }, (_, index) => ({ ...textFile, id: 'bundle-' + index, name: `资料${index}.md` }));
@@ -51,20 +50,18 @@ it('keeps sticker battles directly visible instead of collapsing stickers into a
   for (const picture of host.querySelectorAll('img')) expect(picture.getAttribute('src')).toBe(sticker.url);
   expect(request).not.toHaveBeenCalled();
 });
-it('shows a mixed sticker directly while folding only the real ordinary attachment count', async () => {
+it('shows a mixed sticker and its single file card directly', async () => {
   await render({ ...message, attachments: [sticker, textFile] }); expect(host.querySelector('.is-sticker img')?.getAttribute('src')).toBe(sticker.url);
-  expect(host.querySelector('.bot-message-file-toggle')?.getAttribute('aria-label')).toBe('展开 1 个附件'); expect(host.querySelector('.bot-attachment-card')).toBeNull();
-  await click('展开 1 个附件'); expect(host.querySelectorAll('.is-sticker')).toHaveLength(1); expect(host.querySelector('.bot-attachment-card strong')?.textContent).toBe(textFile.name);
+  expect(host.querySelector('.bot-message-file-toggle')).toBeNull(); expect(host.querySelectorAll('.is-sticker')).toHaveLength(1); expect(host.querySelector('.bot-attachment-card strong')?.textContent).toBe(textFile.name);
 });
-it('folds single and multiple photos by default and mounts only safe thumbnails after explicit expansion', async () => {
-  await render({ ...message, content: '', attachments: [image] }); expect(host.querySelector('.bot-message-file-toggle')?.getAttribute('aria-expanded')).toBe('false');
-  expect(host.querySelector('img')).toBeNull(); await click('展开 1 个附件');
+it('uses only a safe thumbnail for a single photo and keeps photo collections and originals on demand', async () => {
+  await render({ ...message, content: '', attachments: [image] }); expect(host.querySelector('.bot-message-file-toggle')).toBeNull();
   expect(host.querySelector('img')?.getAttribute('src')).toBe(image.previewUrl); expect(host.querySelector('img')?.getAttribute('src')).not.toBe(image.url);
   await render({ ...message, id: 'photo-batch', content: '', attachments: [image, { ...image, id: 'image-b' }, { ...image, id: 'image-c' }] });
   expect(host.querySelector('.bot-message-file-toggle')?.getAttribute('aria-label')).toBe('展开 3 个附件'); expect(host.querySelector('img,.bot-attachment-bundle')).toBeNull();
   await click('展开 3 个附件'); expect(host.querySelectorAll('.bot-attachment-tile img')).toHaveLength(3);
   await render({ ...message, id: 'large', content: '', attachments: [{ ...image, size: 200 * 1024 * 1024 + 1, storage: 'external', analysisBlocked: true }] });
-  expect(host.querySelector('.bot-message-file-toggle')?.getAttribute('aria-expanded')).toBe('false'); expect(host.querySelector('img')).toBeNull(); expect(request).not.toHaveBeenCalled();
+  expect(host.querySelector('.bot-message-file-toggle')).toBeNull(); expect(host.querySelector('img')).toBeNull(); expect(request).not.toHaveBeenCalled();
 });
 it('preserves literal user text, actual assistant Markdown, live text and terminal status without inventing a blank reply', async () => {
   await render({ ...message, senderId: 'user', content: '**原样用户文字**', attachments: [] }); expect(host.querySelector('.bot-message-text')?.textContent).toBe('**原样用户文字**'); expect(host.querySelector('.bot-message-text strong')).toBeNull();
@@ -76,4 +73,13 @@ it('preserves literal user text, actual assistant Markdown, live text and termin
 it('does not carry an expanded attachment draft into another message or another conversation', async () => {
   await render(); await click('展开 2 个附件'); expect(host.querySelectorAll('.bot-attachment-card')).toHaveLength(2);
   await render({ ...message, id: 'message-b', conversationId: 'room-b' }); expect(host.querySelector('.bot-message-file-toggle')?.getAttribute('aria-expanded')).toBe('false'); expect(host.querySelector('.bot-attachment-card')).toBeNull();
+});
+it('turns raw web addresses into compact, honest site cards while keeping titled links inline and unsafe schemes inert', async () => {
+  const open = vi.fn(), address = 'https://www.bilibili.com/video/BV1YgHq62EN6?x=1';
+  await render({ ...message, attachments: [], content: `${address}\n\n[视频页面](${address}) · [危险链接](javascript:alert)` });
+  await act(() => root!.render(<BotMessageBody message={{ ...message, attachments: [], content: `${address}\n\n[视频页面](${address}) · [危险链接](javascript:alert)` }} statusText="" locale="zh-CN" onOpenUrl={open} />));
+  const card = host.querySelector<HTMLButtonElement>('.browser-markdown-link-card')!;
+  expect(card.querySelector('strong')?.textContent).toBe('视频链接'); expect(card.querySelector('small')?.textContent).toBe('/video/BV1YgHq62EN6?x=1'); expect(card.textContent).toContain('bilibili.com'); expect(card.textContent).toContain('内置浏览器打开');
+  expect(host.querySelectorAll('.browser-markdown-link-card')).toHaveLength(1); expect(host.querySelectorAll('.browser-markdown-link')).toHaveLength(2);
+  expect(open).not.toHaveBeenCalled(); await act(() => card.click()); expect(open).toHaveBeenCalledWith(address);
 });

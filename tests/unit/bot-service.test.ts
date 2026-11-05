@@ -86,18 +86,27 @@ describe('new companion orchestration', () => {
     const { service, conversationId } = await fixture(brain);
     await send(service, conversationId, 'uncertain');
     await poll(async () => brain.calls.length === 1);
-    await service.handle({ type: 'companion.update', companionId: DEFAULT_BOT_COMPANION_ID, name: '新名字', persona: '重试期间的新人格' });
+    const saved = await service.handle({ type: 'companion.personas.save', companionId: DEFAULT_BOT_COMPANION_ID, name: '新的已保存人格', prompt: '重试期间的新人格', activate: true });
+    await service.handle({ type: 'companion.update', companionId: DEFAULT_BOT_COMPANION_ID, name: '新名字' });
     await poll(async () => brain.calls.length === 2);
     expect(brain.calls[1]!.prompt).toBe(brain.calls[0]!.prompt);
     expect(brain.calls[1]!.system).toBe(brain.calls[0]!.system);
     expect(brain.calls[1]!.eventId).toBe(brain.calls[0]!.eventId);
+    await poll(async () => service.store.getEvent(brain.calls[1]!.eventId)?.status === 'done');
+    await send(service, conversationId, 'after-persona-activation');
+    await poll(async () => brain.calls.length === 3);
+    expect(brain.calls[2]!.system).toContain('重试期间的新人格');
+    expect(service.store.getCompanion(DEFAULT_BOT_COMPANION_ID)!.activePersonaId).toBe(saved.persona!.id);
   });
   it('persists a reply once for a retried ingress and queues response recording separately', async () => {
     const { service, brain, conversationId } = await fixture();
     const first = await send(service, conversationId, 'stable-request'), duplicate = await send(service, conversationId, 'stable-request');
     expect(duplicate.messageId).toBe(first.messageId);
+    expect(first.replyMessageIds).toHaveLength(1);
+    expect(duplicate.replyMessageIds).toEqual(first.replyMessageIds);
     await poll(async () => (await service.handle({ type: 'state', conversationId })).snapshot!.messages.some(message => message.content === '已经收到。' && message.status === 'sent'));
     expect(brain.calls).toHaveLength(1);
+    expect((await service.handle({ type: 'state', conversationId })).snapshot!.messages.find(message => message.id === first.replyMessageIds![0])).toMatchObject({ senderId: DEFAULT_BOT_COMPANION_ID, status: 'sent', content: '已经收到。' });
     expect(service.store.listPendingMemory().some(job => job.kind === 'projection')).toBe(true);
   });
   it('enforces durable coordination action capacity over HTTP without charging a stable tool receipt twice, and admits fresh user work', async () => {

@@ -115,3 +115,6 @@ SOFTWARE.
 咕咕嘎嘎为高松灯企鹅分支（原角色关联 BanG Dream!），咕嘎为女管理员企鹅分支（原角色关联明日方舟：终末地）；Doro 为 NIKKE / SHIFT UP 相关社区 Q 版形象；菲比啾比与弗糯糯分别为鸣潮 / Kuro Games 角色的社区演绎。具体参考以维护者旧项目素材为准；不随本项目搬运社区视频、模型或远程原图。
 
 头像生成不移除底层人物设计的第三方来源，也不将这些设计自动纳入本项目 MIT 代码许可。原作者在鲸鱼娘系列说明中声明上善无形来源及 CC BY-NC-SA 4.0 非商业同协议使用；各其他参考图的具体授权没有由本次重绘重新确定。完整来源、核对范围和提示词见 `docs/developer/companion-catalogue.md` 与 `assets/companions/portraits/manifest.json`。
+## 本地语音识别：SenseVoiceSmall、sherpa-onnx 与 Silero VAD
+
+SenseVoiceSmall 模型由 Alibaba Group / FunAudioLLM 提供，本项目使用 sherpa-onnx 转换仓库固定修订的 INT8 ONNX 权重；模型权重遵循 FunASR Model Open Source License Agreement v1.1，独立于本项目的代码许可。来源为 https://huggingface.co/FunAudioLLM/SenseVoiceSmall 与 https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 。sherpa-onnx 运行时采用 Apache-2.0，Silero VAD 采用 MIT。来源链接及完整模型、运行时、VAD 许可随发行包放在 `speech-models/LICENSE.source.txt`、`MODEL_LICENSE.txt`、`SHERPA_LICENSE.txt` 和 `SILERO_LICENSE.txt`。

@@ -44,6 +44,9 @@ if (existsSync(path.join(resourcesPath, 'resources', 'embedding-models'))) {
 const requiredPaths = [
   ...['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
   path.join(resourcesPath, 'embedding-models', 'manifest.json'),
+  path.join(resourcesPath, 'speech-models', 'manifest.json'),
+  path.join(resourcesPath, 'speech-runtime', 'worker.cjs'),
+  path.join(resourcesPath, 'app.asar.unpacked', 'node_modules', `sherpa-onnx-${packagePlatform === 'win32' ? 'win' : packagePlatform}-${packageArch}`, 'package.json'),
   path.join(resourcesPath, 'vcp-memory', 'lib', 'client.cjs'),
   path.join(resourcesPath, 'vcp-memory', 'lib', 'worker.cjs'),
   path.join(resourcesPath, 'vcp-memory', 'worldlinebox-integration-manifest.json'),
@@ -62,6 +65,10 @@ const requiredPaths = [
 const embeddingVerification = spawnSync(process.execPath, [path.join(projectRoot, 'scripts', 'stage-bundled-embedding.mjs'),
   '--verify', '--bundle-dir', path.join(resourcesPath, 'embedding-models')], { cwd: projectRoot, encoding: 'utf8', windowsHide: true });
 if (embeddingVerification.status !== 0) throw new Error(`Packaged embedding resources failed verification: ${embeddingVerification.stderr || embeddingVerification.stdout}`);
+const speechVerification = spawnSync(process.execPath, [path.join(projectRoot, 'scripts', 'stage-local-speech.mjs'),
+  '--verify', '--bundle-dir', path.join(resourcesPath, 'speech-models')], { cwd: projectRoot, encoding: 'utf8', windowsHide: true });
+if (speechVerification.status !== 0) throw new Error(`Packaged speech resources failed verification: ${speechVerification.stderr || speechVerification.stdout}`);
+if (!readFileSync(path.join(resourcesPath, 'speech-runtime', 'worker.cjs')).equals(readFileSync(path.join(projectRoot, 'resources', 'speech-runtime', 'worker.cjs')))) throw Error('Packaged speech worker differs from the verified source.');
 
 const sqliteVecPackage = packagePlatform === 'darwin'
   ? `sqlite-vec-darwin-${packageArch}`

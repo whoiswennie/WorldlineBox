@@ -27,16 +27,19 @@ export function seedPeerWorkspace(profile: string) {
       sourceMessageId: 'peer-ui-user-request', content: '你能让大肥鱼给我发晚安吗' }).events[0]!;
     const privateIntroduction = store.contactPeer(source, DEFAULT_BOT_COMPANION_ID, 'human-authored-user-ui-contact', '用户请你在你与用户的私聊中说一句晚安。', 'user');
     if (!privateIntroduction.accepted || privateIntroduction.events.length !== 1) throw Error('Could not create the actual user-directed contact.');
-    const settle = (entries: Array<{ id: string; content: string }>) => {
+    let userDirectReplyId = '';
+    const settle = (entries: Array<{ id: string; content: string }>, userReplyEventId?: string) => {
       const pending = new Map(entries.map(entry => [entry.id, entry.content]));
       while (pending.size) {
         const claim = store.claim({ workerId: 'human-authored-peer-presentation' }), content = claim && pending.get(claim.event.id);
-        if (!claim || content === undefined || !store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'done', content })) throw Error('Could not settle the human-authored peer presentation fixture.');
+        if (!claim || content === undefined) throw Error('Could not claim the human-authored peer presentation fixture.');
+        if (claim.event.id === userReplyEventId) userDirectReplyId = store.replyPeerToUser(claim.event, 'human-authored-user-reply', '晚安呀，我们在自己的私聊里继续聊。').messageId;
+        if (!store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'done', content })) throw Error('Could not settle the human-authored peer presentation fixture.');
         pending.delete(claim.event.id);
       }
     };
-    settle([{ id: source.id, content: '我已把请求交给大肥鱼，她会在你们的私聊中回复。' }, { id: privateIntroduction.events[0]!.id, content: '晚安呀，我们在自己的私聊里继续聊。' }]);
-    const userDirectReplyId = privateIntroduction.events[0]!.replyMessageId;
+    settle([{ id: source.id, content: '我已在双方私聊把请求交给大肥鱼。' }, { id: privateIntroduction.events[0]!.id, content: '收到，我已在自己与用户的私聊里发了晚安。' }], privateIntroduction.events[0]!.id);
+    if (!userDirectReplyId) throw Error('The target companion did not publish its own direct reply.');
     const peerRequest = store.enqueue({ conversationId: sourcePrivate.id, source: 'user', senderId: 'user', recipientIds: [origin.id],
       sourceMessageId: 'peer-ui-pair-request', content: '你和大肥鱼私聊核对清单，我想旁观你们之间的交流。' }).events[0]!;
     const observed = store.contactPeer(peerRequest, DEFAULT_BOT_COMPANION_ID, 'human-authored-peer-ui-contact', '我们在双方私聊中核对清单，不转入用户私聊历史。', 'peer');
@@ -62,8 +65,8 @@ export function seedPeerWorkspace(profile: string) {
     return { synthetic: true, actualModelInference: false, actualDshExecution: false, storeContactPeerUsed: true,
       peerId: introduction.id, peerTitle: introduction.title, sourcePrivateId: sourcePrivate.id, targetPrivateId: targetPrivate.id,
       observedId: observed.conversationId, observedTitle: store.getConversation(observed.conversationId)!.title,
-      observedMessageIds: [observed.message.id, observedReplyId, observedFollowup.message.id], observedReplyId,
-      userDirectIntroductionId: privateIntroduction.message.id, userDirectReplyId,
+      observedMessageIds: [privateIntroduction.message.id, privateIntroduction.events[0]!.replyMessageId, observed.message.id, observedReplyId, observedFollowup.message.id], observedReplyId,
+      userContactIntroductionId: privateIntroduction.message.id, userDirectReplyId,
       sourceCompanionId: origin.id, targetCompanionId: DEFAULT_BOT_COMPANION_ID, secrets,
       peerMessageIds: [groupIntroduction.message.id, targetReplyId, originReply.message.id, userReply.message.id],
       targetReplyId, originReplyId: originReply.message.id, userReplyId: userReply.message.id, pendingEvents: pending.count };

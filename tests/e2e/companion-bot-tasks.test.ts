@@ -50,6 +50,14 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await expect(page.locator('.bot-chat-identity .bot-presence-dot')).toBeVisible();
     await expect(page.locator('.bot-presence-feedback')).toHaveCount(0);
     await expect(page.locator('.bot-task-notice')).toHaveCount(1); await expect(page.locator('.bot-transcript')).not.toContainText('MASSIVE EXECUTOR RECEIPT');
+    await expect(page.locator('.bot-followup-receipt')).toContainText('已交给原任务');
+    await expect(page.locator('.bot-followup-receipt')).toContainText('整理项目目录 1');
+    await expect(page.locator('.browser-markdown-link-card strong')).toHaveText('视频链接');
+    expect(await page.locator('.browser-markdown-link:not(.browser-markdown-link-card)').evaluate(element => {
+      const style = getComputedStyle(element); return { border: style.borderTopWidth, padding: style.paddingTop, background: style.backgroundColor };
+    })).toEqual({ border: '0px', padding: '0px', background: 'rgba(0, 0, 0, 0)' });
+    const receiptState = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state', conversationId }), conversationId);
+    expect(receiptState.snapshot!.messages.some(message => message.senderId === 'user' && message.taskFollowup?.state === 'delivered')).toBe(true);
     const inlineNotice = page.locator('.bot-task-notice');
     await expect(inlineNotice).toHaveAttribute('data-task-owner', 'builtin-dafeiyu');
     await expect(inlineNotice.locator('.bot-task-notice-meta strong')).toHaveText('大肥鱼');
@@ -111,6 +119,10 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
       const file = testInfo.outputPath(name); await writeFile(file, Buffer.from(png, 'base64')); await copyFile(file, path.join(evidence, name)); await testInfo.attach(name, { path: file, contentType: 'image/png' });
     };
     await dialog.getByRole('button', { name: '关闭任务', exact: true }).click(); await expect(dialog).toBeHidden();
+    await capture('chat-followup-receipt-links-light.png');
+    await page.locator('.bot-followup-receipt button').click(); await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.bot-task-heading h4')).toContainText('整理项目目录 1');
+    await dialog.getByRole('button', { name: '关闭任务', exact: true }).click();
     const context = page.getByRole('complementary', { name: '聊天信息', exact: true });
     await expect(context).toBeVisible();
     const summaryState = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state', conversationId }), conversationId);
@@ -139,6 +151,14 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await dialog.locator('[data-task-row="task-presentation-00"]').click();
     await expect(dialog.locator('.bot-task-activity')).toContainText('shell');
     await capture('tasks-workspace-v2-light.png');
+    await dialog.getByRole('button', { name: '跟进这个任务', exact: true }).click(); await expect(dialog).toHaveCount(0);
+    const followup = page.locator('.bot-task-followup'), composer = page.locator('.bot-composer textarea');
+    await expect(followup).toContainText('跟进任务 · 整理项目目录 1'); await expect(followup).toContainText('大肥鱼');
+    await expect(followup).not.toContainText('task-presentation-00'); await expect(composer).toBeFocused();
+    await composer.fill('补充：只分析文件名，先不要修改文件。'); await capture('task-followup-composer-light.png');
+    await followup.getByRole('button', { name: '取消任务跟进', exact: true }).click();
+    await expect(followup).toHaveCount(0); await expect(composer).toHaveValue('补充：只分析文件名，先不要修改文件。');
+    await composer.fill(''); // This fixture never sends or starts synthetic work.
     for (const [theme, width, height] of [['dark', 1440, 960], ['dark', 850, 720]] as const) {
       await application.evaluate(({ BrowserWindow }, size) => { const owned = BrowserWindow.getAllWindows()[0]!; owned.setMinimumSize(0, 0); owned.setSize(size.width, size.height); }, { width, height });
       await page.evaluate(theme => { localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme })); }, theme);

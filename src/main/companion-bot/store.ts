@@ -5,7 +5,8 @@ import BetterSqlite3 from 'better-sqlite3';
 import type { BotDshHandoff } from './dsh-brain';
 import { botTaskRemovalFingerprint } from './task-history';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
-import type { BotHistoryFilter, BotReplyTiming, BotCompanionPresence, BotCompanionPresenceEvent } from '../../shared/companion-bot';
+import { BOT_PERSONA_TEMPLATE_LIMIT, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotCompanionPresenceEvent, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
+import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
 import type { BotMemoryActivity, BotMemoryRecallReport } from '../../shared/companion-bot-memory';
 import { botMessageEvidence } from '../../shared/bot-message-content';
 import { BotActivityBudget, BotActivityLimitError, BotBackpressureError, isInteractiveBotSource, type BotActivityBudgetPolicy } from './activity-budget';
@@ -39,6 +40,10 @@ const optional = (value: string | number | null | undefined) => value == null ? 
 const text = (value: string, label: string, max: number) => {
   if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error(`${label}无效或超过${max}字符。`);
   return value.trim();
+};
+const personaPrompt = (value: string) => {
+  if (typeof value !== 'string' || !value.trim() || value.length > 24000 || value.includes('\0')) throw new Error('人格提示词需要 1 至 24000 个字符。');
+  return value;
 };
 const bounded = (value: number | undefined, fallback: number, max: number) => Math.min(max, Math.max(1, Number.isSafeInteger(value) ? value! : fallback));
 const taskStatuses = new Set<BotTaskStatus>(['queued', 'running', 'waiting', 'paused', 'succeeded', 'failed', 'cancelled', 'unknown']);
@@ -83,6 +88,8 @@ const developmentDefault = 'default-companion', defaultCleanupKey = 'development
 export class BotStore {
   private readonly db: Connection;
   private readonly activityBudget: BotActivityBudget;
+  private taskBudgetAuthority?: (taskId: string) => boolean;
+  setTaskBudgetAuthority(authorize: (taskId: string) => boolean): void { this.taskBudgetAuthority = authorize; }
   constructor(readonly filename: string, options: { activityBudget?: Partial<BotActivityBudgetPolicy> } = {}) {
     if (filename !== ':memory:') mkdirSync(path.dirname(path.resolve(filename)), { recursive: true });
     const Database = BetterSqlite3 as { new(filename: string): Connection };
@@ -91,7 +98,7 @@ export class BotStore {
     try { this.activityBudget = new BotActivityBudget(this, options.activityBudget); } catch (error) { this.db.close(); throw error; }
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('busy_timeout = 5000');
     const version = Number(this.db.pragma('user_version', { simple: true }));
-    if (version > 17) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
+    if (version > 18) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bot_companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,kind TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,direct_key TEXT UNIQUE);
@@ -277,6 +284,19 @@ export class BotStore {
       }).immediate(); } catch (error) { this.db.close(); throw error; }
     }
     if (version < 17) this.db.pragma('user_version = 17');
+    try { this.db.transaction(() => {
+      this.db.exec(`CREATE TABLE IF NOT EXISTS bot_persona_templates(
+        companion_id TEXT NOT NULL REFERENCES bot_companions(id) ON DELETE CASCADE,id TEXT NOT NULL,
+        name TEXT NOT NULL,prompt TEXT NOT NULL,builtin INTEGER NOT NULL,original_name TEXT NOT NULL,original_prompt TEXT NOT NULL,
+        deleted INTEGER NOT NULL DEFAULT 0,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(companion_id,id));
+        CREATE TABLE IF NOT EXISTS bot_persona_settings(companion_id TEXT PRIMARY KEY REFERENCES bot_companions(id) ON DELETE CASCADE,active_id TEXT NOT NULL);`);
+      // Original prompt bytes and a user's edited current persona both survive
+      // migration. Tombstones prevent deleted built-ins reappearing on restart.
+      for (const raw of this.db.prepare('SELECT id,persona FROM bot_companions').all()) {
+        const row = asRow(raw); this.seedPersonaTemplates(String(row.id), String(row.persona));
+      }
+      this.db.pragma('user_version = 18');
+    }).immediate(); } catch (error) { this.db.close(); throw error; }
   }
 
   close(): void { this.db.close(); }
@@ -344,13 +364,15 @@ export class BotStore {
   }
   createCompanion(input: { id?: string; name: string; persona: string }): BotCompanion {
     const id = input.id ? text(input.id, '伙伴标识', 200) : randomUUID(), stamp = nowIso();
-    const name = text(input.name, '伙伴名称', 100), persona = text(input.persona, '人格', 24000);
-    this.db.prepare('INSERT INTO bot_companions(id,name,persona,created_at,updated_at) VALUES(?,?,?,?,?)').run(id, name, persona, stamp, stamp);
-    return this.getCompanion(id)!;
+    const name = text(input.name, '伙伴名称', 100), persona = personaPrompt(input.persona);
+    return this.db.transaction(() => {
+      this.db.prepare('INSERT INTO bot_companions(id,name,persona,created_at,updated_at) VALUES(?,?,?,?,?)').run(id, name, persona, stamp, stamp);
+      this.seedPersonaTemplates(id, persona); return this.getCompanion(id)!;
+    }).immediate();
   }
   getCompanion(id: string): BotCompanion | undefined {
-    const raw = this.db.prepare('SELECT * FROM bot_companions WHERE id=?').get(id); if (!raw) return;
-    const r = asRow(raw); return { id: String(r.id), name: String(r.name), persona: String(r.persona), createdAt: String(r.created_at), updatedAt: String(r.updated_at) };
+    const raw = this.db.prepare('SELECT c.*,p.active_id FROM bot_companions c LEFT JOIN bot_persona_settings p ON p.companion_id=c.id WHERE c.id=?').get(id); if (!raw) return;
+    const r = asRow(raw); return { id: String(r.id), name: String(r.name), persona: String(r.persona), createdAt: String(r.created_at), updatedAt: String(r.updated_at), activePersonaId: optional(r.active_id) };
   }
   listCompanions(): BotCompanion[] { return this.db.prepare('SELECT id FROM bot_companions ORDER BY created_at,id').all().map(raw => this.getCompanion(String(asRow(raw).id))!).filter(companion => !this.isRetiredDevelopmentDefault(companion.id)); }
   isRetiredDevelopmentDefault(id: string): boolean { return id === developmentDefault && !!this.getMetadata(defaultCleanupKey); }
@@ -428,10 +450,108 @@ export class BotStore {
     const plan = this.developmentDefaultCleanup(); if (plan?.phase !== 'sql-deleted') throw new Error('开发伙伴清理尚未确认退休。');
     this.setMetadata(defaultCleanupKey, JSON.stringify({ ...plan, phase: 'complete' }));
   }
-  updateCompanion(id: string, input: { name: string; persona: string }): BotCompanion {
+  updateCompanion(id: string, input: { name: string; persona?: string }): BotCompanion {
     if (this.isRetiredDevelopmentDefault(id)) throw new Error('旧开发伙伴已退休。');
-    const changed = this.db.prepare('UPDATE bot_companions SET name=?,persona=?,updated_at=? WHERE id=?').run(text(input.name, '伙伴名称', 100), text(input.persona, '人格', 24000), nowIso(), id);
-    if (!changed.changes) throw new Error('伙伴不存在。'); return this.getCompanion(id)!;
+    const name = text(input.name, '伙伴名称', 100), prompt = input.persona === undefined ? undefined : personaPrompt(input.persona);
+    return this.db.transaction(() => {
+      const companion = this.requirePersonaCompanion(id), stamp = nowIso();
+      if (prompt !== undefined) {
+        this.db.prepare('UPDATE bot_persona_templates SET prompt=?,updated_at=? WHERE companion_id=? AND id=? AND deleted=0').run(prompt, stamp, id, companion.activePersonaId!);
+        this.db.prepare('UPDATE bot_companions SET name=?,persona=?,updated_at=? WHERE id=?').run(name, prompt, stamp, id);
+      } else this.db.prepare('UPDATE bot_companions SET name=?,updated_at=? WHERE id=?').run(name, stamp, id);
+      return this.getCompanion(id)!;
+    }).immediate();
+  }
+  private seedPersonaTemplates(companionId: string, currentPrompt: string): void {
+    const stamp = nowIso(), builtins = builtinBotPersonaTemplates(companionId);
+    const defaults = builtins.length ? builtins : [{ id: 'default', name: '默认人格', prompt: currentPrompt }];
+    for (const item of defaults) {
+      this.db.prepare(`INSERT OR IGNORE INTO bot_persona_templates(companion_id,id,name,prompt,builtin,original_name,original_prompt,created_at,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?)`).run(companionId, item.id, item.name, item.prompt, Number(!!builtins.length), item.name, item.prompt, stamp, stamp);
+      if (builtins.length) this.db.prepare('UPDATE bot_persona_templates SET original_name=?,original_prompt=? WHERE companion_id=? AND id=? AND builtin=1')
+        .run(item.name, item.prompt, companionId, item.id);
+    }
+    if (this.db.prepare('SELECT 1 FROM bot_persona_settings WHERE companion_id=?').get(companionId)) return;
+    let activeId = defaults.find(item => item.prompt === currentPrompt)?.id ?? 'default';
+    if (!defaults.some(item => item.prompt === currentPrompt)) {
+      activeId = 'custom-current';
+      this.db.prepare(`INSERT INTO bot_persona_templates(companion_id,id,name,prompt,builtin,original_name,original_prompt,created_at,updated_at)
+        VALUES(?,?,?,?,0,?,?,?,?)`).run(companionId, activeId, '原有自定义人格', currentPrompt, '原有自定义人格', currentPrompt, stamp, stamp);
+    }
+    this.db.prepare('INSERT INTO bot_persona_settings(companion_id,active_id) VALUES(?,?)').run(companionId, activeId);
+  }
+  private requirePersonaCompanion(companionId: string): BotCompanion {
+    const companion = this.getCompanion(companionId);
+    if (!companion || this.isRetiredDevelopmentDefault(companionId)) throw new Error('伙伴不存在。');
+    return companion;
+  }
+  private personaSummary(row: Row): BotPersonaTemplateSummary {
+    return { id: String(row.id), name: String(row.name), builtin: !!row.builtin, isDefault: row.id === 'default',
+      modified: row.name !== row.original_name || !!row.prompt_modified,
+      charCount: Number(row.char_count), updatedAt: String(row.updated_at) };
+  }
+  listPersonaTemplates(companionId: string): BotPersonaTemplateList {
+    const companion = this.requirePersonaCompanion(companionId);
+    // SQL returns metadata only: large prompts never travel with list/snapshot.
+    const rows = this.db.prepare(`SELECT id,name,builtin,original_name,updated_at,length(prompt) AS char_count,
+      CASE WHEN prompt=original_prompt THEN 0 ELSE 1 END AS prompt_modified
+      FROM bot_persona_templates WHERE companion_id=? AND deleted=0 ORDER BY CASE WHEN id='default' THEN 0 ELSE 1 END,builtin DESC,created_at,id LIMIT ?`)
+      .all(companionId, BOT_PERSONA_TEMPLATE_LIMIT);
+    return { items: rows.map(raw => this.personaSummary(asRow(raw))),
+      activeId: companion.activePersonaId!, limit: BOT_PERSONA_TEMPLATE_LIMIT };
+  }
+  getPersonaTemplate(companionId: string, id: string): BotPersonaTemplate {
+    this.requirePersonaCompanion(companionId);
+    const raw = this.db.prepare('SELECT *,length(prompt) AS char_count,prompt<>original_prompt AS prompt_modified FROM bot_persona_templates WHERE companion_id=? AND id=? AND deleted=0').get(companionId, id);
+    if (!raw) throw new Error('人格模板不存在或已删除。');
+    const row = asRow(raw); return { ...this.personaSummary(row), prompt: String(row.prompt) };
+  }
+  savePersonaTemplate(companionId: string, input: { id?: string; name: string; prompt: string; activate?: boolean }): BotPersonaTemplate {
+    const name = text(input.name, '模板名称', 80), prompt = personaPrompt(input.prompt), id = input.id ?? `persona-${randomUUID()}`;
+    return this.db.transaction(() => {
+      const companion = this.requirePersonaCompanion(companionId), stamp = nowIso();
+      if (input.id) {
+        this.getPersonaTemplate(companionId, id);
+        this.db.prepare('UPDATE bot_persona_templates SET name=?,prompt=?,updated_at=? WHERE companion_id=? AND id=?').run(name, prompt, stamp, companionId, id);
+      } else {
+        // Deleted built-ins reserve their slot so restoring the entire built-in
+        // collection never deletes custom templates or exceeds the list bound.
+        const count = Number(asRow(this.db.prepare('SELECT count(*) AS count FROM bot_persona_templates WHERE companion_id=?').get(companionId)).count);
+        if (count >= BOT_PERSONA_TEMPLATE_LIMIT) throw new Error(`每位伙伴最多保存 ${BOT_PERSONA_TEMPLATE_LIMIT} 套人格模板（包含可恢复的内置模板）。`);
+        this.db.prepare(`INSERT INTO bot_persona_templates(companion_id,id,name,prompt,builtin,original_name,original_prompt,created_at,updated_at)
+          VALUES(?,?,?,?,0,?,?,?,?)`).run(companionId, id, name, prompt, name, prompt, stamp, stamp);
+      }
+      if (input.activate || companion.activePersonaId === id) this.activatePersonaTemplate(companionId, id);
+      return this.getPersonaTemplate(companionId, id);
+    }).immediate();
+  }
+  activatePersonaTemplate(companionId: string, id: string): BotPersonaTemplate {
+    return this.db.transaction(() => {
+      const persona = this.getPersonaTemplate(companionId, id), stamp = nowIso();
+      this.db.prepare('UPDATE bot_companions SET persona=?,updated_at=? WHERE id=?').run(persona.prompt, stamp, companionId);
+      this.db.prepare('UPDATE bot_persona_settings SET active_id=? WHERE companion_id=?').run(id, companionId);
+      return persona;
+    }).immediate();
+  }
+  deletePersonaTemplate(companionId: string, id: string): void {
+    this.db.transaction(() => {
+      const companion = this.requirePersonaCompanion(companionId), persona = this.getPersonaTemplate(companionId, id);
+      if (persona.isDefault) throw new Error('默认人格不能删除，可以编辑或恢复默认原稿。');
+      if (companion.activePersonaId === id) this.activatePersonaTemplate(companionId, 'default');
+      if (persona.builtin) this.db.prepare('UPDATE bot_persona_templates SET deleted=1,updated_at=? WHERE companion_id=? AND id=?').run(nowIso(), companionId, id);
+      else this.db.prepare('DELETE FROM bot_persona_templates WHERE companion_id=? AND id=?').run(companionId, id);
+    }).immediate();
+  }
+  restorePersonaTemplates(companionId: string, id?: string): BotPersonaTemplate {
+    return this.db.transaction(() => {
+      this.requirePersonaCompanion(companionId);
+      if (id) {
+        const raw = this.db.prepare('SELECT builtin FROM bot_persona_templates WHERE companion_id=? AND id=?').get(companionId, id);
+        if (!raw || (!asRow(raw).builtin && id !== 'default')) throw new Error('只能恢复默认或内置人格模板。');
+        this.db.prepare('UPDATE bot_persona_templates SET name=original_name,prompt=original_prompt,deleted=0,updated_at=? WHERE companion_id=? AND id=?').run(nowIso(), companionId, id);
+      } else this.db.prepare("UPDATE bot_persona_templates SET name=original_name,prompt=original_prompt,deleted=0,updated_at=? WHERE companion_id=? AND (builtin=1 OR id='default')").run(nowIso(), companionId);
+      return this.activatePersonaTemplate(companionId, id ?? 'default');
+    }).immediate();
   }
   openDirect(companionId: string): BotConversation {
     if (this.isRetiredDevelopmentDefault(companionId)) throw new Error('旧开发伙伴已退休。');
@@ -474,7 +594,9 @@ export class BotStore {
       this.setMetadata(key, created.id); return created;
     }).immediate();
   }
-  /** Explicit destination: only the current authorized request crosses the boundary. */
+  /** Communication always belongs to the pair's own channel. A request for a
+   * user-facing answer grants the recipient one separate publication, never
+   * membership of (or an incoming message in) its user-private channel. */
   contactPeer(source: BotEvent, targetId: string, callId: string, content: string, destination: 'user' | 'peer' = 'peer') {
     if (!['user', 'peer'].includes(destination)) throw new Error('转达目的地必须为 user 或 peer。');
     if (source.source !== 'user' || source.senderId !== 'user') throw new Error('联系其他聊天中的伙伴需要当前用户明确请求。');
@@ -491,15 +613,60 @@ export class BotStore {
       }
       const sourceRoom = this.getConversation(source.conversationId);
       if (!sourceRoom || sourceRoom.dissolvedAt || sourceRoom.revision !== source.aclRevision || !sourceRoom.memberIds.includes(source.companionId)) throw new Error('转达来源权限已经变化。');
-      const room = destination === 'user' ? this.openDirect(targetId) : this.openPeer(sender.id, target.id);
+      const room = this.openPeer(sender.id, target.id);
       const result = this.tryEnqueueAutomatic({ conversationId: room.id, source: 'companion', senderId: sender.id, recipientIds: [targetId],
         content: text(content, '转达内容', 8000), sourceMessageId: `peer-contact:${source.id}:${callId}`, correlationId: source.correlationId, causationId: source.id,
-        ...(destination === 'user' ? { contactSourceEventId: source.id } : {}),
         payload: { hop: 1, userRequestedContact: true, originalSenderName: source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer' }, sourceIds: [source.id, source.sourceMessageRecordId] });
+      if (result.accepted && destination === 'user') for (const event of result.events) this.setMetadata(`peer-user-reply-grant:${event.id}`,
+        JSON.stringify({ sourceEventId: source.id, relayMessageId: result.message.id, peerConversationId: room.id, recipientId: target.id,
+          requesterId: sender.id, correlationId: source.correlationId, sourceAclRevision: source.aclRevision }));
       if (result.accepted) for (const sourceId of this.eventSourceIds(source.id)) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
         .run(source.companionId, source.securityDomainId, sourceId, room.id, result.message.id);
       if (result.accepted) this.setMetadata(receiptKey, JSON.stringify({ recipientId: targetId, conversationId: room.id, messageId: result.message.id, destination, fingerprint: hash([targetId, destination, content]) }));
       return { ...result, conversationId: room.id };
+    }).immediate();
+  }
+  /** Returns an already committed reply without sending or guessing absence. */
+  peerReplyReceipt(eventId: string, callId: string, content: string): { sent: true; conversationId: string; messageId: string; senderId: string; recipientId: 'user' } | undefined {
+    const saved = this.getMetadata(`peer-user-reply-receipt:${eventId}:${callId}`);
+    if (!saved) return;
+    const receipt = JSON.parse(saved) as { fingerprint: string; result: { sent: true; conversationId: string; messageId: string; senderId: string; recipientId: 'user' } };
+    if (receipt.fingerprint !== hash([text(content, '回复内容', 24000)])) throw new Error('向用户回复的回执内容不匹配。');
+    return receipt.result;
+  }
+  replyPeerToUser(source: BotEvent, callId: string, content: string) {
+    const reply = text(content, '回复内容', 24000), fingerprint = hash([reply]);
+    return this.db.transaction(() => {
+      const prior = this.peerReplyReceipt(source.id, callId, reply); if (prior) return prior;
+      const event = this.getEvent(source.id), savedGrant = event && this.getMetadata(`peer-user-reply-grant:${event.id}`);
+      if (!event || event.status !== 'running' || event.source !== 'companion' || !savedGrant) throw new Error('当前伙伴私聊没有向用户回复的有效授权。');
+      const grant = JSON.parse(savedGrant) as { sourceEventId: string; relayMessageId: string; peerConversationId: string; recipientId: string;
+        requesterId: string; correlationId: string; sourceAclRevision: number; reply?: { fingerprint: string; result: NonNullable<ReturnType<BotStore['peerReplyReceipt']>> } };
+      const origin = this.getEvent(grant.sourceEventId), originRoom = origin && this.getConversation(origin.conversationId), peer = this.getConversation(event.conversationId);
+      if (!origin || origin.source !== 'user' || origin.senderId !== 'user' || !originRoom || originRoom.dissolvedAt || originRoom.revision !== grant.sourceAclRevision
+        || !originRoom.memberIds.includes(grant.requesterId) || peer?.kind !== 'peer' || peer.revision !== event.aclRevision || peer.id !== grant.peerConversationId
+        || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([grant.requesterId, grant.recipientId].sort())
+        || event.companionId !== grant.recipientId || event.senderId !== grant.requesterId || event.sourceMessageRecordId !== grant.relayMessageId
+        || event.correlationId !== grant.correlationId || origin.correlationId !== grant.correlationId
+        || this.withdrawnIn(origin.companionId, origin.securityDomainId, this.eventSourceIds(origin.id)).size
+        || this.withdrawnIn(event.companionId, event.securityDomainId, this.eventSourceIds(event.id)).size) throw new Error('向用户回复的原始授权已经失效。');
+      if (grant.reply && grant.reply.fingerprint !== fingerprint) throw new Error('本次授权回复已经发送，不能再次发布不同内容。');
+      let result = grant.reply?.result;
+      if (!result) {
+        const room = this.openDirect(event.companionId);
+        const { message } = this.enqueue({ conversationId: room.id, senderId: event.companionId, source: 'companion', recipientIds: [], content: reply,
+          sourceInstanceId: 'peer-user-reply', sourceMessageId: event.id, correlationId: event.correlationId, causationId: event.id,
+          sourceIds: [...new Set([...this.eventSourceIds(event.id), ...this.eventSourceIds(origin.id)])] });
+        for (const sourceId of this.eventSourceIds(origin.id)) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
+          .run(origin.companionId, origin.securityDomainId, sourceId, room.id, message.id);
+        this.db.prepare('INSERT OR IGNORE INTO bot_outbox(id,event_id,conversation_id,message_id,created_at) VALUES(?,?,?,?,?)')
+          .run(message.id, event.id, room.id, message.id, message.createdAt);
+        this.enqueueMemoryJob({ key: `peer-user-reply-history:${event.id}`, kind: 'projection', payload: { scope: { companionId: event.companionId, conversationId: room.id, securityDomainId: room.securityDomainId } } });
+        result = { sent: true, conversationId: room.id, messageId: message.id, senderId: event.companionId, recipientId: 'user' };
+        this.setMetadata(`peer-user-reply-grant:${event.id}`, JSON.stringify({ ...grant, reply: { fingerprint, result } }));
+      }
+      this.setMetadata(`peer-user-reply-receipt:${event.id}:${callId}`, JSON.stringify({ fingerprint, result }));
+      return result;
     }).immediate();
   }
   peerWithdrawalTargets(companionId: string, securityDomainId: string) {
@@ -597,7 +764,25 @@ export class BotStore {
   }
   conversations(): BotConversation[] {
     const hidden = new Set(this.developmentDefaultCleanup()?.conversationIds ?? []);
-    return this.db.prepare('SELECT id FROM bot_conversations ORDER BY created_at DESC,id').all().map(raw => this.getConversation(String(asRow(raw).id))!).filter(conversation => !hidden.has(conversation.id)&&!conversation.dissolvedAt);
+    return this.db.prepare(`SELECT c.id FROM bot_conversations c WHERE c.kind<>'peer' OR EXISTS(
+      SELECT 1 FROM bot_messages m WHERE m.conversation_id=c.id AND m.status='sent' AND m.kind='message' AND (length(m.content)>0 OR m.attachments_json<>'[]'))
+      ORDER BY c.created_at DESC,c.id`).all().map(raw => this.getConversation(String(asRow(raw).id))!).filter(conversation => !hidden.has(conversation.id)&&!conversation.dissolvedAt);
+  }
+  /** One short published-message projection per visible channel. Correlated
+   * lookups use bot_messages_page; no transcript or attachment body is read. */
+  conversationActivity(): Record<string, BotConversationActivity> {
+    const hidden = new Set(this.developmentDefaultCleanup()?.conversationIds ?? []);
+    const found = this.db.prepare(`SELECT c.id AS conversation_id,m.id,m.sequence,m.sender_name,substr(m.content,1,240) AS preview,m.created_at
+      FROM bot_conversations c JOIN bot_messages m ON m.sequence=(
+        SELECT latest.sequence FROM bot_messages latest WHERE latest.conversation_id=c.id AND latest.status='sent'
+          AND latest.kind='message' AND (length(latest.content)>0 OR latest.attachments_json<>'[]') ORDER BY latest.sequence DESC LIMIT 1)
+      WHERE c.kind<>'world' AND (EXISTS(SELECT 1 FROM bot_members member WHERE member.conversation_id=c.id AND member.member_id='user')
+        OR c.kind='peer' AND (SELECT COUNT(*) FROM bot_members member WHERE member.conversation_id=c.id)=2)
+        AND NOT EXISTS(SELECT 1 FROM bot_metadata d WHERE d.key='conversation-dissolved:'||c.id AND d.value<>'')
+      ORDER BY m.sequence DESC LIMIT 256`).all().map(asRow);
+    return Object.fromEntries(found.filter(value => !hidden.has(String(value.conversation_id))).map(value => [String(value.conversation_id), {
+      messageId: String(value.id), sequence: Number(value.sequence), senderName: String(value.sender_name), preview: String(value.preview) || '[附件]', updatedAt: String(value.created_at),
+    }]));
   }
   getLane(id: string): BotLane | undefined {
     const raw = this.db.prepare('SELECT * FROM bot_lanes WHERE id=?').get(id); if (!raw) return;
@@ -811,14 +996,7 @@ export class BotStore {
     return this.db.transaction(() => {
       const conversation = this.getConversation(input.conversationId); if (!conversation||conversation.dissolvedAt) throw new Error('会话不存在或已经解散。');
       const serviceSource = source === 'task' || source === 'world';
-      const contact = input.contactSourceEventId ? this.getEvent(input.contactSourceEventId) : undefined;
-      const contactRoom = contact ? this.getConversation(contact.conversationId) : undefined;
-      const trustedContact = conversation.kind === 'direct' && source === 'companion' && contact?.source === 'user' && contact.senderId === 'user'
-        && contact.companionId === input.senderId && contactRoom?.revision === contact.aclRevision && !contactRoom.dissolvedAt
-        && contactRoom.memberIds.includes(input.senderId) && input.recipientIds?.length === 1 && conversation.memberIds.includes(input.recipientIds[0]!)
-        && input.recipientIds[0] !== input.senderId && input.causationId === contact.id && input.correlationId === contact.correlationId
-        && !this.withdrawnIn(contact.companionId, contact.securityDomainId, this.eventSourceIds(contact.id)).size;
-      if (!serviceSource && !conversation.memberIds.includes(input.senderId) && !trustedContact) throw new Error('消息发送者不属于该会话。');
+      if (!serviceSource && !conversation.memberIds.includes(input.senderId)) throw new Error('消息发送者不属于该会话。');
       if (source === 'world' && conversation.kind !== 'world') throw new Error('世界事件必须进入世界会话。');
       const sender = this.getCompanion(input.senderId);
       if (source === 'user' && input.senderId !== 'user' || source === 'companion' && !sender) throw new Error('事件来源与真实发送者不匹配。');
@@ -843,7 +1021,7 @@ export class BotStore {
       this.assertInboxCapacity(source, recipients.length);
       const stamp = nowIso(), correlationId = input.correlationId ?? randomUUID(), messageId = `message-${originKey}`;
       this.activityBudget.start(correlationId);
-      if (!isInteractiveBotSource(source)) this.activityBudget.reserve(correlationId, 'events', originKey, recipients.length);
+      if (!isInteractiveBotSource(source) && recipients.length) this.activityBudget.reserve(correlationId, 'events', originKey, recipients.length);
       this.db.prepare('INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at,attachments_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(messageId, originKey, conversation.id, input.senderId, senderName, senderType, content, 'sent', kind, correlationId, stamp, attachmentsJson);
       const sourceIds = [...new Set([...(input.sourceIds ?? []), ...(source === 'task' && typeof input.payload?.taskId === 'string' ? this.taskSourceIds(input.payload.taskId) : [])])];
@@ -920,14 +1098,17 @@ export class BotStore {
   reserveAutomaticAction(eventId: string, callId: string, kind: string): void {
     this.db.transaction(() => {
       const event = this.getEvent(eventId); if (!event || event.status !== 'running') throw Error('活动预算没有有效运行事件。');
-      this.activityBudget.reserve(event.correlationId, 'actions', `${eventId}:${callId}:${kind}`);
+      const taskId = typeof event.payload.taskId === 'string' ? event.payload.taskId : undefined;
+      const authorizedWork = !!taskId && event.source === 'task' && this.getMetadata(`task-notice-authority:${event.id}`) === taskId
+        && this.taskBudgetAuthority?.(taskId) === true;
+      this.activityBudget.reserve(event.correlationId, 'actions', `${eventId}:${callId}:${kind}`, 1, Date.now(), { authorizedWork });
     }).immediate();
   }
   reserveTaskAction(taskId: string, callId: string, kind: string): void {
     this.db.transaction(() => {
       const task = this.getTask(taskId), source = task && this.getEvent(task.sourceEventId);
       if (!task || task.status !== 'running' || task.extra.cancelRequested || !source) throw new Error('活动预算没有有效运行任务。');
-      this.activityBudget.reserve(source.correlationId, 'actions', `task:${taskId}:${callId}:${kind}`);
+      this.activityBudget.reserve(source.correlationId, 'actions', `task:${taskId}:${callId}:${kind}`, 1, Date.now(), { authorizedWork: this.taskBudgetAuthority?.(taskId) === true });
     }).immediate();
   }
   tryEnqueueAutomatic(input: BotEnqueueInput): { accepted: true; message: BotMessage; events: BotEvent[] } | { accepted: false; reason: string } {
@@ -947,7 +1128,15 @@ export class BotStore {
       const prior = this.db.prepare('SELECT * FROM bot_deferred_task_notices WHERE id=?').get(id);
       if (prior && asRow(prior).fingerprint !== fingerprint) throw Error('同一任务回执标识对应不同内容。');
       const payload = prior ? JSON.parse(String(asRow(prior).payload_json)) as BotEnqueueInput : input;
-      try { this.enqueue(payload); this.db.prepare('DELETE FROM bot_deferred_task_notices WHERE id=?').run(id); return { deferred: false }; }
+      try {
+        const delivered = this.enqueue(payload), task = typeof payload.payload?.taskId === 'string' ? this.getTask(payload.payload.taskId) : undefined;
+        const source = task && this.getEvent(task.sourceEventId);
+        if (task && source && payload.senderId === 'task-service' && payload.conversationId === task.conversationId
+          && payload.causationId === source.id && payload.correlationId === source.correlationId) for (const event of delivered.events) {
+          if (event.companionId === task.companionId) this.setMetadata(`task-notice-authority:${event.id}`, task.id);
+        }
+        this.db.prepare('DELETE FROM bot_deferred_task_notices WHERE id=?').run(id); return { deferred: false };
+      }
       catch (error) {
         if (!(error instanceof BotBackpressureError)) throw error;
         this.db.prepare('INSERT OR IGNORE INTO bot_deferred_task_notices VALUES(?,?,?,?)').run(id, JSON.stringify(payload), fingerprint, nowIso());
@@ -979,7 +1168,7 @@ export class BotStore {
       status: String(r.status) as BotEventStatus, attempts: Number(r.attempts), occurredAt: String(r.occurred_at), receivedAt: String(r.received_at), dshEventId: optional(r.dsh_event_id), error: optional(r.error) };
   }
   /** Lease recovery preserves event and reply IDs; a stale worker cannot later publish. */
-  claim(input: { workerId: string; leaseMs?: number; excludeLaneIds?: readonly string[]; now?: number; interactiveOnly?: boolean; preferInteractive?: boolean }): BotClaim | undefined {
+  claim(input: { workerId: string; leaseMs?: number; excludeLaneIds?: readonly string[]; now?: number; interactiveOnly?: boolean; preferInteractive?: boolean; serialCompanions?: boolean }): BotClaim | undefined {
     const now = input.now ?? Date.now(), leaseMs = bounded(input.leaseMs, 60000, 300000);
     return this.db.transaction(() => {
       this.flushDeferredTaskNotices();
@@ -992,6 +1181,7 @@ export class BotStore {
         WHERE i.status='queued' AND i.available_at<=?${skip}
         AND NOT EXISTS(SELECT 1 FROM bot_inbox older WHERE older.lane_id=i.lane_id AND older.sequence<i.sequence AND older.status IN ('queued','running'))
         AND NOT EXISTS(SELECT 1 FROM bot_inbox active WHERE active.lane_id=i.lane_id AND active.status='running')
+        ${input.serialCompanions ? "AND NOT EXISTS(SELECT 1 FROM bot_inbox actor WHERE actor.companion_id=i.companion_id AND actor.status='running')" : ''}
         ORDER BY ${input.preferInteractive ? "CASE WHEN i.source IN ('user','task','gateway') THEN 0 ELSE 1 END," : ''}l.last_claimed_at,i.sequence LIMIT 1`).get(now, ...excluded);
       if (!raw) return;
       const event = this.event(raw), token = `${input.workerId}:${randomUUID()}`, leaseUntil = now + leaseMs;
@@ -1351,6 +1541,7 @@ export class BotStore {
     const rows = this.db.prepare(`SELECT id,conversation_id,companion_id,(SELECT name FROM bot_companions WHERE bot_companions.id=bot_tasks.companion_id) AS companion_name,source_event_id,substr(goal,1,${goalChars}) AS goal,status,attempt_id,dsh_task_id,session_id,
       ${summary} AS summary,${input.view === 'context' ? 'length(summary)>2000' : 'NULL'} AS summary_is_preview,${input.order === 'summary' ? 'NULL' : 'substr(error,1,2000)'} AS error,created_at,updated_at,
       json_object('title',substr(json_extract(extra_json,'$.title'),1,120),
+        'humanStopped',json(CASE WHEN json_type(extra_json,'$.humanStopped')='true' THEN 'true' ELSE 'false' END),
         'cancelRequested',json(CASE WHEN json_type(extra_json,'$.cancelRequested')='true' THEN 'true' ELSE 'false' END),
         'cancelRequestedAt',json_extract(extra_json,'$.cancelRequestedAt'),'presenceStartedAt',json_extract(extra_json,'$.presenceStartedAt'),
         'cancelRecoveryPaused',json(CASE WHEN json_type(extra_json,'$.cancelRecoveryPaused')='true' THEN 'true' ELSE 'false' END),
@@ -1409,6 +1600,23 @@ export class BotStore {
         .run(randomUUID(), id, task.companionId, task.conversationId, kind, String(typeof extra.title === 'string' ? extra.title : '任务').slice(0, 120), status, updatedAt);
     }).immediate();
     return this.getTask(id)!;
+  }
+  /** Host-only continuation after an explicit human request and mandate
+   * validation. Generic late worker updates still cannot reopen a terminal. */
+  reopenTask(id: string, continuation: { id: string; text: string }): BotTask {
+    return this.db.transaction(() => {
+      const task = this.getTask(id);
+      if (!task || !['succeeded', 'failed'].includes(task.status) || task.extra.cancelRequested || task.extra.humanStopped || task.extra.removedAt
+        || this.taskSourcesWithdrawn(id)) throw new Error('任务不能由后续指导重新启动。');
+      const grant = this.db.prepare("SELECT 1 FROM bot_task_mandates WHERE task_id=? AND state='active'").get(id);
+      if (!grant) throw new Error('任务缺少仍有效的原始授权。');
+      const extra = { ...task.extra, taskContinuation: continuation, taskContinuationId: continuation.id,
+        reportBaseline: (task.extra.workerReport as { callId?: string } | undefined)?.callId ?? task.extra.reportBaseline ?? null,
+        retryAt: 0, progress: { phase: 'queued', detail: '用户的后续指导已保存，沿原任务和会话继续。', updatedAt: nowIso() } };
+      this.db.prepare("UPDATE bot_tasks SET status='queued',error=NULL,extra_json=?,updated_at=? WHERE id=? AND status=?")
+        .run(JSON.stringify(extra), nowIso(), id, task.status);
+      return this.getTask(id)!;
+    }).immediate();
   }
   /** Runtime presence is a metadata projection, never a Host health request or
    * a scan of task reports, private message bodies or frozen worker inputs. */

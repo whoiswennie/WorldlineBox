@@ -42,7 +42,8 @@ it('uses the actual Markdown renderer, blocks embedded HTML and avoids automatic
   const f = boundary(async () => ({ ok: true, textPage: page(source) })), open = vi.fn(); await mount({ api: f.api, onOpenUrl: open });
   expect(document.querySelector('[role=dialog] h1')?.textContent).toBe('可阅读标题'); expect(document.querySelector('[role=dialog] strong')?.textContent).toBe('粗体');
   expect(document.querySelector('[role=dialog] script,[role=dialog] iframe,[role=dialog] img')).toBeNull(); expect(open).not.toHaveBeenCalled();
-  await click('参考链接'); expect(open).toHaveBeenLastCalledWith('https://example.com/reference');
+  const link = document.querySelector<HTMLButtonElement>('.browser-markdown-link-card')!; expect(link.textContent).toContain('参考链接'); expect(link.textContent).toContain('内置浏览器打开');
+  await act(() => link.click()); expect(open).toHaveBeenLastCalledWith('https://example.com/reference');
   await click('远程图片'); expect(open).toHaveBeenLastCalledWith('https://example.com/picture.png');
   expect([...document.querySelectorAll('[role=dialog] button')].some(button => button.textContent === '不安全链接')).toBe(false);
   await click('原文'); expect(document.querySelector('[role=dialog] pre')?.textContent).toBe(source); expect(f.request).toHaveBeenCalledTimes(1);

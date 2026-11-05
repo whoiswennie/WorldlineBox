@@ -38,6 +38,34 @@ function replaceResponse(session: Session, operation: string, reply: (payload: R
 }
 
 describe('standalone VCP bot memory adapter', () => {
+  it('checks native provenance and tombstone revision for one explicitly selected cross-conversation read without passive recall', async () => {
+    const evidence = { content: 'source-owned fact', sourceEventId: 'origin-event', sourceMessageIds: ['origin-message'] };
+    const f = await fixture(3, session => {
+      replaceResponse(session, 'bot.tombstones', () => ({ revision: '4' }));
+      replaceResponse(session, 'search', () => ({ results: [evidence], unverifiedWrapper: 'must not be copied' }));
+      replaceResponse(session, 'bot.source.filter', () => ({ sourceEventWithdrawn: false, blockedMessageIds: [] }));
+    });
+    expect(await f.service.readScoped(scope, 'memory_search', { query: 'fact' })).toEqual({ available: true, records: [evidence], provenance: { revision: '4', sourceEventIds: ['origin-event'], sourceMessageIds: ['origin-message'] } });
+    expect(f.sessions).toHaveLength(1);
+    expect(f.sessions[0]!.request.mock.calls.find(([op]) => op === 'bot.source.filter')?.[1]).toEqual({ sourceEventId: 'origin-event', messageIds: ['origin-message'] });
+    expect(f.sessions[0]!.request.mock.calls.some(([op]) => ['preprocess', 'response', 'bot.remember'].includes(op))).toBe(false);
+  });
+  it('withholds withdrawn, unproven and concurrently revoked cross-conversation results', async () => {
+    let revision = '4', withdrawn = false, raw = false, revokeDuringRead = false;
+    const f = await fixture(3, session => {
+      replaceResponse(session, 'bot.tombstones', () => ({ revision }));
+      replaceResponse(session, 'bot.note.read', () => { if (revokeDuringRead) revision = '5'; return raw ? 'unproven secret' : { id: 'note', content: 'protected secret', sourceEventId: 'origin-event', sourceMessageIds: ['origin-message'] }; });
+      replaceResponse(session, 'bot.source.filter', () => ({ sourceEventWithdrawn: withdrawn, blockedMessageIds: [] }));
+    });
+    withdrawn = true;
+    expect(await f.service.readScoped(scope, 'memory_note', { id: 'note' })).toMatchObject({ available: false, reason: 'memory-source-withdrawn' });
+    withdrawn = false; raw = true;
+    const unproven = await f.service.readScoped(scope, 'memory_note', { id: 'note' });
+    expect(unproven).toMatchObject({ available: false, reason: 'memory-provenance-unavailable' }); expect(JSON.stringify(unproven)).not.toContain('secret');
+    raw = false; revokeDuringRead = true;
+    const revoked = await f.service.readScoped(scope, 'memory_note', { id: 'note' });
+    expect(revoked).toMatchObject({ available: false, reason: 'memory-source-revision-changed' }); expect(JSON.stringify(revoked)).not.toContain('protected secret');
+  });
   it('single-flights only the selected audience warm-up and shares its resident worker with a concurrent turn', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });

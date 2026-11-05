@@ -1,6 +1,8 @@
 import type { BotTask } from '../../shared/companion-bot';
 
 export const botTaskActive = (task: BotTask) => ['queued', 'running', 'waiting', 'unknown', 'paused'].includes(task.status);
+export const botTaskCanFollow = (task: BotTask) => task.followupAvailable !== false && !task.humanStopped && !task.cancelRequested && !task.pauseRequested
+  && (['queued', 'running', 'waiting', 'paused'].includes(task.status) || task.followupAvailable === true && ['succeeded', 'failed'].includes(task.status));
 export const botTaskStopping = (task: BotTask) => botTaskActive(task) && (task.cancelRequested === true || task.progress?.phase === 'stopping');
 export const botTaskPausing = (task: BotTask) => botTaskActive(task) && task.status !== 'paused' && !botTaskStopping(task) && (task.pauseRequested === true || task.progress?.phase === 'pausing');
 export const botTaskState = (task: BotTask) => botTaskStopping(task) ? ['stop-unconfirmed', 'stop-request-unknown'].includes(task.progress?.phase ?? '') ? 'stop-unconfirmed' : 'stopping' : botTaskPausing(task) ? ['pause-unconfirmed', 'pause-request-unknown'].includes(task.progress?.phase ?? '') ? 'pause-unconfirmed' : 'pausing' : task.status;

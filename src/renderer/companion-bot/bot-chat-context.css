@@ -92,6 +92,9 @@
 .bot-context-events small { font-size:10px;color:var(--bot-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .bot-context-events time { color:var(--bot-muted);font-size:9px;font-variant-numeric:tabular-nums;padding-top:1px;flex-shrink:0; }
 .bot-context-collapsed { display:none; }
+.bot-context-agent-continuity { display:grid;gap:5px;margin:0 0 13px;font-size:10px;line-height:1.8; }
+.bot-context-agent-continuity strong { color:var(--bot-text);font-weight:550; }
+.bot-context-agent-continuity span { color:var(--bot-muted); }
 @media(min-width:1450px) {
  .bot-workspace.bot-atmosphere.context-collapsed { grid-template-columns:282px minmax(0,1fr) 38px; }
  .bot-atmosphere .bot-context-collapsed { display:flex;align-items:flex-start;padding:24px 6px 0 0;margin-right:6px; }

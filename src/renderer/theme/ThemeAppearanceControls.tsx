@@ -8,6 +8,7 @@ import { DSH_BACKGROUND_MEDIA, isAnimatedTheme } from './dsh-background-media';
 import { BackgroundImagePanel } from './BackgroundImageControls';
 import {
   BACKGROUND_DISPLAY_MODES,
+  DEFAULT_BACKGROUND_OPACITY,
   isSafeBackgroundImageDataUrl,
   MIN_PANEL_OPACITY,
   type BackgroundDisplayMode,
@@ -323,6 +324,25 @@ export function ThemeModePicker(): ReactNode {
   );
 }
 
+/** The current skin or personal image has one discoverable opacity control. */
+export function BackgroundOpacitySettings(): ReactNode {
+  const t = useT();
+  const { backgroundPreferences, setBackgroundPreferences, themeProfile } = useTheme();
+  const [error, setError] = useState(false);
+  const personalImage = backgroundPreferences.imageDataUrl !== null;
+  const illustratedTheme = isAnimatedTheme(themeProfile.preset);
+  const available = personalImage || illustratedTheme;
+  const opacity = personalImage ? backgroundPreferences.imageOpacity : backgroundPreferences.themeOpacity ?? DEFAULT_BACKGROUND_OPACITY;
+  const label = t(personalImage ? 'settings.backgroundOpacity' : 'settings.skinOpacity');
+  return <div className="app-settings-opacity-control app-settings-row app-settings-row-stack">
+    <div className="app-settings-row-copy"><strong>{label}</strong><span>{t(available ? 'settings.skinOpacityHint' : 'settings.skinOpacityUnavailable')}</span></div>
+    <Slider aria-label={label} disabled={!available || !backgroundPreferences.enabled} max={1} min={0} step={0.05}
+      value={opacity} valueText={`${Math.round(opacity * 100)}%`} showValue
+      onValueChange={value => { setError(!setBackgroundPreferences({ ...backgroundPreferences, ...(personalImage ? { imageOpacity: value } : { themeOpacity: value }) })); }} />
+    {error && <p className="app-settings-background-error" role="alert">{t('settings.backgroundSaveError')}</p>}
+  </div>;
+}
+
 export function BackgroundSettings(): ReactNode {
   const t = useT();
   const { backgroundPreferences, setBackgroundPreferences, themeProfile, backgroundMotion, setBackgroundMotion } = useTheme();
@@ -456,19 +476,6 @@ export function BackgroundSettings(): ReactNode {
           checked={backgroundPreferences.showInMainPanel}
           disabled={(backgroundPreferences.imageDataUrl === null && !isAnimatedTheme(themeProfile.preset)) || !backgroundPreferences.enabled}
           onCheckedChange={(checked) => update({ showInMainPanel: checked })}
-        />
-      </div>
-      <div className="app-settings-background-opacity">
-        <Slider
-          aria-label={t('settings.backgroundOpacity')}
-          label={t('settings.backgroundOpacity')}
-          max={1}
-          min={0}
-          onValueChange={(value) => update({ imageOpacity: value })}
-          showValue
-          step={0.05}
-          value={backgroundPreferences.imageOpacity}
-          valueText={`${Math.round(backgroundPreferences.imageOpacity * 100)}%`}
         />
       </div>
       {backgroundPreferences.showInMainPanel && backgroundPreferences.enabled && (backgroundPreferences.imageDataUrl !== null || isAnimatedTheme(themeProfile.preset)) ? (

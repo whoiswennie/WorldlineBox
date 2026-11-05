@@ -11,6 +11,8 @@ import { llm } from './bridge/llm';
 import { music } from './bridge/music';
 import { companionBot } from './bridge/companion-bot';
 import { companionBotMedia } from './bridge/companion-bot-media';
+import { localSpeech } from './bridge/local-speech';
+import { companionBotSpeech } from './bridge/companion-bot-speech';
 import { automation } from './bridge/automation';
 import {
   armE2eBrowseSessionDelay,
@@ -89,6 +91,8 @@ contextBridge.exposeInMainWorld(
     music,
     companionBot,
     companionBotMedia,
+    localSpeech,
+    companionBotSpeech,
     automation,
     mcp,
     plugins,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { LocalSpeechTranscript } from './local-speech';
 
 export const BOT_MEDIA_CHANNEL = 'companion-bot-media:request';
 /** Classify a declared MP4 container without reading or probing its bytes. */
@@ -27,6 +28,8 @@ export function botMediaPreviewPolicy(input:{name?:string;mimeType:string;size:n
 }
 export interface BotMediaTextPage {content:string;offset:number;nextOffset?:number;totalBytes:number;name:string;format:'text'|'markdown';encoding:'utf-8'|'utf-16le'|'utf-16be'}
 export interface BotMediaRef {
+  voice?: { durationSeconds: number };
+  transcript?: LocalSpeechTranscript;
   id: string; name: string; mimeType: string; size: number; sha256?: string; url: string;
   kind: 'file' | 'sticker'; packId?: string; animated?: boolean; width?: number; height?: number;
   previewUrl?:string;

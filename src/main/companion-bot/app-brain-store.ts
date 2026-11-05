@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { toolResultView } from './app-brain-tool-view';
 import { projectAppHistoricalPrompt } from './app-brain-history-view';
+import type { BotDshTool } from './dsh-brain';
 
 export interface AppBrainCall { id: string; name: string; arguments: string }
 export interface AppBrainMessage { role: 'user' | 'assistant' | 'tool'; content: string | null; tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>; tool_call_id?: string }
@@ -14,6 +15,7 @@ export interface AppBrainTurn {
 export interface AppBrainStoredCall extends AppBrainCall { step: number; position: number; state: string; result?: unknown }
 export interface AppBrainStep { ordinal: number; state: string; assistant?: AppBrainMessage; calls: AppBrainStoredCall[] }
 export interface AppBrainSummary { through: number; text: string }
+export interface AppBrainBinding { system: string; cwd: string; tools: readonly BotDshTool[] }
 type Row = Record<string, unknown>;
 interface Statement { all(...values: unknown[]): unknown[]; get(...values: unknown[]): unknown; run(...values: unknown[]): { changes: number } }
 interface Connection {
@@ -49,18 +51,30 @@ export class BotAppBrainStore {
         PRIMARY KEY(event_id,call_id,budget,version),FOREIGN KEY(event_id,call_id) REFERENCES app_calls(event_id,call_id));
       CREATE TABLE IF NOT EXISTS app_handoffs(key TEXT PRIMARY KEY,value TEXT NOT NULL);
     `);
+    const columns = this.db.prepare('PRAGMA table_info(app_turns)').all() as Row[];
+    if (!columns.some(column => column.name === 'binding_json')) this.db.exec('ALTER TABLE app_turns ADD COLUMN binding_json TEXT');
   }
   private turn(row: Row): AppBrainTurn { return { seq: Number(row.seq), eventId: String(row.event_id), laneId: String(row.lane_id), fingerprint: String(row.fingerprint),
     prompt: String(row.prompt), state: String(row.state), text: String(row.text), error: row.error ? String(row.error) : undefined,
     cancelRequested: !!row.cancel_requested, leaseOwner: row.lease_owner ? String(row.lease_owner) : undefined, leasePid: Number(row.lease_pid), leaseUntil: Number(row.lease_until) }; }
   get(eventId: string): AppBrainTurn | undefined { const value = this.db.prepare('SELECT * FROM app_turns WHERE event_id=?').get(eventId); return value ? this.turn(value as Row) : undefined; }
   hasLane(laneId: string): boolean { return !!this.db.prepare('SELECT 1 FROM app_lanes WHERE lane_id=?').get(laneId); }
-  admit(input: { laneId: string; eventId: string; fingerprint: string; prompt: string }): AppBrainTurn {
+  binding(eventId: string): AppBrainBinding | undefined {
+    const value = this.db.prepare('SELECT binding_json FROM app_turns WHERE event_id=?').get(eventId) as Row | undefined;
+    return value?.binding_json ? JSON.parse(String(value.binding_json)) as AppBrainBinding : undefined;
+  }
+  admit(input: { laneId: string; eventId: string; fingerprint: string; prompt: string; binding?: AppBrainBinding }): AppBrainTurn {
     return this.db.transaction(() => {
       const prior = this.get(input.eventId);
-      if (prior) { if (prior.laneId !== input.laneId || prior.fingerprint !== input.fingerprint) throw new Error('App主脑事件标识对应其他输入。'); return prior; }
+      if (prior) {
+        const saved = this.binding(input.eventId);
+        const sameInput = saved && input.binding && prior.prompt === input.prompt && saved.system === input.binding.system && saved.cwd === input.binding.cwd;
+        if (prior.laneId !== input.laneId || prior.fingerprint !== input.fingerprint && !sameInput) throw new Error('App主脑事件标识对应其他输入或旧工具版本尚未核实。');
+        return prior;
+      }
       this.db.prepare('INSERT OR IGNORE INTO app_lanes(lane_id) VALUES(?)').run(input.laneId);
       this.db.prepare("INSERT INTO app_turns(event_id,lane_id,fingerprint,prompt,state) VALUES(?,?,?,?,'pending')").run(input.eventId, input.laneId, input.fingerprint, input.prompt);
+      if (input.binding) this.db.prepare('UPDATE app_turns SET binding_json=? WHERE event_id=?').run(JSON.stringify(input.binding), input.eventId);
       return this.get(input.eventId)!;
     }).immediate();
   }
@@ -141,9 +155,13 @@ export class BotAppBrainStore {
     const messages: AppBrainMessage[] = [{ role: 'user', content: promptView }];
     const steps = this.steps(turn.eventId);
     let visibleSteps = steps;
-    if (compactSteps && steps.length && steps.every(step => step.calls.every(call => call.state === 'committed'))) {
-      const completed = steps.filter(step => step.assistant);
-      const older = compactSteps === 'all' ? completed : completed.slice(0, -1); visibleSteps = compactSteps === 'all' ? [] : completed.slice(-1);
+    if (compactSteps && steps.length) {
+      const completed = steps.filter(step => step.assistant && step.calls.every(call => call.state === 'committed'));
+      const pending = steps.filter(step => step.assistant && step.calls.some(call => call.state !== 'committed'));
+      // Reader page sizing runs before its receipt is committed. Older groups
+      // may become a ledger already; every unresolved call stays whole.
+      const older = compactSteps === 'all' || pending.length ? completed : completed.slice(0, -1);
+      visibleSteps = pending.length ? pending : compactSteps === 'all' ? [] : completed.slice(-1);
       if (older.length) messages.push({ role: 'assistant', content: JSON.stringify({ kind: 'durable_tool_steps_summary',
         detail: '这是宿主从已确认步骤生成的有界资料。原工具不应重执行；需要细节时按read回读原件。',
         completedSteps: older.length, confirmedCalls: older.reduce((sum, step) => sum + step.calls.length, 0),

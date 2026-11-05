@@ -8,6 +8,9 @@ import type { BotService } from './companion-bot/service';
 import { BOT_CHANNEL, BOT_EVENT_CHANNEL, botRequestSchema } from '../shared/companion-bot';
 import { BOT_MEDIA_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
 import type { BotMediaService } from './companion-bot/media-service';
+import { LOCAL_SPEECH_CHANNEL, localSpeechRequestSchema, type LocalSpeechResponse } from '../shared/local-speech';
+import { LocalSpeechService } from './local-speech-service';
+import { registerBotSpeechIpc } from './companion-bot/speech-ipc';
 import { botCanInspectConversation, botCanImportConversationMedia } from '../shared/companion-bot-access';
 import { GlobalEmbeddingService, createManagedTextEmbeddingService } from './embedding-global-service';
 import { EmbeddingDeviceCapabilityService } from './embedding-device-capability';
@@ -653,6 +656,8 @@ let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureV
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let botService: BotService | undefined;
+let localSpeechService: LocalSpeechService | undefined;
+let disposeBotSpeechIpc: (() => void) | undefined;
 let botMediaService: Promise<BotMediaService> | undefined;
 let creatingBotService: Promise<BotService> | undefined;
 const mainProcessSessionId = randomUUID();
@@ -5094,6 +5099,22 @@ async function startApplication(): Promise<void> {
       });
       const capacity = currentBotModel().limits.window;
       botService = new BotService({ root, brain, brainRuntime: 'worldlinebox', prewarmMemory: true, memory, media,
+        transcribeAttachments: async (conversationId, attachments, requestId) => {
+          if (!attachments.some(attachment => attachment.mimeType.startsWith('audio/') && !attachment.transcript && !attachment.analysisBlocked)) return attachments;
+          return ensureLocalSpeech().run(requestId, async signal => {
+            const result = [];
+            for (const attachment of attachments) {
+              signal.throwIfAborted();
+              if (!attachment.mimeType.startsWith('audio/') || attachment.transcript || attachment.analysisBlocked) { result.push(attachment); continue; }
+              const source = await media.getForAgent(conversationId, attachment.id);
+              const transcript = await ensureLocalSpeech().transcribeFile(source.path, signal);
+              signal.throwIfAborted();
+              if (!botCanImportConversationMedia(botService?.store.getConversation(conversationId))) throw Error('聊天权限已变化，已停止转写。');
+              result.push(await media.setTranscript(conversationId, attachment.id, transcript));
+            }
+            return result;
+          });
+        },
         // Actual context compaction follows the model budget in the App Agent.
         // Generation retirement is a larger lifetime bound, not a 32k window.
         retention: { maxTurns: Number.MAX_SAFE_INTEGER, maxBytes: Math.min(Number.MAX_SAFE_INTEGER, capacity * 8) },
@@ -5105,6 +5126,38 @@ async function startApplication(): Promise<void> {
       return botService;
     })().catch(error => { creatingBotService = undefined; throw error; });
   };
+  const ensureLocalSpeech = () => localSpeechService ??= new LocalSpeechService({
+    root: path.join(app.getPath('userData'), 'local-speech'),
+    resources: app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'),
+    appPath: app.getAppPath(), ffmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
+    fetchFn: async (input, init) => (await import('electron')).net.fetch(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, init),
+  });
+  ipcMain.handle(LOCAL_SPEECH_CHANNEL, async (event, input: unknown): Promise<LocalSpeechResponse> => {
+    if (applicationClosing || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问本地语音服务。' };
+    const parsed = localSpeechRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '语音请求无效。' };
+    const request = parsed.data, speech = ensureLocalSpeech();
+    if (request.type === 'speech.status') return { ok: true, status: speech.status() };
+    if (request.type === 'speech.cancel') { speech.cancel(request.requestId); return { ok: true, cancelled: true }; }
+    try {
+      return await speech.run(request.requestId, async signal => {
+        if (request.type === 'speech.prepare') { await speech.prepare(signal); return { ok: true, status: speech.status() }; }
+        if (request.type === 'speech.transcribe') return { ok: true, transcript: await speech.transcribeWave(Buffer.from(request.audio, 'base64'), signal) };
+        const bot = await ensureBotService(), media = await ensureBotMediaService();
+        const allowed = () => botCanImportConversationMedia(bot.store.getConversation(request.conversationId));
+        if (!allowed()) throw Error('当前聊天不允许发送或转写语音。');
+        if (request.type === 'speech.voice') {
+          const bytes = Buffer.from(request.audio, 'base64'), transcript = await speech.transcribeWave(bytes, signal);
+          signal.throwIfAborted(); if (!allowed()) throw Error('聊天权限已变化，已停止保存语音。');
+          return { ok: true, transcript, media: await media.importVoice(request.conversationId, bytes, transcript) };
+        }
+        const source = await media.getForAgent(request.conversationId, request.attachmentId);
+        if (!source.ref.mimeType.startsWith('audio/')) throw Error('此附件不是音频。');
+        const transcript = source.ref.transcript ?? await speech.transcribeFile(source.path, signal);
+        signal.throwIfAborted(); if (!allowed()) throw Error('聊天权限已变化，已停止转写。');
+        return { ok: true, transcript, media: await media.setTranscript(request.conversationId, request.attachmentId, transcript) };
+      });
+    } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '本地语音识别失败。' }; }
+  });
   ipcMain.handle(BOT_CHANNEL, async (event, input: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame)
       return { ok: false, error: '无权访问伙伴服务。' };
@@ -5149,6 +5202,16 @@ async function startApplication(): Promise<void> {
         }
       }
     }catch(error){return{ok:false,error:error instanceof Error?error.message:'附件操作失败。'};}
+  });
+  disposeBotSpeechIpc = registerBotSpeechIpc({
+    ipc: ipcMain, getMainWindow: () => mainWindow, isClosing: () => applicationClosing || applicationQuitting,
+    ensureReady: async conversationId => { await (await ensureBotService()).handle({ type: 'state', conversationId }); },
+    createSpeechService: async () => {
+      const { BotSpeechService } = await import('./companion-bot/speech-service');
+      return new BotSpeechService({ getMessage: id => botService?.store.getMessage(id), getConversation: id => botService?.store.getConversation(id),
+        resolveProxy: async url => { if (!applicationNetwork) throw Error('全局网络服务尚未就绪。'); return applicationNetwork.resolveProxy(url); } });
+    },
+    report: error => logger?.error('companion-bot.speech', error),
   });
   bindRendererKeyboardFocusLogger(logger);
   appUpdateService = createAppUpdateService({
@@ -7927,6 +7990,7 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("before-quit", (event) => {
+    disposeBotSpeechIpc?.(); disposeBotSpeechIpc = undefined;
     applicationClosing = true;
     applicationQuitting = true;
     aiQueueScheduler.clearAll();
@@ -7934,7 +7998,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !botService && !creatingBotService && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !botService && !creatingBotService && !localSpeechService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -7949,6 +8013,7 @@ if (!hasSingleInstanceLock) {
     const mcpClose = releaseLoopbackListeners();
     // Stop model processes before app.exit(), which bypasses will-quit.
     applicationShutdownPromise = (async (): Promise<void> => {
+      await localSpeechService?.close().catch(error => logger?.error('local-speech.shutdown', error));
       // Fence/requeue bot events and stop its streams before closing the shared DSH Host.
       try { await (creatingBotService ? creatingBotService.then(service => service.shutdown(), () => undefined) : botService?.shutdown()); }
       catch (error) { logger?.error('companion-bot.shutdown', error); }

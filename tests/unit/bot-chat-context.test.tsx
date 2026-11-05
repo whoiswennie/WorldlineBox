@@ -51,11 +51,13 @@ it('uses backend exact task totals even when current chat snapshot contains only
 });
 
 it('shows last-request upper bound, separate provider input and real inbox/compaction counters without pretending cumulative use is occupancy', async () => {
-  const value = props(); value.brainContexts = { 'person-0': context() }; await mount(value);
+  const value = props(); value.brainContexts = { 'person-0': { ...context(), agent: { id: 'stable-companion-actor', sequence: 71, continuity: 'durable-event-driven' } } }; await mount(value);
   const meter = host.querySelector('[role="meter"]')!;
   expect(meter.getAttribute('aria-valuenow')).toBe('24000'); expect(meter.getAttribute('aria-valuemax')).toBe('1000000');
   expect(host.textContent).toContain('最近请求上下文'); expect(host.textContent).toContain('保守估计'); expect(host.textContent).toContain('模型报告输入');
   expect(host.textContent).toContain('等待模型响应'); expect(host.textContent).toContain('2 条待处理'); expect(host.textContent).toContain('已处理轮次25'); expect(host.textContent).toContain('整理尝试2 次');
+  expect(host.textContent).toContain('统一主脑 · 当前聊天视图'); expect(host.textContent).toContain('主脑累计事件71'); expect(host.textContent).toContain('这里仅展示本聊天获准的上下文');
+  expect(host.textContent).not.toContain('stable-companion-actor');
   expect(host.textContent).not.toContain('留住每一次相遇');
 });
 

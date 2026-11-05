@@ -7,13 +7,13 @@ const phases: Record<'zh-CN' | 'en', Record<BotReplyProgress['phase'], string>> 
     'memory-starting': '正在唤醒伙伴记忆', 'memory-verifying': '正在校验内置记忆引擎', 'memory-indexing': '正在同步记忆索引',
     queued: '等待处理', 'recalling-memory': '正在检索记忆', 'preparing-context': '准备上下文',
     'compacting-context': '正在整理长对话', 'waiting-runtime': '等待运行环境', 'waiting-model': '等待模型响应',
-    'using-tool': '正在使用工具', generating: '正在生成回复', retrying: '正在恢复连接',
+    'using-tool': '正在使用工具', generating: '正在生成回复', retrying: '正在恢复连接', reconciling: '正在核实先前操作',
   },
   en: {
     'memory-starting': 'Starting companion memory', 'memory-verifying': 'Verifying the memory engine', 'memory-indexing': 'Synchronizing memory indexes',
     queued: 'Waiting to start', 'recalling-memory': 'Recalling memories', 'preparing-context': 'Preparing context',
     'compacting-context': 'Organizing the conversation', 'waiting-runtime': 'Waiting for runtime', 'waiting-model': 'Waiting for model',
-    'using-tool': 'Using a tool', generating: 'Generating a reply', retrying: 'Reconnecting',
+    'using-tool': 'Using a tool', generating: 'Generating a reply', retrying: 'Reconnecting', reconciling: 'Checking prior actions',
   },
 };
 const tools: Record<string, [string, string]> = {

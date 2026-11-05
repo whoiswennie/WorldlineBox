@@ -9,3 +9,15 @@ resources/vcp-memory/** -text
 *.bat text eol=crlf
 # Reviewed tool inventory is hashed byte-for-byte on every operating system.
 resources/portable-tools/manifests/*.json text eol=lf
+# Pinned source models must be materialized with git lfs pull before packaging.
+resources/speech-models/tokens.txt -text
+public/companion-call/deepseek/** -text
+# Retain the author's original CRLF and intentional Markdown hard breaks in the supplied license.
+public/companion-call/deepseek/MODEL-LICENSE.txt -whitespace
+resources/speech-models/*.onnx filter=lfs diff=lfs merge=lfs -text
+resources/embedding-models/*.gguf filter=lfs diff=lfs merge=lfs -text
+public/companion-call/deepseek/*.moc3 filter=lfs diff=lfs merge=lfs -text
+public/companion-call/deepseek/**/*.png filter=lfs diff=lfs merge=lfs -text
+public/companion-call/ringtone.wav -text
+tests/fixtures/media/*.wav -text
+tests/fixtures/media/*.mp3 -text

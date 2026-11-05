@@ -3,6 +3,7 @@ import { createServer, type ServerResponse } from 'node:http';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { BotService, type BotServiceOptions } from '../../src/main/companion-bot/service';
 import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
@@ -10,6 +11,10 @@ import { BotDshBrain, type BotDshResult, type BotDshRun } from '../../src/main/c
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import type { BotEvent as UiEvent, BotMessage } from '../../src/shared/companion-bot';
 import type { BotEvent, BotSource } from '../../src/main/companion-bot/types';
+import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
+import { BotAppBrainStore } from '../../src/main/companion-bot/app-brain-store';
+import { builtinBotPersonaTemplates } from '../../src/shared/builtin-bot-personas';
+import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 
 class Memory extends BotMemoryService {
   readonly records: Array<Parameters<BotMemoryService['remember']>> = [];
@@ -40,7 +45,8 @@ async function until<T>(read: () => Promise<T | undefined>, timeout = 12000): Pr
   const deadline = Date.now() + timeout;
   for (;;) { const value = await read(); if (value !== undefined) return value; if (Date.now() >= deadline) throw new Error('App service fixture timed out'); await new Promise(resolve => setTimeout(resolve, 15)); }
 }
-async function fixture(options: { holdFirstReply?: boolean; retention?: BotServiceOptions['retention']; summaryText?: string; chatReply?(body: ProviderBody): ScriptedChat | undefined } = {}) {
+async function fixture(options: { holdFirstReply?: boolean; retention?: BotServiceOptions['retention']; summaryText?: string;
+  upgradeWorkerAccess?(): Promise<void>; chatReply?(body: ProviderBody): ScriptedChat | undefined; workerWaitFirst?: boolean } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-app-service-'));
   const requests: ProviderBody[] = [], failures: string[] = [], events: UiEvent[] = [];
   let release!: () => void;
@@ -91,16 +97,26 @@ async function fixture(options: { holdFirstReply?: boolean; retention?: BotServi
   const address = server.address(); if (!address || typeof address === 'string') throw new Error('Local provider did not bind');
   const baseUrl = `http://127.0.0.1:${address.port}/v1`, host = vi.fn(async () => { throw new Error('No DSH Host available in this fixture'); }), workerRuns: BotDshRun[] = [];
   const worker = new class extends BotDshBrain {
+    override async upgradeWorkerAccess(input: Parameters<BotDshBrain['upgradeWorkerAccess']>[0]) {
+      if (options.upgradeWorkerAccess) {
+        await options.upgradeWorkerAccess();
+        return { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, workerAccess: 'full' as const };
+      }
+      return super.upgradeWorkerAccess(input);
+    }
     override async run(input: BotDshRun): Promise<BotDshResult> {
       if (input.role !== 'worker') throw new Error('Ordinary conversation was incorrectly delegated to DSH');
       workerRuns.push(input); const file = path.join(input.cwd, 'result.txt'); await writeFile(file, 'APP_ROUTER_WORKER_OK');
       if (await readFile(file, 'utf8') !== 'APP_ROUTER_WORKER_OK') throw new Error('Worker did not verify its actual artifact');
+      await reportWorkerOutcome(input, { state: options.workerWaitFirst && workerRuns.length === 1 ? 'waiting' : 'ready',
+        summary: options.workerWaitFirst && workerRuns.length === 1 ? '保留原任务，等待用户后续指导。' : '已生成并读取核验 result.txt：APP_ROUTER_WORKER_OK', verification: ['实际读取 result.txt，与要求的字节内容一致。'] });
       return { text: '已生成并读取核验 result.txt：APP_ROUTER_WORKER_OK', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
     }
   }({ getHost: host });
-  const app = new BotAppBrain({ root: path.join(root, 'app-brain') }), router = new BotBrainRouter({ app, worker }), memory = new Memory(path.join(root, 'memory'));
+  const app: BotAppBrain = new BotAppBrain({ root: path.join(root, 'app-brain'), reconcileTool: (call, signal) => service.reconcileToolReceipt(call, signal) }),
+    router = new BotBrainRouter({ app, worker }), memory = new Memory(path.join(root, 'memory'));
   const preparation = { phase: 'starting-host', elapsedMs: 99000 };
-  const service = new BotService({ root, brain: router, brainRuntime: 'worldlinebox', memory,
+  const service: BotService = new BotService({ root, brain: router, brainRuntime: 'worldlinebox', memory,
     retention: options.retention,
     runtimePreparation: () => preparation, model: () => ({ apiFormat: 'openai_chat', model: 'local-sse-fixture', baseUrl, apiKey: 'fixture-no-paid-request', maxTokens: 1024, contextWindow: 32768 }),
     onEvent: event => { events.push(event); } });
@@ -128,6 +144,99 @@ it('streams an ordinary chat through the real App engine while the DSH Host is u
   expect((await f.service.handle({ type: 'state' })).snapshot?.runtime.engine).toBe('worldlinebox');
   expect(f.host).not.toHaveBeenCalled(); expect(f.workerRuns).toEqual([]); expect(f.requests).toHaveLength(1); expect(f.failures).toEqual([]);
 });
+it('uses each activated persona in the next App model request without rewriting an already dispatched turn', async () => {
+  const f = await fixture({ holdFirstReply: true });
+  const companionId = 'builtin-dafeiyu', builtin = builtinBotPersonaTemplates(companionId);
+  const listed = await f.service.handle({ type: 'companion.personas.list', companionId });
+  expect(listed.ok).toBe(true); expect(listed.personas?.items).toHaveLength(5);
+  expect(listed.personas?.items.every(item => !('prompt' in item))).toBe(true);
+  const original = await f.service.handle({ type: 'companion.personas.get', companionId, id: listed.personas!.activeId });
+  const accepted = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '第一条普通聊天', requestId: 'persona-before-switch' });
+  expect(accepted.ok).toBe(true);
+  await until(async () => f.requests.length ? true : undefined);
+  const dispatchedSystem = f.requests[0]!.messages.filter(message => message.role === 'system').map(message => text(message.content)).join('\n');
+  expect(dispatchedSystem).toContain(original.persona!.prompt);
+  const firstDocument = builtin.find(item => item.id === 'dafeiyu-original')!;
+  expect((await f.service.handle({ type: 'companion.personas.activate', companionId, id: firstDocument.id })).ok).toBe(true);
+  expect(f.requests[0]!.messages.filter(message => message.role === 'system').map(message => text(message.content)).join('\n')).toBe(dispatchedSystem);
+  f.release();
+  await until(async () => (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.messages.some(message => message.senderId === companionId && message.status === 'sent') ? true : undefined);
+  const assertNextPersona = async (prompt: string, requestId: string) => {
+    const before = f.requests.length;
+    const reply = await f.send('接着普通聊天', requestId);
+    expect(reply.status).toBe('sent');
+    const request = f.requests.slice(before).find(body => !!body.tools?.length)!;
+    const systems = request.messages.filter(message => message.role === 'system');
+    expect(systems).toHaveLength(1);
+    const system = text(systems[0]!.content);
+    expect(system.slice(system.indexOf('【你的身份与人格】'))).toBe(`【你的身份与人格】\n姓名：大肥鱼\n${prompt}`);
+    expect(system).toContain('DSH是独立执行器');
+  };
+  await assertNextPersona(firstDocument.prompt, 'persona-first-document');
+  for (const template of builtin.filter(item => item.id !== 'default' && item.id !== firstDocument.id)) {
+    expect((await f.service.handle({ type: 'companion.personas.activate', companionId, id: template.id })).ok).toBe(true);
+    await assertNextPersona(template.prompt, `persona-${template.id}`);
+  }
+  const custom = await f.service.handle({ type: 'companion.personas.save', companionId, name: '星海朋友', prompt: 'PERSONA_CUSTOM_A：以轻快的语气相处。', activate: true });
+  expect(custom.persona?.name).toBe('星海朋友');
+  await assertNextPersona(custom.persona!.prompt, 'persona-new-custom');
+  const renamed = await f.service.handle({ type: 'companion.personas.save', companionId, id: custom.persona!.id, name: '星海老友', prompt: 'PERSONA_CUSTOM_B：以简洁沉稳的语气相处。' });
+  expect(renamed.persona).toMatchObject({ id: custom.persona!.id, name: '星海老友' });
+  expect(renamed.personas?.activeId).toBe(custom.persona!.id);
+  await assertNextPersona(renamed.persona!.prompt, 'persona-edited-active');
+  const restored = await f.service.handle({ type: 'companion.personas.restore', companionId });
+  expect(restored.personas?.activeId).toBe('default');
+  expect(restored.personas?.items.some(item => item.id === custom.persona!.id && item.name === '星海老友')).toBe(true);
+  await assertNextPersona(builtin[0]!.prompt, 'persona-restored-default');
+  expect(f.host).not.toHaveBeenCalled(); expect(f.workerRuns).toEqual([]); expect(f.failures).toEqual([]);
+}, 25000);
+it('retires a cancelled answer waiting for DSH access and lets the same companion chat when the shared runtime becomes ready', async () => {
+  let release!: () => void, entered!: () => void, questionId = '', taskId = '', answerRequests = 0;
+  const ready = new Promise<void>(resolve => { release = resolve; }), upgrading = new Promise<void>(resolve => { entered = resolve; });
+  const upgrade = vi.fn(async () => { entered(); await ready; });
+  const f = await fixture({ upgradeWorkerAccess: upgrade, chatReply: body => {
+    const last = body.messages.at(-1);
+    const trigger = last?.role === 'user' ? (JSON.parse(String(last.content)) as { trigger?: { source?: string; content?: string } }).trigger : undefined;
+    if (trigger?.source === 'task' && trigger.content?.includes('等待回答') && questionId) {
+      answerRequests++;
+      return { name: 'dsh_task_control', args: { operation: 'answer', taskId, questionId, answers: [{ id: 'next_step', selected: ['先不做这件事'] }] } };
+    }
+    return '你好，继续聊吧。';
+  } });
+  cleanups.push(async () => { release(); });
+  const original = await f.send('你好', 'original-task-source'), source = f.service.store.getEvent(original.eventId)!;
+  taskId = 'startup-question-task';
+  const task = f.service.store.createTask({ id: taskId, conversationId: f.conversationId, companionId: source.companionId,
+    sourceEventId: source.id, goal: '恢复原任务', extra: { nativeAttempted: true, userPaused: true } });
+  const callId = 'original-native-question';
+  questionId = 'question-' + createHash('sha256').update(`work-${taskId}:${callId}`).digest('hex').slice(0, 48);
+  const runtime = new BotTaskRuntime(f.service.store);
+  runtime.question(task, { callId, questionId, questions: [{ id: 'next_step', question: '如何继续？', options: [{ label: '先不做这件事', description: '保留原记录' }] }] });
+  // The original native worker is unavailable during startup; its durable
+  // question and saved paused state remain, without launching a second worker.
+  f.service.store.updateTask(taskId, { status: 'paused' });
+  await upgrading;
+  const reply = await until(async () => {
+    const messages = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.messages;
+    return messages.find(message => message.senderId === source.companionId && message.status === 'running' && message.id !== original.id);
+  });
+  expect(upgrade).toHaveBeenCalledTimes(1);
+  await f.service.handle({ type: 'reply.cancel', messageId: reply.id });
+  expect(f.service.store.getEvent(reply.eventId)?.status).toBe('cancelled');
+  // Reproduce the old call finally reaching the controller after cancellation.
+  // It must not answer or restart an ended task.
+  f.service.store.updateTask(taskId, { status: 'cancelled' });
+  f.preparation.phase = 'ready'; release();
+  const recovered = await f.send('你好', 'after-delayed-host-ready');
+  expect(recovered).toMatchObject({ status: 'sent', content: '你好，继续聊吧。' });
+  await until(async () => f.service.store.pendingCancelledNativeAdmissions(source.laneId).length === 0 ? true : undefined);
+  const journal = new BotAppBrainStore(path.join(f.root, 'app-brain', 'app-brain.sqlite'));
+  try { expect(journal.get(reply.eventId)?.state).toBe('cancelled'); }
+  finally { journal.close(); }
+  expect(f.service.store.getTask(taskId)?.status).toBe('cancelled');
+  expect(f.service.store.taskTransaction(sql => sql.prepare('SELECT 1 FROM bot_task_controls WHERE task_id=?').get(taskId))).toBeUndefined();
+  expect(answerRequests).toBe(1); expect(upgrade).toHaveBeenCalledTimes(1); expect(f.workerRuns).toEqual([]); expect(f.host).not.toHaveBeenCalled();
+}, 25000);
 it('extracts a post-reply memory through App and retains source receipts without invoking DSH', async () => {
   const f = await fixture(), message = await f.send('从今天起，晚上喝麦茶，白天仍喝咖啡。', 'capture-app-only');
   await until(async () => f.memory.records.length ? true : undefined);
@@ -147,18 +256,42 @@ it('dispatches only an explicit dsh_task to the worker and consumes its actual t
   expect(receipts.some(row => JSON.stringify(JSON.parse(row.value)).includes(task.id))).toBe(true);
   expect(f.host).not.toHaveBeenCalled(); expect(f.failures).toEqual([]);
 }, 20000);
-it('keeps App waiting on its model instead of presenting an unrelated native Host startup phase', async () => {
+it('delivers a host-bound chat followup to the existing worker without rerouting it through the main model', async () => {
+  const f = await fixture({ workerWaitFirst: true }); await f.send('委派一个测试任务。', 'followup-original');
+  const work = await until(async () => { const work = f.service.store.listTasks(f.conversationId)[0]; return work?.status === 'waiting' && work.extra.turnOutcome ? work : undefined; });
+  const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: 'bound-guidance',
+    content: '保留原目标，请核验并提交完成报告。', replyToTaskId: work.id });
+  const first = sent.messageId!;
+  expect((await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: 'bound-guidance',
+    content: '保留原目标，请核验并提交完成报告。', replyToTaskId: work.id })).messageId).toBe(first);
+  await until(async () => f.service.store.getTask(work.id)?.status === 'succeeded' ? true : undefined);
+  expect(f.service.store.listTasks(f.conversationId)).toHaveLength(1); expect(f.workerRuns).toHaveLength(2);
+  expect(f.workerRuns[1]).toMatchObject({ laneId: f.workerRuns[0]!.laneId, eventId: f.workerRuns[0]!.eventId,
+    taskContinuation: { text: '保留原目标，请核验并提交完成报告。' } });
+  const source = f.service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_inbox WHERE source_record_id=?').get(first)) as { id: string };
+  expect(f.observedTriggers.some(trigger => trigger.eventId === source.id)).toBe(false);
+  expect(f.service.store.taskTransaction(sql => sql.prepare('SELECT state FROM bot_task_followups WHERE task_id=? AND event_id=?').get(work.id, source.id))).toMatchObject({ state: 'delivered' });
+  const receipt = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.messages.find(message => message.id === first)?.taskFollowup;
+  expect(receipt).toMatchObject({ taskId: work.id, state: 'delivered', title: '应用主脑委派验收' });
+  expect(f.failures).toEqual([]);
+}, 20000);
+
+it('keeps App chat independent while the DSH Host starts, fails and later becomes ready', async () => {
   const f = await fixture({ holdFirstReply: true }), reply = f.send('你好', 'app-progress');
   const waiting = await until(async () => {
     const message = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.messages.find(message => message.progress?.phase === 'waiting-model');
     return f.requests.length && message ? message : undefined;
   });
-  expect(waiting.progress?.phase).toBe('waiting-model'); f.service.runtimePreparationChanged();
-  f.preparation.phase = 'failed'; f.service.runtimePreparationChanged();
-  const state = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!;
-  expect(state.messages.some(message => message.progress?.phase === 'waiting-runtime')).toBe(false);
-  expect(state.messages.find(message => message.id === waiting.id)?.progress?.phase).toBe('waiting-model');
+  expect(waiting.progress?.phase).toBe('waiting-model');
+  for (const phase of ['starting-host', 'failed', 'ready']) {
+    f.preparation.phase = phase; f.service.runtimePreparationChanged();
+    const state = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!;
+    expect(state.messages.some(message => message.progress?.phase === 'waiting-runtime' || message.progress?.phase === 'retrying')).toBe(false);
+    expect(state.messages.find(message => message.id === waiting.id)?.progress?.phase).toBe('waiting-model');
+  }
   f.release(); expect((await reply).status).toBe('sent'); expect(f.host).not.toHaveBeenCalled(); expect(f.workerRuns).toEqual([]);
+  expect(await f.send('你好', 'app-after-host-ready')).toMatchObject({ status: 'sent', content: '你好，我在这里。' });
+  expect(f.host).not.toHaveBeenCalled(); expect(f.workerRuns).toEqual([]); expect(f.requests).toHaveLength(2); expect(f.failures).toEqual([]);
 });
 
 it('drains 60 mixed-source queued events across bounded app summaries and retention handoffs without DSH', async () => {

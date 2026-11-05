@@ -9,6 +9,7 @@ import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/compani
 import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import type { BotTask } from '../../src/main/companion-bot/types';
+import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 
 type ControlInput = Omit<BotDshRun, 'prompt' | 'onEvent'>;
 const owners: Array<() => Promise<void>> = [];
@@ -40,6 +41,7 @@ class BrainBoundary extends BotDshBrain {
   constructor() { super({ getHost: async () => { throw Error('Pause regression never launches DSH.'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
     this.calls.push(input);
+    if (input.role === 'worker') await reportWorkerOutcome(input, { state: 'ready', summary: '原任务已经继续并完成。', verification: ['受控执行脚本已沿原任务完成。'] });
     return { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded',
       text: input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : input.role === 'worker' ? '原任务已经继续并完成。' : '已收到任务状态。' };
   }
@@ -122,12 +124,15 @@ it('bounds missing pause proof instead of treating plain accepted as paused and 
   expect(f.service.store.getTask(task.id)!.extra.pauseRequestedAt).toBe(first);
 });
 
-it.each(['succeeded', 'failed', 'cancelled'] as const)('keeps a genuine %s native result when a pause races the terminal receipt', async status => {
+it.each(['succeeded', 'failed', 'cancelled'] as const)('preserves native %s separately from business completion when pause races a terminal receipt', async status => {
   const f = await fixture(), task = f.task({ nativeAttempted: true, workerPrompt: 'ORIGINAL_REQUEST' });
   f.brain.stopping = async input => ({ accepted: true, result: { eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), status, text: '原生持久终态。' } });
-  await f.control(task.id, 'pause', 'terminal-race'); await until(() => f.service.store.getTask(task.id)?.status === status);
-  expect(f.service.store.getTask(task.id)).toMatchObject({ status, summary: '原生持久终态。' });
-  expect(f.service.store.getTask(task.id)!.extra.pausedAt).toBeUndefined();
+  const business = status === 'succeeded' ? 'paused' : status;
+  await f.control(task.id, 'pause', 'terminal-race'); await until(() => f.service.store.getTask(task.id)?.status === business);
+  expect(f.service.store.getTask(task.id)?.status).toBe(business);
+  expect(f.service.store.getTask(task.id)!.extra.turnOutcome).toMatchObject({ status });
+  if (status === 'succeeded') expect(f.service.store.getTask(task.id)!.extra.pausedAt).toBeDefined();
+  else expect(f.service.store.getTask(task.id)?.summary).toBe('原生持久终态。');
 });
 
 it('requires explicit user permission to resume and preserves unresolved effects as a gate rather than replaying the task', async () => {

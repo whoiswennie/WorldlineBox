@@ -18,7 +18,7 @@ export function seedThemeAttachments(profile: string, conversationId: string, at
     const userSingle = store.enqueue({ conversationId, senderId: 'user', source: 'user', recipientIds: [], sourceMessageId: 'human-theme-single-file',
       content: '这份说明也单独放在这里。', attachments: attachments.slice(0, 1) });
     const partnerSingle = store.enqueue({ conversationId, senderId: DEFAULT_BOT_COMPANION_ID, source: 'companion', recipientIds: [], sourceMessageId: 'human-theme-partner-file',
-      content: '同一份群共享说明，需要时可以展开查看。', attachments: attachments.slice(0, 1), sourceIds: [userSingle.message.id] });
+      content: '同一份群共享说明，需要时可以展开查看。\n\nhttps://www.bilibili.com/video/BV1YgHq62EN6\n\n或打开[视频页面](https://www.bilibili.com/video/BV1YgHq62EN6)继续查看。', attachments: attachments.slice(0, 1), sourceIds: [userSingle.message.id] });
     if (result.events.length + userSingle.events.length + partnerSingle.events.length) throw Error('Theme fixtures must not start AI work.');
     return { messageId: result.message.id, userSingleId: userSingle.message.id, partnerSingleId: partnerSingle.message.id,
       attachments: result.message.attachments?.length, pendingEvents: 0 };

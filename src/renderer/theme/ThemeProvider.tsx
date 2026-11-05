@@ -11,12 +11,14 @@ import {
 
 import {
   applyBackgroundPreferences,
+  DEFAULT_BACKGROUND_OPACITY,
   loadBackgroundPreferences,
   saveBackgroundPreferences,
   type BackgroundPreferences,
 } from './background-preferences';
 import { loadBackgroundMotion, saveBackgroundMotion } from './animated-background-preferences';
 import { isAnimatedTheme } from './dsh-background-media';
+import { restoreWallpaperPanels, WALLPAPER_PANEL_OPACITY } from './wallpaper-panels';
 import {
   loadCustomTheme,
   type CustomTheme,
@@ -131,7 +133,7 @@ export function ThemeProvider({
   const [colorDrafts, setColorDrafts] = useState<ThemeColorDrafts>(initial.drafts);
   const [userThemes, setUserThemesState] = useState<UserThemesState>(initial.userThemes);
   const [baseThemeProfile, setThemeProfileState] = useState<ThemeProfile>(initial.profile);
-  const [backgroundPreferences, setBackgroundPreferencesState] = useState<BackgroundPreferences>(() => loadBackgroundPreferences(storage));
+  const [storedBackgroundPreferences, setBackgroundPreferencesState] = useState<BackgroundPreferences>(() => loadBackgroundPreferences(storage));
   const [backgroundMotion, setBackgroundMotionState] = useState(() => loadBackgroundMotion(storage));
   const [systemTheme, setSystemTheme] = useState<ResolvedTheme>(() =>
     readSystemTheme(),
@@ -160,6 +162,8 @@ export function ThemeProvider({
     () => (activeUserTheme ? { ...baseThemeProfile, preset: activeUserTheme.base } : baseThemeProfile),
     [activeUserTheme, baseThemeProfile],
   );
+  const backgroundPreferences = useMemo(() => restoreWallpaperPanels(storedBackgroundPreferences,
+    storedBackgroundPreferences.imageDataUrl !== null || isAnimatedTheme(themeProfile.preset)), [storedBackgroundPreferences, themeProfile.preset]);
   // Effective overrides combine the selected named theme with its own draft.
   // Built-in profiles have independent drafts under their preset identities.
   const customTheme = useMemo<CustomTheme>(
@@ -205,10 +209,17 @@ export function ThemeProvider({
   }, [customTheme, resolved, themeAccentHex, themeProfile]);
 
   useEffect(() => {
+    if (backgroundPreferences !== storedBackgroundPreferences) {
+      // Reconcile persisted defaults on startup and during renderer hot reload,
+      // not only when the user selects another theme. Storage failure must not
+      // leave the currently rendered wallpaper behind opaque surfaces.
+      try { saveBackgroundPreferences(backgroundPreferences, storage); } catch { /* Keep the usable in-memory appearance. */ }
+    }
     applyBackgroundPreferences(backgroundPreferences);
     const root = document.documentElement;
     if (backgroundPreferences.enabled && isAnimatedTheme(themeProfile.preset) && backgroundPreferences.imageDataUrl === null) {
       root.dataset.animatedBackground = themeProfile.preset;
+      root.style.setProperty('--ui-background-image-opacity', String(backgroundPreferences.themeOpacity ?? DEFAULT_BACKGROUND_OPACITY));
       root.style.setProperty('--ui-background-surface-opacity', '0%');
       root.style.setProperty('--ui-backdrop-image', 'none');
       if (backgroundPreferences.showInMainPanel) root.setAttribute('data-bg-main-panel', 'on');
@@ -216,7 +227,7 @@ export function ThemeProvider({
       delete root.dataset.animatedBackground;
       root.style.removeProperty('--ui-backdrop-image');
     }
-  }, [backgroundPreferences, themeProfile.preset]);
+  }, [backgroundPreferences, storedBackgroundPreferences, storage, themeProfile.preset]);
 
   useEffect(() => {
     const signature = `${resolved}:${JSON.stringify(customTheme)}:${JSON.stringify(themeAccentHex)}:${JSON.stringify(themeProfile)}:${JSON.stringify(backgroundPreferences)}`;
@@ -261,10 +272,19 @@ export function ThemeProvider({
     commitColorDraft({ customTheme: DEFAULT_CUSTOM_THEME });
   }, [activeUserTheme, commitColorDraft, commitUserThemes, customTheme, themeAccentHex, userThemes]);
 
+  // Selecting an illustrated theme should reveal its wallpaper immediately.
+  // The appearance switch can still turn panel transparency off afterwards.
+  const revealThemeWallpaper = useCallback((preset: ThemeProfileId) => {
+    if (!isAnimatedTheme(preset) || !backgroundPreferences.enabled || backgroundPreferences.showInMainPanel) return;
+    const next = { ...backgroundPreferences, showInMainPanel: true, panelOpacity: Math.min(backgroundPreferences.panelOpacity, WALLPAPER_PANEL_OPACITY), panelVisibilityVersion: 1 as const };
+    if (saveBackgroundPreferences(next, storage)) setBackgroundPreferencesState(next);
+  }, [backgroundPreferences, storage]);
+
   const selectUserTheme = useCallback((id: string) => {
-    if (!userThemes.themes.some((theme) => theme.id === id)) return;
+    const selected = userThemes.themes.find((theme) => theme.id === id); if (!selected) return;
     commitUserThemes({ ...userThemes, activeId: id });
-  }, [commitUserThemes, userThemes]);
+    revealThemeWallpaper(selected.base);
+  }, [commitUserThemes, revealThemeWallpaper, userThemes]);
 
   const createUserTheme = useCallback((name: string) => {
     const { state, theme } = addUserTheme(userThemes, {
@@ -305,10 +325,11 @@ export function ThemeProvider({
     const next: ThemeProfile = { version: THEME_PROFILE_VERSION, preset, overrides: {} };
     saveThemeProfile(next, storage);
     setThemeProfileState(next);
+    revealThemeWallpaper(preset);
     if (userThemes.activeId !== null) commitUserThemes({ ...userThemes, activeId: null });
     // Light/dark is orthogonal to the theme: picking a profile must not flip
     // the global light/dark preference.
-  }, [commitUserThemes, storage, userThemes]);
+  }, [commitUserThemes, revealThemeWallpaper, storage, userThemes]);
 
   const setThemeAccent = useCallback((accentHex: string) => {
     const nextHex = normalizeAccentHex(accentHex);
@@ -334,10 +355,12 @@ export function ThemeProvider({
   }, [activeUserTheme, baseCustomTheme, commitColorDraft, commitUserThemes, userThemes]);
 
   const setBackgroundPreferences = useCallback((next: BackgroundPreferences) => {
-    const saved = saveBackgroundPreferences(next, storage);
-    if (saved) setBackgroundPreferencesState(next);
+    const newImage = next.enabled && !!next.imageDataUrl && next.imageDataUrl !== backgroundPreferences.imageDataUrl;
+    const updated = { ...next, ...(newImage ? { showInMainPanel: true, panelOpacity: Math.min(next.panelOpacity, WALLPAPER_PANEL_OPACITY) } : {}), panelVisibilityVersion: 1 as const };
+    const saved = saveBackgroundPreferences(updated, storage);
+    if (saved) setBackgroundPreferencesState(updated);
     return saved;
-  }, [storage]);
+  }, [backgroundPreferences.imageDataUrl, storage]);
 
   const setBackgroundMotion = useCallback((enabled: boolean) => {
     const saved = saveBackgroundMotion(enabled, storage);

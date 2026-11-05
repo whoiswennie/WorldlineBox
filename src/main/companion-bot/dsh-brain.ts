@@ -21,6 +21,9 @@ export interface BotDshRun {
   sessionTitle?: string;
   /** Explicit user continuation of this exact durable output checkpoint. */
   continueAfterSeq?: number;
+  /** Host-bound follow-up opens a new execution segment of the same task.
+   * Its stable ID makes a retry distinct from replaying the original prompt. */
+  taskContinuation?: { id: string; text: string };
   workerAccess?: 'scoped' | 'full';
   /** Extra controlled host tools augment the native worker catalog. */
   workerTools?: readonly BotDshTool[];
@@ -129,7 +132,7 @@ export class BotDshBrain {
     let terminal = false, deliveryStage: 'turn' | 'stream' = 'turn';
     try {
       const admitted = await client.request<{ accepted: boolean; result?: BotDshResult }>(`/bot/lanes/${sessionId}/turn`, {
-        eventId: input.eventId, prompt: input.prompt, continueAfterSeq: input.continueAfterSeq,
+        eventId: input.eventId, prompt: input.prompt, continueAfterSeq: input.continueAfterSeq, taskContinuation: input.taskContinuation,
       }, input.signal);
       if (admitted.result) {
         terminal = true;

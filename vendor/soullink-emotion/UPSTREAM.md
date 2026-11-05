@@ -1,0 +1,9 @@
+# SoulLink local snapshot
+
+Source: the user-provided `soullink-emotion-sdk` checkout, packages `engine` and `live2d-pixi`, version 0.2.0-beta.1. The original Apache-2.0 licenses, notices and source files are retained. No remote inference, speech service or credentials are used.
+
+`scripts/build-companion-call-sdk.mjs` compiles the local packages after npm install. WorldlineBox adds `Live2DRenderer.resetPose()` so a neutral reset stops native motion/expression queues and does not randomly choose an expression. Complex rigs now allocate enough Cubism mask atlases (32 groups per atlas when the single-atlas 36-group capacity is exceeded), at 1024 pixels, before the first render. This fixes overlapping facial masks in the supplied 49-group DeepSeek rig. The adapter is pinned to the matching Cubism internals in `pixi-live2d-display@0.5.0-beta`.
+
+The model archive and ringtone are separate user-provided local assets, staged by `scripts/stage-companion-call.mjs`; their original licenses apply. The model PSD is excluded. Re-snapshotting with `--sdk` replaces local source; preserve/reapply these integration patches when updating upstream.
+
+The speech integration adds `SoullinkRuntime.finishSpeechPerformance(timeSeconds)` to end actual audio playback immediately, release speech-only layers and return to idle while retaining the current VAD and a short posture/expression residue. It does not reset the character's emotional state on every utterance. `Live2DRenderer.applyNativeAnimation(null)` now restores the neutral expression rather than randomly selecting an expression; clearing an automatic performance must never change costume or body type. Unchanged animation tokens can update parameter ownership without replaying native clips, so measured speech temporarily owns the mouth while manual expressions keep their other parameters.

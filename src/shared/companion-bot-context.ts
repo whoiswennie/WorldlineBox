@@ -13,6 +13,7 @@ export const botBrainRequestMetricsSchema = z.strictObject({
 });
 export type BotBrainRequestMetrics = z.infer<typeof botBrainRequestMetricsSchema>;
 export interface BotBrainContextSummary {
+  agent?: { id: string; sequence: number; continuity: 'durable-event-driven' };
   conversationId: string; companionId: string; epoch: number;
   queuedMessages: number; runningMessages: number; phase?: string;
   retention: { completedTurns: number };

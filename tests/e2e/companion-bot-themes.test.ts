@@ -134,6 +134,10 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
             inner: textStyle && { background: textStyle.backgroundColor, image: textStyle.backgroundImage, border: textStyle.borderTopColor, shadow: textStyle.boxShadow, ink: textStyle.color } };
         });
         return { primary, secondary, panel, accent: resolve('--bot-accent'), workspaceBackground: rgba(getComputedStyle(workspace).backgroundColor),
+          sidebarBackground: rgba(getComputedStyle(document.querySelector('.bot-sidebar')!).backgroundColor),
+          headerBackground: rgba(getComputedStyle(document.querySelector('.bot-chat-header')!).backgroundColor),
+          composerBackground: rgba(getComputedStyle(document.querySelector('.bot-composer')!).backgroundColor),
+          messageBackground: rgba(getComputedStyle(document.querySelector('.bot-message-bubble')!).backgroundColor),
           mainBackground: rgba(getComputedStyle(main).backgroundColor), primaryContrast: contrast(primary, panel), secondaryContrast: contrast(secondary, panel), userBubbleContrast: contrast(primary, self),
           bounds: rect.toJSON(), viewport: { width: innerWidth, height: innerHeight }, overflow: workspace.scrollWidth > workspace.clientWidth + 1 || thread.scrollWidth > thread.clientWidth + 1,
           effects: [workspace, main, document.querySelector('.bot-sidebar')!].map(element => ({ backdrop: getComputedStyle(element).backdropFilter, filter: getComputedStyle(element).filter })),
@@ -152,7 +156,17 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
       expect(actual.nestedVideos).toBe(0); expect(actual.rootVideos).toBe(wallpaper ? 1 : 0);
       expect(actual.workspaceBackground[3]).toBe(wallpaper ? 0 : 255);
       const panelAlpha = hexToRgba(THEME_PROFILE_PRESETS[preset].tokens[tone]['--ui-surface-raised'])[3]!;
-      expect(actual.mainBackground[3]).toBe(transparent ? Math.round(.72 * panelAlpha) : panelAlpha);
+      expect(actual.mainBackground[3]).toBe(transparent ? Math.round(.48 * panelAlpha) : panelAlpha);
+      expect(actual.sidebarBackground[3]).toBe(transparent ? Math.round(.48 * panelAlpha) : panelAlpha);
+      if (transparent) {
+        expect(actual.headerBackground[3]).toBeLessThan(128); expect(actual.composerBackground[3]).toBeLessThan(200); expect(actual.messageBackground[3]).toBeLessThan(200);
+      }
+      await expect(page.locator('.browser-markdown-link-card')).toHaveCount(1);
+      const linkGeometry = await page.locator('.browser-markdown-link-card').evaluate(element => {
+        const card = element.getBoundingClientRect(), bubble = element.closest('.bot-message-bubble')!.getBoundingClientRect();
+        return { card: card.toJSON(), bubble: bubble.toJSON() };
+      });
+      expect(linkGeometry.card.right).toBeLessThanOrEqual(linkGeometry.bubble.right); expect(linkGeometry.card.left).toBeGreaterThanOrEqual(linkGeometry.bubble.left);
       expect(actual.bubblePalettes.some(item => item.fromUser)).toBe(true);
       expect(actual.bubblePalettes.some(item => !item.fromUser)).toBe(true);
       const { fromUser: _direction, ...expectedPalette } = actual.bubblePalettes.find(item => !item.fromUser)!;
@@ -161,10 +175,7 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
       const fold = page.getByRole('button', { name: '展开 3 个附件', exact: true });
       await expect(fold).toHaveAttribute('aria-expanded', 'false');
       await expect(page.locator('.bot-attachment-bundle')).toHaveCount(0);
-      for (const id of [attachmentFixture.userSingleId, attachmentFixture.partnerSingleId]) {
-        await page.locator(`[data-bot-message="${id}"]`).getByRole('button', { name: '展开 1 个附件', exact: true }).click();
-      }
-      const cards = page.locator('.bot-message-expanded-files .bot-attachment-card');
+      const cards = page.locator('.bot-message-single-file .bot-attachment-card');
       await expect(cards).toHaveCount(2);
       const cardPalettes = await cards.evaluateAll(elements => elements.map(element => {
         const style = getComputedStyle(element); return { fromUser: !!element.closest('.from-user'), background: style.backgroundColor,
@@ -174,9 +185,6 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
       const { fromUser: _cardDirection, ...expectedCard } = cardPalettes[0]!; void _cardDirection;
       const { fromUser: _otherDirection, ...otherCard } = cardPalettes[1]!; void _otherDirection;
       expect(otherCard).toEqual(expectedCard); checks.push({ preset, tone, expandedCardPalettes: cardPalettes });
-      for (const id of [attachmentFixture.userSingleId, attachmentFixture.partnerSingleId]) {
-        await page.locator(`[data-bot-message="${id}"]`).getByRole('button', { name: '收起 1 个附件', exact: true }).click();
-      }
       if (actual.viewport.width >= 1450) {
         await expect(page.locator('.bot-group-overview')).toBeVisible();
         await expect(page.getByRole('region', { name: '群公告', exact: true })).toContainText('附件默认折叠');
@@ -194,6 +202,61 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
         checks.push({ preset, tone, memberFooter });
       }
     };
+    // Verify composed pixels as well as CSS alpha: a second opaque surface
+    // would pass a single-layer alpha check while still hiding the wallpaper.
+    await page.evaluate(() => {
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128; const context = canvas.getContext('2d')!;
+      context.fillStyle = '#2b7cdb'; context.fillRect(0, 0, 128, 128); context.fillStyle = '#eea63c'; context.fillRect(0, 0, 64, 64); context.fillRect(64, 64, 64, 64);
+      localStorage.setItem('worldlinebox.theme-profile.v3', JSON.stringify({ version: 3, preset: 'forest', overrides: {} }));
+      localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'light' }));
+      localStorage.setItem('worldlinebox.background-preferences.v3', JSON.stringify({ version: 3, imageDataUrl: canvas.toDataURL(), imageSource: null, mode: 'tile', imageOpacity: .7, enabled: true, showInMainPanel: false, panelOpacity: 1 }));
+    });
+    await page.reload(); await companions.click();
+    await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: seeded.peerTitle }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-bg-main-panel', 'on');
+    await expect(page.locator('.app-theme-background')).toHaveAttribute('data-wallpaper', 'image');
+    const samplePoints = await page.evaluate(() => ['.bot-sidebar', '.bot-main'].map(selector => {
+      const bounds = document.querySelector(selector)!.getBoundingClientRect(); return { x: Math.floor(bounds.left + 20), y: Math.floor(bounds.bottom - 180) };
+    }));
+    const sampleWallpaper = async () => {
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      const encoded = await application.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG().toString('base64'));
+      const { default: sharp } = await import('sharp');
+      const pixels = await sharp(Buffer.from(encoded, 'base64')).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      return samplePoints.map(point => [...pixels.data.subarray((point.y * pixels.info.width + point.x) * 4, (point.y * pixels.info.width + point.x) * 4 + 3)]);
+    };
+    const transparentPixels = await sampleWallpaper(); await capture('companions-restored-personal-wallpaper-light.png');
+    const pixelSettings = await openAppearance(); await openBackground(pixelSettings);
+    await pixelSettings.getByRole('switch', { name: '面板显示背景图', exact: true }).uncheck(); await page.keyboard.press('Escape');
+    const opaquePixels = await sampleWallpaper();
+    for (let index = 0; index < samplePoints.length; index++) expect(Math.max(...transparentPixels[index]!.map((value, channel) => Math.abs(value - opaquePixels[index]![channel]!)))).toBeGreaterThan(25);
+    checks.push({ personalWallpaperCompositedPixels: { samplePoints, transparentPixels, opaquePixels, restoredWithoutThemeSelection: true } });
+    // Reproduce an upgraded user profile: a wallpaper is already selected and
+    // v3 saved either its old default-off flag or fully opaque panels. Do not
+    // click a theme or transparency switch to make this acceptance pass.
+    for (const legacy of [{ showInMainPanel: false, panelOpacity: .72 }, { showInMainPanel: true, panelOpacity: 1 }]) {
+      await page.evaluate(legacy => {
+        localStorage.setItem('worldlinebox.theme-profile.v3', JSON.stringify({ version: 3, preset: 'shuimo-danqing', overrides: {} }));
+        localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'light' }));
+        localStorage.setItem('worldlinebox.background-preferences.v3', JSON.stringify({ version: 3, imageDataUrl: null, imageSource: null, mode: 'cover', imageOpacity: .7, enabled: true, ...legacy }));
+      }, legacy);
+      await page.reload(); await companions.click();
+      await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: seeded.peerTitle }).click();
+      await expect(page.locator('html')).toHaveAttribute('data-bg-main-panel', 'on');
+      await expect.poll(() => page.locator('.app-animated-background-video').evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
+      const migrated = await page.evaluate(() => JSON.parse(localStorage.getItem('worldlinebox.background-preferences.v3')!));
+      expect(migrated).toMatchObject({ showInMainPanel: true, panelOpacity: .48, panelVisibilityVersion: 1 });
+      await audit('shuimo-danqing', 'light', true, true);
+      await capture(`companions-restored-wallpaper-${legacy.showInMainPanel ? 'legacy-opaque' : 'legacy-off'}.png`);
+    }
+    let restoredSettings = await openAppearance(); await openBackground(restoredSettings);
+    await restoredSettings.getByRole('switch', { name: '面板显示背景图', exact: true }).uncheck(); await page.keyboard.press('Escape');
+    await page.reload(); await companions.click();
+    await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: seeded.peerTitle }).click();
+    await expect(page.locator('html')).not.toHaveAttribute('data-bg-main-panel', 'on');
+    await audit('shuimo-danqing', 'light', true, false);
+    restoredSettings = await openAppearance(); await restoredSettings.getByRole('tab', { name: '外观', exact: true }).click();
+    await restoredSettings.locator('[data-theme-entry="worldlinebox"]').click(); await page.keyboard.press('Escape');
     for (const [preset, tone] of [['worldlinebox', 'light'], ['worldlinebox', 'dark'], ['forest', 'light'], ['rose', 'dark']] as const) {
       const settings = await openAppearance(); await settings.getByRole('radio', { name: tone === 'light' ? '亮色' : '暗色', exact: true }).click();
       await settings.locator(`[data-theme-entry="${preset}"]`).click(); await page.keyboard.press('Escape');
@@ -204,7 +267,7 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
         let settings = await openAppearance(); await settings.getByRole('radio', { name: tone === 'light' ? '亮色' : '暗色', exact: true }).click();
         await settings.locator(`[data-theme-entry="${preset}"]`).click();
         await openBackground(settings);
-        await settings.getByRole('switch', { name: '面板显示背景图', exact: true }).check();
+        await expect(settings.getByRole('switch', { name: '面板显示背景图', exact: true })).toBeChecked();
         await page.keyboard.press('Escape');
         const video = page.locator('.app-animated-background-video');
         await expect(video).toHaveCount(1); await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);

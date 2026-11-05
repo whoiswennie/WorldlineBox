@@ -4,7 +4,7 @@ import type { BotEffectResolution, BotTaskAnswer } from '../../shared/companion-
 import { BotTextField } from './BotTextField';
 import { BotIcon } from './BotIcon';
 import { BotTaskOwner } from './BotTaskOwner';
-import { botTaskTitle, botTaskStatus, botTaskState, botTaskActive, botTaskStopping, botTaskPausing, botTaskStages } from './task-presentation';
+import { botTaskTitle, botTaskStatus, botTaskState, botTaskActive, botTaskStopping, botTaskPausing, botTaskStages, botTaskCanFollow } from './task-presentation';
 import { BotTaskActivity, BotTaskEvents } from './BotTaskActivity';
 
 const labels = {
@@ -18,13 +18,13 @@ const labels = {
 type Control = Extract<BotRequest, { type: 'task.control' }>;
 type ControlDraft = Omit<Control, 'type' | 'taskId' | 'conversationId' | 'requestId'>;
 
-interface TaskCardProps { task: BotTask; companion?: BotCompanion; showOwner?: boolean; locale: 'zh-CN' | 'en'; request(input: BotRequest): Promise<BotResponse>; changed(): Promise<unknown>; removed?(): Promise<unknown>; children?: ReactNode }
+interface TaskCardProps { task: BotTask; companion?: BotCompanion; showOwner?: boolean; locale: 'zh-CN' | 'en'; request(input: BotRequest): Promise<BotResponse>; changed(): Promise<unknown>; removed?(): Promise<unknown>; onFollow?(task: BotTask): void; children?: ReactNode }
 export function BotTaskCard(props: TaskCardProps) {
   const { task } = props;
   const context = JSON.stringify([task.id, task.attention?.id, task.status === 'paused', task.pauseRequested, task.status === 'unknown' ? task.pendingEffects?.map(effect => [effect.callId, effect.argsHash]) : undefined]);
   return <TaskCardForm key={context} {...props} />;
 }
-function TaskCardForm({ task, companion, showOwner, locale, request, changed, removed, children }: TaskCardProps) {
+function TaskCardForm({ task, companion, showOwner, locale, request, changed, removed, onFollow, children }: TaskCardProps) {
   const t = labels[locale], attention = task.attention, zh = locale === 'zh-CN', uid = useId();
   const [answers, setAnswers] = useState<Record<string, BotTaskAnswer>>({}), [text, setText] = useState(''), [verification, setVerification] = useState('');
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
@@ -117,6 +117,7 @@ function TaskCardForm({ task, companion, showOwner, locale, request, changed, re
     <footer className="bot-task-actionbar">
       <button className="bot-task-refresh" disabled={busy} onClick={() => void changed()}><BotIcon name="history" />{zh ? '刷新状态' : 'Refresh status'}</button>
       <div>
+        {onFollow && botTaskCanFollow(view) && <button className="bot-task-follow-action" disabled={busy} onClick={() => onFollow(task)}><BotIcon name="external" />{['succeeded', 'failed'].includes(task.status) ? zh ? '继续这个任务' : 'Continue this task' : zh ? '跟进这个任务' : 'Follow up in chat'}</button>}
         {active && !stopping && <button className="bot-task-stop-action" disabled={busy} onClick={() => void control({ operation: 'cancel' })}>{zh ? '停止任务' : 'Stop task'}</button>}
         {stopping && <button disabled className="bot-task-stopping-action">{botTaskState(view) === 'stop-unconfirmed' ? zh ? '停止待核实' : 'Stop unconfirmed' : zh ? '正在停止…' : 'Stopping…'}</button>}
         {!stopping && !pausing && ['queued', 'running'].includes(task.status) && <button disabled={busy} onClick={() => void control({ operation: 'pause' })}>{zh ? '暂停任务' : 'Pause task'}</button>}

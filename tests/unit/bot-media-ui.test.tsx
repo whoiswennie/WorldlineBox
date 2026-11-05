@@ -60,7 +60,7 @@ it('renders actual animated media without empty reply bubbles and saves files on
   const f = await mount(async () => ({ ok: true }), undefined, snapshot);
   expect(host.querySelectorAll('.bot-message')).toHaveLength(1); expect(host.querySelector('.bot-message-text')).toBeNull();
   expect(host.querySelector<HTMLImageElement>('.is-sticker img')?.getAttribute('src')).toBe(sticker.url);
-  await click('展开 1 个附件');
+  expect(host.querySelector('.bot-message-file-toggle')).toBeNull();
   await click('保存'); expect(f.mediaRequests).toContainEqual({ type: 'attachment.save', conversationId: 'a', id: file.id });
 });
 
@@ -76,15 +76,12 @@ it('loads supported players only after opening preview and keeps files over 200M
   const snapshot: BotSnapshot = { ...base, messages: refs.map((ref, index) => ({ id: ref.id, eventId: `e-${index}`, conversationId: 'a', senderId: 'alice', senderName: 'Alice', content: '', sequence: index + 1, status: 'sent', createdAt: at, attachments: [ref] })) };
   const f = await mount(async () => ({ ok: true }), undefined, snapshot);
   expect(document.querySelectorAll('video,audio')).toHaveLength(0);
-  await act(() => host.querySelector<HTMLButtonElement>('[data-bot-message="video-limit"] .bot-message-file-toggle')!.click());
   await click('打开预览 片段.mp4');
   expect(document.querySelectorAll('video')).toHaveLength(1); expect(document.querySelector('video')?.getAttribute('preload')).toBe('metadata');
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭预览"]')!.click());
-  await act(() => host.querySelector<HTMLButtonElement>('[data-bot-message="audio-limit"] .bot-message-file-toggle')!.click());
   await click('打开预览 声音.mp3'); expect(document.querySelectorAll('audio')).toHaveLength(1); expect(document.querySelector('audio')?.hasAttribute('controls')).toBe(true);
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭预览"]')!.click());
   for (const id of ['large-video', 'large-audio', 'large-image']) expect(host.querySelector(`[data-bot-message="${id}"]`)?.querySelector('img,video,audio')).toBeNull();
-  await act(() => host.querySelector<HTMLButtonElement>('[data-bot-message="large-video"] .bot-message-file-toggle')!.click());
   const target = host.querySelector<HTMLButtonElement>('[data-bot-message="large-video"] .bot-file-open')!;
   await act(async () => target.click());
   expect(f.mediaRequests).toContainEqual({ type: 'attachment.open', conversationId: 'a', id: 'large-video' });

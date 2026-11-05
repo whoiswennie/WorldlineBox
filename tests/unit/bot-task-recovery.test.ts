@@ -10,6 +10,7 @@ import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/compani
 import type { BotTask } from '../../src/main/companion-bot/types';
 import type { BotWorkerEffectInspection } from '../../src/shared/companion-bot-task';
 import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
+import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 
 class MemoryBoundary extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw new Error('VCP fixture boundary'); }, embedding: async () => { throw new Error('VCP fixture boundary'); } }); }
@@ -45,6 +46,7 @@ class BrainBoundary extends BotDshBrain {
     try {
       input.onEvent?.({ type: 'text', text: '', sequence: 1, receivedAt: new Date().toISOString() });
       const text = input.role === 'worker' ? await this.worker(input) : input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.router(input);
+      if (input.role === 'worker') await reportWorkerOutcome(input, { state: 'ready', summary: text.slice(0, 16000) || '夹具业务交付已完成', verification: ['受控执行脚本已完成当前场景并提交明确完成报告。'] });
       return { text, status: 'succeeded', eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId) };
     } finally { this.activeWorkers.delete(input.laneId); }
   }

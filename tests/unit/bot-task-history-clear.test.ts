@@ -4,6 +4,7 @@ import os from 'node:os';
 import { afterEach, expect, it, vi } from 'vitest';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { clearBotTaskHistory, resumeBotTaskHistoryClears, botTaskRemovalFingerprint } from '../../src/main/companion-bot/task-history';
+import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runtime';
 
 const owned: Array<{ store: BotStore; root?: string }> = [];
 afterEach(async () => {
@@ -34,11 +35,15 @@ function fixture(filename = ':memory:') {
 
 it('removes ended task bodies and preserves the admission tombstone and exact replay identity', async () => {
   const f = fixture(), item = f.create('ended');
+  f.store.setMetadata('task-report:ended:ready-call', JSON.stringify({ report: { summary: 'RAW_REPORT_TO_CLEAR', verification: ['raw verification'] } }));
+  f.store.setMetadata('task-report:ended-other:ready-call', 'OTHER_TASK_REPORT');
   expect(await clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: item.task.id, requestId: 'clear-one' })).toEqual({ cleared: 1, remaining: 0, recordsOnly: true });
   const retained = f.store.getTask(item.task.id)!;
   expect(retained.status).toBe('succeeded'); expect(retained.sourceEventId).toBe(item.task.sourceEventId);
   expect(retained.goal).toBe(''); expect(retained.summary).toBeUndefined(); expect(retained.error).toBeUndefined();
   expect(retained.extra).not.toHaveProperty('workerPrompt'); expect(retained.extra).not.toHaveProperty('activity');
+  expect(f.store.getMetadata('task-report:ended:ready-call')).toBeUndefined();
+  expect(f.store.getMetadata('task-report:ended-other:ready-call')).toBe('OTHER_TASK_REPORT');
   expect(retained.extra.removedFingerprint).toBe(botTaskRemovalFingerprint({ sourceEventId: item.input.sourceEventId, goal: item.input.goal, ...item.input.extra }));
   expect(f.store.createTask(item.input).extra.removedAt).toBeTruthy();
   expect(() => f.store.createTask({ ...item.input, goal: '不能复用原标识启动另一任务' })).toThrow();
@@ -52,6 +57,19 @@ it('rejects live and foreign tasks while allowing a stopped task to be cleared',
   await expect(clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: live.task.id, companionId: 'other-agent', requestId: 'reject-owner' })).rejects.toThrow('不属于');
   f.store.updateTask(live.task.id, { status: 'cancelled' });
   expect((await clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: live.task.id, requestId: 'clear-stopped' })).cleared).toBe(1);
+});
+
+it('clears mandate and report bodies while retaining an inactive admission fingerprint when runtime tables exist', async () => {
+  const f = fixture(), item = f.create('mandate-secret', false), runtime = new BotCompanionRuntime(f.store);
+  const mandate = runtime.bindTask(item.task), before = f.store.taskTransaction(sql => sql.prepare('SELECT fingerprint FROM bot_task_mandates WHERE task_id=?').get(item.task.id)) as { fingerprint: string };
+  expect(mandate.goal).toBe(item.input.goal);
+  f.store.updateTask(item.task.id, { status: 'succeeded' });
+  await clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: item.task.id, requestId: 'clear-mandate' });
+  const saved = f.store.taskTransaction(sql => sql.prepare('SELECT record_json,fingerprint,state FROM bot_task_mandates WHERE task_id=?').get(item.task.id)) as { record_json: string; fingerprint: string; state: string };
+  expect(saved.state).toBe('withdrawn'); expect(saved.fingerprint).toBe(before.fingerprint);
+  expect(JSON.parse(saved.record_json)).toEqual({ removed: true, taskId: item.task.id, id: mandate.id, sourceEventId: f.source.id, authorizingEventId: f.source.id, originalFingerprint: before.fingerprint });
+  expect(saved.record_json).not.toContain(item.input.goal); expect(saved.record_json).not.toContain('attachmentIds');
+  expect(() => runtime.validateTask(f.store.getTask(item.task.id)!)).toThrow();
 });
 
 it('freezes bulk membership and replays its fixed receipt instead of clearing newly finished work', async () => {

@@ -10,6 +10,7 @@ import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/compani
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import { botRequestSchema } from '../../src/shared/companion-bot';
 import type { BotMediaRef } from '../../src/shared/companion-bot-media';
+import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 class Memory extends BotMemoryService {
@@ -39,8 +40,11 @@ class Memory extends BotMemoryService {
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
   constructor(private readonly handle: (input: BotDshRun) => Promise<string> = async () => '已收到') { super({ getHost: async () => { throw Error('No actual Host or model'); } }); }
-  override async run(input: BotDshRun) { this.calls.push(input); return { status: 'succeeded' as const, text: input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.handle(input),
-    eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), inputContextCommitted: true }; }
+  override async run(input: BotDshRun) {
+    this.calls.push(input); const text = input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.handle(input);
+    if (input.role === 'worker' && !input.signal?.aborted) await reportWorkerOutcome(input, { state: 'ready', summary: text.slice(0, 16000) || '媒体夹具交付已完成', verification: ['受控媒体脚本已完成本场景的实际文件与交付检查。'] });
+    return { status: 'succeeded' as const, text, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), inputContextCommitted: true };
+  }
   override async cancelDurable() { return { accepted: true, absent: true }; }
   override async close() {}
 }

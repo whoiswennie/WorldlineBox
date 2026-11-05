@@ -22,6 +22,7 @@ import type { WorldlineBoxLibraryApi } from '../shared/library-api';
 import type { ExtensionSaveCompletedEvent } from '../shared/protocol/responses';
 import type { WorldlineBoxBotApi } from '../shared/companion-bot';
 import type { WorldlineBoxBotMediaApi } from '../shared/companion-bot-media';
+import type { WorldlineBoxBotSpeechApi } from '../shared/companion-bot-speech';
 import { featureLoader } from './feature-loader';
 import './feature-loading.css';
 
@@ -33,7 +34,7 @@ const networkFeature = featureLoader(() => import('./network/ApplicationNetworkP
 const Launcher = lazy(launcherFeature.load), Browser = lazy(browserFeature.load), Companions = lazy(companionsFeature.load);
 const Assets = lazy(assetsFeature.load), Network = lazy(networkFeature.load);
 const api = (window as Window & { worldlinebox?: { dshLauncher?: WorldlineBoxDshLauncherApi;
-  captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companionBot?: WorldlineBoxBotApi; companionBotMedia?: WorldlineBoxBotMediaApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
+  captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companionBot?: WorldlineBoxBotApi; companionBotMedia?: WorldlineBoxBotMediaApi; companionBotSpeech?: WorldlineBoxBotSpeechApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
 
 function FeatureLoading() {
   return <div className="feature-loading" role="status"><span className="feature-loading-dot" aria-hidden="true" />正在打开…</div>;
@@ -81,7 +82,16 @@ export function App() {
     setSettingsController(current => current === 'idle' ? 'opening' : current);
     if (assetManagerRef.current) { pendingSettings.current = false; assetManagerRef.current.openSettings(); }
   }, []);
-  const openCompanionUrl = useCallback((url: string) => { void api?.shell?.openExternalUrl(url); }, []);
+  const openCompanionUrl = useCallback((url: string) => {
+    let address: URL;
+    try { address = new URL(url); } catch { setToolError('这个链接无法打开。'); return; }
+    if (!['https:', 'http:'].includes(address.protocol) || address.username || address.password || url.length > 8192) { setToolError('这个链接无法打开。'); return; }
+    if (!api?.browser) { setToolError('内置浏览器尚未就绪，请稍后重试。'); return; }
+    void api.browser.request({ type: 'tab.new', url: address.href, background: false }).then(result => {
+      if (result.ok) { setToolError(''); setActiveModuleId('browser'); }
+      else setToolError(result.error);
+    }).catch(() => setToolError('内置浏览器未能打开这个链接，请重试。'));
+  }, []);
   return <ContextMenuProvider><MusicProvider api={api?.music}>
     <div className="application-root"><ThemeBackground /><HoverTipHost /><EditTextContextMenuHost />
       {usesWindowsStyleShell(navigator.userAgent) ? <><WindowsWindowControls shell={api?.shell} /><WindowEdgeResizeHandles shell={api?.shell} /></> : null}
@@ -91,7 +101,7 @@ export function App() {
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} isActive={activeModuleId === 'companions'} /></Suspense> },
+          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} speechApi={api?.companionBotSpeech} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} isActive={activeModuleId === 'companions'} /></Suspense> },
           { id: 'assets', preload: assetsFeature.preload, label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
           { id: 'browser', preload: browserFeature.preload, label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
           { id: 'network', preload: networkFeature.preload, label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },

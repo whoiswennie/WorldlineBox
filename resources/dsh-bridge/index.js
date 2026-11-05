@@ -10,7 +10,7 @@ export const inject = ['loader', 'sessionController', 'workspaceRegistry', 'agen
 const protocol = 'worldlinebox-native-web-host-v1';
 const textOf = message => (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question'];
+const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question', 'worker_report'];
 const observationalWorkerTools = new Set(['read', 'read_image', 'glob', 'grep', 'present', 'working_directory', 'web_search', 'web_fetch',
   'ask_user_question', 'job_output', 'job_list', 'skill', 'cordis_inspect_list', 'cordis_inspect_query']);
 const maxWorkerContinuations = 4;
@@ -392,12 +392,20 @@ export async function apply(ctx) {
           }
         }
         if (await continueWorkerOutput(record)) continue;
+        // This is the native execution segment's outcome. Business completion
+        // belongs to the host's durable worker_report, not a completed turn.
         record.status = record.cancelled ? 'cancelled' : record.reason?.kind === 'completed' ? 'succeeded' : 'failed';
         if (record.bot?.eventId) await botWriteReceipt(record, { eventId: record.bot.eventId, status: 'complete',
           result: { eventId: record.bot.eventId, sessionId: record.id, status: record.status, text: record.text,
+            ...(record.bot.taskContinuationId ? { taskContinuationId: record.bot.taskContinuationId } : {}),
             inputContextCommitted: record.bot.inputContextCommitted === true,
             ...(record.outputCheckpoint !== undefined ? { outputCheckpoint: record.outputCheckpoint } : {}),
             ...(record.status === 'failed' ? { error: botTerminalError(record) } : {}) } });
+        if (record.bot?.taskContinuationId) {
+          const key = record.bot.eventId + ':task-continuation:' + record.bot.taskContinuationId;
+          const prior = await botReadReceipt(record, key), completed = await botReadReceipt(record, record.bot.eventId);
+          await botWriteReceipt(record, { ...prior, eventId: key, status: 'complete', result: completed.result });
+        }
         emit(record, { type: 'complete', status: record.status, text: record.text, reason: record.reason, artifacts: record.artifacts,
           ...(record.status === 'failed' ? { error: botTerminalError(record) } : {}),
           ...(record.outputCheckpoint !== undefined ? { outputCheckpoint: record.outputCheckpoint } : {}),
@@ -608,7 +616,25 @@ export async function apply(ctx) {
   const decorateBot = record => {
     const accessDisposers = record.bot.role === 'worker' ? record.accessDisposers ??= [] : record.disposers;
     if (record.bot.role === 'worker') record.disposers.push(() => { for (const dispose of record.accessDisposers.splice(0)) dispose(); });
-    if (record.bot.role === 'worker') registerWorkerHostTools(record, record.agent);
+    if (record.bot.role === 'worker') {
+      registerWorkerHostTools(record, record.agent);
+      // Built into the bridge rather than the immutable workerTools selection,
+      // so restoring an older task does not require replacing its Session.
+      record.disposers.push(record.agent.ctx.tools.register({
+        name: 'worker_report',
+        description: '提交本任务的结构化业务报告。progress为重要阶段，waiting等待后续事件，blocked受阻，failed失败，dropped无需继续；当前目标已完成才用ready，并列出实际核验依据。最终正文或本轮正常结束不会自动完成任务。ready后若又修改产物须重新核验报告；不要求一定创建文件。只有根执行器可提交，子Agent向父Agent汇报。',
+        parameters: { type: 'object', properties: { state: { type: 'string', enum: ['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped'] },
+          summary: { type: 'string', minLength: 1, maxLength: 16000 }, verification: { type: 'array', maxItems: 16, items: { type: 'string', minLength: 1, maxLength: 2000 } } },
+          required: ['state', 'summary', 'verification'], additionalProperties: false },
+        output: { schema: { type: 'object', properties: { result: {} }, required: ['result'], additionalProperties: false },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value.result) }] },
+        async execute(args, execution) {
+          if (execution.agent !== record.agent || execution.signal.aborted) throw new Error('Only the root executor may report this task outcome.');
+          const ref = nativeCallRef(record, execution.agent, execution.callId);
+          return { result: await workerCallback(record, 'worker_report', { ...args, nativeSessionId: ref.nativeSessionId, nativeCallId: ref.nativeCallId }, ref.callId, execution.signal) };
+        },
+      }));
+    }
       if (record.bot.role === 'brain') {
         const callback = record.bot.callback;
         const endpoint = new URL(callback.url);
@@ -1132,6 +1158,8 @@ export async function apply(ctx) {
             || input.text.length > 16000 || !['queue', 'steer'].includes(input.mode)) throw new Error('Invalid task guidance.');
           const key = input.eventId + ':guidance:' + input.messageId;
           const prior = await botReadReceipt(record, key);
+          const fingerprint = createHash('sha256').update(input.text).digest('hex');
+          if (prior?.fingerprint && prior.fingerprint !== fingerprint) throw new Error('Task guidance ID has different content.');
           if (prior?.status !== 'accepted') {
             const { freezeMessage } = await import('@deepseek-ai/dsh-llm');
             const message = freezeMessage({ id: 'worldlinebox-bot:' + key, role: 'user', content: [{ type: 'text', text: input.text }],
@@ -1139,11 +1167,11 @@ export async function apply(ctx) {
             const already = prior && (record.agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === message.id)
               || [...record.agent.inbox.nextTurn, ...record.agent.inbox.nextStep].some(value => value.id === message.id));
             if (!already) {
-              await botWriteReceipt(record, { eventId: key, status: 'prepared' });
+              await botWriteReceipt(record, { eventId: key, status: 'prepared', fingerprint, messageId: message.id });
               if (input.mode === 'steer') record.agent.steer(message); else record.agent.followup(message);
             }
             record.revision++; await ctx.sessions.flush(record.agent.session);
-            await botWriteReceipt(record, { eventId: key, status: 'accepted' });
+            await botWriteReceipt(record, { eventId: key, status: 'accepted', fingerprint, messageId: message.id });
           }
           json(response, { accepted: true }); return;
         }
@@ -1212,8 +1240,69 @@ export async function apply(ctx) {
         }
         if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 65536) throw new Error('Invalid companion message.');
         if (input.continueAfterSeq !== undefined && (!Number.isSafeInteger(input.continueAfterSeq) || input.continueAfterSeq < 0)) throw new Error('Invalid output continuation checkpoint.');
+        if (input.taskContinuation !== undefined && (record.bot.role !== 'worker' || typeof input.taskContinuation?.id !== 'string'
+          || !input.taskContinuation.id.length || input.taskContinuation.id.length > 300 || typeof input.taskContinuation.text !== 'string'
+          || !input.taskContinuation.text.trim() || input.taskContinuation.text.length > 16000)) throw new Error('Invalid task continuation.');
         const receipt = await botReadReceipt(record, input.eventId);
+        if (input.taskContinuation) {
+          const prior = await botReadReceipt(record, input.eventId + ':task-continuation:' + input.taskContinuation.id);
+          if (prior && prior.fingerprint !== createHash('sha256').update(input.taskContinuation.text).digest('hex')) throw new Error('Task continuation ID has different guidance.');
+        }
+        if (receipt?.taskContinuationId) record.bot.taskContinuationId = receipt.taskContinuationId;
         if (receipt?.status === 'complete') {
+          if (input.taskContinuation && ['succeeded', 'failed'].includes(receipt.result.status) && receipt.result.taskContinuationId !== input.taskContinuation.id && !record.cancelled) {
+            const continuation = input.taskContinuation, key = input.eventId + ':task-continuation:' + continuation.id;
+            const fingerprint = createHash('sha256').update(continuation.text).digest('hex');
+            const prior = await botReadReceipt(record, key);
+            if (prior && prior.fingerprint !== fingerprint) throw new Error('Task continuation ID has different guidance.');
+            if (prior?.status === 'complete') { json(response, { accepted: true, result: prior.result }); return; }
+            const { freezeMessage } = await import('@deepseek-ai/dsh-llm');
+            // A steering callback can commit immediately before the segment
+            // detaches. Reuse its actual native input identity, rather than
+            // delivering the same guidance again as a new continuation.
+            const guidanceKey = input.eventId + ':guidance:' + continuation.id, guidance = await botReadReceipt(record, guidanceKey);
+            if (guidance?.fingerprint && guidance.fingerprint !== fingerprint) throw new Error('Task guidance ID has different content.');
+            const messageId = prior?.messageId ?? 'worldlinebox-bot:' + (guidance ? guidanceKey : key), events = record.agent.session.snapshotEvents();
+            const start = events.findIndex(event => event.type === 'user/message' && event.data.id === messageId);
+            const queued = [...record.agent.inbox.nextTurn, ...record.agent.inbox.nextStep].some(message => message.id === messageId);
+            if (start >= 0) {
+              let text = '', end;
+              for (const event of events.slice(start + 1)) {
+                if (event.type === 'user/message' && ['worldlinebox-bot-task-continuation', 'worldlinebox-bot-guidance', 'worldlinebox-bot'].includes(event.data.source.kind)) break;
+                if (event.type === 'assistant/message') text = textOf(event.data.message);
+                if (event.type === 'turn/end') end = event;
+              }
+              if (end?.data.reason.kind === 'completed' && record.agent.status === 'idle' && !queued) {
+                const result = { eventId: input.eventId, sessionId: record.id, status: 'succeeded', text, inputContextCommitted: true, taskContinuationId: continuation.id };
+                await botWriteReceipt(record, { eventId: key, status: 'complete', fingerprint, messageId, result });
+                await botWriteReceipt(record, { eventId: input.eventId, status: 'complete', result });
+                json(response, { accepted: true, result }); return;
+              }
+            }
+            if (prior && start < 0 && !queued && (prior.status !== 'prepared' || !Number.isSafeInteger(prior.previousSeq)
+              || prior.previousSeq !== record.agent.session.seq)) throw new Error('Task continuation input delivery remains unconfirmed.');
+            if (guidance && start < 0 && !queued) throw new Error('Previously delivered task guidance remains unconfirmed.');
+            await botWriteReceipt(record, { eventId: key + ':previous', status: 'complete', result: receipt.result });
+            await botWriteReceipt(record, { eventId: key, status: 'prepared', fingerprint, messageId, previousSeq: prior?.previousSeq ?? record.agent.session.seq });
+            if (start < 0 && !queued) record.agent.followup(freezeMessage({ id: messageId, role: 'user',
+              source: { kind: 'worldlinebox-bot-task-continuation', form: 'relay', eventId: input.eventId },
+              content: [{ type: 'text', text: '同一任务收到后续指导。保留原目标、授权、已有回执与产物，不重复已执行工作。新工作完成后重新提交worker_report。\n\n' + continuation.text }] }));
+            else if (start >= 0 && record.agent.status === 'idle') {
+              const recoveryId = 'worldlinebox-bot-continuation-recovery:' + key;
+              if (!events.some(event => event.type === 'user/message' && event.data.id === recoveryId)
+                && ![...record.agent.inbox.nextTurn, ...record.agent.inbox.nextStep].some(message => message.id === recoveryId)) record.agent.followup(freezeMessage({ id: recoveryId, role: 'user',
+                source: { kind: 'worldlinebox-bot-recovery', form: 'notice', eventId: input.eventId },
+                content: [{ type: 'text', text: '恢复同一任务已接收的后续指导。原始任务和指导均已在历史中，不再次投递或重复已执行操作；从真实工具回执核实当前状态，继续尚未完成的部分并重新报告。' }] }));
+            }
+            record.bot.suspended = false; record.bot.eventId = input.eventId; record.bot.taskContinuationId = continuation.id;
+            record.bot.inputContextCommitted = receipt.result.inputContextCommitted === true;
+            record.status = 'running'; record.reason = undefined; record.text = ''; record.lastError = undefined; record.revision++;
+            await ctx.sessions.flush(record.agent.session);
+            await botWriteReceipt(record, { eventId: key, status: 'accepted', fingerprint, messageId });
+            await botWriteReceipt(record, { eventId: input.eventId, status: 'accepted', taskContinuationId: continuation.id });
+            emit(record, { type: 'status', stage: 'task_continuation', summary: '正在沿原任务处理后续指导' });
+            json(response, { accepted: true }); void settle(record); return;
+          }
           if (record.bot.role === 'worker' && receipt.result.status === 'failed' && Number.isSafeInteger(receipt.result.outputCheckpoint)
             && input.continueAfterSeq === receipt.result.outputCheckpoint && !record.cancelled) {
             const checkpoint = receipt.result.outputCheckpoint;
@@ -1299,7 +1388,8 @@ export async function apply(ctx) {
                 source: { kind: 'worldlinebox-bot-recovery', form: 'notice', summary: '恢复中断的伙伴任务' }, content: [{ type: 'text', text:
                   '宿主恢复事件 ' + input.eventId + '。继续处理历史中的原始请求；不要把本恢复通知当成新的用户任务。保留已经完成的工具和交付，不重复创建已有任务。对于缺失回执的外部操作，先检查真实状态，无法确认时报告需要核实，不得盲重试或声称已完成。' }] }));
               await ctx.sessions.flush(record.agent.session);
-              await botWriteReceipt(record, { eventId: input.eventId, status: 'accepted', recoveries }); await rm(pendingFile, { force: true });
+              await botWriteReceipt(record, { eventId: input.eventId, status: 'accepted', recoveries,
+                ...(record.bot.taskContinuationId ? { taskContinuationId: record.bot.taskContinuationId } : {}) }); await rm(pendingFile, { force: true });
               json(response, { accepted: true });
             } finally { record.admissions--; void settle(record); }
             return;

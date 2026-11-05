@@ -419,28 +419,28 @@ test('groups and observed peer private conversations remain distinct in the regu
     expect(reused.conversationId).toBe(joined[0]!.id);
     privateChecks.push({ joinedGroupId: joined[0]!.id, joinedMembers: joined[0]!.memberIds, copiedPrivateMessages: 0, reusedGroupId: reused.conversationId });
     await page.getByRole('button', { name: '伙伴私聊', exact: true }).click();
-    const picker = page.getByRole('dialog', { name: '查看伙伴私聊', exact: true });
-    await expect(picker.getByRole('button', { name: '查看私聊', exact: true })).toBeDisabled();
-    await picker.getByRole('button', { name: 'GPT', exact: true }).click(); await picker.getByRole('button', { name: '白幻', exact: true }).click();
-    await expect(picker.locator('[aria-pressed=true]')).toHaveCount(2); await capture('dark', 'peer-private-selector-packaged-dark.png');
-    await picker.getByRole('button', { name: '查看私聊', exact: true }).click(); await expect(picker).toHaveCount(0);
-    await expect(page.locator('.bot-peer-observer-dock')).toBeVisible(); await expect(transcript).toContainText('这两位伙伴还没有私聊记录');
-    const emptyPair = await page.evaluate(async () => {
+    await expect(page.getByRole('dialog', { name: '查看伙伴私聊', exact: true })).toHaveCount(0);
+    await expect(sidebar.locator('.bot-conversation')).toHaveCount(1);
+    await expect(sidebar.locator('.bot-conversation-preview')).toContainText('GPT：好，我们先核对交付顺序。');
+    await sidebar.locator('.bot-conversation').click(); await expect(page.locator('.bot-peer-observer-dock')).toBeVisible();
+    await capture('dark', 'peer-private-message-list-packaged-dark.png');
+    const actualPairs = await page.evaluate(async () => {
       const state = await (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' });
       return state.snapshot!.conversations.filter(item => item.kind === 'peer');
     });
-    expect(emptyPair).toHaveLength(2);
-    privateChecks.push({ emptyPairRooms: emptyPair.map(item => ({ id: item.id, memberIds: item.memberIds })) });
-    // A request to contact the user is delivered in the target's ordinary user
-    // direct room with the source companion's actual identity, not a group.
+    expect(actualPairs).toHaveLength(1);
+    privateChecks.push({ realPairRooms: actualPairs.map(item => ({ id: item.id, memberIds: item.memberIds })), emptyPairCreatedByUi: false });
+    // The source's relay remains in the companion pair. Only the target's
+    // own authorized reply is published in its existing user direct room.
+    await sidebar.getByRole('tab', { name: '聊天', exact: true }).click();
     await sidebar.locator('.bot-conversation').filter({ has: page.getByText('大肥鱼', { exact: true }) }).click();
     await expect(page.locator('.bot-composer textarea')).toBeVisible(); await expect(page.locator('.bot-peer-observer-dock')).toHaveCount(0);
-    await expect(transcript.locator(`[data-bot-message="${seeded.userDirectIntroductionId}"] .bot-message-author`)).toContainText('GPT');
+    await expect(transcript.locator(`[data-bot-message="${seeded.userContactIntroductionId}"]`)).toHaveCount(0);
     await expect(transcript.locator(`[data-bot-message="${seeded.userDirectReplyId}"] .bot-message-author`)).toContainText('大肥鱼');
     await expect(transcript).toContainText('晚安呀，我们在自己的私聊里继续聊。');
     await expect(transcript).not.toContainText('我们先核对交付顺序');
     await capture('dark', 'peer-contact-user-direct-packaged-dark.png');
-    privateChecks.push({ userDirectRoomId: seeded.targetPrivateId, introductionId: seeded.userDirectIntroductionId, replyId: seeded.userDirectReplyId, userInputEnabled: true });
+    privateChecks.push({ userDirectRoomId: seeded.targetPrivateId, internalIntroductionId: seeded.userContactIntroductionId, replyId: seeded.userDirectReplyId, sourceNeverEnteredUserDirect: true, userInputEnabled: true });
     const finalRuntime = await application.evaluate(({ app }) => {
       const { createRequire } = process.getBuiltinModule('node:module'), path = process.getBuiltinModule('node:path'), require = createRequire(path.join(app.getAppPath(), 'package.json'));
       const fs = require('node:fs'), root = app.getPath('userData'), filename = path.join(root, 'ai-profiles.json'), keys = path.join(root, 'ai-profile-keys');

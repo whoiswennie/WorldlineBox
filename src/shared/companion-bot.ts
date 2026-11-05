@@ -9,15 +9,25 @@ export type { BotBrainContextSummary, BotBrainRequestMetrics } from './companion
 export const BOT_CHANNEL = 'companion-bot:request';
 export const BOT_EVENT_CHANNEL = 'companion-bot:event';
 const id = z.string().min(1).max(160);
-export interface BotCompanion { id: string; name: string; persona: string; createdAt: string }
+export interface BotCompanion { id: string; name: string; persona: string; createdAt: string; activePersonaId?: string }
+export const BOT_PERSONA_TEMPLATE_LIMIT = 64;
+export interface BotPersonaTemplateSummary {
+  id: string; name: string; builtin: boolean; isDefault: boolean; modified: boolean; charCount: number; updatedAt: string;
+}
+export interface BotPersonaTemplate extends BotPersonaTemplateSummary { prompt: string }
+export interface BotPersonaTemplateList { items: BotPersonaTemplateSummary[]; activeId: string; limit: number }
 export type BotParticipationMode = 'automatic' | 'all' | 'mentions';
 export type BotHistoryFilter = 'all' | 'media' | 'stickers' | 'files' | 'links';
 export interface BotReplyTiming { elapsedMs: number; queueMs?: number; prepareMs?: number; firstTextMs?: number; modelMs?: number; finishMs?: number }
 export interface BotReplyProgress {
-  phase: 'queued' | 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory' | 'preparing-context' | 'compacting-context' | 'waiting-runtime' | 'waiting-model' | 'using-tool' | 'generating' | 'retrying';
+  phase: 'queued' | 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory' | 'preparing-context' | 'compacting-context' | 'waiting-runtime' | 'waiting-model' | 'using-tool' | 'generating' | 'retrying' | 'reconciling';
   toolName?: string; detail?: string;
 }
 export interface BotGroupAnnouncement { text: string; updatedAt: string }
+export interface BotTaskFollowupReceipt {
+  taskId: string; title?: string;
+  state: 'queued' | 'delivered' | 'needs-attention' | 'failed' | 'cancelled';
+}
 export interface BotConversation { id: string; title: string; kind: 'direct' | 'group' | 'world' | 'peer'; memberIds: string[]; createdAt: string; participationMode?: BotParticipationMode; peerConversation?: boolean; userRole?: 'observer'; ownerId?:'user';dissolvedAt?:string; announcement?: BotGroupAnnouncement }
 export interface BotMessage {
   id: string; eventId: string; conversationId: string; senderId: string; senderName: string;
@@ -25,12 +35,15 @@ export interface BotMessage {
   attachments?: BotMediaRef[];
   timing?: BotReplyTiming;
   progress?: BotReplyProgress;
+  taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
 export interface BotTaskProgress { phase: string; detail?: string; updatedAt?: string; toolName?: string }
 export interface BotTask { id: string; conversationId: string; companionId: string; companionName?: string; goal: string; status: string; summary?: string; summaryIsPreview?: boolean; error?: string;
   title?: string; createdAt?: string; startedAt?: string; updatedAt?: string; sessionId?: string; progress?: BotTaskProgress; cancelRequested?: boolean; stopRequestedAt?: string; continuationAvailable?: boolean;
-  pauseRequested?: boolean; pauseRequestedAt?: string; pausedAt?: string;
+  pauseRequested?: boolean; pauseRequestedAt?: string; pausedAt?: string; followupAvailable?: boolean; humanStopped?: boolean;
+  report?: { state: 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'; summary: string; verification: string[]; receivedAt: string };
+  executionTurn?: { status: string; receivedAt: string };
   activity?: Array<BotTaskProgress & { id: string; createdAt: string }>;
   diagnostic?: { attempts: number; stage?: string; message: string };
   attention?: BotTaskAttention; pendingEffects?: BotTaskPendingEffect[]; outputs?: BotTaskOutput[] }
@@ -56,9 +69,11 @@ export interface BotRuntimeStatus {
   ready: boolean; detail?: string; dataRoot: string;
   modelContext?: { window: number; source: 'explicit' | 'metadata' | 'official-default' | 'unknown'; estimate: 'utf8-byte-upper-bound' };
 }
+export interface BotConversationActivity { messageId: string; sequence: number; senderName: string; preview: string; updatedAt: string }
 export interface BotSnapshot {
   companions: BotCompanion[]; conversations: BotConversation[]; messages: BotMessage[]; tasks: BotTask[];
   presence?: Record<string, BotCompanionPresence>;
+  conversationActivity?: Record<string, BotConversationActivity>;
   brainContexts?: Record<string, BotBrainContextSummary>;
   taskSummary?: BotTaskSummary;
   hasMore: boolean; runtime: BotRuntimeStatus;
@@ -69,7 +84,13 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('history.search'), conversationId: id, query: z.string().max(200).refine(value => !value.includes('\0')).default(''), filter: z.enum(['all', 'media', 'stickers', 'files', 'links']).optional(), before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(80).optional() }),
   z.strictObject({ type: z.literal('companion.create'), name: z.string().trim().min(1).max(80), persona: z.string().max(24000) }),
-  z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000) }),
+  z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000).optional() }),
+  z.strictObject({ type: z.literal('companion.personas.list'), companionId: id }),
+  z.strictObject({ type: z.literal('companion.personas.get'), companionId: id, id }),
+  z.strictObject({ type: z.literal('companion.personas.save'), companionId: id, id: id.optional(), name: z.string().trim().min(1).max(80), prompt: z.string().min(1).max(24000).refine(value => !!value.trim() && !value.includes('\0')), activate: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('companion.personas.activate'), companionId: id, id }),
+  z.strictObject({ type: z.literal('companion.personas.delete'), companionId: id, id }),
+  z.strictObject({ type: z.literal('companion.personas.restore'), companionId: id, id: id.optional() }),
   z.strictObject({ type: z.literal('conversation.open'), companionId: id }),
   z.strictObject({ type: z.literal('conversation.peer.open'), memberIds: z.tuple([id, id]) }),
   z.strictObject({ type: z.literal('conversation.peer.join'), conversationId: id, title: z.string().trim().min(1).max(120).optional() }),
@@ -79,7 +100,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('conversation.announcement'), conversationId: id, content: z.string().max(4000).refine(value => !value.includes('\0')),
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional(), replyToTaskId: id.optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('task.list'), conversationId: id, companionId: id.optional(), filter: z.enum(['all', 'active', 'done', 'issues']).default('all'), query: z.string().max(200).optional(), page: z.number().int().min(0).max(1000000).default(0), limit: z.number().int().min(1).max(30).default(6) }),
@@ -106,7 +127,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
-export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean }
+export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate }
 export type BotEvent = { type: 'changed'; conversationId?: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }
   | { type: 'error'; conversationId?: string; message: string };

@@ -21,6 +21,11 @@ export default tseslint.config(
       // Pinned upstream sources are hash-verified and intentionally kept byte-for-byte.
       'vendor/vcp-memory/**',
       'resources/vcp-memory/**',
+      // Vendored SoulLink SDK keeps its upstream style; compile and integration
+      // tests validate the local adapters instead of rewriting third-party code.
+      'vendor/soullink-emotion/**',
+      // Upstream-generated Cubism Core is shipped with its original license header.
+      'public/companion-call/live2dcubismcore.min.js',
       // Emscripten-generated glue (acquired by scripts/build-ufbx-wasm.mjs).
       'resources/ufbx/**',
       'resources/portable-tools/win32-x64/**',
@@ -34,7 +39,7 @@ export default tseslint.config(
     },
   },
   ...tseslint.configs.recommended,
-  { files: ['src/main/vcp-memory/**/*.cjs', 'scripts/**/*.cjs', 'tests/fixtures/bot-memory-fs-probe.cjs'], languageOptions: { globals: globals.node, sourceType: 'commonjs' },
+  { files: ['src/main/vcp-memory/**/*.cjs', 'resources/speech-runtime/**/*.cjs', 'scripts/**/*.cjs', 'tests/fixtures/bot-memory-fs-probe.cjs'], languageOptions: { globals: globals.node, sourceType: 'commonjs' },
     rules: { '@typescript-eslint/no-require-imports': 'off', 'no-redeclare': ['error', { builtinGlobals: false }] } },
   {
     files: ['**/*.{ts,tsx}'],

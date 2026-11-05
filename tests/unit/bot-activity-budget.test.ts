@@ -87,9 +87,9 @@ it('reserves task slots for explicit user mandates while bounding automatic task
   expect(() => f.store.createTask({ sourceEventId: user.id, conversationId: f.world.id, companionId: 'alice', goal: '超额' })).toThrow(BotBackpressureError);
 });
 
-it('leaves an interactive execution slot while two automatic lanes are waiting', async () => {
+it('leaves an interactive companion slot while two other automatic companions are waiting', async () => {
   const f = fixture();
-  for (const id of ['alice', 'bob', 'carol']) f.automatic(`auto-${id}`, `root-${id}`, id);
+  for (const id of ['bob', 'carol']) f.automatic(`auto-${id}`, `root-${id}`, id);
   const started: BotClaim[] = [], release = new Map<string, () => void>();
   const scheduler = new BotScheduler(f.store, { concurrency: 3, handle: async claim => {
     started.push(claim); await new Promise<void>(resolve => release.set(claim.event.id, resolve));

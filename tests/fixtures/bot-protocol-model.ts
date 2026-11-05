@@ -30,7 +30,9 @@ export async function startBotProtocolModel() {
       let current = plain(messages[lastUser]?.content);
       for (let index = messages.length - 1; index >= 0; index--) {
         if (messages[index]?.role !== 'user') continue;
-        const envelope = jsonEnvelope(plain(messages[index]!.content), '{"envelope":');
+        const serialized = plain(messages[index]!.content);
+        let direct: Record<string, unknown> | undefined; try { direct = JSON.parse(serialized) as Record<string, unknown>; } catch { /* Native legacy wrappers are read below. */ }
+        const envelope = direct?.trigger ? direct : jsonEnvelope(serialized, '{"envelope":');
         const trigger = envelope?.trigger as { content?: unknown } | undefined;
         if (typeof trigger?.content === 'string') { current = trigger.content; lastUser = index; break; }
       }
@@ -38,7 +40,7 @@ export async function startBotProtocolModel() {
       const have = (name: string) => suffix.some(message => message.role === 'tool' && (message.name === name || JSON.stringify(message).includes(name)));
       const priorTools = suffix.filter(message => message.role === 'tool').length;
       let content = '你好，伙伴主脑已经接入。', call: { name: string; args: object } | undefined;
-      if (messages.some(message => plain(message.content).includes('You are now acting as a compaction engine'))) {
+      if (system.includes('把历史资料归纳') || messages.some(message => plain(message.content).includes('You are now acting as a compaction engine'))) {
         counters.summaries++;
         content = '## Primary Request and Intent\n- Continue the companion validation conversation.\n## Key Technical Concepts\n- Native sessions, VCP recall and delegated task receipts.\n## Files and Code\n- cedar-proof.txt is the task artifact; inspect task status before claiming completion.\n## Errors and Fixes\n- None.\n## Pending Jobs\n- Use durable task records for current progress.\n## Current Work\n- Verify test project code through memory.\n## Next Step\n- Respond to the latest user message.\n## Critical Context\n- Test project code 青榆舟. Evening preference 麦茶; morning coffee remains allowed.';
       } else if (system.includes('最多6条') && system.includes('notes')) {
@@ -52,6 +54,7 @@ export async function startBotProtocolModel() {
       } else if (system.includes('DSH执行器')) {
         if (priorTools === 0) call = { name: 'write', args: { file_path: 'cedar-proof.txt', content: 'WLB_SUPER_AGENT_OK' } };
         else if (priorTools === 1) call = { name: 'read', args: { file_path: 'cedar-proof.txt' } };
+        else if (priorTools === 2) call = { name: 'worker_report', args: { state: 'ready', summary: '已创建 cedar-proof.txt，并实际读取验证。', verification: ['真实write已写入WLB_SUPER_AGENT_OK，真实read回执已核对其内容。'] } };
         else content = '已创建 cedar-proof.txt，并实际读取验证。';
       } else if (current.includes('请实际调用 dsh_task')) {
         if (!have('dsh_task') && priorTools === 0) call = { name: 'dsh_task', args: { title: '验收文件', goal: '在本任务工作区创建 cedar-proof.txt，内容为 WLB_SUPER_AGENT_OK，再读取文件核验。' } };

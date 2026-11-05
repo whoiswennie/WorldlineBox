@@ -19,8 +19,11 @@ it('seeds independent user-direct, ordinary group and observed pair without leav
     expect(group.kind).toBe('group'); expect(group.memberIds).toContain('user'); expect(pair.kind).toBe('peer'); expect(pair.memberIds).not.toContain('user'); expect(pair.userRole).toBe('observer');
     expect(direct.kind).toBe('direct'); expect(new Set(direct.memberIds)).toEqual(new Set(['user', fixture.targetCompanionId]));
     expect(group.id).not.toBe(pair.id); expect(group.id).not.toBe(direct.id); expect(pair.id).not.toBe(direct.id);
-    expect(store.getMessage(fixture.userDirectIntroductionId)?.senderId).toBe(fixture.sourceCompanionId);
+    expect(store.getMessage(fixture.userContactIntroductionId)?.senderId).toBe(fixture.sourceCompanionId);
+    expect(store.getMessage(fixture.userContactIntroductionId)?.conversationId).toBe(pair.id);
     expect(store.getMessage(fixture.userDirectReplyId)?.conversationId).toBe(direct.id);
+    expect(store.getMessage(fixture.userDirectReplyId)?.senderId).toBe(fixture.targetCompanionId);
+    expect(store.taskTransaction(sql => sql.prepare('SELECT COUNT(*) AS count FROM bot_messages WHERE conversation_id=? AND sender_id=?').get(direct.id, fixture.sourceCompanionId))).toEqual({ count: 0 });
     for (const id of fixture.observedMessageIds) { const message = store.getMessage(id)!; expect(message.conversationId).toBe(pair.id); expect(message.senderId).not.toBe('user'); expect(message.content).not.toContain(fixture.secrets.origin); expect(message.content).not.toContain(fixture.secrets.target); }
     expect(store.openPeer(fixture.sourceCompanionId, fixture.targetCompanionId).id).toBe(pair.id);
   } finally { store?.close(); rmSync(profile, { recursive: true, force: true }); }

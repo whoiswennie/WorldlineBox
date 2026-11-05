@@ -386,6 +386,65 @@ export class BotMemoryService {
   async readNote(scope: BotMemoryScope, input: { id: string }): Promise<unknown> {
     return this.run(scope, entry => this.request(entry, 'bot.note.read', input), undefined, true, true);
   }
+  /** Explicit cross-conversation reads stay in one selected VCP domain and
+   * require managed source provenance. Legacy free-text output is unavailable
+   * here: scanning it for a withdrawn phrase is not an authorization check. */
+  async readScoped(scope: BotMemoryScope, name: 'memory_search' | 'DeepMemo' | 'TopicMemo' | 'memory_note' | 'memory_list', args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    return this.run(scope, async entry => {
+      const before = object(checked(await this.request(entry, 'bot.tombstones', {}, signal)));
+      if (typeof before.revision !== 'string') throw new Error('目标记忆来源缺少可核实的撤回水位。');
+      const checkedRead = (result: unknown) => result && typeof result === 'object' && !Array.isArray(result) ? checked(result) : result;
+      let value: unknown;
+      if (name === 'memory_note') value = checkedRead(await this.request(entry, 'bot.note.read', { id: args.id }, signal));
+      else if (name === 'memory_list') value = checkedRead(await this.request(entry, 'bot.catalog', args, signal));
+      else if (name === 'memory_search') value = checkedRead(await this.request(entry, 'search', { query: args.query, options: { folder: 'Companion', sync: false, k: 8 } }, signal));
+      else value = checkedRead(await this.request(entry, 'tool', { name,
+        args: name === 'DeepMemo' ? { keyword: args.keyword, maid: scope.companionId, window_size: 4 }
+          : { maid: scope.companionId, command: args.topic_id ? 'GetTopicContent' : 'ListTopics', topic_id: args.topic_id },
+        ...(name === 'DeepMemo' ? { context: { agentId: scope.companionId, topicId: scope.conversationId } } : {}) }, signal));
+      const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      const root = asRecord(value);
+      let records = Array.isArray(value) ? value : Array.isArray(root.results) ? root.results : Array.isArray(root.items) ? root.items : [value];
+      const sourceEventIds = new Set<string>(), sourceMessageIds = new Set<string>();
+      if (records.length > 64) return { available: false, reason: 'memory-provenance-capacity', message: '来源结果超过单次核实容量，请缩小查询。' };
+      if (name === 'memory_list') {
+        const verified: unknown[] = [];
+        for (const record of records) {
+          const row = asRecord(record);
+          if (typeof row.id !== 'string' || !row.id) return { available: false, reason: 'memory-provenance-unavailable', message: '记忆目录缺少可回读的受管编号。' };
+          const note = checked(await this.request(entry, 'bot.note.read', { id: row.id }, signal));
+          if (typeof row.checksum !== 'string' || row.checksum !== note.checksum) return { available: false, reason: 'memory-source-revision-changed', message: '日记版本在目录读取期间发生变化，请重新查询。' };
+          verified.push({ id: row.id, content: typeof row.content === 'string' ? row.content : '', checksum: row.checksum, indexState: row.indexState,
+            sourceEventId: note.sourceEventId, sourceMessageIds: note.sourceMessageIds, createdAt: row.createdAt, updatedAt: row.updatedAt });
+        }
+        records = verified;
+      }
+      for (const record of records) {
+        const row = asRecord(record), metadata = asRecord(row.metadata), lineage = [row, metadata, asRecord(row.source)];
+        const sourceId = (id: unknown): id is string => typeof id === 'string' && id.trim().length > 0 && id.length <= 500;
+        const events = [...new Set(lineage.flatMap(item => [...(sourceId(item.sourceEventId) ? [item.sourceEventId] : []),
+          ...(sourceId(item.sourceRootEventId) ? [item.sourceRootEventId] : []), ...(Array.isArray(item.sourceEventIds) ? item.sourceEventIds.filter(sourceId) : [])]))];
+        const messageIds = [...new Set(lineage.flatMap(item => Array.isArray(item.sourceMessageIds) ? item.sourceMessageIds.filter(sourceId) : []))];
+        if (!events.length && !messageIds.length) return { available: false, reason: 'memory-provenance-unavailable', message: '该历史返回格式缺少可核实来源，不能在另一会话中使用；可到原会话查询。' };
+        if (events.length > 16 || messageIds.length > 512) return { available: false, reason: 'memory-provenance-capacity', message: '来源证据超过单次核实容量，请缩小查询。' };
+        for (const sourceEventId of events.length ? events : [undefined]) {
+          const allowed = object(checked(await this.request(entry, 'bot.source.filter', { sourceEventId, messageIds }, signal)));
+          if (typeof allowed.sourceEventWithdrawn !== 'boolean' || !Array.isArray(allowed.blockedMessageIds)) throw new Error('目标记忆来源过滤没有返回可核实回执。');
+          if (allowed.sourceEventWithdrawn || Array.isArray(allowed.blockedMessageIds) && allowed.blockedMessageIds.length)
+            return { available: false, reason: 'memory-source-withdrawn', message: '该结果含已撤回来源，本次未提供记忆正文。' };
+        }
+        for (const id of events) sourceEventIds.add(id);
+        for (const id of messageIds) sourceMessageIds.add(id);
+        if (sourceEventIds.size > 128 || sourceMessageIds.size > 1024) return { available: false, reason: 'memory-provenance-capacity', message: '来源证据超过单次核实容量，请缩小查询。' };
+      }
+      const after = object(checked(await this.request(entry, 'bot.tombstones', {}, signal)));
+      if (typeof after.revision !== 'string' || before.revision !== after.revision) return { available: false, reason: 'memory-source-revision-changed', message: '记忆来源在查询期间发生撤回，请重新查询。' };
+      // Project only the checked evidence records, never unverified wrapper
+      // fields or a second unfiltered free-text representation of the result.
+      return { available: true, records, ...(name === 'memory_list' && typeof root.nextCursor === 'string' ? { nextCursor: root.nextCursor } : {}),
+        provenance: { revision: after.revision, sourceEventIds: [...sourceEventIds], sourceMessageIds: [...sourceMessageIds] } };
+    }, signal, name === 'memory_note' || name === 'memory_list', true);
+  }
   async update(scope: BotMemoryScope, input: BotMemoryUpdate, signal?: AbortSignal): Promise<Record<string, unknown>> {
     return this.run(scope, async entry => checked(await this.request(entry, 'bot.update', input, signal)), signal);
   }

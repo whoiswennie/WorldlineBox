@@ -7,6 +7,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
+import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
+import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
 import { BotMemoryService } from '../../src/main/companion-bot/memory-service';
 import { GlobalEmbeddingService } from '../../src/main/embedding-global-service';
 import { VcpEmbeddingGateway } from '../../src/main/vcp-embedding-gateway';
@@ -76,12 +78,15 @@ void app.whenReady().then(async () => {
         embedding: async () => gateway.configuration(GLOBAL_EMBEDDING_SELECTION_ID, await embedding.resolveProfile()),
         chat: async () => ({ baseUrl: model.baseUrl!, model: model.model, apiKey: model.apiKey, apiType: 'openai-completions' }),
       });
-      const brain = new BotDshBrain({ getHost: async () => ({ client }) }), run = brain.run.bind(brain);
+      const worker = new BotDshBrain({ getHost: async () => ({ client }) });
+      const appBrain = new BotAppBrain({ root: path.join(botRoot, 'router'),
+        reconcileTool: (call, signal) => service ? service.reconcileToolReceipt(call, signal) : Promise.resolve({ state: 'unknown' as const }) });
+      const brain = new BotBrainRouter({ app: appBrain, worker }), run = brain.run.bind(brain);
       brain.run = input => run({ ...input, onEvent: event => {
         if (event.type === 'tool_call' && event.callId && event.toolName) nativeCalls.set(`${input.eventId}:${event.callId}`, { eventId: input.eventId, callId: event.callId, name: event.toolName });
         input.onEvent?.(event);
       } });
-      return new BotService({ root: botRoot, brain, memory, media, model: () => ({ ...model, baseUrl: model.baseUrl! }),
+      return new BotService({ root: botRoot, brain, brainRuntime: 'worldlinebox', memory, media, model: () => ({ ...model, baseUrl: model.baseUrl! }),
         retention: { maxTurns: 3 },
         report: error => errors.push({ phase: stage, name: error instanceof Error ? error.name : 'Error', code: String((error as { code?: string })?.code ?? ''), message: safeError(error) }),
         onEvent: event => { if (event.type === 'text') { streamCount++; firstText ||= performance.now(); } } });
@@ -168,7 +173,8 @@ void app.whenReady().then(async () => {
     }
     if (!task || task.status !== 'succeeded') throw new Error('DELEGATED_TASK_NOT_SUCCEEDED');
     const conversation = service.store.getConversation(conversationId)!;
-    const artifact = path.join(botRoot, 'workspaces', createHash('sha256').update(conversation.securityDomainId).digest('hex'), task.id, 'cedar-proof.txt');
+    const artifact = path.join(botRoot, 'workspaces', ...(task.extra.workspaceLayout === 'companion-v1'
+      ? [createHash('sha256').update(task.companionId).digest('hex')] : []), createHash('sha256').update(conversation.securityDomainId).digest('hex'), task.id, 'cedar-proof.txt');
     if ((await readFile(artifact, 'utf8')).trim() !== 'WLB_SUPER_AGENT_OK') throw new Error('DELEGATED_ARTIFACT_INVALID');
     report.task = { count: service.store.listTasks(conversationId).length, status: task.status, artifactVerified: true };
     if (!protocolMode) {

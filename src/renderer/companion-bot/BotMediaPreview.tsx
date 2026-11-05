@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { BotMediaRef, WorldlineBoxBotMediaApi, BotMediaTextPage } from '../../shared/companion-bot-media';
 import { BrowserMarkdown } from '../browser/BrowserMarkdown';
@@ -40,6 +40,7 @@ export function BotMediaPreview({ media, api, conversationId, locale, kind, imag
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   };
   const next = () => { if (!page?.nextOffset || loading) return; const nextOffset = page.nextOffset; setCursors(current => [...current.slice(0, pageIndex + 1), nextOffset]); setPageIndex(pageIndex + 1); };
+  const openDocumentLink = useCallback((url: string) => { onClose(); onOpenUrl(url); }, [onClose, onOpenUrl]);
   const unavailable = decodeFailed || kind === 'image' && !imageUrl;
   return createPortal(<div className="bot-attachment-viewer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className={`bot-attachment-viewer is-${kind}`} ref={box} role="dialog" aria-modal="true" aria-label={media.name} onKeyDown={keyboard}>
@@ -48,7 +49,7 @@ export function BotMediaPreview({ media, api, conversationId, locale, kind, imag
       <div className="bot-attachment-viewer-content" aria-busy={loading}>
         {loading ? <div className="bot-attachment-viewer-empty"><BotIcon name="file" /><strong>{zh ? '正在读取文件…' : 'Reading the file…'}</strong></div>
           : readError || unavailable ? <div className="bot-attachment-viewer-empty" role="alert"><BotIcon name="file" /><strong>{readError ?? (zh ? '暂时无法在此预览这个格式' : 'This format cannot be previewed here')}</strong><p>{zh ? '可以用系统应用打开原文件。' : 'You can open the original file with your system app.'}</p>{readError && <button onClick={() => setRetry(value => value + 1)}>{zh ? '重新读取' : 'Try again'}</button>}</div>
-          : kind === 'text' && page ? page.content ? <div className="bot-attachment-document">{page.format === 'markdown' && !source ? <BrowserMarkdown text={page.content} open={onOpenUrl} /> : <pre>{page.content}</pre>}</div> : <div className="bot-attachment-viewer-empty"><strong>{zh ? '这是一份空文件' : 'This file is empty'}</strong></div>
+          : kind === 'text' && page ? page.content ? <div className="bot-attachment-document">{page.format === 'markdown' && !source ? <BrowserMarkdown text={page.content} open={openDocumentLink} linkAppearance="chat" locale={locale} /> : <pre>{page.content}</pre>}</div> : <div className="bot-attachment-viewer-empty"><strong>{zh ? '这是一份空文件' : 'This file is empty'}</strong></div>
           : kind === 'image' ? <figure className="bot-attachment-picture"><img alt={media.name} src={imageUrl} onError={() => setDecodeFailed(true)} /></figure>
           : kind === 'video' ? <div className="bot-attachment-player"><video controls preload="metadata" playsInline src={media.url} aria-label={media.name} onError={() => setDecodeFailed(true)} /></div>
           : <div className="bot-attachment-audio-player"><span>♫</span><strong>{media.name}</strong><audio controls preload="metadata" src={media.url} aria-label={media.name} onError={() => setDecodeFailed(true)} /></div>}
