@@ -1,0 +1,86 @@
+import { clampFACSState, facsKeys } from "../facs/FACSUtils";
+import { createDefaultFACSState } from "../facs/defaultFACSState";
+import { additiveFACSKeys, maxFACSKeys } from "./PriorityRules";
+export class MotionMixer {
+    mix(input) {
+        let result = createDefaultFACSState();
+        result = this.applyLayer(result, input.idle, "idle");
+        result = this.applyLayer(result, input.emotion, "emotion");
+        result = this.applyLayer(result, input.reaction, "reaction");
+        result = this.applyLayer(result, input.speech, "speech");
+        result = this.applyLayer(result, input.speechPerformance, "speechPerformance");
+        result = this.applyLayer(result, input.manual, "manual");
+        return clampFACSState(result);
+    }
+    applyLayer(base, layer, mode) {
+        if (!layer)
+            return base;
+        const result = { ...base };
+        for (const key of facsKeys) {
+            const value = layer[key];
+            if (typeof value !== "number")
+                continue;
+            if (mode === "manual") {
+                result[key] = value;
+            }
+            else if (mode === "speech") {
+                if (key === "mouthOpen") {
+                    result[key] = Math.max(result[key], value);
+                }
+                else if (key === "browOuterUp") {
+                    result[key] += value;
+                }
+                else if (additiveFACSKeys.has(key)) {
+                    result[key] += value;
+                }
+            }
+            else if (mode === "speechPerformance") {
+                if (key === "mouthOpen" || key === "eyeOpen" || key === "eyeBlinkL" || key === "eyeBlinkR")
+                    continue;
+                if (maxFACSKeys.has(key)) {
+                    result[key] = Math.max(result[key], value);
+                }
+                else {
+                    result[key] += value;
+                }
+            }
+            else if (mode === "idle") {
+                if (key === "breath") {
+                    result[key] = value;
+                }
+                else if (additiveFACSKeys.has(key) || key === "mouthSmile" || key === "browInnerUp") {
+                    result[key] += value;
+                }
+                else {
+                    result[key] = value;
+                }
+            }
+            else if (mode === "emotion") {
+                if (key === "breath") {
+                    result[key] = Math.max(result[key], value);
+                }
+                else if (additiveFACSKeys.has(key) || key === "mouthSmile" || key === "mouthFrown" || key.startsWith("brow")) {
+                    result[key] += value;
+                }
+                else if (maxFACSKeys.has(key)) {
+                    result[key] = Math.max(result[key], value);
+                }
+                else {
+                    result[key] = value;
+                }
+            }
+            else if (mode === "reaction") {
+                if (maxFACSKeys.has(key)) {
+                    result[key] = Math.max(result[key], value);
+                }
+                else if (additiveFACSKeys.has(key)) {
+                    result[key] += value;
+                }
+                else {
+                    result[key] = value;
+                }
+            }
+        }
+        return clampFACSState(result);
+    }
+}

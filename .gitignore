@@ -70,3 +70,10 @@ CLAUDE.md
 resources/speech-models/*.part
 resources/speech-models/*.range-*
 resources/speech-models/*.download-*
+# These vendored packages expose dist as their runtime and type entry points.
+# Retain the distribution with its source so Windows setup's --ignore-scripts
+# installation can resolve both packages in a fresh checkout.
+!vendor/soullink-emotion/engine/dist/
+!vendor/soullink-emotion/engine/dist/**
+!vendor/soullink-emotion/live2d-pixi/dist/
+!vendor/soullink-emotion/live2d-pixi/dist/**

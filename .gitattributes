@@ -21,3 +21,5 @@ public/companion-call/deepseek/**/*.png filter=lfs diff=lfs merge=lfs -text
 public/companion-call/ringtone.wav -text
 tests/fixtures/media/*.wav -text
 tests/fixtures/media/*.mp3 -text
+# Retained third-party TypeScript distributions preserve the compiler's export formatting.
+vendor/soullink-emotion/*/dist/** -whitespace

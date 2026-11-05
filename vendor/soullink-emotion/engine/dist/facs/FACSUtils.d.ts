@@ -1,0 +1,11 @@
+import type { FACSKey, FACSLikeState, PartialFACSLikeState } from "./FACSLikeState";
+export declare const facsKeys: FACSKey[];
+export declare function facsRangeForKey(key: FACSKey): [number, number];
+export declare function clampFACSValue(key: FACSKey, value: number): number;
+export declare function normalizeFACS(partial: PartialFACSLikeState): FACSLikeState;
+export declare function clampFACSState<T extends PartialFACSLikeState>(state: T): T;
+export declare function mergeFACS(base: PartialFACSLikeState, overlay: PartialFACSLikeState): PartialFACSLikeState;
+export declare function addFACS(base: PartialFACSLikeState, overlay: PartialFACSLikeState, weight?: number): PartialFACSLikeState;
+export declare function scaleFACS(state: PartialFACSLikeState, scale: number): PartialFACSLikeState;
+export declare function scaleFACSFromNeutral(state: PartialFACSLikeState, scale: number): PartialFACSLikeState;
+export declare function interpolateFACS(from: PartialFACSLikeState, to: PartialFACSLikeState, t: number): PartialFACSLikeState;
