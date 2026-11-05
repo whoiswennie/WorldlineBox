@@ -70,4 +70,4 @@ node scripts/build-companion-call-sdk.mjs
 
 Galgame 原生窗口验证真实 MP3 的逐步台词、暂停 350ms 后媒体时钟与文字均保持、结束全文停留、后续队列不抢台词，以及音频实际 RMS 驱动的口型峰值（约 0.167）。另核对 light/dark 场景、按需历史、唯一原输入框、表情/录音弹层、草稿收展保留、统一 SVG 控件及展开/多行/收起前后对白位置不变。详见 call-galgame-e2e.log、call-galgame-fixed-caption.log 和 ui/companion-call-galgame-evidence.json；本轮专项单测、类型检查与 ESLint 日志分别为 call-voice-final-unit.log、call-voice-typecheck.log、call-voice-lint.log。
 
-开发代码及本地资源已更新，未发布新的安装包。
+本轮修复已执行项目 Windows Installer 脚本，生成 `out/make/inno/WorldlineBoxSetup.exe`。成品语音验收、字幕/口型/外观修复、Git LFS 模型远程校验及安装包摘要见 [后续修复记录](./companion-call-refinements-2026-11-05.md)。

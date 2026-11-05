@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -37,8 +37,10 @@ const resourcesPath =
   packagePlatform === 'darwin'
     ? path.join(packageRoot, 'WorldlineBox.app', 'Contents', 'Resources')
     : path.join(packageRoot, 'resources');
-if (existsSync(path.join(resourcesPath, 'resources', 'embedding-models'))) {
-  throw new Error('Embedding model resources are duplicated inside the general resources payload. Ship the bundle only once.');
+for (const bundle of ['embedding-models', 'speech-models', 'speech-runtime']) {
+  if (existsSync(path.join(resourcesPath, 'resources', bundle))) {
+    throw new Error(`${bundle} resources are duplicated inside the general resources payload. Ship the bundle only once.`);
+  }
 }
 
 const requiredPaths = [
@@ -88,6 +90,22 @@ if (sqliteVecPackage) {
 const missingPaths = requiredPaths.filter((requiredPath) => !existsSync(requiredPath));
 if (missingPaths.length > 0) {
   throw new Error(`Package is missing required runtime files:\n${missingPaths.join('\n')}`);
+}
+// A package.json alone does not prove the speech binding and its companion
+// DLLs/shared libraries survived ASAR unpacking. Check the entire installed,
+// lockfile-pinned platform payload, including nested files, byte for byte.
+const speechNativePackage = `sherpa-onnx-${packagePlatform === 'win32' ? 'win' : packagePlatform}-${packageArch}`;
+const speechNativeSource = path.join(projectRoot, 'node_modules', speechNativePackage);
+const speechNativePackaged = path.join(resourcesPath, 'app.asar.unpacked', 'node_modules', speechNativePackage);
+const speechNativeFiles = readdirSync(speechNativeSource, { recursive: true, withFileTypes: true }).filter(entry => entry.isFile());
+if (!speechNativeFiles.some(entry => entry.name.endsWith('.node'))) throw new Error('Installed speech platform package has no native binding.');
+for (const entry of speechNativeFiles) {
+  const sourcePath = path.join(entry.parentPath, entry.name);
+  const relative = path.relative(speechNativeSource, sourcePath);
+  const packagedPath = path.join(speechNativePackaged, relative);
+  if (!existsSync(packagedPath) || !readFileSync(sourcePath).equals(readFileSync(packagedPath))) {
+    throw new Error(`Packaged speech native payload is missing or differs from the pinned dependency: ${relative}`);
+  }
 }
 for (const name of ['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml']) {
   const expected = readFileSync(path.join(projectRoot, 'resources', 'dsh-bridge', name));

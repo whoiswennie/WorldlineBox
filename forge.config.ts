@@ -98,6 +98,10 @@ const config: ForgeConfig = {
     },
   },
   packagerConfig: {
+    // npm installs the vendored companion SDK as directory junctions on Windows.
+    // Copy their contents so ordinary builds do not require symlink privileges
+    // and the packaged application never points back into the source checkout.
+    derefSymlinks: true,
     // The Windows launcher verifies and reuses its portable Electron ZIP.
     electronZipDir: process.env.WORLDLINEBOX_ELECTRON_ZIP_DIR,
     icon: appIconBase,

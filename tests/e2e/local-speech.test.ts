@@ -20,6 +20,10 @@ test('real CPU STT prepares offline, dictates, persists playable voice, transcri
   const app = await electron.launch({ ...launch, args: [...launch.args, '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${path.resolve('tests/fixtures/media/sensevoice-zh.wav')}`],
     env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
   try {
+    if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) {
+      const identity = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, appPath: app.getAppPath(), profile: app.getPath('userData') }));
+      expect(identity.packaged).toBe(true); expect(identity.appPath).toMatch(/app\.asar$/u); expect(identity.profile).toBe(profile);
+    }
     await app.evaluate(({ BrowserWindow }) => { for (const window of BrowserWindow.getAllWindows()) { window.hide(); window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false); window.setSize(1400, 950); } });
     const page = await app.firstWindow(), errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
     await page.locator('[data-application-module="companions"]').click();

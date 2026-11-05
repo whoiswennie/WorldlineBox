@@ -10,4 +10,12 @@
 
 语音识别 ONNX、内嵌向量 GGUF、Live2D MOC3 与贴图纳入 Git LFS；词表、模型 JSON、授权、声音和测试用中文样本保留在普通 Git。新环境执行 `git lfs pull` 后可还原运行资源。`resources/speech-models/tokens.txt` 与 Live2D 运行资源禁止自动换行符转换，避免破坏校验及模型文件。
 
+Windows 打包复制本地 SDK junction 时展开为真实目录，避免要求创建符号链接的系统权限，成品也不会依赖源工作区路径。语音模型和 worker 从通用工具导出中排除，各由独立资源入口分发一次，门禁拒绝嵌套重复副本。发布门禁逐字节核对 sherpa 平台包的原生绑定及全部配套动态库，并重新验证成品中的模型、词表和 worker。原生语音验收支持 `WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE`，此模式还会核对实际运行的是 ASAR 安装版及独立资料目录。
+
 验证覆盖：语音展示归属、开关与中断、字素分页、手动浏览和恢复跟随、真实音频暂停与口型、真实 Electron 生成至播放全过程、长回复及历史定位、默认皮肤强度和持久化。验收使用隔离资料目录、受控本地消息和留存音频，不发起付费模型调用。
+
+Windows 成品 ASAR 语音验收于 2026-11-05 通过（去重后的最终应用包为 26.3 秒）：离线准备真实 CPU 模型、Chromium 模拟麦克风录音、原输入框转写、语音消息持久化与播放、78 秒附件分段识别、跨会话访问拒绝、超长录音拒绝和取消清理。验收直接启动 `out/WorldlineBox-win32-x64/WorldlineBox.exe`，不使用开发目录主程序或外置模型替代包内资源。
+
+11 项 LFS 资源共 1,034,428,445 字节已成功上传。另指定全新空 LFS 对象目录，从 GitHub 回下载 SenseVoice INT8（239,233,841 字节）及 VAD（1,807,522 字节），两者大小与 SHA-256 均匹配固定清单，确认远程保存了实际模型字节。
+
+项目 `scripts/windows.ps1 -Action Installer` 于 2026-11-05 19:38（Asia/Shanghai）完整成功，生成 `out/make/inno/WorldlineBoxSetup.exe`，1,709,956,576 字节，SHA-256 为 `98be9f42a09ddddb1faed3f2aecd71fb0ed4c9c0eede8907d6c2e4ee4edb548e`。脚本包含完整类型检查、Forge 生产构建、成品资源校验与 Inno 编译；安装器保留为本地构建产物，源码及模型资源由 Git/Git LFS 记录。
