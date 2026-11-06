@@ -23,13 +23,16 @@ test('manages saved personas through actual packaged IPC without changing anothe
     expect(identity.offscreen).toBe(true);
     if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) { expect(identity.packaged).toBe(true); expect(identity.appPath).toMatch(/app\.asar$/u); }
     await writeFile(testInfo.outputPath('persona-identity.json'), JSON.stringify(identity, null, 2));
+    // firstWindow() can resolve before the startup renderer handoff finishes.
+    // Wait for the real application shell before testing persistence by reload.
+    await expect(page.locator('[data-application-module="companions"]')).toBeVisible();
     await page.evaluate(() => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'light' })));
     await page.reload(); await page.locator('[data-application-module="companions"]').click();
     await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
     const otherBefore = await page.evaluate(() => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'companion.personas.get', companionId: 'gpt', id: 'default' }));
     expect(otherBefore.ok).toBe(true);
-    await page.getByRole('button', { name: '编辑伙伴', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: '编辑伙伴 · 大肥鱼', exact: true });
+    await page.getByRole('button', { name: '角色卡', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '角色卡 · 大肥鱼', exact: true });
     await expect(dialog).toBeVisible();
     const templates = dialog.locator('.bot-personas');
     await expect(templates.locator('.bot-personas__row')).toHaveCount(5);
@@ -69,7 +72,7 @@ test('manages saved personas through actual packaged IPC without changing anothe
     await templates.getByRole('textbox', { name: '模板名称', exact: true }).fill('星海老友');
     await templates.getByRole('button', { name: '保存修改', exact: true }).click();
     await expect(templates.getByRole('button', { name: '星海老友 · 使用中', exact: true })).toBeVisible();
-    await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '编辑伙伴', exact: true }).click();
+    await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
     await expect(templates.getByRole('textbox', { name: '模板名称', exact: true })).toHaveValue('星海老友');
     await expect(templates.locator('.bot-personas__row')).toHaveCount(6);
     await templates.getByRole('button', { name: '删除模板', exact: true }).click(); await templates.getByRole('button', { name: '确认删除', exact: true }).click();
@@ -84,7 +87,7 @@ test('manages saved personas through actual packaged IPC without changing anothe
     for (const size of [{ width: 1440, height: 960 }, { width: 850, height: 720 }]) {
       await application.evaluate(({ BrowserWindow }, nextSize) => { const window = BrowserWindow.getAllWindows()[0]!; window.setMinimumSize(0, 0); window.setSize(nextSize.width, nextSize.height); }, size);
       await page.evaluate(() => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'dark' })));
-      await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '编辑伙伴', exact: true }).click();
+      await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
       await expect(templates.locator('.bot-personas__row')).toHaveCount(5);
       const geometry = await dialog.evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth, panel: element.getBoundingClientRect().toJSON(), footer: element.querySelector('.bot-personas__editor-footer')!.getBoundingClientRect().toJSON() }));
       expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width); expect(geometry.footer.bottom).toBeLessThanOrEqual(geometry.panel.bottom + 1);

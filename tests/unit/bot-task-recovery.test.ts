@@ -11,6 +11,7 @@ import type { BotTask } from '../../src/main/companion-bot/types';
 import type { BotWorkerEffectInspection } from '../../src/shared/companion-bot-task';
 import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
 import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
+import { DshHostUnavailableError } from '../../src/main/dsh/host-errors';
 
 class MemoryBoundary extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw new Error('VCP fixture boundary'); }, embedding: async () => { throw new Error('VCP fixture boundary'); } }); }
@@ -69,7 +70,7 @@ afterEach(async () => {
     await rm(item.root, { recursive: true, force: true });
   }
 });
-async function fixture(brain = new BrainBoundary(), options: Partial<Pick<BotServiceOptions, 'activityBudget' | 'model'>> | undefined = undefined) {
+async function fixture(brain = new BrainBoundary(), options: Partial<Pick<BotServiceOptions, 'activityBudget' | 'model' | 'resumeTaskRuntime'>> | undefined = undefined) {
   const root = await mkdtemp(path.join(tmpdir(), 'wlb-task-recovery-')), memory = new MemoryBoundary(root);
   const owner = { root, services: [] as BotService[] }; owned.push(owner);
   const open = (next: BrainBoundary) => {
@@ -133,6 +134,88 @@ it('retries an unknown worker outcome with the same work event, task and prompt 
   expect(notices[0]?.taskNotice).toMatchObject({ taskId: task.id, kind: 'task_done', replyMessageId: expect.any(String) });
   const naturalReply = f.service.store.getMessage(notices[0]!.taskNotice!.replyMessageId!);
   expect(naturalReply?.senderId).toBe(DEFAULT_BOT_COMPANION_ID); expect(naturalReply?.taskNotice).toBeUndefined();
+});
+
+it('retains unconfigured work as resumable without inventing a native admission or repeatedly calling the executor', async () => {
+  const brain = new BrainBoundary(); brain.worker = async () => { throw new DshHostUnavailableError('configuration', '请先安装 DSH'); };
+  let starts = 0;
+  const f = await fixture(brain, { resumeTaskRuntime: async () => { starts++; } }), task = f.task();
+  await nudge(f.service, f.conversationId, 'missing-runtime');
+  await waitFor(() => f.service.store.getTask(task.id)?.status === 'paused');
+  expect(currentExtra(f.service, task)).toMatchObject({ nativeAttempted: false, userPaused: true, executorInterruption: { reason: 'configuration' } });
+  expect(currentExtra(f.service, task).executorControl).toBeUndefined();
+  await nudge(f.service, f.conversationId, 'still-chatting');
+  expect(brain.calls.filter(call => call.role === 'worker')).toHaveLength(1); expect(brain.stops).toEqual([]);
+  brain.worker = async () => '安装运行环境后沿原任务完成';
+  await f.service.handle({ type: 'task.control', operation: 'resume_paused', conversationId: f.conversationId, taskId: task.id, requestId: 'resume-configured' });
+  await waitFor(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+  const calls = brain.calls.filter(call => call.role === 'worker');
+  expect(starts).toBe(1); expect(calls[1]?.resumeHost).toBe(true);
+  expect(calls[1]).toMatchObject({ laneId: calls[0]!.laneId, eventId: calls[0]!.eventId, cwd: calls[0]!.cwd, prompt: calls[0]!.prompt });
+  expect(f.service.store.listTasks()).toHaveLength(1);
+});
+
+it('bounds startup failures and releases execution slots while preserving work for explicit recovery', async () => {
+  const brain = new BrainBoundary(); let brokenLane = '';
+  brain.worker = async input => { if (input.laneId === brokenLane) throw new DshHostUnavailableError('startup', 'Host startup failed', 'original-host'); return '另一项任务已完成'; };
+  const f = await fixture(brain), task = f.task(); brokenLane = `worker-${task.id}`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    f.service.store.updateTask(task.id, { extra: { ...currentExtra(f.service, task), retryAt: 0 } });
+    await nudge(f.service, f.conversationId, `startup-${attempt}`);
+    await waitFor(() => Number(currentExtra(f.service, task).retryAttempts) === attempt);
+  }
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
+  expect(currentExtra(f.service, task).nativeAttempted).toBe(false);
+  const other = f.task(); await nudge(f.service, f.conversationId, 'unblocked');
+  await waitFor(() => f.service.store.getTask(other.id)?.status === 'succeeded');
+  expect(brain.calls.filter(call => call.laneId === brokenLane)).toHaveLength(3);
+});
+
+it('immediately pauses only tasks bound to a manually closed instance and preserves that pause across restart', async () => {
+  const brain = new BrainBoundary(), gate = deferred<string>();
+  brain.worker = input => waitAbortably(input, gate.promise);
+  const f = await fixture(brain), task = f.task();
+  f.service.store.setMetadata(`native-host:worker-${task.id}`, 'closed-instance');
+  const other = f.task({ retryAt: Date.now() + 60000 });
+  f.service.store.setMetadata(`native-host:worker-${other.id}`, 'other-instance');
+  await nudge(f.service, f.conversationId, 'run-before-close');
+  await waitFor(() => brain.calls.some(call => call.laneId === `worker-${task.id}`));
+  f.service.workerInstanceStopped('closed-instance');
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
+  expect(f.service.store.getTask(other.id)?.status).toBe('queued');
+  const paused = currentExtra(f.service, task);
+  expect(paused.timerStartedAt).toBeUndefined(); expect(paused.executorInterruption).toMatchObject({ reason: 'stopped' });
+  await nudge(f.service, f.conversationId, 'no-revival');
+  expect(currentExtra(f.service, task).elapsedMs).toBe(paused.elapsedMs);
+  expect(brain.calls.filter(call => call.laneId === `worker-${task.id}`)).toHaveLength(1);
+  await f.service.shutdown(); const next = new BrainBoundary(), restarted = f.reopen(next);
+  await restarted.handle({ type: 'state', conversationId: f.conversationId });
+  expect(restarted.store.getTask(task.id)?.status).toBe('paused');
+  expect(next.calls.filter(call => call.laneId === `worker-${task.id}`)).toEqual([]);
+  await restarted.handle({ type: 'task.control', operation: 'resume_paused', conversationId: f.conversationId, taskId: task.id, requestId: 'resume-original-host' });
+  await waitFor(() => restarted.store.getTask(task.id)?.status === 'succeeded');
+  expect(next.calls.find(call => call.laneId === `worker-${task.id}`)).toMatchObject({ eventId: `work-${task.id}`, resumeHost: true });
+  expect(restarted.store.getMetadata(`native-host:worker-${task.id}`)).toBe('closed-instance');
+});
+
+it('stops an unsuccessful reconnect loop after five attempts and resumes the same durable work only on request', async () => {
+  const brain = new BrainBoundary(); brain.worker = async () => { throw new BotDshDeliveryUnknownError('connection lost', 'stream'); };
+  const f = await fixture(brain), task = f.task();
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    f.service.store.updateTask(task.id, { extra: { ...currentExtra(f.service, task), retryAt: 0 } });
+    await nudge(f.service, f.conversationId, `interruption-${attempt}`);
+    await waitFor(() => Number(currentExtra(f.service, task).retryAttempts) === attempt);
+  }
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
+  expect(currentExtra(f.service, task)).toMatchObject({ nativeAttempted: true, retryAttempts: 5, executorInterruption: { reason: 'interrupted' } });
+  await nudge(f.service, f.conversationId, 'no-loop');
+  expect(brain.calls.filter(call => call.role === 'worker')).toHaveLength(5);
+  brain.worker = async () => '原任务已恢复完成';
+  await f.service.handle({ type: 'task.control', operation: 'resume_paused', conversationId: f.conversationId, taskId: task.id, requestId: 'resume-interrupted' });
+  await waitFor(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+  const calls = brain.calls.filter(call => call.role === 'worker');
+  expect(new Set(calls.map(call => call.eventId))).toEqual(new Set([`work-${task.id}`]));
+  expect(new Set(calls.map(call => call.cwd)).size).toBe(1); expect(new Set(calls.map(call => call.prompt)).size).toBe(1);
 });
 
 it('persists a worker failure and its single source-bound brain notification across a restart', async () => {
@@ -420,6 +503,7 @@ it('deduplicates stable guidance IDs, rejects changed content and retains pendin
 
 it('uses the real HTTP question channel, validates original choices and frees running slots while waiting', async () => {
   const f = await fixture(), questionTask = f.task(), work = deferred<string>();
+  f.service.store.updateCompanion(DEFAULT_BOT_COMPANION_ID, { name: '大肥鱼', workerConcurrency: 2 });
   const callId = 'native-ask-1', id = questionId(questionTask, callId), questions = [{ id: 'format', question: '请选择输出格式', options: [{ label: 'JSON' }, { label: 'Markdown' }] }];
   let questionInput: BotDshRun | undefined, answered: unknown;
   f.brain.worker = async input => {

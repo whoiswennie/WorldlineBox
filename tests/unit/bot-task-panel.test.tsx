@@ -3,7 +3,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BotTaskPanel } from '../../src/renderer/companion-bot/BotTaskPanel';
-import { BotTaskNotice, botTaskNoticeVisible } from '../../src/renderer/companion-bot/BotTaskNotice';
+import { BotTaskNotice } from '../../src/renderer/companion-bot/BotTaskNotice';
 import type { BotCompanion, BotRequest, BotResponse, BotTask } from '../../src/shared/companion-bot';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -105,21 +105,11 @@ it('opens an old task by its trusted notice ID without rendering or parsing raw 
   expect(host.textContent).not.toContain('SECRET'); await click('查看任务 · 任务有新进展'); expect(open).toHaveBeenCalledWith('task-old-not-in-snapshot');
 });
 
-it('hides a transport notice only after its own visible natural reply has actually been sent', () => {
-  const notice = { id: 'notice', eventId: 'e', conversationId: 'room', senderId: 'task-service', senderName: '任务回执', content: 'RAW', sequence: 1, status: 'sent' as const, createdAt, taskNotice: { taskId: 't', kind: 'task_done' as const, replyMessageId: 'reply' } };
-  const reply = { ...notice, id: 'reply', senderId: 'fish', senderName: '大肥鱼', taskNotice: undefined, content: '结果已经整理好。' };
-  expect(botTaskNoticeVisible(notice, [{ ...reply, status: 'running' }])).toBe(true);
-  expect(botTaskNoticeVisible(notice, [{ ...reply, status: 'failed' }])).toBe(true);
-  expect(botTaskNoticeVisible(notice, [{ ...reply, content: '' }])).toBe(true);
-  expect(botTaskNoticeVisible(notice, [{ ...reply, conversationId: 'other-room' }])).toBe(true);
-  expect(botTaskNoticeVisible(notice, [reply])).toBe(false);
-});
-
 it('limits the transport notice title to a compact label without exposing its long goal', async () => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   const task = { ...tasks[0]!, title: '一个很长的任务标题'.repeat(12) };
   await act(() => root!.render(<BotTaskNotice locale="zh-CN" tasks={[task]} onOpen={() => undefined} message={{ id: 'n', eventId: 'e', conversationId: 'room', senderId: 'task-service', senderName: '任务回执', createdAt, sequence: 1, status: 'sent', content: 'RAW', taskNotice: { taskId: task.id, kind: 'task_progress' } }} />));
-  expect(host.querySelector('.bot-task-notice-title')?.textContent?.length).toBe(32);
+  expect(host.querySelector('.bot-task-notice-title')?.textContent?.length).toBe(64);
   expect(host.textContent).not.toContain('完整原始要求');
 });
 
@@ -127,10 +117,14 @@ it('keeps the real responsible identity on an old receipt outside the task snaps
   host = document.createElement('div'); document.body.append(host); root = createRoot(host); const open = vi.fn();
   await act(() => root!.render(<BotTaskNotice locale="zh-CN" tasks={[]} onOpen={open} companions={[]}
     message={{ id: 'n', eventId: 'e', conversationId: 'room', senderId: 'task-service', senderName: '任务回执', createdAt, sequence: 1, status: 'sent', content: 'RAW SECRET',
-      taskNotice: { taskId: 'old', kind: 'task_progress', companionId: 'gpt', companionName: 'GPT', title: '列桌面的歌曲' } }} />));
+      taskNotice: { taskId: 'old', kind: 'task_progress', companionId: 'gpt', companionName: 'GPT', title: '列桌面的歌曲', status: 'succeeded' } }} />));
   expect(host.querySelector('[data-task-owner]')?.getAttribute('data-task-owner')).toBe('gpt');
   expect(host.querySelector('.bot-task-notice-meta strong')?.textContent).toBe('GPT');
   expect(host.querySelector('.bot-task-notice-title')?.textContent).toBe('列桌面的歌曲');
+  expect(host.querySelector('[data-task-state]')?.getAttribute('data-task-state')).toBe('succeeded');
+  expect(host.querySelector('.bot-task-notice-state')?.textContent).toBe('已完成');
+  expect(host.querySelector('.bot-task-notice-open')?.getAttribute('aria-describedby')).toBe(host.querySelector('.bot-task-notice-state')?.id);
+  expect(host.querySelector('.bot-task-notice-footer')?.textContent).toBe('任务记录查看详情');
   expect(host.querySelector('time')?.getAttribute('datetime')).toBe(createdAt);
   expect(host.querySelector('time')?.textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/u);
   expect(host.textContent).not.toContain('RAW SECRET');

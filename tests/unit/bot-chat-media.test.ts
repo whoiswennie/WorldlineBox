@@ -1,5 +1,5 @@
-import { afterEach, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { afterEach, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -11,6 +11,7 @@ import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companion
 import { botRequestSchema } from '../../src/shared/companion-bot';
 import type { BotMediaRef } from '../../src/shared/companion-bot-media';
 import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
+import type { BotScheduler } from '../../src/main/companion-bot/scheduler';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
 class Memory extends BotMemoryService {
@@ -84,6 +85,83 @@ it('gives the actual brain original sticker filenames, semantic descriptions and
   await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '你好', requestId: 'source-name-search' });
   await waitFor(() => result !== undefined);
   expect(result).toMatchObject({ stickers: expect.arrayContaining([expect.objectContaining({ id: selected.id, originalName: selected.originalName, name: selected.name, description: selected.description, tags: selected.tags })]) });
+});
+
+it('drains a gated attachment preparation on shutdown and aborts before another media directory operation or model call', async () => {
+  const brain = new Brain(), f = await fixture(brain), ref = await userFile(f, 'prepare-before-close.txt');
+  const original = f.media.verifiedLocalFile.bind(f.media); let entered = false, checked = false, incoming: AbortSignal | undefined, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.media.verifiedLocalFile = async (conversationId, id, signal) => { entered = true; incoming = signal; await gate; checked = true; return original(conversationId, id, signal); };
+  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验这个附件', attachmentIds: [ref.id], requestId: 'shutdown-preparing-file' });
+  await waitFor(() => entered);
+  let closed = false; const closing = f.service.shutdown().then(() => { closed = true; });
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve)); expect(incoming?.aborted).toBe(true); expect(closed).toBe(false); expect(checked).toBe(false);
+  } finally { release(); await closing; }
+  expect(checked).toBe(true); expect(brain.calls).toEqual([]);
+  // A pre-aborted inventory cannot recreate a directory after its owner has
+  // removed the media workspace, even when it was delayed before I/O began.
+  await rm(path.join(f.root, 'media'), { recursive: true, force: true });
+  await expect(original(f.conversationId, ref.id, incoming)).rejects.toBe(incoming!.reason);
+  await expect(stat(path.join(f.root, 'media'))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('fences a model that returns after the bounded scheduler drain without accessing closed SQLite', async () => {
+  let entered = false, returned = false, release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(new Brain(async () => { entered = true; await gate; returned = true; return '关闭后的迟到回复'; }));
+  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '你好', requestId: 'late-provider-after-close' });
+  await waitFor(() => entered);
+  // Exercise the scheduler's explicit deadline without making this fixture
+  // sleep for the production five-second grace period.
+  await (f.service as unknown as { scheduler: BotScheduler }).scheduler.close(20); await f.service.shutdown();
+  const timing = vi.spyOn(f.service.store, 'recordTurnTiming'), state = vi.spyOn(f.service.store, 'getEvent');
+  try {
+    release(); await waitFor(() => returned); await new Promise<void>(resolve => setImmediate(resolve));
+    expect(timing).not.toHaveBeenCalled(); expect(state).not.toHaveBeenCalled();
+  } finally { timing.mockRestore(); state.mockRestore(); release(); }
+});
+
+it('keeps pause immediate and prevents the resumed worker from overlapping its cancelled attachment preparation', async () => {
+  let taskId = '', release!: () => void, stages = 0, oldFinished = false, overlap = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const brain = new Brain(async input => {
+    if (input.role === 'worker') return '原任务附件核验完成';
+    if (JSON.parse(input.prompt).trigger.source === 'user') taskId = String((await callback(input, 'dsh_task', 'prepare-pause-resume', { title: '暂停附件准备', goal: '核验用户明确提供的附件' })).result!.taskId);
+    return '已收到';
+  });
+  const f = await fixture(brain), ref = await userFile(f, 'pause-stage.txt'), original = f.media.stageForTask.bind(f.media);
+  f.media.stageForTask = async input => {
+    if (++stages === 1) { try { await gate; return await original(input); } finally { oldFinished = true; } }
+    overlap = !oldFinished; return original(input);
+  };
+  try {
+    await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验这个原始附件', attachmentIds: [ref.id], requestId: 'pause-during-staging' });
+    await waitFor(() => stages === 1 && !!taskId);
+    const paused = await f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId, operation: 'pause', requestId: 'pause-staging-now' });
+    expect(paused.ok).toBe(true); expect(f.service.store.getTask(taskId)?.status).toBe('paused'); expect(f.service.store.getTask(taskId)?.extra.timerStartedAt).toBeUndefined();
+    await f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId, operation: 'resume_paused', requestId: 'resume-same-staging' });
+    await new Promise<void>(resolve => setImmediate(resolve)); expect(stages).toBe(1); expect(f.service.store.getTask(taskId)?.status).toBe('queued');
+    release(); await waitFor(() => f.service.store.getTask(taskId)?.status === 'succeeded');
+    expect(stages).toBe(2); expect(overlap).toBe(false); expect(brain.calls.filter(input => input.role === 'worker')).toHaveLength(1);
+  } finally { release(); }
+});
+
+it('drains cancelled worker staging before closing resources and prevents late workspace writes', async () => {
+  let taskId = '', release!: () => void, stage: Parameters<BotMediaService['stageForTask']>[0] | undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const brain = new Brain(async input => {
+    if (input.role !== 'worker' && JSON.parse(input.prompt).trigger.source === 'user') taskId = String((await callback(input, 'dsh_task', 'prepare-shutdown', { title: '关闭附件准备', goal: '核验用户提供的附件' })).result!.taskId);
+    return '已收到';
+  });
+  const f = await fixture(brain), ref = await userFile(f, 'shutdown-stage.txt'), original = f.media.stageForTask.bind(f.media);
+  f.media.stageForTask = async input => { stage = input; await gate; return original(input); };
+  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验附件', attachmentIds: [ref.id], requestId: 'shutdown-during-staging' });
+  await waitFor(() => !!stage && !!taskId); let closed = false; const closing = f.service.shutdown().then(() => { closed = true; });
+  try { await new Promise<void>(resolve => setImmediate(resolve)); expect(stage!.signal?.aborted).toBe(true); expect(closed).toBe(false); }
+  finally { release(); await closing; }
+  expect(brain.calls.filter(input => input.role === 'worker')).toEqual([]);
+  await expect(stat(path.join(stage!.destination, 'attachments'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('persists original text and canonical file bytes while denying other-chat, unsent-draft and withdrawn source access to the brain', async () => {

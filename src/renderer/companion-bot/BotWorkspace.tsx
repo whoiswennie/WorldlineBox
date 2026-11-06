@@ -8,14 +8,14 @@ import { BotWorldScene } from './BotWorldScene';
 import { BotMessageBody } from './BotMessageBody';
 import { BotTaskFollowupReceipt } from './BotTaskFollowupReceipt';
 import { BotTaskPanel } from './BotTaskPanel';
-import { BotTaskNotice, botTaskNoticeVisible } from './BotTaskNotice';
+import { BotTaskNotice } from './BotTaskNotice';
 import { BotPeerAvatar } from './BotPeerAvatar';
 import { BotAvatar } from './BotAvatar';
 import { BotCallWindow, type BotCallComposerOptions, type BotCallComposerSendBridge } from './BotCallWindow';
 import { BotPresenceSummary, BotPresenceText, useBotTaskUpdates } from './BotPresence';
 import { botTaskActive, botTaskCanFollow, botTaskTitle } from './task-presentation';
 import { builtinBotCompanion } from '../../shared/builtin-bot-companions';
-import { BotCompanionEditor, type BotCompanionEditorDraft } from './BotCompanionEditor';
+import { BotCompanionEditor, type BotCompanionEditorDraft, type BotCompanionSettingsSection } from './BotCompanionEditor';
 import { BotGroupMembers } from './BotGroupMembers';
 import { useBotConversationUpdates } from './BotConversationActivity';
 import './bot-peer-observation.css';
@@ -29,7 +29,6 @@ import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companio
 import type { WorldlineBoxBotSpeechApi } from '../../shared/companion-bot-speech';
 import { BotChatContext } from './BotChatContext';
 import { BotExecutorNotice } from './BotExecutorNotice';
-import { CompanionCapabilitiesDialog } from '../launcher/CompanionCapabilities';
 import { isBotFilePaste } from './clipboard-paste';
 import type { WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 const ignoreLink = () => undefined;
@@ -50,7 +49,7 @@ const copy = {
     intro: '对话会一直保留在这里。伙伴可以查询记忆，也可以把工作交给执行器。', send: '发送', placeholder: '发消息，Enter 发送，Shift + Enter 换行',
     name: '名字', persona: '人格与相处方式', create: '创建', save: '保存', cancel: '取消', settings: '模型设置', memory: '记忆', tasks: '任务',
     search: '查询', remember: '记住', memoryPlaceholder: '查询过去的事实，或保存一条明确的信息', noTasks: '还没有独立任务', stop: '停止', more: '查看更早消息',
-    groupTitle: '聊天名称', members: '参与伙伴', loading: '正在打开伙伴…', unavailable: '伙伴服务尚未连接', edit: '编辑伙伴',
+    groupTitle: '聊天名称', members: '参与伙伴', loading: '正在打开伙伴…', unavailable: '伙伴服务尚未连接', edit: '角色卡',
     working: '正在回复', queued: '等待回复', failed: '回复失败', cancelled: '已停止', worldEvent: '发布世界事件', ready: '已就绪', boot: '按需启动',
     close: '关闭', noMemory: '没有匹配的记忆', runtime: '运行信息', brainEngine: 'WorldlineBox 主脑', taskEngine: 'DSH 任务执行器', memoryEngine: 'VCP Memory 记忆', error: '操作失败，请稍后重试。', user: '我', connected: '持续对话', scene: '世界场景',
     modelWindow: '模型上下文窗口', estimatedWindow: '模型窗口（保守估计）', windowSource: '规格来源', capacityEstimate: '容量检查使用 UTF-8 字节上界估算。',
@@ -65,7 +64,7 @@ const copy = {
     intro: 'Your conversation stays here. Companions can recall memories and delegate work.', send: 'Send', placeholder: 'Message · Enter to send · Shift + Enter for a new line',
     name: 'Name', persona: 'Personality and relationship', create: 'Create', save: 'Save', cancel: 'Cancel', settings: 'Model settings', memory: 'Memory', tasks: 'Tasks',
     search: 'Search', remember: 'Remember', memoryPlaceholder: 'Find past facts or save something specific', noTasks: 'No independent tasks yet', stop: 'Stop', more: 'Earlier messages',
-    groupTitle: 'Chat name', members: 'Participants', loading: 'Opening companions…', unavailable: 'Companion service is not connected', edit: 'Edit companion',
+    groupTitle: 'Chat name', members: 'Participants', loading: 'Opening companions…', unavailable: 'Companion service is not connected', edit: 'Character card',
     working: 'Responding', queued: 'Queued', failed: 'Reply failed', cancelled: 'Stopped', worldEvent: 'Publish world event', ready: 'Ready', boot: 'Starts when needed',
     close: 'Close', noMemory: 'No matching memories', runtime: 'Runtime', brainEngine: 'WorldlineBox brain', taskEngine: 'DSH task executor', memoryEngine: 'VCP Memory', error: 'The operation failed. Try again.', user: 'Me', connected: 'Continuous conversation', scene: 'World scene',
     modelWindow: 'Model context window', estimatedWindow: 'Model window (conservative estimate)', windowSource: 'Specification source', capacityEstimate: 'Capacity checks use a UTF-8 byte upper-bound estimate.',
@@ -85,9 +84,9 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const [drafts, setDrafts] = useState<Record<string, string>>({}), [busy, setBusy] = useState(false), [streams, setStreams] = useState<Record<string, string>>({});
   const [dialog, setDialog] = useState<'companion' | 'group' | 'world' | null>(null), [editing, setEditing] = useState<BotCompanion>();
   const [editorEpoch, setEditorEpoch] = useState(0);
+  const [editorSection, setEditorSection] = useState<BotCompanionSettingsSection>('templates');
   const dialogEpoch = useRef(0);
   const [panel, setPanel] = useState<'memory' | 'tasks' | 'history' | null>(null);
-  const [capabilitiesCompanion, setCapabilitiesCompanion] = useState<BotCompanion | null>(null);
   const [focusedTaskId, setFocusedTaskId] = useState<string>();
   const [followups, setFollowups] = useState<Record<string, TaskFollowup>>({});
   const [callTarget, setCallTarget] = useState<{ conversationId: string; companionId: string }>();
@@ -310,20 +309,20 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
     finally { activeImports.current.delete(origin); setImports(current => ({ ...current, [origin]: false })); }
   };
   const closeDialog = () => { ++dialogEpoch.current; setDialog(null); setEditing(undefined); };
-  const saveDialog = async ({ name, persona, members, groupMode }: BotCompanionEditorDraft, epoch: number): Promise<BotResponse> => {
+  const saveDialog = async ({ name, persona, members, groupMode, workerConcurrency }: BotCompanionEditorDraft, epoch: number): Promise<BotResponse> => {
     const input: BotRequest = dialog === 'companion'
-      ? editing ? { type: 'companion.update', companionId: editing.id, name, ...(persona !== undefined ? { persona } : {}) } : { type: 'companion.create', name, persona: persona ?? '' }
+      ? editing ? { type: 'companion.update', companionId: editing.id, name, ...(persona !== undefined ? { persona } : {}), ...(workerConcurrency !== undefined ? { workerConcurrency } : {}) } : { type: 'companion.create', name, persona: persona ?? '', ...(workerConcurrency !== undefined ? { workerConcurrency } : {}) }
       : { type: 'conversation.create', title: name, kind: dialog === 'world' ? 'world' : 'group', memberIds: members,
         ...(dialog === 'group' ? { participationMode: groupMode } : {}) };
     let result: BotResponse;
     try { result = api ? await api.request(input) : { ok: false, error: t.unavailable }; }
     catch { result = { ok: false, error: t.error }; }
     // An old save may finish after cancel/reopen. It cannot close another draft.
-    if (result.ok && dialogEpoch.current === epoch) { closeDialog(); if (result.conversationId) selectConversation(result.conversationId); await refresh(result.conversationId); }
+    if (result.ok && dialogEpoch.current === epoch) { if (!editing) closeDialog(); if (result.conversationId) selectConversation(result.conversationId); await refresh(result.conversationId); }
     return result;
   };
-  const startDialog = (kind: 'companion' | 'group' | 'world', target?: BotCompanion) => {
-    setEditorEpoch(++dialogEpoch.current); setDialog(kind); setEditing(target); setError('');
+  const startDialog = (kind: 'companion' | 'group' | 'world', target?: BotCompanion, section: BotCompanionSettingsSection = 'templates') => {
+    setEditorEpoch(++dialogEpoch.current); setDialog(kind); setEditing(target); setEditorSection(section); setError('');
   };
   const earlier = async () => {
     const before = messages[0]?.sequence; if (!before || paging.current) return;
@@ -413,11 +412,10 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
         {companion && conversation?.kind === 'direct' && conversation.memberIds.includes('user') && <button className="bot-call-entry" disabled={companion.enabled === false} aria-label={locale === 'zh-CN' ? '拨打伙伴电话' : 'Call companion'} title={locale === 'zh-CN' ? '发起文字会面' : 'Start a text conversation'} onClick={() => setCallTarget({ conversationId: selected, companionId: companion.id })}><BotIcon name="phone" /><span>{locale === 'zh-CN' ? '拨号' : 'Call'}</span></button>}
         {conversation && !observing && <button className="bot-chat-tasks" aria-pressed={panel === 'tasks'} title={unreadTaskUpdates ? locale === 'zh-CN' ? '本次打开后收到的任务更新；打开工作台查看' : 'Task updates received since opening; view in the task workspace' : conversation.kind === 'group' ? locale === 'zh-CN' ? '查看本群各位伙伴的任务' : 'Tasks owned by companions in this group' : undefined} onClick={() => panel === 'tasks' ? setPanel(null) : openTask()}><BotIcon name="tasks" />{conversation.kind === 'group' ? locale === 'zh-CN' ? '群任务' : 'Group tasks' : t.tasks}{currentTaskCount > 0 && <span>{currentTaskCount}</span>}{unreadTaskUpdates > 0 && <span className="bot-task-updates" data-count={unreadTaskUpdates} aria-label={locale === 'zh-CN' ? `${unreadTaskUpdates} 项任务有新动态` : `${unreadTaskUpdates} tasks with new updates`}>{locale === 'zh-CN' ? '新动态' : 'Updates'} <b>{unreadTaskUpdates > 99 ? '99+' : unreadTaskUpdates}</b></span>}</button>}
         {conversation && <button className="bot-context-toggle" aria-label={locale === 'zh-CN' ? '切换聊天信息' : 'Toggle chat information'} aria-expanded={showContext} onClick={() => setShowContext(!showContext)}><BotIcon name={showContext ? 'panel-collapse' : 'panel-expand'} /></button>}
-        {launcherApi && companion && conversation?.kind === 'direct' && <button onClick={() => setCapabilitiesCompanion(companion)}><BotIcon name="sparkles" />{locale === 'zh-CN' ? '能力' : 'Capabilities'}</button>}
         {companion && conversation?.kind === 'direct' && <button onClick={() => startDialog('companion', companion)}><BotIcon name="profile" />{t.edit}</button>}
       </nav></header>
       {error && <div className="bot-error" role="alert">{error}<button aria-label={t.close} onClick={() => setError('')}>×</button></div>}
-      <BotExecutorNotice api={launcherApi} zh={locale==='zh-CN'} onOpenLauncher={onOpenLauncher} />
+      <BotExecutorNotice api={launcherApi} zh={locale==='zh-CN'} companionIds={participants.map(person=>person.id)} onOpenLauncher={onOpenLauncher} />
       {showWorld && conversation?.kind === 'world' && api && companion && <BotWorldScene key={`${selected}:${companion.id}`} api={api} conversationId={selected} companionId={companion.id} isActive={isActive} />}
       <div className="bot-chat-body">
         <section className={`bot-thread-column${draggingFiles ? ' is-file-drag' : ''}`} aria-label={conversation?.title ?? t.title}
@@ -432,7 +430,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
             {browsingHistory && <div className="bot-sidebar-actions">{newMessages && <span role="status">{t.newer}</span>}<button disabled={loadingLatest} onClick={() => void jumpToLatest()}>{t.latest}</button></div>}
             {loadingLatest && <p role="status">{t.loadingLatest}</p>}
             {snapshot.hasMore && <button className="bot-earlier" disabled={loadingLatest} onClick={() => void earlier()}>{t.more}</button>}
-            {messages.map((message, index) => <Fragment key={message.id}>{messageDay(message.createdAt, locale) && (index === 0 || messageDay(message.createdAt, locale) !== messageDay(messages[index - 1]!.createdAt, locale)) && <div className="bot-chat-day"><time dateTime={message.createdAt}>{messageDay(message.createdAt, locale)}</time></div>}{message.senderId === 'task-service' ? !observing && botTaskNoticeVisible(message, messages) ? <BotTaskNotice key={message.id} message={message} tasks={snapshot.tasks} companions={snapshot.companions} locale={locale} onOpen={openTask} /> : null : <article key={message.id} data-bot-message={message.id} className={`bot-message ${message.senderId === 'user' ? 'from-user' : ''}`}>
+            {messages.map((message, index) => <Fragment key={message.id}>{messageDay(message.createdAt, locale) && (index === 0 || messageDay(message.createdAt, locale) !== messageDay(messages[index - 1]!.createdAt, locale)) && <div className="bot-chat-day"><time dateTime={message.createdAt}>{messageDay(message.createdAt, locale)}</time></div>}{message.senderId === 'task-service' ? !observing ? <BotTaskNotice key={message.id} message={message} tasks={snapshot.tasks} companions={snapshot.companions} locale={locale} onOpen={openTask} /> : null : <article key={message.id} data-bot-message={message.id} className={`bot-message ${message.senderId === 'user' ? 'from-user' : ''}`}>
               <div className="bot-message-avatar"><BotAvatar companion={snapshot.companions.find(item => item.id === message.senderId)} name={message.senderId === 'user' ? t.user : message.senderName} /></div>
               <div className="bot-message-content"><div className="bot-message-author">{message.senderId === 'user' ? t.user : message.senderName}<time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString(locale)}>{new Date(message.createdAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })}</time>{message.senderId !== 'user' && !['queued', 'running'].includes(message.status) && <BotReplyTiming timing={message.timing} locale={locale} />}</div>
               <BotMessageBody message={message} streamedText={streams[message.id]} statusText={status(message)} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
@@ -459,8 +457,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
     {panel === 'history' && api && <BotHistoryDialog key={selected} api={api} conversationId={selected} locale={locale} companions={snapshot?.companions}
       title={conversation?.title ?? t.title} onClose={() => setPanel(null)} onLocate={message => { setPanel(null); void locateMessage(message); }} />}
     {showMembers && conversation?.kind === 'group' && <BotGroupMembers conversation={conversation} companions={snapshot?.companions ?? []} presence={snapshot?.presence} locale={locale} request={request} onChanged={() => refresh()} onClose={() => setShowMembers(false)} onDissolved={() => { setShowMembers(false); selectConversation(''); void refresh(''); }} />}
-    {capabilitiesCompanion && launcherApi && <CompanionCapabilitiesDialog key={capabilitiesCompanion.id} api={launcherApi} botApi={api} companion={snapshot?.companions.find(person => person.id === capabilitiesCompanion.id) ?? capabilitiesCompanion} onRuntimeChanged={() => { closeCall(); void refresh(); }} onClose={() => setCapabilitiesCompanion(null)} />}
-    {dialog && <BotCompanionEditor key={editorEpoch} kind={dialog} companion={editing} companions={snapshot?.companions ?? []} locale={locale} api={api} onPersonaChanged={() => { if (dialogEpoch.current === editorEpoch) void refresh(); }}
+    {dialog && <BotCompanionEditor key={editorEpoch} kind={dialog} companion={snapshot?.companions.find(person => person.id === editing?.id) ?? editing} companions={snapshot?.companions ?? []} locale={locale} api={api} launcherApi={launcherApi} initialSection={editorSection} suspended={!!callTarget} onRuntimeChanged={() => { closeCall(); void refresh(); }} onMeet={editing && editing.enabled !== false && conversation?.kind === 'direct' && companion?.id === editing.id ? () => setCallTarget({ conversationId: selected, companionId: editing.id }) : undefined} onPersonaChanged={() => { if (dialogEpoch.current === editorEpoch) void refresh(); }}
       onSave={draft => saveDialog(draft, editorEpoch)} onCancel={closeDialog} />}
     {callTarget && callCompanion && callTarget.conversationId === selected && <BotCallWindow key={`${callTarget.conversationId}:${callTarget.companionId}`} conversationId={callTarget.conversationId} companion={callCompanion} messages={snapshot?.messages.filter(message => message.conversationId === callTarget.conversationId) ?? []} streams={streams} mediaApi={mediaApi} speechApi={speechApi} locale={locale} onHangup={closeCall} onOpenUrl={openCallUrl} composer={renderComposer} registerComposerSend={registerComposerSend} hasPendingDraft={!!draft.trim() || !!draftFiles[selected]?.length || !!followedTask || !!imports[selected]} sendError={error}
       onEditText={text => setDrafts(current => ({ ...current, [selected]: current[selected] ? `${current[selected]}\n${text}` : text }))}

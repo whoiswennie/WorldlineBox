@@ -1,6 +1,7 @@
 import {afterEach,expect,it} from 'vitest';
 import {createHash} from 'node:crypto';
-import {mkdtemp,mkdir,readFile,writeFile,rm,symlink} from 'node:fs/promises';
+import {watch} from 'node:fs';
+import {mkdtemp,mkdir,readFile,writeFile,rm,symlink,readdir} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -11,6 +12,15 @@ const roots:string[]=[];
 afterEach(async()=>{for(const root of roots.splice(0))await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:50});});
 const hash=(bytes:Uint8Array)=>createHash('sha256').update(bytes).digest('hex');
 async function fixture(){const root=await mkdtemp(path.join(os.tmpdir(),'bot-media-test-'));roots.push(root);return{root,media:new BotMediaService({root:path.join(root,'media'),builtinRoot:path.resolve('resources/bot-stickers')})};}
+it('cancels an actual exclusive task copy, removes its incomplete output and can stage the same original again',async()=>{
+  const {root,media}=await fixture(),source=path.join(root,'interrupt-copy.bin'),bytes=Buffer.alloc(4*1024*1024,87);await writeFile(source,bytes);
+  const [ref]=await media.importFiles({conversationId:'a',paths:[source]}),task=path.join(root,'task'),attachments=path.join(task,'attachments');await mkdir(attachments,{recursive:true});
+  const controller=new AbortController(),observer=watch(attachments,{persistent:false},()=>controller.abort(new Error('Fixture paused the in-progress copy.')));
+  try{await expect(media.stageForTask({conversationId:'a',attachmentIds:[ref!.id],destination:task,signal:controller.signal})).rejects.toBeDefined();expect(controller.signal.aborted).toBe(true);}
+  finally{observer.close();}
+  expect(await readdir(attachments)).toEqual([]);expect(hash(await readFile(source))).toBe(ref!.sha256);
+  const [staged]=await media.stageForTask({conversationId:'a',attachmentIds:[ref!.id],destination:task});expect(hash(await readFile(staged!.path))).toBe(ref!.sha256);
+});
 it('preserves all 91 builtin originals, real content types, frames and separate static previews',async()=>{
   const {media}=await fixture(),packs=await media.listPacks({conversationId:'a'});
   expect(packs.map(pack=>[pack.name,pack.count])).toEqual([['八千代',17],['彩叶',8],['辉夜',21],['通用',45]]);

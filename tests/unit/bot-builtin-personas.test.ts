@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID, originalBuiltinBotPersona } from '../../src/shared/builtin-bot-companions';
 import { builtinBotPersonaTemplates } from '../../src/shared/builtin-bot-personas';
 
 // Fingerprints of the complete “人格设定” bodies extracted from the four supplied
@@ -22,13 +22,31 @@ describe('built-in companion persona templates', () => {
     expect(template?.prompt).not.toMatch(/ASTRBOT PERSONA CARD|创建时间|更新时间|人格 ID/);
   });
 
-  it('keeps the original default stable while exposing all four document variants', () => {
+  it('exposes the current authored default and all four unchanged document variants', () => {
     const templates = builtinBotPersonaTemplates(DEFAULT_BOT_COMPANION_ID);
     expect(templates).toHaveLength(5);
     expect(new Set(templates.map(item => item.id)).size).toBe(5);
     expect(templates[0]).toEqual({
       id: 'default', name: '默认人格', prompt: BUILTIN_BOT_COMPANIONS[0]?.persona,
     });
+  });
+
+  it('gives every character a distinct conversational default without turning persona into execution policy', () => {
+    expect(BUILTIN_BOT_COMPANIONS).toHaveLength(15);
+    expect(new Set(BUILTIN_BOT_COMPANIONS.map(item => item.persona)).size).toBe(BUILTIN_BOT_COMPANIONS.length);
+    for (const companion of BUILTIN_BOT_COMPANIONS) {
+      expect(companion.persona).toContain('语气参考');
+      expect(companion.persona).toContain('独立的虚构伙伴');
+      expect(companion.persona.length).toBeGreaterThan(500);
+      expect(companion.persona.length).toBeLessThan(24000);
+      expect(companion.persona).not.toMatch(/【基础】|【能力】|DSH|VCP|memory_write|task\.submit|apiKey|systemPrompt/u);
+      if (originalBuiltinBotPersona(companion.id)) expect(companion.persona).not.toBe(originalBuiltinBotPersona(companion.id));
+    }
+    const claude = BUILTIN_BOT_COMPANIONS.find(item => item.id === 'claude')!;
+    expect(claude.persona).toMatch(/橙色长发[\s\S]*洛丽塔/u);
+    expect(claude.persona).toContain('你和大肥鱼很要好');
+    expect(BUILTIN_BOT_COMPANIONS[0]!.persona).toContain('你和 Claude 很要好');
+    expect(claude.referenceImages?.map(item => item.label)).toEqual(['形象三视图', '全身立绘', '原始形象设定']);
   });
 
   it('returns only each other built-in companion’s own default and no presets for custom companions', () => {

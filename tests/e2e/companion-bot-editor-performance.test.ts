@@ -10,7 +10,7 @@ if (!['before', 'after'].includes(phase)) throw Error('Editor audit phase must b
 const evidence = path.resolve('artifacts/superagent-bot-development/ui');
 const longPersona = '认真表达，保留自己的边界与真实经历。\n'.repeat(1500).slice(0, 23960);
 
-async function contrast(page: Page, selector = '.bot-modal footer button:last-child') {
+async function contrast(page: Page, selector = '.bot-modal .bot-editor-primary:visible') {
   return page.locator(selector).evaluate(button => {
     const context = document.createElement('canvas').getContext('2d')!;
     const rgba = (value: string) => { context.clearRect(0, 0, 1, 1); context.fillStyle = value; context.fillRect(0, 0, 1, 1); return [...context.getImageData(0, 0, 1, 1).data]; };
@@ -118,21 +118,22 @@ for (const renderer of ['software', 'hardware'] as const) {
       });
       await mkdir(evidence, { recursive: true });
       for (const blur of [true, false]) {
-        await page.getByRole('button', { name: '编辑伙伴', exact: true }).evaluate(element => (element as HTMLElement).click());
+        await page.getByRole('button', { name: '角色卡', exact: true }).evaluate(element => (element as HTMLElement).click());
         (measurements.samples as unknown[]).push({ surface: 'persona', ...await sample(page, '.bot-modal textarea', '.bot-modal-backdrop', blur, longPersona) });
-        await page.getByRole('dialog', { name: '编辑伙伴' }).getByRole('button', { name: '取消', exact: true }).evaluate(element => (element as HTMLElement).click());
+        await page.getByRole('dialog', { name: '角色卡' }).locator('.bot-editor-close').evaluate(element => (element as HTMLElement).click());
       }
       for (const theme of ['light', 'dark']) {
         await page.evaluate(theme => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme })), theme);
         await page.reload(); await page.locator('[data-application-module="companions"]').evaluate(element => (element as HTMLElement).click());
         await keepHidden();
         for (let i = 0; i < 4; i++) { await page.getByRole('button', { name: '查看更早消息', exact: true }).evaluate(element => (element as HTMLElement).click()); await expect(page.locator('[data-bot-message]')).toHaveCount((i + 2) * 80); }
-        await page.getByRole('button', { name: '编辑伙伴', exact: true }).evaluate(element => (element as HTMLElement).click());
-        const dialog = page.getByRole('dialog', { name: '编辑伙伴' }), save = dialog.getByRole('button', { name: '保存', exact: true });
+        await page.getByRole('button', { name: '角色卡', exact: true }).evaluate(element => (element as HTMLElement).click());
+        const dialog = page.getByRole('dialog', { name: '角色卡' }), save = dialog.getByRole('button', { name: '保存修改', exact: true });
+        await dialog.getByRole('textbox', { name: '人格与相处方式', exact: true }).fill('用于当前主题按钮对比验收的人格草稿。');
         for (const state of ['normal', 'hover', 'disabled']) {
           if (state === 'normal') await page.mouse.move(10, 10);
           if (state === 'hover') await save.hover();
-          if (state === 'disabled') await dialog.getByRole('textbox', { name: '名字', exact: true }).fill('');
+          if (state === 'disabled') await dialog.getByRole('textbox', { name: '模板名称', exact: true }).fill('');
           await page.waitForTimeout(180);
           const check = await contrast(page); (measurements.contrasts as unknown[]).push({ kind: 'save', theme, state, ...check });
           if (phase === 'after') expect(check.contrast).toBeGreaterThanOrEqual(state === 'disabled' ? 3 : 4.5);
@@ -143,7 +144,7 @@ for (const renderer of ['software', 'hardware'] as const) {
             await copyFile(screenshot, path.join(evidence, `editor-${phase}-${theme}-${state}.png`));
           }
         }
-        await dialog.getByRole('button', { name: '取消', exact: true }).evaluate(element => (element as HTMLElement).click());
+        await dialog.locator('.bot-editor-close').evaluate(element => (element as HTMLElement).click());
         await page.getByRole('button', { name: '新群聊', exact: true }).evaluate(element => (element as HTMLElement).click());
         const group = page.getByRole('dialog', { name: '新群聊' });
         await group.getByRole('textbox', { name: '聊天名称', exact: true }).fill('仅测试按钮对比的群聊草稿'); await group.getByRole('checkbox').first().evaluate(element => (element as HTMLInputElement).click());
@@ -172,16 +173,18 @@ for (const renderer of ['software', 'hardware'] as const) {
         expect(round.radius).toBe('50%'); expect(round.width).toBe(round.height);
         const sendContrast = await contrast(page, '.bot-compose-footer .bot-send'); expect(sendContrast.contrast).toBeGreaterThanOrEqual(4.5); measurements.roundSendHover = { ...round, ...sendContrast };
         await page.locator('.bot-composer textarea').fill('');
-        await page.getByRole('button', { name: '编辑伙伴', exact: true }).evaluate(element => (element as HTMLElement).click());
-        const dialog = page.getByRole('dialog', { name: '编辑伙伴' }), full = '设'.repeat(23998) + '😀';
+        await page.getByRole('button', { name: '角色卡', exact: true }).evaluate(element => (element as HTMLElement).click());
+        const dialog = page.getByRole('dialog', { name: '角色卡' }), full = '设'.repeat(23998) + '😀';
         await dialog.getByRole('textbox', { name: '人格与相处方式', exact: true }).fill(full);
         expect(await dialog.locator('textarea').evaluate(field => getComputedStyle(field).resize)).toBe('none');
-        await dialog.getByRole('button', { name: '保存', exact: true }).evaluate(element => (element as HTMLElement).click()); await expect(dialog).toHaveCount(0);
+        await dialog.getByRole('button', { name: '保存修改', exact: true }).evaluate(element => (element as HTMLElement).click());
+        await expect(dialog.locator('.bot-personas__feedback')).toContainText('已保存并启用');
         const saved = await page.evaluate(async () => {
           const api = (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot;
           return (await api.request({ type: 'state' })).snapshot!.companions.find(item => item.id === 'builtin-dafeiyu')!.persona;
         });
         expect(saved).toBe(full); measurements.completePersonaSave = { utf16Length: saved.length, originalEquality: saved === full };
+        await dialog.locator('.bot-editor-close').evaluate(element => (element as HTMLElement).click());
       }
       await page.getByRole('button', { name: '记忆', exact: true }).evaluate(element => (element as HTMLElement).click());
       await page.getByRole('button', { name: '召回试查', exact: true }).evaluate(element => (element as HTMLElement).click());

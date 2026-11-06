@@ -21,6 +21,8 @@ type Active = { claim: BotClaim; controller: AbortController; promise: Promise<v
 export class BotScheduler {
   private readonly workerId = randomUUID();
   private readonly active = new Map<string, Active>();
+  /** Abort releases a scheduling slot before cooperative file cleanup finishes. */
+  private readonly executions = new Set<Promise<void>>();
   private readonly concurrency: number;
   private readonly leaseMs: number;
   private poll?: ReturnType<typeof setInterval>;
@@ -73,7 +75,10 @@ export class BotScheduler {
         } catch (error) { controller.abort(error); this.report(error); }
       }, Math.floor(this.leaseMs / 3));
       active.heartbeat.unref?.();
-      active.promise = abortable(Promise.resolve().then(() => this.options.handle(claim, controller.signal)), controller.signal).then(() => {
+      const execution = Promise.resolve().then(() => { controller.signal.throwIfAborted(); return this.options.handle(claim, controller.signal); });
+      this.executions.add(execution);
+      void execution.then(() => this.executions.delete(execution), () => this.executions.delete(execution));
+      active.promise = abortable(execution, controller.signal).then(() => {
         if (this.closed) return;
         const event = this.store.getEvent(claim.event.id);
         if (event?.status === 'running') this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken,
@@ -117,7 +122,10 @@ export class BotScheduler {
       active.controller.abort(Object.assign(new Error('伙伴运行时正在关闭，事件已保留待恢复。'), { code: 'BOT_SUSPEND' }));
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([Promise.allSettled([...this.active.values()].map(active => active.promise)),
+    // Wait for actual handlers too: abortable() only fences their result. A
+    // cooperative context/file operation may still own filesystem resources.
+    // Keep the deadline for a provider that never honors cancellation.
+    await Promise.race([Promise.allSettled([...this.executions, ...[...this.active.values()].map(active => active.promise)]),
       new Promise<void>(resolve => { timer = setTimeout(resolve, Math.max(0, timeoutMs)); })]);
     if (timer) clearTimeout(timer);
   }

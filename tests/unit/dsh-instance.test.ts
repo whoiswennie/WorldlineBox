@@ -30,16 +30,16 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));}
 `);
   const runtimes = ['runtime-a', 'runtime-b'].map((id, index) => dshRuntimeSchema.parse({ id, version: `0.2.${index}`, nodeVersion: TEST_NODE_VERSION,
     platform: 'win32-x64', adapter: 'node-cli-web-v1', source: 'fixture', sourceSha256: String(index).repeat(64), contentSha256: String(index).repeat(64), installedAt: '', fileCount: 0, byteLength: 0 }));
-  const verify = vi.fn(async () => undefined), openWorkbench = vi.fn(async () => undefined), startup = vi.fn();
+  const verify = vi.fn(async () => undefined), openWorkbench = vi.fn(async () => undefined), startup = vi.fn(), manualStop = vi.fn();
   const readyGate = path.join(root, 'token-exchange-released');
   const operations = new OperationStore(path.join(root, 'operations'), () => undefined); await operations.init();
   const serviceOptions: ConstructorParameters<typeof InstanceService>[0] = { rootPath: root, bridgePackagePath: path.resolve('resources/dsh-bridge'), operations,
     runtimes: { list: () => runtimes, get: id => runtimes.find(value => value.id === id)!, directory: () => program,
       plan: id => ({ executable: TEST_NODE_EXECUTABLE, cli, env: { FIXTURE_VERSION: runtimes.find(value => value.id === id)!.version, ...(holdTokenExchange ? { FIXTURE_READY_GATE: readyGate } : {}) } }), verify },
-    onChanged: () => undefined, onStartup: startup, openWorkbench, closeWorkbench: async () => undefined, clearBrowserData: async () => undefined };
+    onChanged: () => undefined, onStartup: startup, onManualStop: manualStop, openWorkbench, closeWorkbench: async () => undefined, clearBrowserData: async () => undefined };
   const service = new InstanceService(serviceOptions);
   await service.init(); cleanup.push(async () => { await service.shutdown(); await operations.shutdown(); await rm(root, { recursive: true, force: true }); });
-  return { service, serviceOptions, operations, root, verify, openWorkbench, startup, readyGate };
+  return { service, serviceOptions, operations, root, verify, openWorkbench, startup, manualStop, readyGate };
 }
 it('deduplicates concurrent starts and opens the same native Host for the user', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a');
@@ -85,6 +85,75 @@ it('restarts the same stopped user instance without creating another companion p
   expect(second.pid).not.toBe(first.pid); expect(f.service.list()).toHaveLength(1);
   expect(f.service.get(instance.id)).toMatchObject({ name: '我的 DSH', homePath: instance.homePath, status: 'running' });
   expect((await second.request<{ home: string }>('/health')).home).toBe(instance.homePath);
+});
+
+it.each([false, true])('fences automatic starts after an explicit stop of an ordinary/private instance (%s)', async privateEnvironment => {
+  const f = await fixture(), base = await f.service.create('我的 DSH', 'runtime-a');
+  const instance = privateEnvironment ? await f.service.ensureCompanion('stopped-partner', '暂停伙伴', base) : base;
+  await f.service.ensureHost(instance.id); const stop = f.service.stop(instance.id);
+  expect(f.manualStop).toHaveBeenCalledExactlyOnceWith(instance.id);
+  await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'stopped', instanceId: instance.id });
+  await stop;
+  await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ reason: 'stopped' });
+  expect(f.verify).toHaveBeenCalledTimes(1); expect(f.service.get(instance.id).status).toBe('stopped');
+  await f.service.ensureHost(instance.id);
+  expect(f.service.get(instance.id).status).toBe('running'); expect(f.verify).toHaveBeenCalledTimes(2);
+});
+
+it('lets an explicit resume wait for the same instance shutdown and starts exactly one replacement', async () => {
+  const f = await fixture(), instance = await f.service.create('Resume after stop', 'runtime-a');
+  const old = await f.service.ensureHost(instance.id), stopping = f.service.stop(instance.id);
+  const resumes = [f.service.ensureHost(instance.id), f.service.ensureHost(instance.id)];
+  await stopping; const clients = await Promise.all(resumes);
+  expect(clients[0]!.pid).toBe(clients[1]!.pid); expect(clients[0]!.pid).not.toBe(old.pid);
+  expect(f.verify).toHaveBeenCalledTimes(2); expect(f.service.list()).toHaveLength(1);
+});
+
+it('does not let a failing stop observer prevent the actual stop or clear its fence', async () => {
+  const f = await fixture(), instance = await f.service.create('Stop observer', 'runtime-a');
+  await f.service.ensureHost(instance.id); f.manualStop.mockImplementation(() => { throw new Error('observer failed'); });
+  await f.service.stop(instance.id); expect(f.service.get(instance.id).status).toBe('stopped');
+  await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ reason: 'stopped' });
+});
+
+it('keeps a newer explicit stop authoritative over a resume already waiting for shutdown', async () => {
+  const f = await fixture(), instance = await f.service.create('Stop wins', 'runtime-a');
+  await f.service.ensureHost(instance.id); const firstStop = f.service.stop(instance.id);
+  const resume = f.service.ensureHost(instance.id), rejected = expect(resume).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'stopped' });
+  const lastStop = f.service.stop(instance.id);
+  await Promise.all([firstStop, lastStop, rejected]);
+  expect(f.service.get(instance.id).status).toBe('stopped'); expect(f.verify).toHaveBeenCalledTimes(1);
+});
+
+it('stops a shared startup before readiness and leaves no automatic revival or false failed state', async () => {
+  const f = await fixture(true), instance = await f.service.create('Stop startup', 'runtime-a');
+  const starting = f.service.ensureHost(instance.id, undefined, { automatic: true });
+  const rejected = expect(starting).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'stopped', instanceId: instance.id });
+  await vi.waitFor(async () => expect(await readFile(f.readyGate + '.waiting', 'utf8')).toBe('1'));
+  await f.service.stop(instance.id); await rejected;
+  expect(f.service.get(instance.id).status).toBe('stopped');
+  await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ reason: 'stopped' });
+  expect(f.verify).toHaveBeenCalledTimes(1);
+});
+
+it('recovers a crashed Host on demand without confusing it with a user stop', async () => {
+  const f = await fixture(), instance = await f.service.create('Crash recovery', 'runtime-a');
+  const previous = await f.service.ensureHost(instance.id);
+  await previous.request('/shutdown'); await vi.waitFor(() => expect(f.service.get(instance.id).status).toBe('failed'));
+  const recovered = await f.service.ensureHost(instance.id, undefined, { automatic: true });
+  expect(recovered.pid).not.toBe(previous.pid); expect(f.manualStop).not.toHaveBeenCalled();
+  expect(f.service.get(instance.id).status).toBe('running'); expect(f.verify).toHaveBeenCalledTimes(2);
+});
+
+it('classifies a definite startup failure separately from missing configuration and shutdown', async () => {
+  const f = await fixture(), instance = await f.service.create('Bad startup', 'runtime-a');
+  f.verify.mockRejectedValueOnce(new Error('runtime bytes changed'));
+  await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'startup', instanceId: instance.id });
+  expect(f.service.get(instance.id).status).toBe('failed');
+  await expect(f.service.ensureHost('missing', undefined, { automatic: true })).rejects.toMatchObject({ reason: 'configuration', instanceId: 'missing' });
+  await f.service.shutdown();
+  await expect(f.service.ensureHost(instance.id)).rejects.toMatchObject({ reason: 'closing' });
+  expect(f.manualStop).not.toHaveBeenCalled();
 });
 it('retains the real user environment and selects the native web profile in its user terminal', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a'); const selection = await f.service.prepareCli(instance.id);

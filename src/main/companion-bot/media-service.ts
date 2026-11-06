@@ -31,19 +31,38 @@ export async function assertBotMediaPhysicalPath(value:string):Promise<void> {
   }
   if(!samePath(path.resolve(await realpath(absolute)),absolute))throw new Error('媒体路径解析到其他位置。');
 }
-async function ensureDirectory(value:string):Promise<void> {
+async function ensureDirectory(value:string,signal?:AbortSignal):Promise<void> {
+  signal?.throwIfAborted();
   const absolute=path.resolve(value),base=path.parse(absolute).root;let current=base;
   for(const part of path.relative(base,absolute).split(path.sep).filter(Boolean)) {
+    signal?.throwIfAborted();
     current=path.join(current,part);
     try{await mkdir(current);}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
     const info=await lstat(current);if(!info.isDirectory()||info.isSymbolicLink())throw new Error('媒体目录不能包含链接。');
   }
-  await assertBotMediaPhysicalPath(absolute);
+  signal?.throwIfAborted();await assertBotMediaPhysicalPath(absolute);signal?.throwIfAborted();
 }
-async function digestFile(value:string):Promise<{sha256:string;size:number}> {
+async function digestFile(value:string,signal?:AbortSignal):Promise<{sha256:string;size:number}> {
+  signal?.throwIfAborted();
   const digest=createHash('sha256');let size=0;
-  for await(const bytes of createReadStream(value)){digest.update(bytes);size+=bytes.length;}
+  for await(const bytes of createReadStream(value,{signal})){signal?.throwIfAborted();digest.update(bytes);size+=bytes.length;}
   return{sha256:digest.digest('hex'),size};
+}
+/** A cancelled preparation removes only its own incomplete exclusive copy. */
+async function copyTaskInput(source:string,destination:string,signal?:AbortSignal):Promise<void>{
+  signal?.throwIfAborted();const target=await open(destination,'wx',0o600);let identity:Awaited<ReturnType<typeof target.stat>>|undefined,complete=false,failed=false,failure:unknown;
+  const fail=(error:unknown)=>{failure=failed?new AggregateError([failure,error],'任务附件准备清理失败。'):error;failed=true;};
+  try{
+    identity=await target.stat();
+    for await(const bytes of createReadStream(source,{signal})){
+      signal?.throwIfAborted();let offset=0;
+      while(offset<bytes.length){signal?.throwIfAborted();const written=await target.write(bytes,offset,bytes.length-offset);if(!written.bytesWritten)throw new Error('任务附件写入未取得进展。');offset+=written.bytesWritten;}
+    }
+    signal?.throwIfAborted();await target.sync();signal?.throwIfAborted();complete=true;
+  }catch(error){fail(error);}
+  try{await target.close();}catch(error){fail(error);}
+  if(!complete&&identity)try{const current=await lstat(destination);if(current.dev===identity.dev&&current.ino===identity.ino&&!current.isSymbolicLink())await rm(destination,{force:true});}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')fail(error);}
+  if(failed)throw failure;
 }
 async function atomicManifest(value:string,manifest:Manifest){
   const temporary=value+'.'+randomUUID()+'.tmp';
@@ -77,15 +96,16 @@ export class BotMediaService {
   private readonly externalDigests=new Map<string,{signature:string;sha256:string}>();
   constructor(options:BotMediaOptions){this.root=path.resolve(options.root);this.builtinRoot=path.resolve(options.builtinRoot);this.canUserAccessConversation=options.canUserAccessConversation;}
   private scope(conversationId:string){if(!safeId(conversationId))throw new Error('媒体会话无效。');return hash(conversationId);}
-  private async serial<T>(conversationId:string,run:(manifest:Manifest,home:string)=>Promise<T>):Promise<T>{
+  private async serial<T>(conversationId:string,run:(manifest:Manifest,home:string)=>Promise<T>,signal?:AbortSignal):Promise<T>{
+    signal?.throwIfAborted();
     const key=this.scope(conversationId),previous=this.queues.get(key)||Promise.resolve();
     const pending=previous.catch(()=>undefined).then(async()=>{
-      const home=path.join(this.root,'conversations',key);await ensureDirectory(path.join(home,'objects'));
+      signal?.throwIfAborted();const home=path.join(this.root,'conversations',key);await ensureDirectory(path.join(home,'objects'),signal);
       let manifest=this.manifests.get(key);
       if(!manifest){try{await assertBotMediaPhysicalPath(path.join(home,'manifest.json'));manifest=this.validate(JSON.parse(await readFile(path.join(home,'manifest.json'),'utf8')),conversationId);}
         catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;manifest={schema:1,conversationId,media:[],packs:[]};}
         this.manifests.set(key,manifest);while(this.manifests.size>32)this.manifests.delete(this.manifests.keys().next().value!);}
-      const working=structuredClone(manifest),result=await run(working,home);this.manifests.set(key,working);return result;
+      signal?.throwIfAborted();const working=structuredClone(manifest),result=await run(working,home);signal?.throwIfAborted();this.manifests.set(key,working);return result;
     });
     this.queues.set(key,pending);try{return await pending;}finally{if(this.queues.get(key)===pending)this.queues.delete(key);}
   }
@@ -138,12 +158,13 @@ export class BotMediaService {
     return this.serial(conversationId,async manifest=>{const pack=manifest.packs.find(pack=>pack.id===packId);if(!pack)throw new Error('当前会话没有此表情包。');return pack.ids.map(id=>this.reference(manifest.media.find(item=>item.id===id)!,conversationId));});
   }
   async listMedia(conversationId:string):Promise<BotMediaRef[]>{return this.serial(conversationId,async manifest=>manifest.media.map(item=>this.reference(item,conversationId)));}
-  private async verifyObject(root:string,item:StoredMedia,readContent=true):Promise<string>{
+  private async verifyObject(root:string,item:StoredMedia,readContent=true,signal?:AbortSignal):Promise<string>{
+    signal?.throwIfAborted();
     if(!item.object||!item.sha256)throw new Error('此附件没有已管理的内容对象。');
     const value=path.join(root,item.object);await assertBotMediaPhysicalPath(value);const info=await stat(value);
     if(!info.isFile()||info.size!==item.size)throw new Error('附件文件与已登记大小不一致。');
     const signature=[info.dev,info.ino,info.size,info.mtimeMs,info.ctimeMs,item.sha256].join(':');
-    if(readContent&&this.verified.get(value)!==signature){const actual=await digestFile(value);if(actual.sha256!==item.sha256)throw new Error('附件内容校验失败。');this.verified.delete(value);this.verified.set(value,signature);while(this.verified.size>512)this.verified.delete(this.verified.keys().next().value!);}
+    signal?.throwIfAborted();if(readContent&&this.verified.get(value)!==signature){const actual=await digestFile(value,signal);if(actual.sha256!==item.sha256)throw new Error('附件内容校验失败。');this.verified.delete(value);this.verified.set(value,signature);while(this.verified.size>512)this.verified.delete(this.verified.keys().next().value!);}
     return value;
   }
   private async externalSource(source:string):Promise<ExternalSource>{
@@ -258,37 +279,37 @@ export class BotMediaService {
       return this.packReference(pack,manifest,conversationId);
     });
   }
-  async resolveForConversation(conversationId:string,ids:string[]):Promise<BotMediaRef[]>{
-    if(ids.length>64||ids.some(id=>!safeId(id)))throw new Error('附件 ID 无效。');const builtin=await this.builtins();
+  async resolveForConversation(conversationId:string,ids:string[],signal?:AbortSignal):Promise<BotMediaRef[]>{
+    signal?.throwIfAborted();if(ids.length>64||ids.some(id=>!safeId(id)))throw new Error('附件 ID 无效。');const builtin=await this.builtins();signal?.throwIfAborted();
     return this.serial(conversationId,async(manifest,home)=>{const result:BotMediaRef[]=[];for(const id of [...new Set(ids)]){
       const common=builtin.media.find(item=>item.id===id),item=common||manifest.media.find(item=>item.id===id);if(!item)throw new Error('附件不属于当前会话。');
-      if(item.storage==='external')await this.verifyExternal(item);else await this.verifyObject(common?this.builtinRoot:home,item,botMediaPreviewPolicy(item).previewEligibility!=='external-only');
-      result.push(this.reference(item,common?undefined:conversationId));}return result;});
+      signal?.throwIfAborted();if(item.storage==='external')await this.verifyExternal(item);else await this.verifyObject(common?this.builtinRoot:home,item,botMediaPreviewPolicy(item).previewEligibility!=='external-only',signal);
+      signal?.throwIfAborted();result.push(this.reference(item,common?undefined:conversationId));}return result;},signal);
   }
-  async getForAgent(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
-    const [ref]=await this.resolveForConversation(conversationId,[id]);if(ref?.analysisBlocked||ref?.previewEligibility==='external-only')throw new Error('此大媒体仅支持用户通过系统软件打开，当前任务不可直接读取或分析。');
-    return this.sourceForUser(conversationId,id);
+  async getForAgent(conversationId:string,id:string,signal?:AbortSignal):Promise<{ref:BotMediaRef;path:string}>{
+    signal?.throwIfAborted();const [ref]=await this.resolveForConversation(conversationId,[id],signal);signal?.throwIfAborted();if(ref?.analysisBlocked||ref?.previewEligibility==='external-only')throw new Error('此大媒体仅支持用户通过系统软件打开，当前任务不可直接读取或分析。');
+    return this.sourceForUser(conversationId,id,signal);
   }
   /** Host-only projection. Never persist physical paths in renderer media refs.
    * External-only entries remain blocked for analysis, but their real location
    * and a streaming digest are available for an honest attachment inventory. */
-  async verifiedLocalFile(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
-    const source=await this.sourceForUser(conversationId,id);
+  async verifiedLocalFile(conversationId:string,id:string,signal?:AbortSignal):Promise<{ref:BotMediaRef;path:string}>{
+    signal?.throwIfAborted();const source=await this.sourceForUser(conversationId,id,signal);signal?.throwIfAborted();
     if(source.ref.sha256)return source;
-    const info=await stat(source.path),signature=[info.dev,info.ino,info.size,info.mtimeMs,info.ctimeMs].join(':');
+    const info=await stat(source.path);signal?.throwIfAborted();const signature=[info.dev,info.ino,info.size,info.mtimeMs,info.ctimeMs].join(':');
     const cached=this.externalDigests.get(source.path);
     if(cached?.signature===signature)return{path:source.path,ref:{...source.ref,sha256:cached.sha256}};
-    const actual=await digestFile(source.path);
-    await this.sourceForUser(conversationId,id);
+    const actual=await digestFile(source.path,signal);
+    signal?.throwIfAborted();await this.sourceForUser(conversationId,id,signal);signal?.throwIfAborted();
     if(actual.size!==source.ref.size)throw new Error('附件核验期间大小改变。');
     this.externalDigests.set(source.path,{signature,sha256:actual.sha256});
     while(this.externalDigests.size>512)this.externalDigests.delete(this.externalDigests.keys().next().value!);
     return{path:source.path,ref:{...source.ref,sha256:actual.sha256}};
   }
-  private async sourceForUser(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
-    const [ref]=await this.resolveForConversation(conversationId,[id]);const builtin=await this.builtins();const common=builtin.media.find(item=>item.id===id);
-    if(common)return{ref:ref!,path:await this.verifyObject(this.builtinRoot,common)};
-    return this.serial(conversationId,async(manifest,home)=>{const item=manifest.media.find(item=>item.id===id)!;return{ref:ref!,path:item.storage==='external'?await this.verifyExternal(item):await this.verifyObject(home,item,ref?.previewEligibility!=='external-only')};});
+  private async sourceForUser(conversationId:string,id:string,signal?:AbortSignal):Promise<{ref:BotMediaRef;path:string}>{
+    signal?.throwIfAborted();const [ref]=await this.resolveForConversation(conversationId,[id],signal);signal?.throwIfAborted();const builtin=await this.builtins();signal?.throwIfAborted();const common=builtin.media.find(item=>item.id===id);
+    if(common)return{ref:ref!,path:await this.verifyObject(this.builtinRoot,common,true,signal)};
+    return this.serial(conversationId,async(manifest,home)=>{const item=manifest.media.find(item=>item.id===id)!;return{ref:ref!,path:item.storage==='external'?await this.verifyExternal(item):await this.verifyObject(home,item,ref?.previewEligibility!=='external-only',signal)};},signal);
   }
   async getForUserOpen(conversationId:string,id:string):Promise<{ref:BotMediaRef;path:string}>{
     const source=await this.sourceForUser(conversationId,id);if(source.ref.storage==='external')return source;
@@ -315,16 +336,16 @@ export class BotMediaService {
       return page;
     });
   }
-  async stageForTask({conversationId,attachmentIds,destination}:{conversationId:string;attachmentIds:string[];destination:string}):Promise<Array<{ref:BotMediaRef;path:string;relativePath:string}>>{
-    await assertBotMediaPhysicalPath(destination);if(!(await stat(destination)).isDirectory())throw new Error('任务附件目标不是现有工作目录。');
-    const refs=await this.resolveForConversation(conversationId,attachmentIds);
+  async stageForTask({conversationId,attachmentIds,destination,signal}:{conversationId:string;attachmentIds:string[];destination:string;signal?:AbortSignal}):Promise<Array<{ref:BotMediaRef;path:string;relativePath:string}>>{
+    signal?.throwIfAborted();await assertBotMediaPhysicalPath(destination);signal?.throwIfAborted();if(!(await stat(destination)).isDirectory())throw new Error('任务附件目标不是现有工作目录。');
+    signal?.throwIfAborted();const refs=await this.resolveForConversation(conversationId,attachmentIds,signal);
     if(refs.some(ref=>ref.analysisBlocked||ref.previewEligibility==='external-only'))throw new Error('附件包含大媒体，仅支持用户系统打开，当前任务不可直接读取或复制分析。');
-    const target=path.join(destination,'attachments');await ensureDirectory(target);const result=[];
-    for(const ref of refs){const source=await this.getForAgent(conversationId,ref.id),label=fileName(ref.name),extension=path.extname(label).slice(0,12),limit=Math.min(160,240-ref.id.length-1);
+    signal?.throwIfAborted();const target=path.join(destination,'attachments');await ensureDirectory(target,signal);const result=[];
+    for(const ref of refs){signal?.throwIfAborted();const source=await this.getForAgent(conversationId,ref.id,signal);signal?.throwIfAborted();const label=fileName(ref.name),extension=path.extname(label).slice(0,12),limit=Math.min(160,240-ref.id.length-1);
       const name=ref.id+'-'+path.basename(label,path.extname(label)).slice(0,Math.max(1,limit-extension.length))+extension,value=path.join(target,name);
-      try{await lstat(value);await assertBotMediaPhysicalPath(value);const actual=await digestFile(value);if(actual.sha256!==ref.sha256)throw new Error('任务目录中的同名附件内容不同。');}
-      catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;const {copyFile}=await import('node:fs/promises');await copyFile(source.path,value,constants.COPYFILE_EXCL);}
-      const actual=await digestFile(value);if(actual.sha256!==ref.sha256)throw new Error('任务附件复制校验失败。');result.push({ref,path:value,relativePath:'attachments/'+name});}
+      try{await lstat(value);signal?.throwIfAborted();await assertBotMediaPhysicalPath(value);const actual=await digestFile(value,signal);if(actual.sha256!==ref.sha256)throw new Error('任务目录中的同名附件内容不同。');}
+      catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;signal?.throwIfAborted();await copyTaskInput(source.path,value,signal);}
+      signal?.throwIfAborted();const actual=await digestFile(value,signal);if(actual.sha256!==ref.sha256)throw new Error('任务附件复制校验失败。');result.push({ref,path:value,relativePath:'attachments/'+name});}
     return result;
   }
   async saveAttachment({conversationId,id,destination}:{conversationId:string;id:string;destination:string}):Promise<void>{

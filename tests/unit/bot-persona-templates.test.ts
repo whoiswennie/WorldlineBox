@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BOT_PERSONA_TEMPLATE_LIMIT, botRequestSchema } from '../../src/shared/companion-bot';
-import { DEFAULT_BOT_COMPANION_ID, builtinBotCompanion } from '../../src/shared/builtin-bot-companions';
+import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID, builtinBotCompanion, originalBuiltinBotPersona } from '../../src/shared/builtin-bot-companions';
 import { builtinBotPersonaTemplates } from '../../src/shared/builtin-bot-personas';
 
 let root: string, store: BotStore;
@@ -46,6 +46,62 @@ it('preserves a legacy custom persona during migration, persisting its active se
   expect(store.getPersonaTemplate(DEFAULT_BOT_COMPANION_ID, 'default').prompt).toBe(builtinBotCompanion(DEFAULT_BOT_COMPANION_ID)!.persona);
   store.close(); store = new BotStore(filename);
   expect(store.getCompanion(DEFAULT_BOT_COMPANION_ID)).toMatchObject({ persona: exact, activePersonaId: 'custom-current' });
+});
+
+it('upgrades every exact untouched historical default and its active companion projection on restart', () => {
+  for (const builtin of BUILTIN_BOT_COMPANIONS) {
+    const historical = originalBuiltinBotPersona(builtin.id); if (!historical) continue;
+    if (!store.getCompanion(builtin.id)) store.createCompanion({ id: builtin.id, name: builtin.name, persona: builtin.persona });
+    store.taskTransaction(sql => {
+      sql.prepare("UPDATE bot_persona_templates SET prompt=?,original_prompt=? WHERE companion_id=? AND id='default'").run(historical, historical, builtin.id);
+      sql.prepare('UPDATE bot_companions SET persona=? WHERE id=?').run(historical, builtin.id);
+    });
+  }
+  const filename = store.filename; store.close(); store = new BotStore(filename);
+  for (const builtin of BUILTIN_BOT_COMPANIONS) {
+    if (!originalBuiltinBotPersona(builtin.id)) continue;
+    expect(store.getCompanion(builtin.id)).toMatchObject({ persona: builtin.persona, activePersonaId: 'default' });
+    expect(store.getPersonaTemplate(builtin.id, 'default')).toMatchObject({ prompt: builtin.persona, modified: false });
+  }
+  store.close(); store = new BotStore(filename);
+  expect(store.getCompanion('gpt')!.persona).toBe(builtinBotCompanion('gpt')!.persona);
+});
+
+it('keeps exact user-edited prompt bytes and nicknames while updating restore baselines', () => {
+  const builtin = builtinBotCompanion('gpt')!, historical = originalBuiltinBotPersona('gpt')!, exact = '  我自己的白龙设定。\n保持这些空格与换行。  ';
+  store.createCompanion({ id: builtin.id, name: '我起的昵称', persona: builtin.persona });
+  store.taskTransaction(sql => {
+    sql.prepare("UPDATE bot_persona_templates SET name=?,prompt=?,original_prompt=? WHERE companion_id=? AND id='default'").run('我的人格名字', exact, historical, builtin.id);
+    sql.prepare('UPDATE bot_companions SET persona=? WHERE id=?').run(exact, builtin.id);
+  });
+  const filename = store.filename; store.close(); store = new BotStore(filename);
+  expect(store.getCompanion('gpt')).toMatchObject({ name: '我起的昵称', persona: exact, activePersonaId: 'default' });
+  expect(store.getPersonaTemplate('gpt', 'default')).toMatchObject({ name: '我的人格名字', prompt: exact, modified: true });
+  expect(store.restorePersonaTemplates('gpt', 'default')).toMatchObject({ name: '默认人格', prompt: builtin.persona, modified: false });
+});
+
+it('updates an inactive default without replacing an active custom template or reviving a deleted built-in', () => {
+  const id = DEFAULT_BOT_COMPANION_ID, deleted = builtinBotPersonaTemplates(id)[1]!, custom = store.savePersonaTemplate(id, { name: '我的日常', prompt: '保留我选中的自建模板。', activate: true });
+  store.deletePersonaTemplate(id, deleted.id);
+  store.taskTransaction(sql => sql.prepare("UPDATE bot_persona_templates SET name=?,prompt=?,original_prompt=? WHERE companion_id=? AND id='default'")
+    .run('只改过模板名字', originalBuiltinBotPersona(id)!, originalBuiltinBotPersona(id)!, id));
+  const filename = store.filename; store.close(); store = new BotStore(filename);
+  expect(store.getCompanion(id)).toMatchObject({ activePersonaId: custom.id, persona: custom.prompt });
+  expect(store.getPersonaTemplate(id, 'default')).toMatchObject({ name: '只改过模板名字', prompt: builtinBotCompanion(id)!.persona, modified: true });
+  expect(store.listPersonaTemplates(id).items.some(item => item.id === deleted.id)).toBe(false);
+});
+
+it('recognizes exact pre-template built-in defaults instead of migrating them as user custom personas', () => {
+  const filename = store.filename, historical = originalBuiltinBotPersona(DEFAULT_BOT_COMPANION_ID)!;
+  store.close();
+  const PersonaDatabase = Database as new (filename: string) => { prepare(sql: string): { run(...args: unknown[]): unknown }; exec(sql: string): void; close(): void };
+  const legacy = new PersonaDatabase(filename);
+  legacy.prepare('UPDATE bot_companions SET persona=? WHERE id=?').run(historical, DEFAULT_BOT_COMPANION_ID);
+  legacy.exec('DROP TABLE bot_persona_settings; DROP TABLE bot_persona_templates; PRAGMA user_version=17'); legacy.close();
+  store = new BotStore(filename);
+  expect(store.getCompanion(DEFAULT_BOT_COMPANION_ID)).toMatchObject({ activePersonaId: 'default', persona: builtinBotCompanion(DEFAULT_BOT_COMPANION_ID)!.persona });
+  expect(store.listPersonaTemplates(DEFAULT_BOT_COMPANION_ID).items.some(item => item.id === 'custom-current')).toBe(false);
+  expect(store.getCompanion('custom')!.persona).toBe('保留这份初始人格。');
 });
 
 it('atomically activates edits and renames stable templates while preserving prompts in other companions', () => {

@@ -308,7 +308,10 @@ export function AppSettingsDialog({
                 aiConfigPanel={aiConfigPanel}
                 onToggleShowAiBadges={onToggleShowAiBadges}
               />
-              <SemanticSearchSettings servicesApi={embeddingServicesApi} section="models" />
+              <section className="global-model-local-section" aria-label={t('aiConfig.localModelsTitle')}>
+                <div className="global-model-section-heading"><div><h4>{t('aiConfig.localModelsTitle')}</h4><p>{t('aiConfig.localModelsHint')}</p></div></div>
+                <SemanticSearchSettings servicesApi={embeddingServicesApi} section="models" />
+              </section>
               </>
             ) : null}
             {!showingPluginSettings && activeCategory === "semantic-search" ? (

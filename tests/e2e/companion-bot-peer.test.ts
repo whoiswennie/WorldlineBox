@@ -244,7 +244,7 @@ test('groups and observed peer private conversations remain distinct in the regu
       return { ok: created.ok, conversationId: created.conversationId, memberIds: stored.snapshot!.conversations.find(room => room.id === created.conversationId)!.memberIds,
         companions: companions.map(person => ({ id: person.id, name: person.name })) };
     });
-    expect(largeGroup.ok).toBe(true); expect(largeGroup.companions).toHaveLength(14); expect(largeGroup.conversationId).toBeTruthy();
+    expect(largeGroup.ok).toBe(true); expect(largeGroup.companions).toHaveLength(15); expect(largeGroup.conversationId).toBeTruthy();
     const expectedTiles = largeGroup.memberIds.filter(id => id !== 'user').slice(0, 9);
     const largeGroupGeometry: unknown[] = [];
     let groupInfoVerified = false;

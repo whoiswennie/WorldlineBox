@@ -4,12 +4,12 @@ import type { WorldlineBoxBotSpeechApi } from '../../shared/companion-bot-speech
 import type { BotLive2DControls } from './BotLive2DStage';
 import { BotSpeechPlayer, type BotSpeechFrame } from './BotSpeechPlayer';
 import { BotCallSpeechSession, type BotCallSpeechState } from './BotCallSpeechSession';
+import { readBotCallPreferences, saveBotCallPreferences } from './call-preferences';
 
-const preference = 'worldlinebox.companion-call.speech.v1';
 export function useBotCallSpeech({ api, conversationId, companionId, connected, messages, control }: {
   api?: WorldlineBoxBotSpeechApi; conversationId: string; companionId: string; connected: boolean; messages: readonly BotMessage[]; control?: BotLive2DControls;
 }) {
-  const [enabled, setEnabled] = useState(() => { try { return localStorage.getItem(preference) !== 'off'; } catch { return true; } });
+  const [enabled, setEnabled] = useState(() => readBotCallPreferences(companionId).readAloud);
   const [state, setState] = useState<BotCallSpeechState>(() => ({ phase: 'idle', textMessageIds: messages.filter(message => message.conversationId === conversationId && message.senderId === companionId && message.status === 'sent').map(message => message.id) }));
   const currentMessages = useRef(messages), controls = useRef(control), player = useRef<BotSpeechPlayer>(undefined), session = useRef<BotCallSpeechSession>(undefined);
   const currentEnabled = useRef(enabled);
@@ -54,7 +54,7 @@ export function useBotCallSpeech({ api, conversationId, companionId, connected, 
   useLayoutEffect(() => { session.current?.setEnabled(enabled); }, [enabled, connected]);
   useLayoutEffect(() => { session.current?.observe(messages); }, [messages, enabled, connected]);
   useEffect(() => () => { player.current?.destroy(); player.current = undefined; }, []);
-  const toggle = () => { const next = !enabled; setEnabled(next); session.current?.setEnabled(next); try { localStorage.setItem(preference, next ? 'on' : 'off'); } catch { /* This visit still uses the selected preference. */ } };
+  const toggle = () => { const next = !enabled; setEnabled(next); session.current?.setEnabled(next); saveBotCallPreferences(companionId, { readAloud: next }); };
   const stop = useCallback(() => session.current?.stop(), []);
   const replay = useCallback((messageId: string) => { unlock(); session.current?.replay(messageId); }, [unlock]);
   return { enabled, available: !!api, state, toggle, unlock, stop, replay };

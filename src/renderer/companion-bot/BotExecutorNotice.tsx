@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 import { BotIcon } from './BotIcon';
 
-export function BotExecutorNotice({ api, zh, onOpenLauncher }: { api?: WorldlineBoxDshLauncherApi; zh:boolean; onOpenLauncher?():void }) {
+export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { api?: WorldlineBoxDshLauncherApi; zh:boolean; companionIds?: readonly string[]; onOpenLauncher?():void }) {
   const [state,setState]=useState<DshLauncherState>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0);
   const [detailsOpen,setDetailsOpen]=useState(false),detailsId=useId();
   const revision=useRef(0),generation=useRef(0);
@@ -23,7 +23,10 @@ export function BotExecutorNotice({ api, zh, onOpenLauncher }: { api?: Worldline
     return()=>{live=false;generation.current=current+1;unsubscribe();};
   },[api,zh,refresh]);
   if(!api)return null;
-  const instance=state?.instances.find(value=>value.isDefault),readiness=state?.executionReadiness;
+  const readiness=state?.executionReadiness, fallback=state?.instances.find(value=>value.isDefault&&!value.companionId);
+  const owned=new Map(state?.instances.filter(value=>value.companionId).map(value=>[value.companionId,value]));
+  const relevant=companionIds?.flatMap(id=>owned.get(id)??fallback??[])??(fallback?[fallback]:[]);
+  const instance=relevant.find(value=>value.status!=='running'||readiness?.instanceId===value.id&&readiness.status!=='ready')??relevant[0];
   const failed=instance?.status==='failed'||readiness?.instanceId===instance?.id&&readiness?.status==='failed';
   const warming=readiness?.instanceId===instance?.id&&readiness?.status==='warming';
   const starting=busy||instance?.status==='starting',preparing=instance?.status==='running'&&warming,stopping=instance?.status==='stopping',unsupported=state?.supported===false;
@@ -39,7 +42,7 @@ export function BotExecutorNotice({ api, zh, onOpenLauncher }: { api?: Worldline
     :instance?(zh?'DSH 未启动':'DSH is stopped')
     :(zh?'尚未配置 DSH':'DSH is not configured');
   const diagnostic=error||(failed?instance?.lastError:undefined);
-  const hint=zh?'聊天可照常进行，执行电脑任务时会连接默认 DSH 实例。':'Chat is available. Delegated computer tasks use the default DSH instance.';
+  const hint=zh?'聊天可照常进行。执行任务时会按需启动相应 DSH 实例；已暂停的任务可在任务中心继续。':'Chat is available. Tasks start their DSH instance on demand; paused tasks can be resumed in the task center.';
   const start=async()=>{
     if(!instance||busy||starting||preparing||stopping||unsupported)return;
     const current=generation.current,requestedAt=revision.current;

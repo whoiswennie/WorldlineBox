@@ -890,9 +890,9 @@ export function AiSettingsPage({
 }: AiSettingsPageProps): ReactNode {
   const t = useT();
   return (
-    <SettingsCard>
-      {aiConfigPanel}
-      <div className="app-settings-card-divider" />
+    <>
+    <SettingsCard className="global-model-connection-card">{aiConfigPanel}</SettingsCard>
+    <SettingsCard className="global-model-display-card">
       <SettingsToggleRow
         checked={aiUiPrefs.showAiBadges}
         hint={t("settings.showAiBadgesHint")}
@@ -900,5 +900,6 @@ export function AiSettingsPage({
         onChange={onToggleShowAiBadges}
       />
     </SettingsCard>
+    </>
   );
 }

@@ -4996,7 +4996,7 @@ async function startApplication(): Promise<void> {
     dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork, () => botService?.executionCapabilitiesChanged(), progress => {
       logger?.info('dsh.bot.preparation', 'Shared DSH preparation changed.', { instanceId: progress.instanceId, phase: progress.phase, elapsedMs: progress.elapsedMs });
       botService?.runtimePreparationChanged();
-    });
+    }, instanceId => botService?.workerInstanceStopped(instanceId));
     dshLauncher.registerIpc();
   } catch (error) {
     logger.error('dsh.launcher.initialization', error);
@@ -5082,18 +5082,30 @@ async function startApplication(): Promise<void> {
           new Error('VCP memory process exited; pending operation diagnostics retained.'), diagnostic),
       });
       const { selectBotWorkerInstance } = await import('./companion-bot/worker-host-selection');
-      const worker = new BotDshBrain({ acquireLease: host => host.instance && launcher
-        ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
-      getHost: async (id, signal, nativeLaneId) => {
-        if (!launcher) throw new Error('DSH 执行器尚未就绪；伙伴主脑仍可正常对话。');
+      const { DshHostUnavailableError } = await import('./dsh/host-errors');
+      const getWorkerHost = async (id: string | undefined, signal: AbortSignal | undefined, nativeLaneId: string | undefined, options?: { explicit?: boolean }) => {
+        if (!launcher) throw new DshHostUnavailableError('configuration', 'DSH 启动器尚未就绪；伙伴主脑仍可正常对话，请检查启动器后继续原任务。');
         const selected = await selectBotWorkerInstance(launcher, botService?.store, nativeLaneId, id);
-        const ownerId = nativeLaneId?.startsWith('worker-') ? botService?.store.getTask(nativeLaneId.slice(7))?.companionId
-          : nativeLaneId ? (botService?.store.getLane(nativeLaneId) ?? botService?.store.getLane(nativeLaneId.replace(/-epoch-[1-9]\d*$/u, '')))?.companionId : undefined;
+        const task = nativeLaneId?.startsWith('worker-') ? botService?.store.getTask(nativeLaneId.slice(7)) : undefined;
+        if (options?.explicit && (!task || !['queued', 'running'].includes(task.status) || task.extra.hostResumeRequested !== true))
+          throw new DshHostUnavailableError('stopped', '任务的继续请求已被撤销；执行环境保持关闭。', selected.id);
+        const ownerId = task?.companionId ?? (nativeLaneId ? (botService?.store.getLane(nativeLaneId) ?? botService?.store.getLane(nativeLaneId.replace(/-epoch-[1-9]\d*$/u, '')))?.companionId : undefined);
         if (ownerId && botService?.store.getCompanion(ownerId)?.enabled === false && !botService.isCompanionStopping(ownerId)) throw new Error('伙伴已关闭，不能重新启动其执行环境。');
-        const host = await launcher.botHost(selected.id, signal);
+        // Bind before preparation yields: an instance switch or manual stop
+        // during startup cannot migrate or accidentally revive this task.
+        if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), selected.id);
+        const host = await launcher.botHost(selected.id, signal, options);
+        signal?.throwIfAborted();
+        if (options?.explicit && task) {
+          const latest = botService?.store.getTask(task.id);
+          if (latest && ['queued', 'running'].includes(latest.status)) botService?.store.updateTask(task.id, { extra: { ...latest.extra, hostResumeRequested: false } });
+        }
         if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), host.instance.id);
         return host;
-      } });
+      };
+      const worker = new BotDshBrain({ acquireLease: host => host.instance && launcher
+        ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
+        getHost: getWorkerHost });
       const appBrain = new BotAppBrain({ root: path.join(root, 'router'),
         fetchFn: async (input, init) => (await import('electron')).net.fetch(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, init),
         reconcileTool: async (call, signal) => botService ? botService.reconcileToolReceipt(call, signal) : { state: 'unknown' as const },
@@ -5122,6 +5134,7 @@ async function startApplication(): Promise<void> {
         restoreCompanionEnvironments: async (companions, signal) => {
           await launcher?.restoreCompanionEnvironments(companions, signal, id => !!botService?.store.getCompanion(id) && botService.store.getCompanion(id)?.enabled !== false);
         },
+        resumeTaskRuntime: async (taskId, signal) => { await getWorkerHost(undefined, signal, `worker-${taskId}`, { explicit: true }); },
         transcribeAttachments: async (conversationId, attachments, requestId) => {
           if (!attachments.some(attachment => attachment.mimeType.startsWith('audio/') && !attachment.transcript && !attachment.analysisBlocked)) return attachments;
           return ensureLocalSpeech().run(requestId, async signal => {

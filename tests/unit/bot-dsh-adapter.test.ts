@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { BotDshBrain, BotDshAbortAcknowledgedError, BotDshDeliveryUnknownError, BotDshLaneBusyError, BotDshOutputLimitError, BotDshTurnFailedError, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import type { NativeHostClient } from '../../src/main/dsh/native-host-client';
+import { DshHostUnavailableError } from '../../src/main/dsh/host-errors';
 
 const input: BotDshRun = { laneId: 'lane', eventId: 'event', cwd: 'C:/bot-test', system: 'Test persona', prompt: 'Test input',
   model: { apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1', apiKey: 'fixture' },
@@ -63,7 +64,7 @@ it('awaits cancellation acknowledgement only for its own lane', async () => {
   const openings: string[] = [];
   const client = { request: async (endpoint: string, body: Record<string, string>) => {
     if (endpoint === '/bot/lanes') { openings.push(body.laneId!); return { sessionId: body.sessionId, cursor: 0 }; }
-    if (endpoint.endsWith('/cancel')) { await stop; return { accepted: true }; }
+    if (endpoint.endsWith('/cancel')) { await stop; return { accepted: true, result: { ...succeeded(body.eventId!, BotDshBrain.sessionId(input.laneId)), status: 'cancelled' } }; }
     if (body.eventId === 'first') { admitted(); return { accepted: true }; }
     return { accepted: true, result: succeeded(body.eventId!, 'session') };
   }, async *events(_sessionId: string, _cursor: number, signal: AbortSignal) {
@@ -96,7 +97,7 @@ it('retains the failed native admission stage and original cause for recovery di
   expect(await new BotDshBrain({ getHost: async () => ({ client }) }).run(input).catch(error => error))
     .toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'attach', cause: failure });
   expect(await new BotDshBrain({ getHost: async () => { throw failure; } }).run(input).catch(error => error))
-    .toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'host', cause: failure });
+    .toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'startup', cause: failure });
 });
 
 it('exposes only a durable exact output checkpoint and forwards its explicit continuation', async () => {
@@ -133,7 +134,156 @@ it('recovers a durable cancel without submitting the original prompt and require
 it('does not convert a failed Host lookup during cancellation into a proved worker failure', async () => {
   const error = new Error('Native Host is currently stopped.');
   const brain = new BotDshBrain({ getHost: async () => { throw error; } });
-  await expect(brain.cancelDurable(input)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'host', cause: error });
+  await expect(brain.cancelDurable(input)).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'startup', cause: error });
+});
+
+it('preserves Host unavailability before native admission and never reclassifies it as unknown delivery', async () => {
+  for (const reason of ['configuration', 'stopped', 'startup', 'closing'] as const) {
+    const failure = new DshHostUnavailableError(reason, 'Host unavailable', 'private-host');
+    const brain = new BotDshBrain({ getHost: async () => { throw failure; } });
+    await expect(brain.run(input)).rejects.toBe(failure);
+    await expect(brain.cancelDurable(input)).rejects.toBe(failure);
+    await expect(brain.inspectEffects(input)).rejects.toBe(failure);
+    await expect(brain.inspectQuestionAnswers({ ...input, questions: [] })).rejects.toBe(failure);
+    await expect(brain.upgradeWorkerAccess(input)).rejects.toBe(failure);
+    await expect(brain.archive(input.laneId)).rejects.toBe(failure);
+  }
+});
+
+it('grants explicit Host startup only to a resumed turn, keeping archive and control requests automatic', async () => {
+  const options: Array<{ explicit?: boolean } | undefined> = [];
+  const client = { request: async (endpoint: string, body: Record<string, string>) => endpoint === '/bot/lanes'
+    ? { sessionId: body.sessionId, cursor: 0 } : { accepted: true, result: succeeded(body.eventId!, BotDshBrain.sessionId(input.laneId)) } } as unknown as NativeHostClient;
+  const brain = new BotDshBrain({ getHost: async (_instance, _signal, _lane, value) => { options.push(value); return { client }; } });
+  await brain.run(input); await brain.run({ ...input, resumeHost: true }); await brain.archive(input.laneId);
+  expect(options).toEqual([{ explicit: false }, { explicit: true }, undefined]);
+});
+
+it('reconnects a failed cancel using its original event proof before admitting the same or a later event', async () => {
+  for (const nextEventId of [input.eventId, 'later-event']) {
+    const original = { ...input, instanceId: 'original-host', cwd: 'C:/original-task' }, abort = new AbortController();
+    let ready!: () => void;
+    const admitted = new Promise<void>(resolve => { ready = resolve; });
+    const firstClient = { request: async (endpoint: string, body: Record<string, string>) => {
+      if (endpoint === '/bot/lanes') return { sessionId: body.sessionId, cursor: 0 };
+      if (endpoint.endsWith('/cancel')) throw Error('cancel response was lost');
+      ready(); return { accepted: true };
+    }, async *events(_session: string, _cursor: number, signal: AbortSignal) {
+      await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+      yield* []; throw signal.reason;
+    } } as unknown as NativeHostClient;
+    const recoveredCalls: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
+    let lookup = 0, unavailable = true, hostStopped = false;
+    const explicitStartups: Array<boolean | undefined> = [];
+    const sessionId = BotDshBrain.sessionId(input.laneId), receipt = { ...succeeded(original.eventId, sessionId), status: 'cancelled', text: 'original stopped' };
+    const recoveredClient = { request: async (endpoint: string, body: Record<string, unknown>) => {
+      recoveredCalls.push({ endpoint, body });
+      if (endpoint === '/bot/cancel') {
+        expect(body).toMatchObject({ eventId: original.eventId, cwd: original.cwd }); expect(body).not.toHaveProperty('prompt');
+        if (unavailable) throw Error('inspection temporarily disconnected');
+        return { requiresAttachment: true };
+      }
+      if (endpoint === '/bot/lanes') return { sessionId: body.sessionId, cursor: 0 };
+      if (endpoint.endsWith('/cancel')) { expect(body.eventId).toBe(original.eventId); return { accepted: true, result: receipt }; }
+      return { accepted: true, result: body.eventId === original.eventId ? receipt : succeeded(String(body.eventId), sessionId) };
+    } } as unknown as NativeHostClient;
+    const brain = new BotDshBrain({ getHost: async (instanceId, _signal, _laneId, options) => {
+      expect(instanceId).toBe(original.instanceId); explicitStartups.push(options?.explicit);
+      if (hostStopped && !options?.explicit) throw new DshHostUnavailableError('stopped', 'Explicitly stopped Host', original.instanceId);
+      if (options?.explicit) hostStopped = false;
+      return { client: ++lookup === 1 ? firstClient : recoveredClient };
+    } });
+    const first = brain.run({ ...original, signal: abort.signal }).catch(error => error);
+    await admitted; abort.abort(new Error('stop interrupted native stream'));
+    expect(await first).toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'cancel' });
+    const next = { ...original, eventId: nextEventId, cwd: 'C:/current-task', prompt: 'current user request' };
+    await expect(brain.run(next)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'cancel' });
+    expect(recoveredCalls.some(call => call.endpoint.endsWith('/turn'))).toBe(false);
+    unavailable = false; hostStopped = true;
+    await expect(brain.run(next)).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'stopped' });
+    expect(recoveredCalls.some(call => call.endpoint.endsWith('/turn'))).toBe(false);
+    const completed = await brain.run({ ...next, resumeHost: true });
+    expect(completed).toMatchObject({ eventId: nextEventId, status: nextEventId === original.eventId ? 'cancelled' : 'succeeded' });
+    const turn = recoveredCalls.findIndex(call => call.endpoint.endsWith('/turn')), cancel = recoveredCalls.findIndex(call => call.endpoint.startsWith('/bot/lanes/') && call.endpoint.endsWith('/cancel'));
+    expect(turn).toBeGreaterThan(cancel); expect(cancel).toBeGreaterThan(0);
+    expect(recoveredCalls.filter(call => call.endpoint.endsWith('/turn'))).toHaveLength(1);
+    expect(recoveredCalls[turn]!.body).toMatchObject({ eventId: nextEventId, prompt: next.prompt });
+    expect(explicitStartups.slice(-3)).toEqual([true, undefined, true]);
+  }
+});
+
+it('keeps accepted-only or contradictory abort acknowledgements gated until fresh native reconciliation proves the old event stopped', async () => {
+  const sessionId = BotDshBrain.sessionId(input.laneId);
+  for (const unproved of [
+    { accepted: true },
+    { accepted: true, paused: true },
+    { absent: true, sessionId, eventId: 'different-event' },
+    { accepted: true, result: { ...succeeded('different-event', sessionId), status: 'cancelled' } },
+    { accepted: true, result: { ...succeeded(input.eventId, sessionId), status: 'running' } },
+  ]) {
+    let ready!: () => void, hosts = 0, confirmed = false;
+    const admitted = new Promise<void>(resolve => { ready = resolve; }), abort = new AbortController();
+    const initial = { request: async (endpoint: string, body: Record<string, unknown>) => {
+      if (endpoint === '/bot/lanes') return { sessionId: body.sessionId, cursor: 0 };
+      if (endpoint.endsWith('/cancel')) return unproved;
+      ready(); return { accepted: true };
+    }, async *events(_session: string, _cursor: number, signal: AbortSignal) {
+      await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+      yield* []; throw signal.reason;
+    } } as unknown as NativeHostClient;
+    const calls: Array<{ endpoint: string; body: Record<string, unknown> }> = [];
+    const recovered = { request: async (endpoint: string, body: Record<string, unknown>) => {
+      calls.push({ endpoint, body });
+      if (endpoint === '/bot/cancel') { expect(body).toMatchObject({ sessionId, eventId: input.eventId, cwd: input.cwd }); return { requiresAttachment: true }; }
+      if (endpoint === '/bot/lanes') {
+        if (body.cancelIntent) { expect(body).toMatchObject({ eventId: input.eventId, cancelIntent: true }); expect(body).not.toHaveProperty('prompt'); }
+        else { expect(confirmed).toBe(true); expect(body.eventId).toBe('new-event'); }
+        return { sessionId, cursor: 0 };
+      }
+      if (endpoint.endsWith('/cancel')) return confirmed ? { accepted: true, result: { ...succeeded(input.eventId, sessionId), status: 'cancelled' } } : { accepted: true };
+      expect(confirmed).toBe(true); return { accepted: true, result: succeeded(String(body.eventId), sessionId) };
+    } } as unknown as NativeHostClient;
+    const brain = new BotDshBrain({ getHost: async () => ({ client: ++hosts === 1 ? initial : recovered }) });
+    const first = brain.run({ ...input, signal: abort.signal }).catch(error => error);
+    await admitted; abort.abort(Error('stop old execution'));
+    expect(await first).toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'cancel' });
+    const next = { ...input, eventId: 'new-event', prompt: 'new user request' };
+    await expect(brain.run(next)).rejects.toMatchObject({ code: 'BOT_DELIVERY_UNKNOWN', stage: 'cancel' });
+    expect(calls.some(call => call.endpoint.endsWith('/turn'))).toBe(false);
+    confirmed = true;
+    // A real current-event attach follows the confirmed old-event stop. Keep
+    // the two identities separate; the old terminal cannot settle this turn.
+    expect(await brain.run(next)).toMatchObject({ eventId: next.eventId, status: 'succeeded', text: 'done' });
+    expect(calls.filter(call => call.endpoint.endsWith('/turn'))).toHaveLength(1);
+    expect(calls.filter(call => call.endpoint === '/bot/cancel')).toHaveLength(2);
+  }
+});
+
+it('accepts a route-bound absence or exact durable pause proof without probing or submitting the old event again', async () => {
+  const sessionId = BotDshBrain.sessionId(input.laneId);
+  for (const suspend of [false, true]) {
+    const proof = suspend ? { accepted: true, paused: true, sessionId, eventId: input.eventId } : { absent: true };
+    let ready!: () => void;
+    const admitted = new Promise<void>(resolve => { ready = resolve; }), abort = new AbortController(), calls: string[] = [];
+    const client = { request: async (endpoint: string, body: Record<string, unknown>) => {
+      calls.push(endpoint);
+      if (endpoint === '/bot/lanes') return { sessionId, cursor: 0 };
+      if (endpoint === '/bot/cancel') throw Error('Already-proved cancellation must not require reconciliation.');
+      if (endpoint.endsWith('/cancel')) { expect(body).toMatchObject({ eventId: input.eventId, suspend }); return proof; }
+      if (body.eventId !== input.eventId) return { accepted: true, result: succeeded(String(body.eventId), sessionId) };
+      ready(); return { accepted: true };
+    }, async *events(_session: string, _cursor: number, signal: AbortSignal) {
+      await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener('abort', () => resolve(), { once: true }); });
+      yield* []; throw signal.reason;
+    } } as unknown as NativeHostClient;
+    const brain = new BotDshBrain({ getHost: async () => ({ client }) }), reason = Object.assign(Error('stop current event'), suspend ? { code: 'BOT_SUSPEND' } : {});
+    const first = brain.run({ ...input, signal: abort.signal }).catch(error => error);
+    await admitted; abort.abort(reason);
+    if (suspend) expect(await first).toMatchObject({ code: 'BOT_PAUSE_ACKNOWLEDGED' }); else expect(await first).toBe(reason);
+    expect(await brain.run({ ...input, eventId: 'after-proof' })).toMatchObject({ eventId: 'after-proof', status: 'succeeded' });
+    expect(calls.filter(endpoint => endpoint.endsWith('/cancel'))).toHaveLength(1);
+    expect(calls.filter(endpoint => endpoint.endsWith('/turn'))).toHaveLength(2);
+  }
 });
 
 it('exposes a durable cancellation receipt after the input signal aborts', async () => {

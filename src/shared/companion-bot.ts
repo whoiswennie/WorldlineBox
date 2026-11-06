@@ -9,7 +9,11 @@ export type { BotBrainContextSummary, BotBrainRequestMetrics } from './companion
 export const BOT_CHANNEL = 'companion-bot:request';
 export const BOT_EVENT_CHANNEL = 'companion-bot:event';
 const id = z.string().min(1).max(160);
-export interface BotCompanion { id: string; name: string; persona: string; createdAt: string; activePersonaId?: string; enabled?: boolean }
+export const BOT_WORKER_CONCURRENCY_DEFAULT = 5;
+export const BOT_WORKER_CONCURRENCY_MIN = 1;
+export const BOT_WORKER_CONCURRENCY_MAX = 32;
+export const botWorkerConcurrencySchema = z.number().int().min(BOT_WORKER_CONCURRENCY_MIN).max(BOT_WORKER_CONCURRENCY_MAX);
+export interface BotCompanion { id: string; name: string; persona: string; createdAt: string; activePersonaId?: string; enabled?: boolean; workerConcurrency?: number }
 export const BOT_PERSONA_TEMPLATE_LIMIT = 64;
 export interface BotPersonaTemplateSummary {
   id: string; name: string; builtin: boolean; isDefault: boolean; modified: boolean; charCount: number; updatedAt: string;
@@ -87,8 +91,8 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   ...botMemoryMaintenanceSchemas,
   z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('history.search'), conversationId: id, query: z.string().max(200).refine(value => !value.includes('\0')).default(''), filter: z.enum(['all', 'media', 'stickers', 'files', 'links']).optional(), before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(80).optional() }),
-  z.strictObject({ type: z.literal('companion.create'), name: z.string().trim().min(1).max(80), persona: z.string().max(24000) }),
-  z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000).optional() }),
+  z.strictObject({ type: z.literal('companion.create'), name: z.string().trim().min(1).max(80), persona: z.string().max(24000), workerConcurrency: botWorkerConcurrencySchema.optional() }),
+  z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000).optional(), workerConcurrency: botWorkerConcurrencySchema.optional() }),
   z.strictObject({ type: z.literal('companion.runtime'), companionId: id, operation: z.enum(['start', 'stop']) }),
   z.strictObject({ type: z.literal('companion.personas.list'), companionId: id }),
   z.strictObject({ type: z.literal('companion.personas.get'), companionId: id, id }),

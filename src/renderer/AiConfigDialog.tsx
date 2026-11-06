@@ -30,6 +30,7 @@ import { isImeKeyboardEvent } from "./ime-safe-dismiss";
 import { useT } from "./i18n";
 import { DialogShell } from "./ui/patterns";
 import { Select } from "./ui/primitives/Select";
+import './global-model-settings.css';
 
 export type AiConnectionState =
   | "idle"
@@ -97,7 +98,9 @@ export interface AiConfigDialogProps {
   onDisclaimerAcceptedChange: (value: boolean) => void;
   onAutoAnalyzeEnabledChange: (value: boolean) => void;
   onClose: () => void;
-  onSave: () => void;
+  onSave: () => void | Promise<void>;
+  /** Persists asset analysis preferences without changing a connection profile. */
+  onSaveAnalysis?: () => Promise<boolean>;
   onTestConnection: () => Promise<{
     success: boolean;
     reason?: string;
@@ -165,13 +168,18 @@ export function AiConfigDialog({
   onAutoAnalyzeEnabledChange,
   onClose,
   onSave,
+  onSaveAnalysis,
   onTestConnection,
   onFetchModels,
 }: AiConfigDialogProps) {
   const t = useT();
   const [modelOptionsState, setModelOptions] = useState<{ fetchKey: string; models: string[] } | null>(null);
   const [modelsFetchRetry, setModelsFetchRetry] = useState(0);
-  const [busyAction, setBusyAction] = useState<"test" | "models" | null>(null);
+  const [busyAction, setBusyAction] = useState<"test" | "models" | "save" | null>(null);
+  const [analysisSaveState, setAnalysisSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [savedAnalysisFingerprint, setSavedAnalysisFingerprint] = useState('');
+  const [pendingProfile, setPendingProfile] = useState<string | null>(null);
+  const [connectionSaveError, setConnectionSaveError] = useState(false);
   const [modelsMessageState, setModelsMessage] = useState<{ fetchKey: string; message: string | null } | null>(null);
   const [testInlineState, setTestInline] = useState<{
     key: string;
@@ -194,6 +202,9 @@ export function AiConfigDialog({
 
   const canUseKey = Boolean(apiKey.trim()) || hasKey;
   const selectedProfile = profiles.find((profile) => profile.id === profileDraftId);
+  const connectionFingerprint = JSON.stringify([profileName.trim(), apiFormat, model.trim(), baseUrl.trim(), apiKey.trim()]);
+  const [draftStart, setDraftStart] = useState(() => ({ id: profileDraftId, fingerprint: connectionFingerprint }));
+  if (draftStart.id !== profileDraftId) setDraftStart({ id: profileDraftId, fingerprint: connectionFingerprint });
   const profileDraftIsDirty = selectedProfile !== undefined && (
     selectedProfile.name !== profileName.trim()
     || selectedProfile.apiFormat !== apiFormat
@@ -201,6 +212,27 @@ export function AiConfigDialog({
     || selectedProfile.baseUrl !== baseUrl.trim()
     || Boolean(apiKey.trim())
   );
+  const connectionUnsaved = !selectedProfile || profileDraftIsDirty;
+  const activeProfile = profiles.find(profile => profile.id === activeProfileId);
+  const analysisFingerprint = JSON.stringify([languages, concurrencyLimit, maxAnalysisImageEdgePx, descriptionEnabled, tagsEnabled, ratingEnabled,
+    forceExistingTags, analysisSettings, disclaimerAccepted, autoAnalyzeEnabled]);
+  const visibleAnalysisSaveState = analysisSaveState === 'saved' && savedAnalysisFingerprint !== analysisFingerprint ? 'idle' : analysisSaveState;
+  const requestProfile = (id: string) => {
+    if (busyAction === 'save' || saveVerifying || id === profileDraftId) return;
+    if (profileDraftIsDirty || !selectedProfile && (Boolean(apiKey.trim()) || draftStart.id === profileDraftId && draftStart.fingerprint !== connectionFingerprint)) { setPendingProfile(id); return; }
+    if (id) onSelectProfile(id); else onNewProfile();
+  };
+  const saveConnection = async () => {
+    if (busyAction || saveVerifying) return;
+    setBusyAction('save'); setConnectionSaveError(false);
+    try { await onSave(); } catch { setConnectionSaveError(true); } finally { setBusyAction(null); }
+  };
+  const saveAnalysis = async () => {
+    if (!onSaveAnalysis || analysisSaveState === 'saving') return;
+    setAnalysisSaveState('saving');
+    try { const saved = await onSaveAnalysis(); if (saved) setSavedAnalysisFingerprint(analysisFingerprint); setAnalysisSaveState(saved ? 'saved' : 'error'); }
+    catch { setAnalysisSaveState('error'); }
+  };
   const language = languages[0] ?? "zh-CN";
   const modelsFetchKey = buildAiModelsFetchKey({
     profileId: profileDraftId,
@@ -397,14 +429,12 @@ export function AiConfigDialog({
   if (!open) return null;
 
   const busy = busyAction !== null || saveVerifying;
-  const canSaveProfile = Boolean(model.trim()) && !busy;
+  const canSaveProfile = Boolean(model.trim()) && connectionUnsaved && !busy;
   const embedded = variant === "embedded";
   const pickerLabel =
     busyAction === "models"
       ? t("aiConfig.fetchingModels")
-      : availableModels.includes(model)
-        ? model
-        : availableModels.length > 0
+      : availableModels.length > 0
           ? t("aiConfig.modelPick")
           : t("aiConfig.modelPickEmpty");
 
@@ -457,17 +487,22 @@ export function AiConfigDialog({
           </div>
         ) : null}
         <div className="ai-config-dialog-body">
-          <p className="ai-config-note">{t("aiConfig.note")}</p>
-          <div className="micro-label ai-config-section-title">{t("aiConfig.modelConfiguration")}</div>
+          <section className="ai-config-connection-section" aria-label={t('aiConfig.modelConfiguration')}>
+          <div className="global-model-section-heading"><div><h4>{t("aiConfig.modelConfiguration")}</h4>
+            <p>{t('aiConfig.connectionIntro')}</p></div>
+            <span className="ai-config-draft-status" data-dirty={connectionUnsaved || undefined} role="status">{!selectedProfile ? t('aiConfig.newDraft') : profileDraftIsDirty ? t('aiConfig.unsavedChanges') : t('aiConfig.profileSaved')}</span>
+          </div>
+          {activeProfile ? <p className="ai-config-current-profile"><Icon name="check" size={13} />{t('aiConfig.currentConnection', { name: activeProfile.name, model: activeProfile.model })}</p> : null}
           <div className="ai-config-profile-row">
             <div className="editor-field ai-config-field">
               <label className="micro-label" htmlFor="ai-config-profile">
                 {t("aiConfig.savedProfiles")}
               </label>
               <Select
+                disabled={busyAction === 'save' || saveVerifying}
                 className="text-field ai-config-input"
                 id="ai-config-profile"
-                onValueChange={onSelectProfile}
+                onValueChange={requestProfile}
                 options={[
                   { value: "", label: t("aiConfig.newProfileOption") },
                   ...profiles.map((profile) => ({
@@ -478,12 +513,14 @@ export function AiConfigDialog({
                 value={profileDraftId ?? ""}
               />
             </div>
-            <button className="secondary-button" onClick={onNewProfile} type="button">
+            <button className="secondary-button" disabled={busyAction === 'save' || saveVerifying} onClick={() => requestProfile('')} type="button">
+              <Icon name="plus" size={14} />
               {t("aiConfig.addProfile")}
             </button>
             {profileDraftId ? (
               <button
                 className="secondary-button"
+                disabled={busyAction === 'save' || saveVerifying}
                 onClick={() => {
                   onDeleteProfile(profileDraftId);
                 }}
@@ -492,23 +529,33 @@ export function AiConfigDialog({
                 {t("aiConfig.deleteProfile")}
               </button>
             ) : null}
-            {profileDraftId && profileDraftId !== activeProfileId ? (
-              <button
-                className="secondary-button"
-                disabled={!selectedProfile?.hasCredential || profileDraftIsDirty || busy}
-                onClick={() => onActivateProfile(profileDraftId)}
-                type="button"
-              >
-                {t("aiConfig.activateProfile")}
-              </button>
-            ) : null}
           </div>
+          {pendingProfile !== null ? <div className="ai-config-switch-confirm" role="alert"><p>{t('aiConfig.unsavedSwitch')}</p><div>
+            <button className="secondary-button" type="button" disabled={busyAction === 'save' || saveVerifying} onClick={() => setPendingProfile(null)}>{t('aiConfig.keepEditing')}</button>
+            <button className="secondary-button" type="button" disabled={busyAction === 'save' || saveVerifying} onClick={() => { if (busyAction === 'save' || saveVerifying) return; const id = pendingProfile; setPendingProfile(null); if (id) onSelectProfile(id); else onNewProfile(); }}>{t('aiConfig.discardAndSwitch')}</button>
+          </div></div> : null}
           {profileDraftId && !selectedProfile?.hasCredential ? (
             <p className="ai-config-hint">{t("aiConfig.profileNeedsKey")}</p>
           ) : null}
           {profileDraftId && selectedProfile?.hasCredential && profileDraftIsDirty ? (
             <p className="ai-config-hint">{t("aiConfig.profileSaveBeforeActivate")}</p>
           ) : null}
+          <div className="dialog-actions ai-config-actions ai-config-connection-actions">
+            <p className="ai-config-action-hint">{profileDraftId === activeProfileId && selectedProfile ? t('aiConfig.saveCurrentHint') : t('aiConfig.saveSeparateHint')}</p>
+            <div className="ai-config-test-cluster">
+              <button className="secondary-button" disabled={!canUseKey || !model.trim() || busy} onClick={() => void runTest()} type="button">
+                <Icon name="activity" size={14} />{busyAction === 'test' ? t('aiConfig.testing') : t('aiConfig.testConnection')}
+              </button>
+              <button className="primary-button" disabled={!canSaveProfile} onClick={() => void saveConnection()} type="button">
+                {busyAction === 'save' ? t('aiConfig.savingProfile') : saveVerifying ? t('aiConfig.savingVerifying') : t('aiConfig.saveProfile')}
+              </button>
+              {profileDraftId && profileDraftId !== activeProfileId ? <button className="secondary-button" disabled={!selectedProfile?.hasCredential || profileDraftIsDirty || busy} onClick={() => onActivateProfile(profileDraftId)} type="button">{t('aiConfig.activateProfile')}</button> : null}
+            </div>
+            {testInline ? <LauncherNotification error={!testInline.ok} message={testInline.text} onDismiss={() => setTestInline(null)} /> : modelsMessage ? <LauncherNotification message={modelsMessage} onDismiss={() => setModelsMessage(null)} /> : null}
+            {saveVerifying ? <LauncherNotification pending message={t('aiConfig.saveVerifyingHint')} onDismiss={() => undefined} /> : null}
+            {connectionSaveError ? <LauncherNotification error message={t('aiConfig.connectionSaveFailed')} onDismiss={() => setConnectionSaveError(false)} /> : null}
+          </div>
+          <fieldset className="ai-config-connection-fields" disabled={busyAction === 'save' || saveVerifying}>
           <div className="editor-field ai-config-field">
             <label className="micro-label" htmlFor="ai-config-profile-name">
               {t("aiConfig.profileName")}
@@ -537,7 +584,7 @@ export function AiConfigDialog({
             />
             <p className="ai-config-hint">{t("aiConfig.apiFormatHint")}</p>
           </div>
-          <div className="editor-field ai-config-field">
+          <div className="editor-field ai-config-field ai-config-field-wide">
             <label className="micro-label" htmlFor="ai-config-base-url">
               {t("aiConfig.baseUrl")}
             </label>
@@ -559,7 +606,7 @@ export function AiConfigDialog({
                 : t("aiConfig.baseUrlHint")}
             </p>
           </div>
-          <div className="editor-field ai-config-field">
+          <div className="editor-field ai-config-field ai-config-key-field">
             <label className="micro-label" htmlFor="ai-config-api-key">
               {t("aiConfig.apiKey")}
             </label>
@@ -601,7 +648,7 @@ export function AiConfigDialog({
               </button>
             ) : null}
           </div>
-          <div className="editor-field ai-config-field">
+          <div className="editor-field ai-config-field ai-config-model-field">
             <label className="micro-label" htmlFor="ai-config-model">
               {t("aiConfig.model")}
             </label>
@@ -702,7 +749,10 @@ export function AiConfigDialog({
               </div>
             </div>
           </div>
-          <details className="ai-config-asset-options"><summary>{t("aiConfig.assetOptions")}</summary>
+          </fieldset>
+          </section>
+          <details className="ai-config-asset-options"><summary><span>{t("aiConfig.assetOptions")}</span><span className="ai-config-disclosure-hint">{t('aiConfig.assetOptionsSummary')}</span></summary>
+          <p className="ai-config-hint">{t('aiConfig.assetOptionsHint')}</p>
           <div className="micro-label ai-config-section-title">{t("aiConfig.analysisBehavior")}</div>
           <div className="editor-field ai-config-field">
             <label className="micro-label" htmlFor="ai-config-language">
@@ -954,33 +1004,9 @@ export function AiConfigDialog({
               {t("aiConfig.autoAnalyze")}
             </label>
           </div>
+          {onSaveAnalysis ? <div className="ai-config-analysis-actions"><span role="status">{visibleAnalysisSaveState === 'saved' ? t('aiConfig.analysisSaved') : visibleAnalysisSaveState === 'error' ? t('aiConfig.analysisSaveFailed') : t('aiConfig.analysisSaveHint')}</span><button type="button" className="secondary-button" disabled={analysisSaveState === 'saving'} onClick={() => void saveAnalysis()}>{analysisSaveState === 'saving' ? t('aiConfig.savingProfile') : t('aiConfig.saveAnalysis')}</button></div> : null}
           </details>
         </div>
-        <div className="dialog-actions ai-config-actions">
-          <div className="ai-config-test-cluster">
-            <button
-              className="secondary-button"
-              disabled={!canUseKey || !model.trim() || busy}
-              onClick={() => void runTest()}
-              type="button"
-            >
-              {busyAction === "test"
-                ? t("aiConfig.testing")
-                : t("aiConfig.testConnection")}
-            </button>
-            {testInline ? <LauncherNotification error={!testInline.ok} message={testInline.text} onDismiss={() => setTestInline(null)} />
-              : modelsMessage ? <LauncherNotification message={modelsMessage} onDismiss={() => setModelsMessage(null)} /> : null}
-          </div>
-          <button
-            className="primary-button"
-            disabled={!canSaveProfile}
-            onClick={() => void onSave()}
-            type="button"
-          >
-            {saveVerifying ? t("aiConfig.savingVerifying") : t("aiConfig.saveProfile")}
-          </button>
-        </div>
-        {saveVerifying ? <LauncherNotification pending message={t("aiConfig.saveVerifyingHint")} onDismiss={() => undefined} /> : null}
     </>
   );
 

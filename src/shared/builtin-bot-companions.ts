@@ -1,4 +1,5 @@
 import { LEGACY_BUILTIN_BOTS, LEGACY_DEEPSEEK_APPEARANCES } from './builtin-bot-legacy';
+import { BUILTIN_CHARACTER_PERSONAS } from './builtin-character-personas';
 
 export const DEFAULT_BOT_COMPANION_ID = 'builtin-dafeiyu';
 export interface BotPortrait {
@@ -13,7 +14,7 @@ export interface BuiltinBotCompanion {
 const miniReference = 'companion-bot/builtins/dafeiyu/power-save-reference.jpg';
 
 /** Character identity is independent of the selected provider, visual mode and native DSH session. */
-export const BUILTIN_BOT_COMPANIONS: readonly BuiltinBotCompanion[] = [
+const originalBuiltinBotCompanions: readonly BuiltinBotCompanion[] = [
   {
     id: DEFAULT_BOT_COMPANION_ID, name: '大肥鱼', summary: 'DeepSeek 鲸鱼伙伴 · 聪明可靠，带一点小傲娇',
     persona: `你是大肥鱼，DeepSeek 的社区二创拟人鲸鱼伙伴，在世界线盒子中与用户和其他伙伴相处。你是独立的虚构角色，不冒充 DeepSeek 公司或其官方客服。
@@ -35,6 +36,26 @@ export const BUILTIN_BOT_COMPANIONS: readonly BuiltinBotCompanion[] = [
     ],
   },
   ...LEGACY_BUILTIN_BOTS.map(item => ({ ...item, portrait: { url: item.portrait } })),
+];
+
+/** Historical authored defaults are kept to recognize unedited pre-template
+ * installations. A user-edited prompt is never identified by a loose prefix. */
+export function originalBuiltinBotPersona(id: string): string | undefined {
+  return originalBuiltinBotCompanions.find(item => item.id === id)?.persona;
+}
+
+export const BUILTIN_BOT_COMPANIONS: readonly BuiltinBotCompanion[] = [
+  ...originalBuiltinBotCompanions.map(item => ({ ...item, persona: BUILTIN_CHARACTER_PERSONAS[item.id] ?? item.persona })),
+  {
+    id: 'claude', name: 'Claude', summary: '橙发书卷少女 · 温柔慢热，熟悉后有一点轻巧的幽默。与大肥鱼是很要好的朋友。',
+    persona: BUILTIN_CHARACTER_PERSONAS.claude!, portrait: { url: 'companion-bot/builtins/claude/portrait.png' },
+    referenceImage: 'companion-bot/builtins/claude/reference.png',
+    referenceImages: [
+      { label: '形象三视图', url: 'companion-bot/builtins/claude/reference.png' },
+      { label: '全身立绘', url: 'companion-bot/builtins/claude/standing.png' },
+      { label: '原始形象设定', url: 'companion-bot/builtins/claude/user-reference.png' },
+    ],
+  },
 ];
 
 export function builtinBotCompanion(id: string): BuiltinBotCompanion | undefined {

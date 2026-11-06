@@ -138,6 +138,7 @@ export const dshLauncherStateSchema = z.object({
   marketplace: dshMarketplaceStateSchema.optional(),
   packPublications: z.array(dshPackPublicationRecordSchema).optional(),
   tasks: z.array(dshTaskRecordSchema).optional(),
+  companionCapabilityRevisions: z.record(z.string(), z.number().int().nonnegative()).optional(),
   executionReadiness: z.object({ instanceId: id, status: z.enum(['warming', 'ready', 'cold', 'failed']), updatedAt: z.string() }).optional(),
 });
 export type DshLauncherState = z.infer<typeof dshLauncherStateSchema>;

@@ -6,8 +6,9 @@ import path from 'node:path';
 import { build } from 'vite';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
-import type { seedGroupTaskWorkspace } from '../fixtures/bot-task-workspace-fixture';
-import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
+import { BOT_EVENT_CHANNEL } from '../../src/shared/companion-bot';
+import type { seedGroupTaskWorkspace, seedTaskActivityHistory, appendTaskActivityConversationMessage } from '../fixtures/bot-task-workspace-fixture';
+import { electronLaunchEnv, preparePackagedCompanionLaunch, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 async function sha256(file: string) { const hash = createHash('sha256'); for await (const chunk of createReadStream(file)) hash.update(chunk); return hash.digest('hex'); }
 
@@ -22,6 +23,7 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'seed.cjs' } } } });
   const application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
   try {
+    await preparePackagedCompanionLaunch(application, profile);
     const page = await application.firstWindow();
     const identity = await application.evaluate(({ app, BrowserWindow }, expected) => {
       if (app.getPath('userData') !== expected) throw new Error('Task fixtures must not access a production profile');
@@ -49,7 +51,7 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     await expect(page.locator('.bot-chat-identity .bot-presence-dot')).toBeVisible();
     await expect(page.locator('.bot-presence-feedback')).toHaveCount(0);
-    await expect(page.locator('.bot-task-notice')).toHaveCount(1); await expect(page.locator('.bot-transcript')).not.toContainText('MASSIVE EXECUTOR RECEIPT');
+    await expect(page.locator('.bot-task-notice')).toHaveCount(2); await expect(page.locator('.bot-transcript')).not.toContainText('MASSIVE EXECUTOR RECEIPT');
     await expect(page.locator('.bot-followup-receipt')).toContainText('已交给原任务');
     await expect(page.locator('.bot-followup-receipt')).toContainText('整理项目目录 1');
     await expect(page.locator('.browser-markdown-link-card strong')).toHaveText('视频链接');
@@ -58,7 +60,7 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     })).toEqual({ border: '0px', padding: '0px', background: 'rgba(0, 0, 0, 0)' });
     const receiptState = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state', conversationId }), conversationId);
     expect(receiptState.snapshot!.messages.some(message => message.senderId === 'user' && message.taskFollowup?.state === 'delivered')).toBe(true);
-    const inlineNotice = page.locator('.bot-task-notice');
+    const inlineNotice = page.locator('.bot-task-notice').first();
     await expect(inlineNotice).toHaveAttribute('data-task-owner', 'builtin-dafeiyu');
     await expect(inlineNotice.locator('.bot-task-notice-meta strong')).toHaveText('大肥鱼');
     await expect(inlineNotice.locator('.bot-avatar img')).toBeVisible();
@@ -75,7 +77,7 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     expect(inlineMetadata.text).not.toMatch(/MASSIVE|task-presentation-|succeeded|完整任务要求/u);
     await expect(page.locator('.bot-transcript')).not.toContainText('ALREADY REPORTED TRANSPORT RECEIPT');
     await expect(page.locator('.bot-transcript')).toContainText('我已经把整理结果带回来啦。');
-    const receiptBounds = await page.locator('.bot-task-notice').boundingBox(); expect(receiptBounds!.width).toBeLessThanOrEqual(422);
+    const receiptBounds = await inlineNotice.boundingBox(); expect(receiptBounds!.width).toBeLessThanOrEqual(482);
     const retained = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'history.search', conversationId, query: 'ALREADY', limit: 20 }), conversationId);
     expect(retained.history?.items.some(message => message.content.includes('ALREADY REPORTED TRANSPORT RECEIPT'))).toBe(true);
     await expect(page.locator('.bot-active-tasks')).toHaveCount(0);
@@ -368,4 +370,132 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await writeFile(testInfo.outputPath('task-workspace-evidence.json'), JSON.stringify(taskEvidence, null, 2));
     await writeFile(path.join(evidence, 'task-stop-clock-evidence.json'), JSON.stringify(taskEvidence, null, 2));
   } finally { await application.close(); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
+});
+
+// eslint-disable-next-line no-empty-pattern -- Electron owns the page.
+test('retains task activity after natural replies and later messages in private and group history', async ({}, testInfo) => {
+  test.setTimeout(180000);
+  testInfo.annotations.push({ type: 'isolated-store-fixture', description: 'Durable BotStore task notices, settled natural replies, paged Main IPC and validated changed events. No DSH execution or paid model request.' });
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-task-activity-history-'));
+  const fixtureDirectory = testInfo.outputPath('history-fixture'); await mkdir(fixtureDirectory, { recursive: true });
+  await build({ configFile: false, logLevel: 'warn', build: { ssr: 'tests/fixtures/bot-task-workspace-fixture.ts', target: 'node24', outDir: fixtureDirectory, emptyOutDir: false,
+    rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'seed.cjs' } } } });
+  const application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
+  const evidence = path.resolve('artifacts/task-activity-history'); await mkdir(evidence, { recursive: true });
+  try {
+    await preparePackagedCompanionLaunch(application, profile);
+    const page = await application.firstWindow();
+    const identity = await application.evaluate(({ app, BrowserWindow }, expectedProfile) => {
+      if (app.getPath('userData') !== expectedProfile) throw Error('Activity history fixtures must use their isolated profile.');
+      const window = BrowserWindow.getAllWindows()[0]!;
+      if (!window.webContents.isOffscreen()) throw Error('Task activity screenshots require offscreen rendering.');
+      window.on('show', () => window.hide()); window.hide(); window.setMinimumSize(0, 0); window.setSize(1440, 960); window.webContents.setBackgroundThrottling(false);
+      const frames = { paints: 0 }; Reflect.set(globalThis, '__taskHistoryFrames', frames);
+      window.webContents.on('paint', () => { frames.paints++; });
+      return { packaged: app.isPackaged, appPath: app.getAppPath(), profile: app.getPath('userData') };
+    }, profile);
+    if (process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) { expect(identity.packaged).toBe(true); expect(identity.appPath).toMatch(/app\.asar$/u); }
+    await page.locator('[data-application-module="companions"]').click();
+    await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
+    const directConversationId = await page.evaluate(async () => {
+      const response = await (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' });
+      return response.snapshot!.conversations.find(room => room.kind === 'direct' && room.memberIds.includes('builtin-dafeiyu'))!.id;
+    });
+    const seeded = await application.evaluate(({ app }, input) => {
+      if (app.getPath('userData') !== input.profile) throw Error('Unexpected task activity profile.');
+      const { createRequire } = process.getBuiltinModule('node:module'), require = createRequire(process.getBuiltinModule('node:path').join(app.getAppPath(), 'package.json'));
+      return (require(input.fixture) as { seedTaskActivityHistory: typeof seedTaskActivityHistory }).seedTaskActivityHistory(input.profile, input.conversationId);
+    }, { profile, conversationId: directConversationId, fixture: path.join(fixtureDirectory, 'seed.cjs') });
+    const capture = async (filename: string) => {
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
+      const previous = await application.evaluate(({ BrowserWindow }) => { const count = (Reflect.get(globalThis, '__taskHistoryFrames') as { paints: number }).paints; BrowserWindow.getAllWindows()[0]!.webContents.invalidate(); return count; });
+      await expect.poll(() => application.evaluate(() => (Reflect.get(globalThis, '__taskHistoryFrames') as { paints: number }).paints)).toBeGreaterThan(previous);
+      const png = await application.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG().toString('base64'));
+      const file = testInfo.outputPath(filename); await writeFile(file, Buffer.from(png, 'base64')); await copyFile(file, path.join(evidence, filename));
+      await testInfo.attach(filename, { path: file, contentType: 'image/png' });
+    };
+    const measurements: unknown[] = [];
+    for (const [theme, preset, width, height] of [['light', 'worldlinebox', 1440, 960], ['dark', 'worldlinebox', 850, 720], ['light', 'shuimo-danqing', 1440, 960]] as const) {
+      await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]!.setSize(size.width, size.height), { width, height });
+      await page.evaluate(({ theme, preset }) => {
+        localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme }));
+        localStorage.setItem('worldlinebox.theme-profile.v3', JSON.stringify({ version: 3, preset, overrides: {} }));
+      }, { theme, preset });
+      await page.reload(); await page.locator('[data-application-module="companions"]').click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      if (preset === 'shuimo-danqing') {
+        await expect(page.locator('html')).toHaveAttribute('data-bg-main-panel', 'on');
+        await expect.poll(() => page.locator('.app-animated-background-video').evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
+      }
+      for (const room of [
+        { conversationId: directConversationId, title: '大肥鱼', tasks: [seeded.direct], group: false },
+        { conversationId: seeded.group.conversationId, title: seeded.group.title, tasks: seeded.group.tasks, group: true },
+      ]) {
+        await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: room.title }).click();
+        await expect(page.locator('.bot-chat-header h2')).toHaveText(room.title);
+        await expect(page.locator('.bot-task-notice')).toHaveCount(room.tasks.length);
+        for (const task of room.tasks) {
+          const notice = page.locator(`[data-bot-message="${task.noticeId}"]`);
+          await expect(notice).toHaveAttribute('data-task-id', task.taskId);
+          await expect(notice).toHaveAttribute('data-task-owner', task.companionId);
+          await expect(notice.locator('.bot-task-notice-meta strong')).toHaveText(task.companionId === 'gpt' ? 'GPT' : '大肥鱼');
+          await expect(notice.locator('.bot-task-notice-footer')).toContainText('查看详情');
+          await expect(page.locator(`[data-bot-message="${task.replyId}"]`)).toContainText(task.replyText);
+          await expect(page.locator('.bot-transcript')).not.toContainText('HUMAN_AUTHORED_RAW_EXECUTOR_RESULT');
+          const layout = await notice.evaluate(element => {
+            const card = element.querySelector<HTMLElement>('.bot-task-notice-open')!, title = element.querySelector<HTMLElement>('.bot-task-notice-title')!, badge = element.querySelector<HTMLElement>('.bot-task-notice-state')!;
+            const rect = card.getBoundingClientRect(), transcript = element.closest('.bot-transcript')!.getBoundingClientRect(), titleRect = title.getBoundingClientRect(), badgeRect = badge.getBoundingClientRect();
+            return { width: element.getBoundingClientRect().width, height: rect.height, overflow: card.scrollWidth > card.clientWidth + 1,
+              left: rect.left, right: rect.right, transcriptLeft: transcript.left, transcriptRight: transcript.right,
+              titleHeight: titleRect.height, lineHeight: Number.parseFloat(getComputedStyle(title).lineHeight), titleRight: titleRect.right, titleBottom: titleRect.bottom, badgeLeft: badgeRect.left, badgeTop: badgeRect.top,
+              background: getComputedStyle(card).backgroundColor, state: element.getAttribute('data-task-state'), badge: badge.textContent };
+          });
+          expect(layout.width).toBeLessThanOrEqual(482); expect(layout.height).toBeLessThan(170); expect(layout.overflow).toBe(false);
+          expect(layout.left).toBeGreaterThanOrEqual(layout.transcriptLeft); expect(layout.right).toBeLessThanOrEqual(layout.transcriptRight);
+          expect(layout.titleHeight).toBeLessThanOrEqual(layout.lineHeight * 2 + 1);
+          expect(layout.titleRight <= layout.badgeLeft || layout.titleBottom <= layout.badgeTop).toBe(true);
+          measurements.push({ theme, preset, viewportWidth: width, group: room.group, taskId: task.taskId, ...layout });
+        }
+        const state = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state', conversationId }), room.conversationId);
+        if (!room.group) expect(state.snapshot?.tasks.some(task => task.id === seeded.direct.taskId)).toBe(false);
+        for (const task of room.tasks) {
+          const notice = state.snapshot?.messages.find(message => message.id === task.noticeId);
+          expect(notice?.taskNotice).toMatchObject({ taskId: task.taskId, companionId: task.companionId, title: task.title, replyMessageId: task.replyId });
+          expect(state.snapshot?.messages.find(message => message.id === task.replyId)?.status).toBe('sent');
+        }
+        await page.locator('.bot-transcript').evaluate(element => { element.scrollTop = element.scrollHeight; });
+        await capture(`task-history-${room.group ? 'group' : 'direct'}-${preset}-${theme}${width < 1000 ? '-narrow' : ''}.png`);
+        // Every card opens its exact task, even the historical record outside
+        // the bounded current-task snapshot and either owner inside a group.
+        for (const task of room.tasks) {
+          const button = page.locator(`[data-bot-message="${task.noticeId}"] button`);
+          await button.focus(); await button.press('Enter');
+          const dialog = page.getByRole('dialog', { name: '任务工作台', exact: true });
+          await expect(dialog.locator('.bot-tasks-header h3')).toHaveText(room.group ? '群任务工作台' : '任务工作台');
+          await expect(dialog.locator('[data-bot-task]')).toHaveAttribute('data-bot-task', task.taskId);
+          await expect(dialog.locator('.bot-task-heading h4')).toHaveText(task.title);
+          await dialog.getByRole('button', { name: '关闭任务', exact: true }).click(); await expect(dialog).toBeHidden();
+        }
+      }
+    }
+    const laterMessages: unknown[] = [];
+    for (const room of [{ id: directConversationId, title: '大肥鱼', tasks: [seeded.direct] }, { id: seeded.group.conversationId, title: seeded.group.title, tasks: seeded.group.tasks }]) {
+      await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: room.title }).click();
+      const messageId = await application.evaluate(({ app, BrowserWindow }, input) => {
+        if (app.getPath('userData') !== input.profile) throw Error('Unexpected task history append profile.');
+        const { createRequire } = process.getBuiltinModule('node:module'), require = createRequire(process.getBuiltinModule('node:path').join(app.getAppPath(), 'package.json'));
+        const messageId = (require(input.fixture) as { appendTaskActivityConversationMessage: typeof appendTaskActivityConversationMessage }).appendTaskActivityConversationMessage(input.profile, input.conversationId);
+        BrowserWindow.getAllWindows()[0]!.webContents.send(input.channel, { type: 'changed', conversationId: input.conversationId });
+        return messageId;
+      }, { profile, fixture: path.join(fixtureDirectory, 'seed.cjs'), conversationId: room.id, channel: BOT_EVENT_CHANNEL });
+      await expect(page.locator(`[data-bot-message="${messageId}"]`)).toContainText('后续消息');
+      for (const task of room.tasks) await expect(page.locator(`[data-bot-message="${task.noticeId}"]`)).toBeVisible();
+      await page.reload(); await page.locator('[data-application-module="companions"]').click();
+      await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: room.title }).click();
+      await expect(page.locator(`[data-bot-message="${messageId}"]`)).toContainText('后续消息');
+      for (const task of room.tasks) await expect(page.locator(`[data-bot-message="${task.noticeId}"]`)).toBeVisible();
+      laterMessages.push({ conversationId: room.id, messageId, retainedNoticeIds: room.tasks.map(task => task.noticeId), survivedReload: true });
+    }
+    await writeFile(path.join(evidence, 'task-history-evidence.json'), JSON.stringify({ identity, seeded, measurements, laterMessages, actualIpc: true, syntheticStoreData: true, rawExecutorTextHidden: true }, null, 2));
+  } finally { await application.close(); removeCompanionTestDirectory(profile); }
 });

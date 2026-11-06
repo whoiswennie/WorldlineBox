@@ -11,7 +11,11 @@ const idleProgram = 'setInterval(() => {}, 1000);';
 const workerProgram = `const {spawn}=require('node:child_process'); const leaf=spawn(process.execPath,['-e',${JSON.stringify(idleProgram)}],{windowsHide:true,detached:true,stdio:'ignore'}); console.log(leaf.pid); setInterval(()=>{},1000);`;
 // A startup gate ensures this fixture's grandchildren are created only after
 // its root is assigned to the Job, just as the launcher assigns before ready.
-const hostProgram = `const {spawn}=require('node:child_process'); process.stdin.once('data',()=>{ const worker=spawn(process.execPath,['-e',${JSON.stringify(workerProgram)}],{windowsHide:true,stdio:['ignore','pipe','pipe']}); worker.stdout.once('data',chunk=>console.log(JSON.stringify([process.pid,worker.pid,Number(String(chunk).trim())]))); }); setInterval(()=>{},1000);`;
+// libuv separately kills non-detached children when their parent exits on
+// Windows. Detach this worker so its survival tests our retained instance Job,
+// rather than racing libuv's independent, asynchronous parent-exit cleanup.
+// Windows still inherits our Job: it grants no breakaway permission.
+const hostProgram = `const {spawn}=require('node:child_process'); process.stdin.once('data',()=>{ const worker=spawn(process.execPath,['-e',${JSON.stringify(workerProgram)}],{windowsHide:true,detached:true,stdio:['ignore','pipe','pipe']}); worker.stdout.once('data',chunk=>console.log(JSON.stringify([process.pid,worker.pid,Number(String(chunk).trim())]))); }); setInterval(()=>{},1000);`;
 
 interface ProcessProbe { alive(): boolean; dispose(): void }
 
@@ -88,8 +92,8 @@ describe.skipIf(process.platform !== 'win32')('Windows DSH instance Job supervis
       for(const pid of await ready)probes.push(processProbe(pid));
       await expect(job!.waitForEmpty(50)).rejects.toThrow('still hold');
       const exited=new Promise<void>(resolve=>host.once('exit',()=>resolve()));host.kill();await exited;
-      expect(probes.slice(1).every(probe=>probe.alive())).toBe(true);
       await expect(job!.waitForEmpty(50)).rejects.toThrow('still hold');
+      expect(probes[0]!.alive()).toBe(false);expect(probes.slice(1).every(probe=>probe.alive())).toBe(true);
       job!.terminate();await job!.waitForEmpty();await waitGone(probes);job!.close();await job!.waitForEmpty();
     }finally{job?.close();for(const probe of probes)probe.dispose();host.kill();}
   });

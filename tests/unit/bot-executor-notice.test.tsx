@@ -11,12 +11,12 @@ afterEach(async()=>{await act(()=>root?.unmount());host?.remove();root=undefined
 const instance:DshInstance={id:'default',name:'我的 DSH',runtimeId:'runtime',createdAt:'now',updatedAt:'now',profile:'web',status:'stopped',homePath:'home',agentsPath:'agents',workspacePath:'workspace',browserPartition:'default',isDefault:true};
 const state=(status:DshInstance['status']='stopped'):DshLauncherState=>({supported:true,rootPath:'fixture',runtimes:[],instances:[{...instance,status}],snapshots:[],packs:[],operations:[]});
 function deferred(){let resolve!:(value:DshLauncherResponse)=>void;return{promise:new Promise<DshLauncherResponse>(done=>{resolve=done;}),resolve:(value:DshLauncherResponse)=>resolve(value)};}
-async function mount(handler:WorldlineBoxDshLauncherApi['request']){
+async function mount(handler:WorldlineBoxDshLauncherApi['request'],companionIds?:string[]){
   let change:(value:DshLauncherState)=>void=()=>undefined;
   const request=vi.fn(handler),open=vi.fn(),unsubscribe=vi.fn();
   const api:WorldlineBoxDshLauncherApi={request,onChanged:listener=>{change=listener;return unsubscribe;}};
   host=document.createElement('div');document.body.append(host);root=createRoot(host);
-  await act(async()=>root!.render(<BotExecutorNotice api={api} zh onOpenLauncher={open}/>));
+  await act(async()=>root!.render(<BotExecutorNotice api={api} zh companionIds={companionIds} onOpenLauncher={open}/>));
   return{request,open,unsubscribe,change:(value:DshLauncherState)=>act(()=>change(value))};
 }
 async function click(label:string){const button=[...host.querySelectorAll('button')].find(value=>value.textContent===label||value.getAttribute('aria-label')===label)!;expect(button,label).toBeDefined();await act(async()=>button.click());}
@@ -26,6 +26,20 @@ it('shows the stopped default instance with a working start button and accepts t
   expect(host.querySelector('.bot-executor-status-label')?.getAttribute('title')).toContain('聊天可照常');
   expect(host.querySelector('small')).toBeNull();
   await click('启动');expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});expect(host.textContent).toBe('');
+});
+it('starts the selected companion environment and ignores an unrelated stopped default',async()=>{
+  const privateInstance={...instance,id:'private',isDefault:false,companionId:'alice',companionName:'Alice'};
+  const f=await mount(async()=>({ok:true,state:{...state('running'),instances:[{...instance,status:'running'},privateInstance]}}),['alice']);
+  expect(host.textContent).toContain('DSH 未启动');await click('启动');
+  expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'private'});
+  await f.change({...state(),instances:[{...instance,status:'stopped'},{...privateInstance,status:'running'}]});
+  expect(host.textContent).toBe('');
+});
+it('finds the unavailable member environment in a mixed group without starting another member host',async()=>{
+  const f=await mount(async()=>({ok:true,state:{...state('running'),instances:[{...instance,status:'running'},
+    {...instance,id:'bob-env',isDefault:false,companionId:'bob',status:'failed'}]}}),['alice','bob']);
+  expect(host.textContent).toContain('DSH 启动失败');await click('启动');
+  expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'bob-env'});
 });
 it('shows starting, stopping and execution-readiness failures instead of hiding a running-but-unready executor',async()=>{
   const f=await mount(async()=>({ok:true,state:state('starting')}));

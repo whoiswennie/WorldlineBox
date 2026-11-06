@@ -13,6 +13,7 @@ import { inspectManagedProcess, instanceEnvironment, launchCli, parseReadyUrl, r
 import type { DshCliSelection } from './cli-terminal';
 import { NativeHostClient } from './native-host-client';
 import { CompanionInstanceLeases, nativeIdleConfirmed, type CompanionInstanceLeaseKind } from './companion-instance-leases';
+import { DshHostUnavailableError, isDshHostUnavailableError } from './host-errors';
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[]; get(id: string): DshRuntime; directory(id: string): string; plan(id: string): RuntimeLaunchPlan;
@@ -27,6 +28,7 @@ interface Options {
   isExternallyInUse?: (instanceId: string) => boolean;
   companionIdleMs?: number;
   onStartup?: (progress: DshHostStartupProgress) => void;
+  onManualStop?: (instanceId: string) => void;
 }
 export interface DshHostStartupProgress {
   instanceId: string;
@@ -53,6 +55,7 @@ export class InstanceService {
   private snapshotRecords: DshSnapshot[] = [];
   private readonly hosts = new Map<string, Host>();
   private readonly starts = new Map<string, Promise<NativeHostClient>>();
+  private readonly stops = new Map<string, Promise<void>>();
   private readonly startControllers = new Map<string, AbortController>();
   private readonly busy = new Set<string>();
   private readonly recoveryBlocked = new Set<string>();
@@ -239,43 +242,62 @@ export class InstanceService {
   }
   async ensureHost(id: string, signal?: AbortSignal, options: { automatic?: boolean } = {}): Promise<NativeHostClient> {
     signal?.throwIfAborted();
-    if (options.automatic && this.suspendedCompanions.has(id)) throw new Error('伙伴环境已明确停止，等待重新启用。');
+    if (this.closing) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。', id);
+    if (!this.instances.some(instance => instance.id === id)) throw new DshHostUnavailableError('configuration', 'DSH 实例不存在，请检查任务绑定的执行环境。', id);
+    const stopEpoch = this.manualStops.get(id) ?? 0;
+    const check = () => {
+      signal?.throwIfAborted();
+      if (this.closing) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。', id);
+      if ((this.manualStops.get(id) ?? 0) !== stopEpoch || options.automatic && this.suspendedCompanions.has(id))
+        throw new DshHostUnavailableError('stopped', 'DSH 实例已由用户关闭，请继续原任务或重新启动实例。', id);
+    };
+    check();
     if (!options.automatic) this.suspendedCompanions.delete(id);
-    this.touchInstance(id);
-    const stopping = this.idleStops.get(id);
-    if (stopping && signal) await new Promise<void>((resolve, reject) => {
-      const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
-      stopping.then(() => resolve(), reject).finally(() => signal.removeEventListener('abort', abort));
-      if (signal.aborted) abort();
-    });
-    else await stopping;
-    signal?.throwIfAborted();
-    if (options.automatic && this.suspendedCompanions.has(id)) throw new Error('伙伴环境已明确停止，等待重新启用。');
-    this.available(id);
-    let pending = this.starts.get(id);
-    if (!pending) {
-      const existing = this.hosts.get(id);
-      if (existing?.stopping) throw new Error('The native DSH Host is stopping. Retry after it has stopped.');
-      // A bridge may announce its port before the Web token exchange and
-      // final startup checks finish. Only the shared startup result publishes
-      // a usable Host; another caller cannot skip those checks.
-      if (existing?.client) { await existing.client.health(signal); this.scheduleIdle(id); return existing.client; }
-      await this.reclaimCompanionCacheBeforeStart(id); signal?.throwIfAborted(); this.available(id);
-      if (options.automatic && this.suspendedCompanions.has(id)) throw new Error('伙伴环境已明确停止，等待重新启用。');
-      // Another waiter may have started this same environment while LRU checked another Host.
-      pending = this.starts.get(id);
+    try {
+      this.touchInstance(id);
+      const wait = async (pending: Promise<unknown> | undefined) => {
+        if (!pending) return;
+        if (!signal) { await pending; return; }
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
+          pending.then(() => resolve(), reject).finally(() => signal.removeEventListener('abort', abort));
+          if (signal.aborted) abort();
+        });
+      };
+      await wait(this.stops.get(id)); check();
+      await wait(this.idleStops.get(id)); check();
+      this.available(id);
+      let pending = this.starts.get(id);
       if (!pending) {
-        this.available(id); const controller = new AbortController(); this.startControllers.set(id, controller);
-        pending = this.startHost(id, controller.signal).finally(() => { this.starts.delete(id); this.startControllers.delete(id); });
-        this.starts.set(id, pending);
+        const existing = this.hosts.get(id);
+        if (existing?.stopping) { await wait(existing.finished); check(); }
+        // Never publish an early bridge client before the shared startup's
+        // token exchange and readiness checks have finished.
+        else if (existing?.client) { await existing.client.health(signal); check(); this.scheduleIdle(id); return existing.client; }
+        await this.reclaimCompanionCacheBeforeStart(id); check(); this.available(id);
+        // Another waiter may have started this environment during the LRU check.
+        pending = this.starts.get(id);
+        if (!pending) {
+          const controller = new AbortController(); this.startControllers.set(id, controller);
+          pending = this.startHost(id, controller.signal).finally(() => { this.starts.delete(id); this.startControllers.delete(id); });
+          this.starts.set(id, pending);
+        }
       }
+      // Cancelling one caller must not stop another caller's shared startup.
+      let client: NativeHostClient;
+      if (!signal) client = await pending;
+      else client = await new Promise<NativeHostClient>((resolve, reject) => {
+        const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
+        pending!.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+        if (signal.aborted) abort();
+      });
+      check(); return client;
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      check();
+      if (isDshHostUnavailableError(error)) throw error;
+      throw new DshHostUnavailableError('startup', 'DSH 执行环境暂时无法连接：' + sanitizeOutput(error instanceof Error ? error.message : String(error)), id, error);
     }
-    // Cancelling one caller must not stop the shared Host or another partner's work.
-    return signal ? new Promise((resolve, reject) => {
-      const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
-      pending!.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
-      if (signal.aborted) abort();
-    }) : pending;
   }
   private async startHost(id: string, signal: AbortSignal): Promise<NativeHostClient> {
     // This shared preparation outlives an individual waiting turn, but profile
@@ -323,10 +345,13 @@ export class InstanceService {
         if (pending[index]!.length > 256000) pending[index] = pending[index]!.slice(-128000);
       }));
       child.once('error', fail);
-      child.once('close', code => {
-        fail(new Error(`Native DSH Web Host exited ${code}. See instance logs.`));
+      child.once('close', (code, exitSignal) => {
+        const failure = new Error(`Native DSH Web Host exited ${exitSignal ?? code}. See instance logs.`);
+        fail(failure);
         if (this.hosts.get(id) === owned) {
           this.hosts.delete(id); instance.status = owned.stopping ? 'stopped' : 'failed'; delete instance.pid; delete instance.port;
+          instance.lastExitCode = code;
+          if (!owned.stopping) instance.lastError = sanitizeOutput(failure.message);
           void (async () => {
             await rm(path.join(this.getRoot(id), 'process.json'), { force: true });
             await this.changed(); await this.options.closeWorkbench(id);
@@ -348,17 +373,27 @@ export class InstanceService {
     }
   }
   async stop(id: string, options: { automatic?: boolean } = {}): Promise<void> {
-    if (!options.automatic && this.require(id).companionId) {
+    this.require(id);
+    if (!options.automatic) {
       this.manualStops.set(id, (this.manualStops.get(id) ?? 0) + 1); this.suspendedCompanions.add(id);
+      try { this.options.onManualStop?.(id); } catch { /* Observers cannot prevent the actual stop. */ }
     }
     this.touchInstance(id);
-    this.startControllers.get(id)?.abort(new Error('DSH instance stopped.'));
-    await this.starts.get(id)?.catch(() => undefined);
-    const host = this.hosts.get(id); if (!host) return;
-    host.stopping = true; this.require(id).status = 'stopping'; await this.changed();
-    try { await host.client?.request('/shutdown', {}, AbortSignal.timeout(5000));
-      await Promise.race([host.finished, new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('Native Host shutdown timed out.')), 15000); timer.unref(); host.finished.finally(() => clearTimeout(timer)); })]);
-    } finally { await terminateOwnedProcess(host.child); await host.finished; }
+    this.startControllers.get(id)?.abort(new DshHostUnavailableError(this.closing ? 'closing' : options.automatic ? 'startup' : 'stopped', 'DSH 实例已停止。', id));
+    const previous = this.stops.get(id); if (previous) return previous;
+    const pending = (async () => {
+      await this.starts.get(id)?.catch(() => undefined);
+      const host = this.hosts.get(id);
+      if (host) {
+        host.stopping = true; this.require(id).status = 'stopping'; await this.changed();
+        try { await host.client?.request('/shutdown', {}, AbortSignal.timeout(5000));
+          await Promise.race([host.finished, new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('Native Host shutdown timed out.')), 15000); timer.unref(); host.finished.finally(() => clearTimeout(timer)); })]);
+        } finally { await terminateOwnedProcess(host.child); await host.finished; }
+      }
+      const instance = this.require(id); instance.status = 'stopped'; delete instance.pid; delete instance.port;
+      await this.changed();
+    })().finally(() => { if (this.stops.get(id) === pending) this.stops.delete(id); });
+    this.stops.set(id, pending); return pending;
   }
   async create(name: string, runtimeId: string, op?: OperationContext, companion?: Pick<DshInstance, 'companionId' | 'companionName' | 'parentInstanceId' | 'keepAlive'>): Promise<DshInstance> {
     if (this.closing) throw new Error('DSH launcher is closing.'); this.options.runtimes.get(runtimeId); op?.signal.throwIfAborted();
@@ -538,6 +573,6 @@ export class InstanceService {
   async shutdown(): Promise<void> {
     for (const timer of this.idleTimers.values()) clearTimeout(timer); this.idleTimers.clear();
     this.closing = true; for (const controller of this.startControllers.values()) controller.abort(new Error('Launcher closing.'));
-    await Promise.allSettled(this.starts.values()); await Promise.allSettled([...this.hosts.keys()].map(id => this.stop(id))); await this.writes;
+    await Promise.allSettled(this.starts.values()); await Promise.allSettled([...this.hosts.keys()].map(id => this.stop(id, { automatic: true }))); await Promise.allSettled(this.stops.values()); await this.writes;
   }
 }

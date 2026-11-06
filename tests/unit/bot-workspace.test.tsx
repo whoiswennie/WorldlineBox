@@ -99,6 +99,29 @@ const rows = (first: number, last: number) => Array.from({ length: last - first 
 });
 const visibleIds = () => [...host.querySelectorAll<HTMLElement>('[data-bot-message]')].map(element => element.dataset.botMessage);
 
+it.each(['direct', 'group'] as const)('retains %s task activity across a natural reply, later messages and conversation switches', async kind => {
+  const people = kind === 'group' ? ['alice', 'bob'] : ['alice'];
+  const notices = people.map((owner, index) => ({ ...message(`notice-${owner}`, 'a', index * 2 + 1, 'RAW EXECUTOR OUTPUT'), senderId: 'task-service', senderName: '任务回执',
+    taskNotice: { taskId: `task-${owner}`, kind: 'task_done' as const, replyMessageId: `result-${owner}`, companionId: owner, companionName: owner === 'alice' ? 'Alice' : 'Bob', title: `整理资料 · ${owner}`, status: 'succeeded' } }));
+  snapshots.a = snapshot(notices.flatMap((notice, index) => [notice, message(`result-${people[index]}`, 'a', index * 2 + 2, '', 'running')]));
+  snapshots.a.conversations[0] = { ...snapshots.a.conversations[0]!, kind, memberIds: ['user', ...people] };
+  await mount();
+  const expectedIds = notices.map(notice => notice.id);
+  const noticeIds = () => [...host.querySelectorAll<HTMLElement>('.bot-task-notice')].map(element => element.dataset.botMessage);
+  expect(noticeIds()).toEqual(expectedIds);
+  const original = host.querySelector('[data-bot-message="notice-alice"]');
+  snapshots.a.messages = snapshots.a.messages.map(entry => entry.senderId === 'task-service' ? entry : { ...entry, status: 'sent', content: '结果已整理好。' });
+  await changed();
+  expect(noticeIds()).toEqual(expectedIds); expect(host.querySelector('[data-bot-message="notice-alice"]')).toBe(original);
+  snapshots.a.messages.push(message('later-chat', 'a', 10, '新的日常对话'));
+  await changed(); expect(noticeIds()).toEqual(expectedIds); expect(transcript()).not.toContain('RAW EXECUTOR OUTPUT');
+  expect([...host.querySelectorAll('.bot-task-notice-meta strong')].map(element => element.textContent)).toEqual(people.map(owner => owner === 'alice' ? 'Alice' : 'Bob'));
+  expect(snapshots.a.tasks).toHaveLength(0); // Historical tasks need not be in the current task window.
+  await select('私聊乙'); expect(noticeIds()).toEqual([]);
+  await select('私聊甲'); expect(noticeIds()).toEqual(expectedIds);
+  expect(visibleIds()).toEqual([...snapshots.a.messages.map(entry => entry.id)]);
+});
+
 it('keeps transport receipts compact and opens the task workspace without adding a composer banner', async () => {
   snapshots.a = snapshot([{ ...message('notice', 'a', 1, 'TASK RAW EXECUTOR OUTPUT '.repeat(100)), senderId: 'task-service', senderName: '任务回执', taskNotice: { taskId: 'task-current', kind: 'task_done' } }, message('character-result', 'a', 2, '我已经把结果整理好了。')]);
   snapshots.a.tasks = [{ id: 'task-current', conversationId: 'a', companionId: 'alice', title: '整理目录', goal: 'Long goal', status: 'running', progress: { phase: 'using-tool', toolName: 'shell' } }];
@@ -591,7 +614,7 @@ it('creates groups with the explicitly selected participation policy', async () 
 });
 
 it('keeps long persona edits local instead of rendering the 400-message transcript on each keystroke', async () => {
-  snapshots.a = snapshot(rows(1, 400)); await mount(); await click('编辑伙伴');
+  snapshots.a = snapshot(rows(1, 400)); await mount(); await click('角色卡');
   const field = host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!;
   const dates = vi.spyOn(Date.prototype, 'toLocaleTimeString');
   try {
@@ -606,7 +629,7 @@ it('keeps long persona edits local instead of rendering the 400-message transcri
 });
 
 it('preserves the full 24000-character persona through refresh, IME composition and a failed save', async () => {
-  await mount(); await click('编辑伙伴');
+  await mount(); await click('角色卡');
   const dialog = host.querySelector<HTMLElement>('.bot-modal')!, field = dialog.querySelector('textarea')!;
   const persona = '设'.repeat(23998) + '😀';
   expect(field.maxLength).toBe(24000); expect(dialog.querySelector<HTMLInputElement>('input[name=templateName]')?.maxLength).toBe(80);
@@ -628,21 +651,21 @@ it('preserves the full 24000-character persona through refresh, IME composition 
 });
 
 it('discards cancelled drafts and separates existing companions, new companions and new groups', async () => {
-  await mount(); await click('编辑伙伴'); await input(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!, '不应保存的Alice草稿'); await closeEditor();
+  await mount(); await click('角色卡'); await input(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!, '不应保存的Alice草稿'); await closeEditor();
   expect(requests.some(request => ['companion.update', 'companion.create', 'companion.personas.save'].includes(request.type))).toBe(false);
-  await select('私聊乙'); await click('编辑伙伴'); expect(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!.value).toBe('直接简明'); await closeEditor();
+  await select('私聊乙'); await click('角色卡'); expect(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!.value).toBe('直接简明'); await closeEditor();
   await act(() => host.querySelector<HTMLButtonElement>('[aria-label="新伙伴"]')!.click());
   expect(host.querySelector<HTMLInputElement>('.bot-modal input')!.value).toBe(''); expect(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!.value).toBe('');
   await input(host.querySelector<HTMLInputElement>('.bot-modal input')!, '新名字'); await input(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!, '新伙伴草稿'); await click('取消');
   await click('新群聊'); expect(host.querySelector<HTMLInputElement>('.bot-modal input:not([type=checkbox])')!.value).toBe(''); expect(host.querySelector('.bot-modal textarea')).toBeNull();
   expect([...host.querySelectorAll<HTMLInputElement>('.bot-modal input[type=checkbox]')].some(input => input.checked)).toBe(false);
-  await click('取消'); await click('编辑伙伴'); expect(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!.value).toBe('直接简明');
+  await click('取消'); await click('角色卡'); expect(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!.value).toBe('直接简明');
 });
 
 it('does not close or replace a newer group draft when a cancelled editor save finishes late', async () => {
   await mount(); const pending = deferred<BotResponse>();
   override = request => request.type === 'companion.update' ? pending.promise : undefined;
-  await click('编辑伙伴'); await click('基本资料'); await input(host.querySelector<HTMLInputElement>('.bot-editor-basics input[name=name]')!, 'Alice 的新名字'); await click('保存');
+  await click('角色卡'); await click('基本资料'); await input(host.querySelector<HTMLInputElement>('.bot-editor-basics input[name=name]')!, 'Alice 的新名字'); await click('保存');
   expect(host.querySelector<HTMLButtonElement>('.bot-editor-basics .bot-editor-primary')!.disabled).toBe(true);
   await closeEditor(); await click('新群聊');
   await input(host.querySelector<HTMLInputElement>('.bot-modal input:not([type=checkbox])')!, '后打开的群');
@@ -657,7 +680,7 @@ it('does not close or replace a newer group draft when a cancelled editor save f
 it('does not refresh or replace a newer group draft when a closed persona template save finishes late', async () => {
   await mount(); const pending = deferred<BotResponse>();
   override = request => request.type === 'companion.personas.save' ? pending.promise : undefined;
-  await click('编辑伙伴'); await input(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!, '仅Alice的新设定'); await click('保存修改');
+  await click('角色卡'); await input(host.querySelector<HTMLTextAreaElement>('.bot-modal textarea')!, '仅Alice的新设定'); await click('保存修改');
   expect(host.querySelector<HTMLButtonElement>('.bot-personas__editor-footer .bot-editor-primary')!.disabled).toBe(true);
   await closeEditor(); await click('新群聊');
   await input(host.querySelector<HTMLInputElement>('.bot-modal input:not([type=checkbox])')!, '另一个新群草稿');

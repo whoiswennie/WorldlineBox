@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { AiApiFormat } from '../../shared/ai-endpoints';
 import type { NativeHostClient, NativeHostEvent } from '../dsh/native-host-client';
+import { DshHostUnavailableError, isDshHostUnavailableError } from '../dsh/host-errors';
 import type { BotAnsweredQuestion, BotWorkerEffectInspection, BotQuestionAnswerInspection, BotNativeCallRef } from '../../shared/companion-bot-task';
 
 export interface BotDshModel {
@@ -19,6 +20,8 @@ export interface BotDshRun {
   laneId: string; eventId: string; cwd: string; system: string; prompt: string;
   model: BotDshModel; tools: readonly BotDshTool[]; callback: BotDshCallback;
   role?: 'brain' | 'worker'; instanceId?: string; signal?: AbortSignal;
+  /** A user explicitly resumed this task after stopping its execution Host. */
+  resumeHost?: boolean;
   /** Trusted launcher display metadata. Each worker retains its own cwd. */
   workspaceTitle?: string;
   workspaceParent?: { path: string; title: string };
@@ -48,7 +51,7 @@ export class BotDshAbortAcknowledgedError extends Error {
 }
 export interface BotDshHost { client: NativeHostClient; instance?: { id: string }; runtime?: { id: string; version: string } }
 export interface BotDshBrainOptions {
-  getHost(instanceId?: string, signal?: AbortSignal, nativeLaneId?: string): Promise<BotDshHost>;
+  getHost(instanceId?: string, signal?: AbortSignal, nativeLaneId?: string, options?: { explicit?: boolean }): Promise<BotDshHost>;
   acquireLease?(host: BotDshHost): () => void;
 }
 export interface BotDshHandoff {
@@ -81,16 +84,48 @@ export class BotDshEffectUnknownError extends Error {
   constructor(readonly callId?: string, message = 'A worker effect requires explicit reconciliation before continuing.') { super(message); }
 }
 
+type CancelInput = Omit<BotDshRun, 'prompt' | 'onEvent' | 'signal' | 'resumeHost'>;
+interface PendingStop { promise: Promise<BotDshCancelAck>; input: CancelInput; suspend: boolean }
+const cancellationInput = (input: Omit<BotDshRun, 'prompt' | 'onEvent'>): CancelInput => ({
+  laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, model: input.model,
+  tools: input.tools, callback: input.callback, role: input.role, instanceId: input.instanceId,
+  workerAccess: input.workerAccess, workerTools: input.workerTools, workspaceTitle: input.workspaceTitle,
+  workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle,
+});
+
 /** DSH owns inference, tool dispatch, native history and compaction. This
  * adapter only submits durable, idempotent lane events and observes output. */
 export class BotDshBrain {
   private readonly active = new Map<string, { client: NativeHostClient; eventId: string; finished: Promise<void>; acquireUse(): () => void; stopStream(reason: Error): void }>();
-  private readonly pendingStops = new Map<string, Promise<BotDshCancelAck>>();
+  private readonly pendingStops = new Map<string, PendingStop>();
   private readonly openingLanes = new Set<string>();
   constructor(private readonly options: BotDshBrainOptions) {}
+  private async getHost(instanceId: string | undefined, signal: AbortSignal | undefined, laneId: string, options?: { explicit?: boolean }): Promise<BotDshHost> {
+    try { return await this.options.getHost(instanceId, signal, laneId, options); }
+    catch (error) {
+      if (signal?.aborted || isDshHostUnavailableError(error) || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
+      throw new DshHostUnavailableError('startup', 'DSH 执行器暂时无法连接，请检查实例后继续原任务。', instanceId, error);
+    }
+  }
+  private stopReceipt(ack: BotDshCancelAck, sessionId: string, eventId: string, suspend: boolean): BotDshCancelAck {
+    if (ack.result) {
+      if (ack.result.eventId !== eventId || ack.result.sessionId !== sessionId || !['succeeded', 'failed', 'cancelled'].includes(ack.result.status))
+        throw new BotDshDeliveryUnknownError('Native cancellation receipt identity or terminal status changed.', 'cancel');
+      return ack;
+    }
+    if (ack.absent === true) {
+      // Older /lanes/:id/cancel responses omit duplicate identity fields. The
+      // authenticated route and request still bind this absence to the event.
+      if (ack.sessionId !== undefined && ack.sessionId !== sessionId || ack.eventId !== undefined && ack.eventId !== eventId)
+        throw new BotDshDeliveryUnknownError('Native absence receipt identity changed.', 'cancel');
+      return ack;
+    }
+    if (suspend && ack.accepted === true && ack.paused === true && ack.sessionId === sessionId && ack.eventId === eventId) return ack;
+    throw new BotDshDeliveryUnknownError('Native control did not prove a terminal, absent or durably paused event.', 'cancel');
+  }
   private async withHost<T>(instanceId: string | undefined, signal: AbortSignal | undefined, laneId: string,
     work: (host: BotDshHost) => Promise<T>): Promise<T> {
-    const host = await this.options.getHost(instanceId, signal, laneId), release = this.options.acquireLease?.(host);
+    const host = await this.getHost(instanceId, signal, laneId), release = this.options.acquireLease?.(host);
     try { return await work(host); } finally { release?.(); }
   }
   static sessionId(laneId: string): string { return 'wlb-bot-' + createHash('sha256').update(laneId).digest('hex'); }
@@ -101,7 +136,16 @@ export class BotDshBrain {
     const sessionId = BotDshBrain.sessionId(input.laneId);
     const stopping = this.pendingStops.get(sessionId);
     if (stopping) {
-      try { await stopping; } catch (error) { throw new BotDshDeliveryUnknownError(error, 'cancel'); }
+      try { await stopping.promise; }
+      catch {
+        input.signal?.throwIfAborted();
+        // Only a new explicit user resume may reopen a manually stopped Host.
+        // Inspect the previous event before any current-event admission. A
+        // rejected promise alone must neither poison this lane forever nor
+        // become permission to forget uncertain native work and resend it.
+        if (input.resumeHost) await this.getHost(stopping.input.instanceId, input.signal, stopping.input.laneId, { explicit: true });
+        await this.cancelDurable({ ...stopping.input, signal: input.signal }, stopping.suspend);
+      }
       await this.active.get(sessionId)?.finished;
     }
     input.signal?.throwIfAborted();
@@ -111,7 +155,7 @@ export class BotDshBrain {
       created: { sessionId: string; cursor: number }, attachmentStage: 'host' | 'attach' = 'host';
     let acquireUse!: () => () => void;
     try {
-      const host = await this.options.getHost(input.instanceId, input.signal, input.laneId);
+      const host = await this.getHost(input.instanceId, input.signal, input.laneId, { explicit: input.resumeHost === true });
       release = this.options.acquireLease?.(host); client = host.client;
       acquireUse = () => this.options.acquireLease?.(host) ?? (() => undefined);
       attachmentStage = 'attach';
@@ -124,9 +168,10 @@ export class BotDshBrain {
       }, input.signal);
     } catch (error) {
       release?.();
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
-      if (/active turn|active maintenance admission|capacity is occupied|lane is busy/.test(error instanceof Error ? error.message : '')) throw new BotDshLaneBusyError(error instanceof Error ? error.message : undefined);
+      if (isDshHostUnavailableError(error) || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
       if (input.signal?.aborted) throw error;
+      if (attachmentStage === 'host') throw new DshHostUnavailableError('startup', 'DSH 执行器暂时无法连接，请检查实例后继续原任务。', input.instanceId, error);
+      if (/active turn|active maintenance admission|capacity is occupied|lane is busy/.test(error instanceof Error ? error.message : '')) throw new BotDshLaneBusyError(error instanceof Error ? error.message : undefined);
       // Attaching may resume a previously admitted native inbox. Losing this
       // response does not prove that the original event failed or stayed idle.
       throw new BotDshDeliveryUnknownError(error, attachmentStage);
@@ -139,10 +184,12 @@ export class BotDshBrain {
     const abort = () => {
       const reason = input.signal?.reason;
       const suspend = !!reason && typeof reason === 'object' && 'code' in reason && reason.code === 'BOT_SUSPEND';
-      const stopping = client.request<BotDshCancelAck>(`/bot/lanes/${sessionId}/cancel`, { eventId: input.eventId, suspend });
+      const stopping = client.request<BotDshCancelAck>(`/bot/lanes/${sessionId}/cancel`, { eventId: input.eventId, suspend })
+        .then(ack => this.stopReceipt(ack, sessionId, input.eventId, suspend));
       stopRequested = stopping;
-      this.pendingStops.set(sessionId, stopping);
-      void stopping.then(() => { if (this.pendingStops.get(sessionId) === stopping) this.pendingStops.delete(sessionId); }, () => undefined);
+      const pending: PendingStop = { promise: stopping, input: cancellationInput(input), suspend };
+      this.pendingStops.set(sessionId, pending);
+      void stopping.then(() => { if (this.pendingStops.get(sessionId) === pending) this.pendingStops.delete(sessionId); }, () => undefined);
       streamAbort.abort(reason);
     };
     input.signal?.addEventListener('abort', abort, { once: true });
@@ -215,14 +262,15 @@ export class BotDshBrain {
   async cancelDurable(input: Omit<BotDshRun, 'prompt' | 'onEvent'>, suspend = false): Promise<BotDshCancelAck> {
     const sessionId = BotDshBrain.sessionId(input.laneId);
     let client: NativeHostClient, release: (() => void) | undefined;
-    try { const host = await this.options.getHost(input.instanceId, input.signal, input.laneId); release = this.options.acquireLease?.(host); client = host.client; }
+    try { const host = await this.getHost(input.instanceId, input.signal, input.laneId); release = this.options.acquireLease?.(host); client = host.client; }
     catch (error) {
-      if (input.signal?.aborted || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
-      // Host unavailability is not proof that the admitted worker stopped.
-      throw new BotDshDeliveryUnknownError(error, 'host');
+      if (input.signal?.aborted || isDshHostUnavailableError(error) || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
+      // This operation has not inspected or admitted native work yet. Earlier
+      // uncertain effects remain gated independently of Host availability.
+      throw new DshHostUnavailableError('startup', 'DSH 执行器暂时无法连接，请检查实例后继续原任务。', input.instanceId, error);
     }
     try {
-    const previous = this.pendingStops.get(sessionId); if (previous) await previous.catch(() => undefined);
+    const previous = this.pendingStops.get(sessionId); if (previous) await previous.promise.catch(() => undefined);
     if (!suspend) try {
       const proof = await client.request<BotDshCancelAck>('/bot/cancel', { sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, role: input.role ?? 'brain' }, input.signal);
       if (proof.absent === true) {
@@ -242,18 +290,19 @@ export class BotDshBrain {
       workerAccess: input.workerAccess ?? 'scoped', workerTools: input.workerTools, workspaceTitle: input.workspaceTitle,
       workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle, cancelIntent: true, suspendIntent: suspend }, input.signal); }
     catch (error) { if (input.signal?.aborted) throw error; throw new BotDshDeliveryUnknownError(error, 'attach'); }
-    const stopping = client.request<BotDshCancelAck>(`/bot/lanes/${sessionId}/cancel`, { eventId: input.eventId, ...(suspend ? { suspend: true } : {}) }, input.signal);
-    this.pendingStops.set(sessionId, stopping);
+    const stopping = client.request<BotDshCancelAck>(`/bot/lanes/${sessionId}/cancel`, { eventId: input.eventId, ...(suspend ? { suspend: true } : {}) }, input.signal)
+      .then(ack => this.stopReceipt(ack, sessionId, input.eventId, suspend));
+    const pending: PendingStop = { promise: stopping, input: cancellationInput(input), suspend };
+    this.pendingStops.set(sessionId, pending);
+    let confirmed = false;
     try {
       const ack = await stopping;
-      if (ack.result && (ack.result.eventId !== input.eventId || ack.result.sessionId !== sessionId)) throw new Error('Native cancellation receipt identity changed.');
-      if (suspend && ack.paused === true && (ack.accepted !== true || ack.sessionId !== sessionId || ack.eventId !== input.eventId)) throw new BotDshDeliveryUnknownError('Native pause receipt identity changed.');
-      if (!ack.result && ack.absent !== true && !(suspend && ack.accepted === true && ack.paused === true)) throw new BotDshDeliveryUnknownError('Native control did not prove a terminal, absent or durably paused event.');
+      confirmed = true;
       return ack;
     } catch (error) {
       if (input.signal?.aborted || error instanceof BotDshDeliveryUnknownError) throw error;
       throw new BotDshDeliveryUnknownError(error, 'cancel');
-    } finally { if (this.pendingStops.get(sessionId) === stopping) this.pendingStops.delete(sessionId); }
+    } finally { if (confirmed && this.pendingStops.get(sessionId) === pending) this.pendingStops.delete(sessionId); }
     } finally { release?.(); }
   }
   async send(laneId: string, input: { messageId: string; text: string; mode: 'steer' | 'queue' }): Promise<void> {
@@ -271,7 +320,7 @@ export class BotDshBrain {
       if (result.sessionId !== sessionId || result.eventId !== input.eventId || result.absent !== true && (result.workerAccess !== 'full' || result.sameSessionId !== sessionId)) throw new BotDshDeliveryUnknownError('Native worker access upgrade was not confirmed.', 'attach');
       return result;
     } catch (error) {
-      if (input.signal?.aborted || error instanceof BotDshDeliveryUnknownError || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
+      if (input.signal?.aborted || isDshHostUnavailableError(error) || error instanceof BotDshDeliveryUnknownError || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
       throw new BotDshDeliveryUnknownError(error, 'attach');
     }
   }
@@ -306,6 +355,6 @@ export class BotDshBrain {
       try { release = active.acquireUse(); await active.client.request(`/bot/lanes/${sessionId}/cancel`, { eventId: active.eventId, suspend: true }); }
       finally { release?.(); active.stopStream(Object.assign(new Error('The native companion adapter stopped; the durable event remains resumable.'), { code: 'BOT_SUSPEND' })); }
     }));
-    await Promise.allSettled([...this.pendingStops.values()]);
+    await Promise.allSettled([...this.pendingStops.values()].map(stop => stop.promise));
   }
 }

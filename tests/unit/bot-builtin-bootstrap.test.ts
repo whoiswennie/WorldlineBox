@@ -29,13 +29,13 @@ it('seeds the recovered catalogue once, starts with only Bigfish chat, and prese
   const root = await mkdtemp(path.join(tmpdir(), 'wlb-bot-bootstrap-')); roots.push(root);
   let service = open(root), state = (await service.handle({ type: 'state' })).snapshot!;
   expect(state.companions.map(item => item.id).sort()).toEqual(BUILTIN_BOT_COMPANIONS.map(item => item.id).sort());
-  expect(state.companions).toHaveLength(14); expect(state.conversations).toHaveLength(1);
+  expect(state.companions).toHaveLength(BUILTIN_BOT_COMPANIONS.length); expect(state.conversations).toHaveLength(1);
   expect(state.conversations[0]?.memberIds).toContain(DEFAULT_BOT_COMPANION_ID);
   for (const removed of ['default-companion', 'deepseek-sister', 'deepseek-flash']) expect(state.companions.map(item => item.id)).not.toContain(removed);
   const conversation = state.conversations[0]!;
   await service.handle({ type: 'companion.update', companionId: 'huan-white', name: '幻的自定称呼', persona: '保留作者实际编辑的相处方式。' });
   await service.shutdown(); service = open(root); state = (await service.handle({ type: 'state' })).snapshot!;
-  expect(state.companions).toHaveLength(14); expect(state.conversations).toEqual([conversation]);
+  expect(state.companions).toHaveLength(BUILTIN_BOT_COMPANIONS.length); expect(state.conversations).toEqual([conversation]);
   expect(state.companions.find(item => item.id === 'huan-white')).toMatchObject({ name: '幻的自定称呼', persona: '保留作者实际编辑的相处方式。' });
 });
 

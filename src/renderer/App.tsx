@@ -13029,6 +13029,9 @@ export function AssetManager({
     aiConnectionProbeGenerationRef.current += 1;
     setAiProfileDraftId(null);
     setAiProfileName(t("aiConfig.newProfileName"));
+    setAiApiFormat(DEFAULT_GLOBAL_LLM_CONFIG.apiFormat);
+    setAiModel(DEFAULT_GLOBAL_LLM_CONFIG.model);
+    setAiBaseUrl(DEFAULT_GLOBAL_LLM_CONFIG.baseUrl);
     setAiApiKey("");
     setAiDraftHasKey(false);
     setAiDraftConnectionState("disconnected");
@@ -16471,7 +16474,8 @@ export function AssetManager({
               // (WorldlineBox-rsbt); re-sync from stored credentials after draft edits.
               void probeStoredAiConnection();
             }}
-            onSave={() => void saveAiConfig()}
+            onSave={saveAiConfig}
+            onSaveAnalysis={() => persistAiConfig()}
             onTestConnection={testAiConnectionFromDialog}
             onFetchModels={fetchAiModelsFromDialog}
           />

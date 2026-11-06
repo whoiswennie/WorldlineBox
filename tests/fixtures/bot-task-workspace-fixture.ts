@@ -78,3 +78,55 @@ export function seedGroupTaskWorkspace(profile: string) {
     return { conversationId: group.id, title: group.title, owners, privateConversationId: privateRoom.id, privateTaskId: 'private-owner-0', countPerOwner: 8, queuedPerOwner: 5, privateCount: 6, synthetic: true, paidRequests: 0 };
   } finally { store.close(); }
 }
+
+/** Completed task notices and their natural replies are written through the
+ * production store. They must both remain in private and group chat history.
+ * Newer ended tasks fill the bounded catalog without starting native work. */
+export function seedTaskActivityHistory(profile: string, directConversationId: string) {
+  const store = new BotStore(path.join(profile, 'companion-bot-v2', 'bot.sqlite'));
+  try {
+    const group = store.createGroup({ title: '任务记录保留验收群', memberIds: [DEFAULT_BOT_COMPANION_ID, 'gpt'], participationMode: 'mentions' });
+    const create = (conversationId: string, companionId: string, id: string, title: string, status: 'succeeded' | 'failed' = 'succeeded') => {
+      const source = store.enqueue({ conversationId, senderId: 'user', source: 'user', sourceMessageId: `activity-source-${id}`,
+        content: '隔离界面验收：核对测试资料，完成后保留任务记录。', recipientIds: [companionId] }).events[0]!;
+      store.cancelEvent(source.id);
+      store.createTask({ id, conversationId, companionId, sourceEventId: source.id, goal: '只读核对隔离界面测试资料；不调用真实模型或执行器。', extra: { title } });
+      store.updateTask(id, { status, summary: `HUMAN_AUTHORED_RAW_EXECUTOR_RESULT_${id}` });
+      return { taskId: id, companionId, conversationId, title };
+    };
+    const direct = create(directConversationId, DEFAULT_BOT_COMPANION_ID, 'activity-private-old', '整理项目资料与引用来源，并核对所有交付文件的名称、格式、目录和阅读说明');
+    // Put this historical record outside the latest 100 task cards. Its notice
+    // still carries trusted title/owner/state metadata and an exact task ID.
+    store.taskTransaction(sql => sql.prepare('UPDATE bot_tasks SET created_at=?,updated_at=? WHERE id=?').run('2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', direct.taskId));
+    for (let index = 0; index < 101; index++) create(directConversationId, DEFAULT_BOT_COMPANION_ID, `activity-catalog-${index}`, `历史目录记录 ${index}`);
+    const groupTasks = [
+      create(group.id, DEFAULT_BOT_COMPANION_ID, 'activity-group-fish', '核对上海天气资料'),
+      create(group.id, 'gpt', 'activity-group-gpt', '核对北京天气资料', 'failed'),
+    ];
+    const completeNotice = (task: typeof direct, text: string) => {
+      const sourceMessageId = `activity-complete-${task.taskId}`;
+      const notice = store.enqueueTaskNotice({ conversationId: task.conversationId, senderId: 'task-service', senderName: '任务回执',
+        source: 'task', sourceMessageId, recipientIds: [task.companionId], kind: 'task_done', payload: { taskId: task.taskId },
+        content: `HUMAN_AUTHORED_RAW_EXECUTOR_RESULT_${task.taskId}` });
+      if (notice.deferred) throw Error('Activity history fixture was unexpectedly deferred.');
+      const claim = store.claim({ workerId: 'human-authored-task-history' });
+      if (!claim || claim.event.sourceMessageId !== sourceMessageId || !store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'done', content: text })) throw Error('Could not settle the activity history reply.');
+      return { ...task, noticeId: claim.event.sourceMessageRecordId, replyId: claim.event.replyMessageId, replyText: text };
+    };
+    return {
+      direct: completeNotice(direct, '资料已经整理完成。这个任务的记录和详情会保留在对话里。'),
+      group: { conversationId: group.id, title: group.title, tasks: groupTasks.map((task, index) => completeNotice(task, index === 0 ? '上海的测试资料已经核对完成，任务记录在这里。' : '北京的测试资料未能完成核对，失败原因已记在任务中。')) },
+      synthetic: true, paidRequests: 0,
+    };
+  } finally { store.close(); }
+}
+
+/** An ordinary subsequent message with no recipients: persistence and UI event
+ * refresh are exercised without a background model turn or executor call. */
+export function appendTaskActivityConversationMessage(profile: string, conversationId: string) {
+  const store = new BotStore(path.join(profile, 'companion-bot-v2', 'bot.sqlite'));
+  try {
+    return store.enqueue({ conversationId, senderId: 'user', source: 'user', recipientIds: [], sourceMessageId: `activity-later-${conversationId}`,
+      content: '后续消息：这些任务记录应当继续留在对话里。' }).message.id;
+  } finally { store.close(); }
+}

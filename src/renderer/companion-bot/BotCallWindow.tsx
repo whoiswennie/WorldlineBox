@@ -14,9 +14,9 @@ import { useBotCallVoice, type BotCallSend } from './useBotCallVoice';
 import { BotCallVoiceControls } from './BotCallVoiceControls';
 import { BotCallCaption } from './BotCallCaption';
 import { isBotFilePaste } from './clipboard-paste';
+import { readBotCallPreferences, saveBotCallPreferences } from './call-preferences';
 import './bot-call.css';
 
-const sceneKey = 'worldlinebox.companion-call.scene.v1';
 export interface BotCallComposerSendBridge {
   send(text: string, requestId: string, perform: () => Promise<{ ok: boolean; replyMessageIds?: readonly string[] }>): Promise<boolean>;
 }
@@ -28,7 +28,6 @@ const poseFields = [
   ['bodyX', '身体左右', 'Body', -1, 1, 0], ['gazeX', '视线左右', 'Look sideways', -1, 1, 0], ['gazeY', '视线上下', 'Look up/down', -1, 1, 0],
   ['mouthOpen', '张嘴', 'Mouth open', 0, 1, 0], ['mouthSmile', '嘴角', 'Smile', -1, 1, 0], ['eyeOpen', '睁眼', 'Eyes open', 0, 1.2, 1],
 ] as const;
-function savedScene(): string { try { const saved = localStorage.getItem(sceneKey); return saved === 'plain' || saved === 'evening' || saved && /^data:image\/(?:png|jpeg|webp|avif);base64,[A-Za-z0-9+/]+=*$/u.test(saved) && saved.length < 4_000_000 ? saved : 'evening'; } catch { return 'evening'; } }
 export function BotCallWindow({ conversationId, companion, messages, streams, mediaApi, speechApi, locale, onHangup, send, onOpenUrl, composer, registerComposerSend, onEditText, onDropFiles, onPasteFiles, hasPendingDraft = false, sendError = '' }: {
   conversationId: string;
   companion: BotCompanion; messages: readonly BotMessage[]; streams: Readonly<Record<string, string>>; locale: 'zh-CN' | 'en'; onHangup(): void;
@@ -43,12 +42,13 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
 }) {
   const zh = locale === 'zh-CN', [phase, setPhase] = useState<'ringing' | 'connected'>('ringing'), [openedAt] = useState(Date.now), [connectedAt, setConnectedAt] = useState(0), [now, setNow] = useState(Date.now);
   const [muted, setMuted] = useState(false), [audioBlocked, setAudioBlocked] = useState(false), audio = useRef<HTMLAudioElement>(undefined);
-  const [scene, setScene] = useState(savedScene), [voiceInputActive, setVoiceInputActive] = useState(false);
+  const [preferences] = useState(() => readBotCallPreferences(companion.id));
+  const [scene, setScene] = useState(preferences.scene), [voiceInputActive, setVoiceInputActive] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(hasPendingDraft), [hudMenu, setHudMenu] = useState(false);
   const [control, setControl] = useState<BotLive2DControls>(), [modelError, setModelError] = useState(''), [interactions, setInteractions] = useState(false), [historyOpen, setHistoryOpen] = useState(false), [scale, setScale] = useState(BOT_CALL_PORTRAIT_SCALE);
   const [expression, setExpression] = useState(''), [motion, setMotion] = useState(''), [notice, setNotice] = useState('');
   const [historyFocus, setHistoryFocus] = useState<string>();
-  const [pose, setPose] = useState<Record<string, number>>({}), [gazeEnabled, setGazeEnabled] = useState(true), [idleEnabled, setIdleEnabled] = useState(true);
+  const [pose, setPose] = useState<Record<string, number>>({}), [gazeEnabled, setGazeEnabled] = useState(preferences.gazeEnabled), [idleEnabled, setIdleEnabled] = useState(preferences.idleEnabled);
   const speech = useBotCallSpeech({ api: speechApi, conversationId, companionId: companion.id, connected: phase === 'connected', messages, control });
   const speechPhase = speech.state.phase, stopSpeech = speech.stop;
   const voice = useBotCallVoice({ connected: phase === 'connected', conversationId, companionId: companion.id, messages, send, speech });
@@ -71,6 +71,7 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
   const openHistory = () => { setHistoryFocus(undefined); setInteractions(false); setHistoryOpen(true); };
   const toggleInteractions = () => { setHistoryOpen(false); setInteractions(value => !value); };
   const ready = useCallback((controls: BotLive2DControls) => { setControl(controls); setModelError(''); }, []), failed = useCallback((message: string) => setModelError(message), []);
+  useEffect(() => { control?.gaze(gazeEnabled); control?.idle(idleEnabled); }, [control, gazeEnabled, idleEnabled]);
   const stopPlayback = () => { if (voice.state.enabled && voice.state.phase === 'speaking') voice.interrupt(); else speech.stop(); };
   const replay = (messageId: string) => { voice.waitForPlayback(); speech.replay(messageId); };
   const speechFailures = speech.state.failures?.length ? speech.state.failures : speech.state.phase === 'error' && speech.state.messageId ? [{ messageId: speech.state.messageId, error: speech.state.error }] : [];
@@ -109,7 +110,7 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
     const target = historyOpen && historyFocus && transcript.current.querySelector(`[data-call-message="${CSS.escape(historyFocus)}"]`);
     if (target) target.scrollIntoView?.({ block: 'center' }); else transcript.current.scrollTop = transcript.current.scrollHeight;
   }, [messages, streams, phase, historyOpen, historyFocus]);
-  const changeScene = (value: string) => { setScene(value); try { localStorage.setItem(sceneKey, value); } catch { setNotice(zh ? '背景已用于本次会面，存储空间不足，未保存。' : 'Background applied for this visit; storage is full.'); } };
+  const changeScene = (value: string) => { setScene(value); if (!saveBotCallPreferences(companion.id, { scene: value })) setNotice(zh ? '背景已用于本次会面，存储空间不足，未保存。' : 'Background applied for this visit; storage is full.'); };
   const chooseImage = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = ''; if (!file) return;
     if (!/^image\/(?:png|jpeg|webp|avif)$/u.test(file.type) || file.size > 2_500_000) { setNotice(zh ? '请选择小于 2.5 MB 的 PNG、JPEG、WebP 或 AVIF 图片。' : 'Choose a PNG, JPEG, WebP or AVIF image smaller than 2.5 MB.'); return; }
@@ -135,7 +136,7 @@ export function BotCallWindow({ conversationId, companion, messages, streams, me
         <label>{zh ? '背景场景' : 'Background'}<select value={scene.startsWith('data:') ? 'custom' : scene} onChange={event => { if (event.target.value !== 'custom') changeScene(event.target.value); }}><option value="evening">{zh ? '暮色书房' : 'Evening studio'}</option><option value="plain">{zh ? '静谧留白' : 'Quiet space'}</option>{scene.startsWith('data:') && <option value="custom">{zh ? '自选图片' : 'Your image'}</option>}</select></label>
         <label className="bot-call-upload"><BotIcon name="image" />{zh ? '更换背景图片' : 'Choose a background'}<input type="file" accept="image/png,image/jpeg,image/webp,image/avif" onChange={event => void chooseImage(event)} /></label>
         {control && <><h3>{zh ? '神态与姿态' : 'Gaze & pose'}</h3><div className="bot-call-gesture-buttons"><button onClick={() => control.gesture('nod')}>{zh ? '点头' : 'Nod'}</button><button onClick={() => control.gesture('shake')}>{zh ? '摇头' : 'Shake'}</button><button onClick={() => control.gesture('blink')}>{zh ? '眨眼' : 'Blink'}</button></div>
-          <label><input type="checkbox" checked={gazeEnabled} onChange={event => { setGazeEnabled(event.target.checked); control.gaze(event.target.checked); }} />{zh ? '视线跟随鼠标' : 'Follow pointer'}</label><label><input type="checkbox" checked={idleEnabled} onChange={event => { setIdleEnabled(event.target.checked); control.idle(event.target.checked); }} />{zh ? '自然待机动作' : 'Idle motion'}</label>
+          <label><input type="checkbox" checked={gazeEnabled} onChange={event => { setGazeEnabled(event.target.checked); saveBotCallPreferences(companion.id, { gazeEnabled: event.target.checked }); }} />{zh ? '视线跟随鼠标' : 'Follow pointer'}</label><label><input type="checkbox" checked={idleEnabled} onChange={event => { setIdleEnabled(event.target.checked); saveBotCallPreferences(companion.id, { idleEnabled: event.target.checked }); }} />{zh ? '自然待机动作' : 'Idle motion'}</label>
           {poseFields.map(([key, chinese, english, min, max, initial]) => <label className="bot-call-pose-slider" key={key}><span>{zh ? chinese : english}</span><input aria-label={zh ? chinese : english} type="range" min={min} max={max} step="0.02" value={pose[key] ?? initial} onChange={event => { const value = Number(event.target.value); setPose(current => ({ ...current, [key]: value })); control.pose({ [key]: value }); }} /><output>{(pose[key] ?? initial).toFixed(2)}</output></label>)}
           <h3>{zh ? '模型表情与动作' : 'Expressions & motions'}</h3><label>{zh ? '表情' : 'Expression'} <small>{control.catalog.expressions.length}</small><select aria-label={zh ? '选择模型表情' : 'Choose expression'} value={expression} onChange={event => { setExpression(event.target.value); if (event.target.value) control.expression(event.target.value); else { control.reset(); setPose({}); } }}><option value="">{zh ? '默认' : 'Default'}</option>{control.catalog.expressions.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
           <label>{zh ? '动作' : 'Motion'} <small>{control.catalog.motions.length}</small><select aria-label={zh ? '选择模型动作' : 'Choose motion'} value={motion} onChange={event => setMotion(event.target.value)}><option value="">{zh ? '选择动作' : 'Choose motion'}</option>{control.catalog.motions.map((item, index) => <option key={item.file} value={index}>{item.name}</option>)}</select></label><button disabled={!motion} onClick={() => control.motion(Number(motion))}>{zh ? '播放动作' : 'Play motion'}</button>

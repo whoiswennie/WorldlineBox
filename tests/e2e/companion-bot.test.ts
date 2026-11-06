@@ -44,13 +44,14 @@ test('new companion UI uses the event runtime, preserves chats, and reports an u
     await page.getByRole('tab', { name: /联系人/ }).click();
     await capture('chat-contacts-light.png');
     await page.getByRole('tab', { name: '聊天', exact: true }).click();
-    await page.getByRole('button', { name: '编辑伙伴', exact: true }).click();
-    const profileDialog = page.getByRole('dialog', { name: '编辑伙伴' });
+    await page.getByRole('button', { name: '角色卡', exact: true }).click();
+    const profileDialog = page.getByRole('dialog', { name: '角色卡' });
+    await profileDialog.getByRole('button', { name: '基本资料', exact: true }).click();
     await profileDialog.getByText('形象设定', { exact: true }).click();
     await expect(profileDialog.locator('.bot-character-reference img')).toHaveCount(2);
     await expect(profileDialog.locator('.bot-character-reference img').first()).toBeVisible();
     await capture('builtin-reference-profile.png');
-    await profileDialog.getByRole('button', { name: '取消', exact: true }).click();
+    await profileDialog.getByRole('button', { name: '关闭', exact: true }).first().click();
     const switchTheme = async (theme: 'light' | 'dark') => {
       await page.evaluate(next => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: next })), theme);
       await page.reload(); await page.locator('[data-application-module="companions"]').click();

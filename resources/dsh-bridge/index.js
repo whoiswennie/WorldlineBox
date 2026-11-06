@@ -215,6 +215,8 @@ export async function apply(ctx) {
   if (!token) return;
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('The WorldlineBox Host capability is invalid.');
   const sessions = new Map(), requests = new Map(), clients = new Set(), workerOwners = new Map(), workerAgents = new Map(), botOpenings = new Map(), botCancelChecks = new Map();
+  const botIdleCacheTarget = 16, botActiveLaneLimit = 64;
+  let botOpeningAdmission = Promise.resolve();
   const pendingWorkerQuestions = new Set();
   let pluginMutations = 0;
   let botProvider;
@@ -819,7 +821,7 @@ export async function apply(ctx) {
     const record = { id: input.sessionId, cwd: input.cwd, preset: 'companion', policy: input.role === 'brain' ? { tools: input.tools.map(tool => tool.name) }
       : input.workerAccess === 'full' ? {} : { tools: [...scopedWorkerTools, ...(input.workerTools ?? []).map(tool => tool.name)] },
       events: [], clients: new Set(), next: 0, revision: 0, admissions: 1, status: 'idle', text: '', stream: '', lastPublish: 0,
-      artifacts: [], disposers: [], eventBytes: 0, bot: input, lastUsed: Date.now() };
+      artifacts: [], disposers: [], eventBytes: 0, bot: input, lastUsed: Date.now(), openingUntil: Date.now() + 30000 };
     const project = botProjectDirectory(input);
     await mkdir(input.cwd, { recursive: true }); await mkdir(project, { recursive: true });
     const currentPreset = await ensureBotPreset(), preset = currentPreset.id;
@@ -1148,6 +1150,7 @@ export async function apply(ctx) {
         const selection = (await botProvider).configure(input.cancelIntent === true
           ? { apiFormat: 'openai_chat', model: 'cancel-only', baseUrl: 'http://127.0.0.1:1', apiKey: 'cancel-only' } : input.model);
         let record = sessions.get(input.sessionId);
+        if (record?.cacheEvicting) throw new Error('The companion lane has an active maintenance admission.');
         const currentPreset = await ensureBotPreset();
         if (record?.bot?.role === 'worker' && record.presetRevision !== currentPreset.revision) deferWorkerPresetRefresh(record, currentPreset);
         if (record?.backgroundStop) await record.backgroundStop;
@@ -1162,16 +1165,49 @@ export async function apply(ctx) {
           try { await upgradeWorkerAccess(record, input); } finally { record.botMutationActive = false; release(); }
         }
         if (!record) {
-          const owned = [...sessions.values()].filter(value => value.bot);
-          if (owned.length >= 16) {
-            const idle = owned.filter(value => value.status !== 'running' && !value.admissions).sort((a, b) => a.lastUsed - b.lastUsed)[0];
-            if (!idle) throw new Error('Companion native lane capacity is occupied by active tasks.');
-            await stopWorkerBackground(idle, true, false); await ctx.sessions.flush(idle.agent.session); await idle.handle.dispose();
-            for (const client of idle.clients) client.end(); sessions.delete(idle.id); forgetWorkerOwners(idle);
+          let opening = botOpenings.get(input.sessionId);
+          if (!opening) {
+            const owned = [...sessions.values()].filter(value => value.bot);
+            const busy = owned.filter(value => value.status === 'running' || value.admissions || value.botMutationActive || value.cacheEvicting || value.agent.status !== 'idle' || value.openingUntil > Date.now());
+            const pending = [...botOpenings.keys()].filter(id => !sessions.has(id)).length;
+            if (busy.length + pending >= botActiveLaneLimit) throw new Error('Companion native lane capacity is occupied by active tasks.');
+            // Reserve before any await, and serialize cache disposal/admission.
+            // Concurrent requests cannot evict the same Agent or over-admit.
+            const admission = botOpeningAdmission.then(async () => {
+              let owned = [...sessions.values()].filter(value => value.bot);
+              const pendingCount = () => [...botOpenings.keys()].filter(id => !sessions.has(id)).length;
+              while (owned.length >= botIdleCacheTarget || owned.length + pendingCount() > botActiveLaneLimit) {
+                const idle = owned.filter(value => value.status !== 'running' && !value.admissions && !value.botMutationActive && !value.cacheEvicting && !(value.openingUntil > Date.now())
+                  && value.agent.status === 'idle').sort((a, b) => a.lastUsed - b.lastUsed)[0];
+                if (!idle) break;
+                idle.cacheEvicting = true;
+                const eviction = (async () => {
+                  await stopWorkerBackground(idle, true, false); await ctx.sessions.flush(idle.agent.session); await idle.handle.dispose();
+                  for (const client of idle.clients) client.end(); sessions.delete(idle.id); forgetWorkerOwners(idle);
+                })();
+                let timer;
+                try { await Promise.race([eviction, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Native idle lane cache disposal timed out.')), 10000); })]); }
+                catch {
+                  // An unconfirmed disposal stays reserved and fenced. New
+                  // independent work may use the remaining hard capacity.
+                  // Retain the promise's rejection handler after the timeout.
+                  void eviction.catch(() => undefined); break;
+                } finally { clearTimeout(timer); }
+                owned = [...sessions.values()].filter(value => value.bot);
+              }
+              // Pending SDK setup already owns a reservation. Count it even
+              // before createBot registers a Session, including this opening.
+              if (owned.length + pendingCount() > botActiveLaneLimit) throw new Error('Companion native lane capacity is occupied by active tasks.');
+            });
+            // Plugin setup is independent across lanes. A stuck third-party
+            // setup keeps its own reservation, not every subsequent opening.
+            opening = admission.then(() => createBot({ ...input, selection }));
+            botOpenings.set(input.sessionId, opening);
+            botOpeningAdmission = admission.then(() => undefined, () => undefined);
           }
-          const opening = botOpenings.get(input.sessionId) ?? createBot({ ...input, selection });
-          botOpenings.set(input.sessionId, opening);
           try { record = await opening; } finally { if (botOpenings.get(input.sessionId) === opening) botOpenings.delete(input.sessionId); }
+          if (!record.bot || record.bot.laneId !== input.laneId || record.bot.role !== input.role || path.resolve(record.cwd) !== path.resolve(input.cwd))
+            throw new Error('Companion Session ownership differs.');
         } else {
           if (record.status === 'running') {
             if (record.bot.eventId !== input.eventId) throw new Error('The companion lane has an active turn.');
@@ -1588,7 +1624,7 @@ export async function apply(ctx) {
         if (!Number.isSafeInteger(after) || after < -1 || record.events[0]?.sequence > after + 1) throw new Error('Native event stream cursor is unavailable.');
         response.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-store' });
         for (const event of record.events) if (event.sequence > after) response.write(JSON.stringify(event) + '\n');
-        record.clients.add(response); clients.add(response);
+        record.openingUntil = undefined; record.clients.add(response); clients.add(response);
         response.on('close', () => { record.clients.delete(response); clients.delete(response); }); return;
       }
       if (request.method === 'POST' && match[2] === 'prompt') {

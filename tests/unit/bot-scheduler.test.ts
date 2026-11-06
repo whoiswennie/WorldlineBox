@@ -67,6 +67,22 @@ it('shutdown fences active work and preserves it for the next runtime', async ()
   expect(store.getEvent(event.id)?.status).toBe('queued');
   const resumed = store.claim({ workerId: 'next-runtime' }); expect(resumed?.event.id).toBe(event.id);
 });
+it('drains the actual cancelled handler after its scheduling wrapper has already released the slot', async () => {
+  const room = store.openDirect('alice'), event = store.enqueue({ conversationId: room.id, senderId: 'user', content: 'prepare files' }).events[0]!;
+  let release: (() => void) | undefined, cleanupFinished = false;
+  scheduler = new BotScheduler(store, { handle: async () => { await new Promise<void>(resolve => { release = resolve; }); cleanupFinished = true; } });
+  scheduler.start(); await tick(); scheduler.cancel(event.id); await tick(); expect(scheduler.runningCount).toBe(0);
+  let closed = false; const closing = scheduler.close(500).then(() => { closed = true; });
+  await tick(); expect(closed).toBe(false); expect(cleanupFinished).toBe(false);
+  release!(); await closing; expect(cleanupFinished).toBe(true);
+});
+it('bounds shutdown when the underlying provider ignores cancellation forever', async () => {
+  const room = store.openDirect('alice'), event = store.enqueue({ conversationId: room.id, senderId: 'user', content: 'blocked provider' }).events[0]!;
+  scheduler = new BotScheduler(store, { handle: async () => new Promise<void>(() => undefined) }); scheduler.start(); await tick();
+  const started = performance.now(); await scheduler.close(30);
+  expect(performance.now() - started).toBeGreaterThanOrEqual(20); expect(performance.now() - started).toBeLessThan(1000);
+  expect(store.getEvent(event.id)?.status).toBe('queued');
+});
 it('detects a handler that silently returns without a durable outcome', async () => {
   const conversation = store.openDirect('alice');
   const event = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: 'no-result' }).events[0]!;

@@ -1,0 +1,57 @@
+.global-model-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+}
+.global-model-section-heading h4 { margin: 0; color: var(--text); font-size: calc(15px * var(--ui-font-scale)); font-weight: 620; }
+.global-model-section-heading p { margin: 6px 0 0; color: var(--secondary); font-size: calc(12px * var(--ui-font-scale)); line-height: 1.65; }
+.global-model-section-heading > div { min-width: 0; }
+.ai-config-draft-status { flex-shrink: 0; padding: 4px 9px; border-radius: var(--ui-radius-pill); color: var(--secondary); background: color-mix(in srgb, var(--text) 5%, transparent); font-size: calc(11px * var(--ui-font-scale)); line-height: 1.6; }
+.ai-config-draft-status[data-dirty] { color: var(--accent); background: var(--ui-action-accent-soft); }
+.ai-config-current-profile { display: flex; align-items: center; gap: 7px; margin: 12px 0 0; color: var(--secondary); font-size: calc(11px * var(--ui-font-scale)); overflow-wrap: anywhere; }
+.ai-config-current-profile .icon { color: var(--accent); flex-shrink: 0; }
+.ai-config-embedded .ai-config-profile-row { flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--divider); gap: 8px; }
+.ai-config-embedded .ai-config-profile-row > .ai-config-field { flex-basis: 220px; }
+.ai-config-connection-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.ai-config-connection-fields > * { min-width: 0; }
+.ai-config-field-wide { grid-column: 1 / -1; }
+.ai-config-connection-fields .text-field { width: 100%; }
+.ai-config-embedded .ai-config-connection-fields .ai-config-field { margin-top: 14px; }
+.ai-config-embedded .ai-config-connection-fields .micro-label { color: var(--text); font-size: calc(12px * var(--ui-font-scale)); }
+.ai-config-embedded .ai-config-connection-fields .ai-config-hint { font-size: calc(11px * var(--ui-font-scale)); line-height: 1.65; }
+.ai-config-embedded .ai-config-connection-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; margin: 12px 0 0; padding: 0 0 14px; gap: 9px 18px; border-top: 0; border-bottom: 1px solid var(--divider); }
+.ai-config-connection-actions .ai-config-action-hint { flex: 1 1 220px; }
+.ai-config-connection-actions .ai-config-test-cluster { flex: 0 1 auto; }
+.ai-config-embedded .ai-config-key-field > .secondary-button { min-height: 0; padding: 4px 0 0; border: 0; background: transparent; color: var(--secondary); font-size: calc(10px * var(--ui-font-scale)); }
+.ai-config-model-field .ai-config-model-picker-wrap { flex: 0 0 98px; }
+.ai-config-connection-actions .ai-config-action-hint { margin: 0; color: var(--secondary); font-size: calc(11px * var(--ui-font-scale)); line-height: 1.6; }
+.ai-config-connection-actions .ai-config-test-cluster { justify-content: flex-end; gap: 8px; }
+.ai-config-connection-actions button, .ai-config-profile-row > button { min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.ai-config-embedded .ai-config-asset-options { margin-top: 22px; padding-top: 16px; }
+.ai-config-asset-options > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; list-style: none; }
+.ai-config-asset-options > summary::before { content: '›'; color: var(--secondary); font-size: 20px; transition: transform 120ms ease; }
+.ai-config-asset-options[open] > summary::before { transform: rotate(90deg); }
+.ai-config-disclosure-hint { color: var(--tertiary); font-size: calc(11px * var(--ui-font-scale)); font-weight: 400; }
+.ai-config-analysis-actions { margin-top: 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--divider); }
+.ai-config-analysis-actions > span { color: var(--secondary); font-size: calc(11px * var(--ui-font-scale)); line-height: 1.6; }
+.ai-config-switch-confirm { margin-top: 12px; padding: 12px; border: 1px solid var(--divider); border-radius: calc(8px * var(--ui-radius-scale, 1)); background: var(--raised); }
+.ai-config-switch-confirm p { margin: 0 0 10px; font-size: calc(12px * var(--ui-font-scale)); line-height: 1.6; }
+.ai-config-switch-confirm > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.global-model-local-section { margin-top: 26px; }
+.global-model-local-section > .global-model-section-heading { margin: 0 0 14px; }
+.global-model-display-card .app-settings-toggle-row { gap: 18px; }
+@container (max-width: 560px) {
+  .ai-config-connection-fields { grid-template-columns: minmax(0, 1fr); }
+  .global-model-section-heading { flex-wrap: wrap; gap: 9px; }
+  .ai-config-connection-actions .ai-config-test-cluster { justify-content: flex-start; }
+  .ai-config-analysis-actions { flex-wrap: wrap; }
+}
+.global-model-connection-card, .ai-config-dialog { container-type: inline-size; }
+@media (max-width: 760px) {
+  .ai-config-connection-fields { grid-template-columns: minmax(0, 1fr); }
+  .global-model-section-heading { flex-wrap: wrap; gap: 9px; }
+  .ai-config-connection-actions .ai-config-test-cluster { justify-content: flex-start; }
+  .ai-config-analysis-actions { flex-wrap: wrap; }
+}

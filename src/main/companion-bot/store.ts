@@ -6,8 +6,9 @@ import type { BotDshHandoff } from './dsh-brain';
 import { botTaskRemovalFingerprint } from './task-history';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
-import { BOT_PERSONA_TEMPLATE_LIMIT, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotCompanionPresenceEvent, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
+import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotCompanionPresenceEvent, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
 import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
+import { originalBuiltinBotPersona } from '../../shared/builtin-bot-companions';
 import type { BotMemoryActivity, BotMemoryRecallReport } from '../../shared/companion-bot-memory';
 import { botMessageEvidence } from '../../shared/bot-message-content';
 import { BotActivityBudget, BotActivityLimitError, BotBackpressureError, isInteractiveBotSource, type BotActivityBudgetPolicy } from './activity-budget';
@@ -99,7 +100,7 @@ export class BotStore {
     try { this.activityBudget = new BotActivityBudget(this, options.activityBudget); } catch (error) { this.db.close(); throw error; }
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('busy_timeout = 5000');
     const version = Number(this.db.pragma('user_version', { simple: true }));
-    if (version > 18) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
+    if (version > 19) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bot_companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,kind TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,direct_key TEXT UNIQUE);
@@ -298,8 +299,16 @@ export class BotStore {
       for (const raw of this.db.prepare('SELECT id,persona FROM bot_companions').all()) {
         const row = asRow(raw); this.seedPersonaTemplates(String(row.id), String(row.persona));
       }
-      this.db.pragma('user_version = 18');
+      if (version < 18) this.db.pragma('user_version = 18');
     }).immediate(); } catch (error) { this.db.close(); throw error; }
+    if (version < 19) {
+      try { this.db.transaction(() => {
+        if (!this.db.prepare('PRAGMA table_info(bot_companions)').all().some(raw => asRow(raw).name === 'worker_concurrency'))
+          this.db.exec(`ALTER TABLE bot_companions ADD COLUMN worker_concurrency INTEGER NOT NULL DEFAULT ${BOT_WORKER_CONCURRENCY_DEFAULT}
+            CHECK(worker_concurrency BETWEEN 1 AND 32 AND worker_concurrency=CAST(worker_concurrency AS INTEGER))`);
+        this.db.pragma('user_version = 19');
+      }).immediate(); } catch (error) { this.db.close(); throw error; }
+    }
     // Older releases exposed executor acknowledgement as an active task.
     // The user's control is authoritative locally; receipt collection is a
     // separate bounded background operation and cannot keep a task running.
@@ -396,17 +405,22 @@ export class BotStore {
     if (pins.length !== expected.size || pins.some(pin => !expected.has(pin.mediaId) || !this.grantValid(source, pin))) return true;
     return this.withdrawnIn(source.companionId, source.securityDomainId, this.taskSourceIds(taskId)).size > 0;
   }
-  createCompanion(input: { id?: string; name: string; persona: string }): BotCompanion {
+  createCompanion(input: { id?: string; name: string; persona: string; workerConcurrency?: number }): BotCompanion {
     const id = input.id ? text(input.id, '伙伴标识', 200) : randomUUID(), stamp = nowIso();
     const name = text(input.name, '伙伴名称', 100), persona = personaPrompt(input.persona);
+    const workerConcurrency = botWorkerConcurrencySchema.parse(input.workerConcurrency ?? BOT_WORKER_CONCURRENCY_DEFAULT);
     return this.db.transaction(() => {
-      this.db.prepare('INSERT INTO bot_companions(id,name,persona,created_at,updated_at) VALUES(?,?,?,?,?)').run(id, name, persona, stamp, stamp);
+      this.db.prepare('INSERT INTO bot_companions(id,name,persona,created_at,updated_at,worker_concurrency) VALUES(?,?,?,?,?,?)').run(id, name, persona, stamp, stamp, workerConcurrency);
       this.seedPersonaTemplates(id, persona); return this.getCompanion(id)!;
     }).immediate();
   }
   getCompanion(id: string): BotCompanion | undefined {
     const raw = this.db.prepare('SELECT c.*,p.active_id FROM bot_companions c LEFT JOIN bot_persona_settings p ON p.companion_id=c.id WHERE c.id=?').get(id); if (!raw) return;
-    const r = asRow(raw); return { id: String(r.id), name: String(r.name), persona: String(r.persona), createdAt: String(r.created_at), updatedAt: String(r.updated_at), activePersonaId: optional(r.active_id), enabled: this.getMetadata(`companion-enabled:${id}`) !== '0' };
+    const r = asRow(raw); return { id: String(r.id), name: String(r.name), persona: String(r.persona), createdAt: String(r.created_at), updatedAt: String(r.updated_at), activePersonaId: optional(r.active_id), enabled: this.getMetadata(`companion-enabled:${id}`) !== '0', workerConcurrency: Number(r.worker_concurrency) };
+  }
+  workerConcurrency(id: string): number {
+    const record = this.db.prepare('SELECT worker_concurrency FROM bot_companions WHERE id=?').get(id);
+    return record ? Number(asRow(record).worker_concurrency) : BOT_WORKER_CONCURRENCY_DEFAULT;
   }
   setCompanionEnabled(id: string, enabled: boolean): void {
     if (!this.getCompanion(id) || this.isRetiredDevelopmentDefault(id)) throw new Error('伙伴不存在。');
@@ -488,15 +502,17 @@ export class BotStore {
     const plan = this.developmentDefaultCleanup(); if (plan?.phase !== 'sql-deleted') throw new Error('开发伙伴清理尚未确认退休。');
     this.setMetadata(defaultCleanupKey, JSON.stringify({ ...plan, phase: 'complete' }));
   }
-  updateCompanion(id: string, input: { name: string; persona?: string }): BotCompanion {
+  updateCompanion(id: string, input: { name: string; persona?: string; workerConcurrency?: number }): BotCompanion {
     if (this.isRetiredDevelopmentDefault(id)) throw new Error('旧开发伙伴已退休。');
     const name = text(input.name, '伙伴名称', 100), prompt = input.persona === undefined ? undefined : personaPrompt(input.persona);
+    const workerConcurrency = input.workerConcurrency === undefined ? undefined : botWorkerConcurrencySchema.parse(input.workerConcurrency);
     return this.db.transaction(() => {
       const companion = this.requirePersonaCompanion(id), stamp = nowIso();
       if (prompt !== undefined) {
         this.db.prepare('UPDATE bot_persona_templates SET prompt=?,updated_at=? WHERE companion_id=? AND id=? AND deleted=0').run(prompt, stamp, id, companion.activePersonaId!);
         this.db.prepare('UPDATE bot_companions SET name=?,persona=?,updated_at=? WHERE id=?').run(name, prompt, stamp, id);
       } else this.db.prepare('UPDATE bot_companions SET name=?,updated_at=? WHERE id=?').run(name, stamp, id);
+      if (workerConcurrency !== undefined) this.db.prepare('UPDATE bot_companions SET worker_concurrency=? WHERE id=?').run(workerConcurrency, id);
       return this.getCompanion(id)!;
     }).immediate();
   }
@@ -504,14 +520,33 @@ export class BotStore {
     const stamp = nowIso(), builtins = builtinBotPersonaTemplates(companionId);
     const defaults = builtins.length ? builtins : [{ id: 'default', name: '默认人格', prompt: currentPrompt }];
     for (const item of defaults) {
+      const previous = this.db.prepare('SELECT name,prompt,original_name,original_prompt,deleted,builtin FROM bot_persona_templates WHERE companion_id=? AND id=?').get(companionId, item.id) as Row | undefined;
       this.db.prepare(`INSERT OR IGNORE INTO bot_persona_templates(companion_id,id,name,prompt,builtin,original_name,original_prompt,created_at,updated_at)
         VALUES(?,?,?,?,?,?,?,?,?)`).run(companionId, item.id, item.name, item.prompt, Number(!!builtins.length), item.name, item.prompt, stamp, stamp);
-      if (builtins.length) this.db.prepare('UPDATE bot_persona_templates SET original_name=?,original_prompt=? WHERE companion_id=? AND id=? AND builtin=1')
-        .run(item.name, item.prompt, companionId, item.id);
+      if (builtins.length) {
+        // Refresh authored defaults only when their exact saved bytes still
+        // match the previous original. Preserve edited names, prompts, active
+        // custom templates and deleted-template tombstones independently.
+        if (previous?.builtin && !previous.deleted) {
+          const inheritPrompt = previous.prompt === previous.original_prompt && previous.prompt !== item.prompt;
+          const inheritName = previous.name === previous.original_name && previous.name !== item.name;
+          if (inheritPrompt || inheritName) this.db.prepare('UPDATE bot_persona_templates SET name=?,prompt=?,updated_at=? WHERE companion_id=? AND id=?')
+            .run(inheritName ? item.name : previous.name, inheritPrompt ? item.prompt : previous.prompt, stamp, companionId, item.id);
+          if (inheritPrompt) this.db.prepare(`UPDATE bot_companions SET persona=?,updated_at=? WHERE id=? AND persona=?
+            AND EXISTS(SELECT 1 FROM bot_persona_settings WHERE companion_id=? AND active_id=?)`)
+            .run(item.prompt, stamp, companionId, previous.prompt, companionId, item.id);
+        }
+        this.db.prepare('UPDATE bot_persona_templates SET original_name=?,original_prompt=? WHERE companion_id=? AND id=? AND builtin=1')
+          .run(item.name, item.prompt, companionId, item.id);
+      }
     }
     if (this.db.prepare('SELECT 1 FROM bot_persona_settings WHERE companion_id=?').get(companionId)) return;
-    let activeId = defaults.find(item => item.prompt === currentPrompt)?.id ?? 'default';
-    if (!defaults.some(item => item.prompt === currentPrompt)) {
+    const exact = defaults.find(item => item.prompt === currentPrompt), historical = originalBuiltinBotPersona(companionId);
+    const inherited = !exact && historical !== undefined && currentPrompt === historical ? defaults.find(item => item.id === 'default') : undefined;
+    let activeId = exact?.id ?? inherited?.id ?? 'default';
+    if (inherited) this.db.prepare('UPDATE bot_companions SET persona=?,updated_at=? WHERE id=? AND persona=?')
+      .run(inherited.prompt, stamp, companionId, currentPrompt);
+    if (!exact && !inherited) {
       activeId = 'custom-current';
       this.db.prepare(`INSERT INTO bot_persona_templates(companion_id,id,name,prompt,builtin,original_name,original_prompt,created_at,updated_at)
         VALUES(?,?,?,?,0,?,?,?,?)`).run(companionId, activeId, '原有自定义人格', currentPrompt, '原有自定义人格', currentPrompt, stamp, stamp);
@@ -1668,16 +1703,24 @@ export class BotStore {
       .all(...args, limit, offset);
     return rows.map(raw => this.task(raw));
   }
-  pendingTasks(limit = 10): BotTask[] {
-    return this.db.prepare(`SELECT * FROM bot_tasks WHERE (status IN ('queued','running','unknown')
+  taskSchedulingStatus(id: string): string | undefined {
+    const record = this.db.prepare('SELECT status FROM bot_tasks WHERE id=?').get(id); return record ? String(asRow(record).status) : undefined;
+  }
+  pendingTasks(limit = 10, options: { afterCompanionId?: string; excludeCompanionIds?: readonly string[] } = {}): BotTask[] {
+    const excluded = [...new Set(options.excludeCompanionIds ?? [])];
+    return this.db.prepare(`WITH eligible AS (SELECT bot_tasks.*,
+      CASE WHEN json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 THEN 0 ELSE 1 END AS priority,
+      ROW_NUMBER() OVER(PARTITION BY companion_id ORDER BY CASE WHEN json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 THEN 0 ELSE 1 END,created_at,id) AS owner_rank
+      FROM bot_tasks WHERE (status IN ('queued','running','unknown')
         OR (status IN ('waiting','paused') AND (json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 OR status='waiting' AND EXISTS(SELECT 1 FROM bot_task_questions q WHERE q.task_id=bot_tasks.id AND q.state='answered'))))
       AND COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)<>1
       AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||bot_tasks.companion_id AND disabled.value='0')
       AND (COALESCE(json_extract(extra_json,'$.pauseRecoveryPaused'),0)<>1 OR json_extract(extra_json,'$.cancelRequested')=1)
       AND (COALESCE(json_extract(extra_json,'$.retryAt'),0)<=?
         OR (json_extract(extra_json,'$.cancelRequested')=1 AND COALESCE(json_extract(extra_json,'$.nativeAttempted'),0)<>1))
-      ORDER BY CASE WHEN json_extract(extra_json,'$.cancelRequested')=1 THEN 0 ELSE 1 END,created_at,id LIMIT ?`)
-      .all(Date.now(), bounded(limit, 10, 100)).map(raw => this.task(raw));
+      ${excluded.length ? `AND (companion_id NOT IN (${excluded.map(() => '?').join(',')}) OR status='unknown' OR json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1)` : ''})
+      SELECT * FROM eligible ORDER BY priority,owner_rank,CASE WHEN companion_id>? THEN 0 ELSE 1 END,companion_id,created_at,id LIMIT ?`)
+      .all(Date.now(), ...excluded, options.afterCompanionId ?? '', bounded(limit, 10, 100)).map(raw => this.task(raw));
   }
   activeDomainTasks(companionId: string, securityDomainId: string): BotTask[] {
     return this.db.prepare(`SELECT t.* FROM bot_tasks t JOIN bot_inbox source ON source.id=t.source_event_id
