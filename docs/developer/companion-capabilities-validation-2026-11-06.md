@@ -64,3 +64,5 @@ Windows Installer 正式脚本已 exit 0：`powershell.exe -NoProfile -Execution
 | `out/WorldlineBox-win32-x64/resources/app.asar` | 805354220 | `be65d7e202b15eae2476881a7b46dd450ac6665778be92fd0097585f15095371` |
 
 `git lfs fsck` 通过；`git lfs push --all origin main` 已成功核对 11 个对象，包含语音、VAD、向量模型和 Live2D 源资源。安装产物留在本地 `out/`，固定来源、权重、运行源码和测试进入版本控制。
+
+实现提交 `319720d536b81fd635b451f4cc1c087b97ecb137` 已推送至 `https://github.com/whoiswennie/WorldlineBox.git` 的 `main`；远端分支列表仅有 `main`，并已核对实现提交与本地一致。本完成记录作为随后单独的文档提交保存。
