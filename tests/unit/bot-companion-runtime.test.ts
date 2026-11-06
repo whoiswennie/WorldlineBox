@@ -142,14 +142,16 @@ it('removes withdrawn and revoked routing references from coordination views, in
   expect(() => runtime.taskInView(current, active.id)).toThrow('协调视图');
 });
 
-it('keeps minimal unconfirmed-stop facts without a revoked task title or source reference', () => {
+it('keeps stopped withdrawn work out of coordination while allowing only scoped explicit stop-status controls', () => {
   const room = store.openDirect('alice'), original = event(room.id, 'PRIVATE_RETRACTED_SOURCE'), work = task(original, 'stop-pending');
   store.updateTask(work.id, { extra: { title: 'PRIVATE_RETRACTED_TITLE', cancelRequested: true }, status: 'running' });
   runtime.bindTask(store.getTask(work.id)!); runtime.withdraw(work.id);
   store.withdrawSources('alice', room.securityDomainId, [original.id]);
   const current = event(room.id, '停止到底确认了吗');
   const view = runtime.view(current);
-  expect(view.tasks).toEqual([{ id: work.id, conversationId: room.id, title: '停止请求尚待执行器确认', status: 'running', updatedAt: store.getTask(work.id)!.updatedAt, cancelRequested: true }]);
+  expect(store.getTask(work.id)).toMatchObject({ status: 'cancelled', extra: { cancelRequested: true, humanStopped: true, elapsedMs: 0 } });
+  expect(store.pendingTasks().some(value => value.id === work.id)).toBe(false);
+  expect(view.tasks).toEqual([]);
   expect(JSON.stringify(view)).not.toMatch(/PRIVATE_RETRACTED/);
   expect(view.recentEvents.some(item => item.eventId === original.id)).toBe(false);
   expect(runtime.taskInView(current, work.id, { stopping: 'cancel' }).id).toBe(work.id);

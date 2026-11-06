@@ -21,14 +21,14 @@ function fixture() {
 it('projects reports and frozen inputs in SQL before crossing the SQLite boundary and keeps full detail explicit', () => {
   const f = fixture(), report = 'R'.repeat(1024 * 1024) + ' FULL_REPORT_TAIL';
   const task = f.create('large-report', { workerPrompt: 'W'.repeat(1024 * 1024), inputFiles: [{ private: 'NOT_CATALOG_DATA' }],
-    cancelRequested: true, outputCheckpoint: 71, progress: { phase: 'using-tool', toolName: 'web_fetch', detail: 'Checking a source', updatedAt: new Date().toISOString() } });
+    outputCheckpoint: 71, progress: { phase: 'using-tool', toolName: 'web_fetch', detail: 'Checking a source', updatedAt: new Date().toISOString() } });
   f.store.updateTask(task.id, { summary: report });
   const sql = f.store.taskTransaction(connection => connection), statements = vi.spyOn(sql, 'prepare');
   const fullRead = vi.spyOn(f.store, 'getTask').mockImplementation(() => { throw new Error('Catalog attempted a full task read.'); });
   const context = f.runtime.visibleTasks(f.conversation.id);
   expect(context[0]?.goal).toHaveLength(2000); expect(context[0]?.summary).toHaveLength(2000);
   expect(context[0]?.summaryIsPreview).toBe(true);
-  expect(context[0]?.extra).toMatchObject({ title: 'large-report', cancelRequested: true, outputCheckpoint: 71, progress: { phase: 'using-tool', toolName: 'web_fetch' } });
+  expect(context[0]?.extra).toMatchObject({ title: 'large-report', cancelRequested: false, outputCheckpoint: 71, progress: { phase: 'using-tool', toolName: 'web_fetch' } });
   expect(context[0]?.extra).not.toHaveProperty('workerPrompt'); expect(context[0]?.extra).not.toHaveProperty('inputFiles');
   expect(f.store.taskSourcesWithdrawn(task.id)).toBe(false);
   expect(f.store.taskSourceIds(task.id)).toContain(f.source.sourceMessageRecordId);
@@ -36,11 +36,11 @@ it('projects reports and frozen inputs in SQL before crossing the SQLite boundar
   expect(card.outputs).toEqual([]); expect(card.summaryIsPreview).toBe(true);
   const envelope = JSON.parse(buildBotContext({ companion: f.store.getCompanion('catalog-agent')!, event: f.source, messages: [], tasks: [{ ...card, cancelRequested: false }] }).user);
   expect(envelope.tasks[0]).toMatchObject({ summaryIsPreview: true }); expect(envelope.tasks[0].summary).toHaveLength(2000);
-  const stopping = JSON.parse(buildBotContext({ companion: f.store.getCompanion('catalog-agent')!, event: f.source, messages: [], tasks: [card] }).user);
-  expect(stopping.tasks[0]).toMatchObject({ summaryIsPreview: false, summary: expect.stringContaining('尚未确认结束') });
+  const stopping = JSON.parse(buildBotContext({ companion: f.store.getCompanion('catalog-agent')!, event: f.source, messages: [], tasks: [{ ...card, cancelRequested: true }] }).user);
+  expect(stopping.tasks[0]).toMatchObject({ status: 'cancelled', summaryIsPreview: false, summary: expect.stringContaining('任务已停止') });
   const page = f.runtime.page({ conversationId: f.conversation.id, filter: 'all', query: 'SEARCH_ORIGINAL_TAIL', page: 0, limit: 6 });
   expect(page.total).toBe(1); expect(page.items[0]?.goal).toHaveLength(200); expect(page.items[0]?.summary).toBeUndefined();
-  expect(page.items[0]?.cancelRequested).toBe(true); expect(page.items[0]?.continuationAvailable).toBe(false);
+  expect(page.items[0]?.cancelRequested).toBe(false); expect(page.items[0]?.continuationAvailable).toBe(false);
   const queries = statements.mock.calls.map(call => call[0]).filter(statement => /\bFROM bot_tasks\b/i.test(statement));
   expect(queries.some(statement => /NULL AS summary/.test(statement))).toBe(true);
   expect(queries.some(statement => /substr\(summary,1,2000\)/.test(statement))).toBe(true);

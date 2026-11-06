@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { botModelsMetadataUrl, resolveBotModelLimits } from '../../src/main/companion-bot/model-limits';
 import { appBrainRequest, fitsAppBrainRequest } from '../../src/main/companion-bot/app-brain-budget';
+import { DEFAULT_MODEL_CONTEXT_WINDOW } from '../../src/shared/model-budget';
 import type { BotDshModel } from '../../src/main/companion-bot/dsh-brain';
 
 const deepseek = { model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1' };
@@ -19,7 +20,7 @@ describe('model-specific context provenance and output bounds', () => {
     for (const input of [{ ...deepseek, baseUrl: 'https://proxy.example/v1' }, { ...deepseek, model: 'deepseek-chat' },
       { ...deepseek, model: 'unverified-model' }, { ...deepseek, baseUrl: 'https://api.deepseek.com.evil.example/v1' },
       { model: 'gpt-6.1-mini-unverified', baseUrl: 'https://api.openai.com/v1' }, { ...deepseek, baseUrl: 'http://api.deepseek.com/v1' }]) {
-      expect(resolveBotModelLimits(input)).toMatchObject({ window: 65536, source: 'unknown', maxTokens: 4096 });
+      expect(resolveBotModelLimits(input)).toMatchObject({ window: DEFAULT_MODEL_CONTEXT_WINDOW, source: 'unknown', maxTokens: 4096 });
     }
   });
   it('prefers a trusted explicit context override and actual same-model output metadata', () => {
@@ -68,4 +69,15 @@ it('includes UTF8 input, output reservation and framing headroom in the hard req
   const body = appBrainRequest(model, '', [{ role: 'user', content: '中'.repeat(1500) }], [], true);
   expect(JSON.stringify(body).length).toBeLessThan(4096);
   expect(fitsAppBrainRequest(body, model)).toBe(false);
+});
+
+
+it('uses the 100k default template while preserving a smaller advertised model window', () => {
+  const model: BotDshModel = { model: 'local-template', baseUrl: 'https://fixture.invalid', apiFormat: 'openai_chat', apiKey: 'fixture' };
+  expect(resolveBotModelLimits(model)).toMatchObject({ window: 100000, maxTokens: 4096, source: 'unknown' });
+  const discovered = resolveBotModelLimits(model, { id: model.model, context_window: 8192, max_output_tokens: 2048 });
+  expect(discovered).toMatchObject({ window: 8192, maxTokens: 2048, source: 'metadata' });
+  const limited = { ...model, contextWindow: discovered.window, maxTokens: discovered.maxTokens };
+  expect(fitsAppBrainRequest(appBrainRequest(limited, '系统', [{ role: 'user', content: '中'.repeat(3000) }], [], true), limited)).toBe(false);
+  expect(fitsAppBrainRequest(appBrainRequest(model, '系统', [{ role: 'user', content: '中'.repeat(3000) }], [], true), model)).toBe(true);
 });

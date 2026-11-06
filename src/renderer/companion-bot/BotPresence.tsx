@@ -15,11 +15,11 @@ export function botPresenceStatus(presence: BotCompanionPresence, now = Date.now
 export function botPresenceLabel(presence: BotCompanionPresence, locale: Locale, now?: number): string {
   const status = botPresenceStatus(presence, now), zh = locale === 'zh-CN';
   const count = presence.counts.activeTasks, suffix = count ? zh ? ` · ${count} 项任务` : ` · ${count} ${count === 1 ? 'task' : 'tasks'}` : '';
-  if (presence.activity?.phase === 'stop-unconfirmed') return (zh ? '停止待核实' : 'Stop unconfirmed') + suffix;
-  if (presence.activity?.phase === 'pause-unconfirmed') return (zh ? '暂停待核实' : 'Pause unconfirmed') + suffix;
+  if (count <= 1 && ['stopping', 'stop-unconfirmed', 'stop-request-unknown'].includes(presence.activity?.phase ?? '')) return zh ? '已停止' : 'Stopped';
+  if (['pausing', 'pause-unconfirmed', 'pause-request-unknown'].includes(presence.activity?.phase ?? '')) return (zh ? '已暂停' : 'Paused') + suffix;
   if (count && presence.counts.paused === count) return (zh ? '已暂停' : 'Paused') + suffix;
   if (presence.counts.queued && !presence.counts.running && !presence.counts.replying && !presence.counts.waiting && !presence.counts.stopping && !presence.counts.blocked && !presence.counts.paused) return (zh ? '任务排队' : 'Tasks queued') + suffix;
-  if (presence.counts.stopping && !['needs-attention', 'error'].includes(status)) return zh ? `正在停止 · ${presence.counts.stopping} 项` : `Stopping · ${presence.counts.stopping}`;
+  if (presence.counts.stopping === count && count && !presence.counts.replying && !presence.counts.pendingMessages) return zh ? '已停止' : 'Stopped';
   if (!count && !presence.counts.replying && presence.counts.pendingMessages && !['error', 'needs-attention'].includes(status)) return zh ? '等待回复' : 'Waiting to reply';
   return labels[status][zh ? 0 : 1] + suffix;
 }

@@ -8,6 +8,9 @@ import { botProjectDirectory, prepareBotWorkspace, attachBotWorkspace as registe
 export const name = 'worldlinebox-bridge';
 export const inject = ['loader', 'sessionController', 'workspaceRegistry', 'agents', 'sessions', 'tools', 'agentPresets', 'llm'];
 const protocol = 'worldlinebox-native-web-host-v1';
+// This resource is distributed independently; keep the default template aligned
+// with src/shared/model-budget.ts without importing application-only modules.
+const defaultContextWindow = 100000, maxContextChars = 100000;
 const textOf = message => (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question', 'worker_report'];
@@ -54,7 +57,7 @@ export async function createBotProvider(ctx) {
       if (!model || model.apiFormat !== 'openai_chat') throw new Error('Companion DSH model currently requires openai_chat; select an OpenAI-compatible endpoint.');
       if (typeof model.model !== 'string' || !model.model.trim() || typeof model.baseUrl !== 'string'
         || !['http:', 'https:'].includes(new URL(model.baseUrl).protocol) || typeof model.apiKey !== 'string' || !model.apiKey.trim()) throw new Error('Companion model endpoint or credential is unavailable.');
-      const capacity = model.contextWindow ?? 65536, output = model.maxTokens ?? Math.min(model.maxOutputTokens ?? 16384, 16384, Math.floor(capacity / 4));
+      const capacity = model.contextWindow ?? defaultContextWindow, output = model.maxTokens ?? Math.min(model.maxOutputTokens ?? 16384, 16384, Math.floor(capacity / 4));
       if (!Number.isSafeInteger(capacity) || capacity < 8192 || !Number.isSafeInteger(output) || output < 1 || output >= capacity) throw new Error('Invalid companion model budget.');
       if (model.maxOutputTokens !== undefined && (!Number.isSafeInteger(model.maxOutputTokens) || model.maxOutputTokens < output)) throw new Error('Companion output exceeds the verified provider limit.');
       const baseUrl = model.baseUrl.replace(/\/+$/, '');
@@ -730,7 +733,7 @@ export async function apply(ctx) {
   const upgradeWorkerAccess = async (record, input) => {
     if (record.bot?.role !== 'worker' || input.role !== 'worker' || input.workerAccess !== 'full'
       || record.bot.laneId !== input.laneId || record.bot.eventId !== input.eventId || path.resolve(record.cwd) !== path.resolve(input.cwd)
-      || typeof input.system !== 'string' || !input.system.trim() || input.system.length > 32000) throw new Error('Companion Session ownership differs.');
+      || typeof input.system !== 'string' || !input.system.trim() || input.system.length > maxContextChars) throw new Error('Companion Session ownership differs.');
     if (!['scoped', 'full'].includes(record.bot.workerAccess)) throw new Error('Unknown worker access policy.');
     const previousAccess = record.bot.workerAccess;
     for (const dispose of record.accessDisposers.splice(0)) dispose();
@@ -1045,7 +1048,7 @@ export async function apply(ctx) {
         input.workerTools ??= [];
         if (!/^[A-Za-z0-9_-]{1,200}$/.test(input.sessionId) || typeof input.cwd !== 'string' || !path.isAbsolute(input.cwd) || typeof input.laneId !== 'string' || input.laneId.length > 600
           || !['brain', 'worker'].includes(input.role) || input.workerAccess !== undefined && !['scoped', 'full'].includes(input.workerAccess)
-          || typeof input.system !== 'string' || !input.system.trim() || input.system.length > 32000
+          || typeof input.system !== 'string' || !input.system.trim() || input.system.length > maxContextChars
           || !Array.isArray(input.tools) || input.tools.length > 24 || input.tools.some(tool => !tool || !/^[a-z][a-z0-9_]{0,63}$/.test(tool.name)
             || typeof tool.description !== 'string' || !tool.parameters || typeof tool.parameters !== 'object')
           || new Set(input.tools.map(tool => tool.name)).size !== input.tools.length
@@ -1087,6 +1090,10 @@ export async function apply(ctx) {
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
           if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(record.bot.workerTools ?? []) !== JSON.stringify(input.workerTools)) throw new Error('Companion tool selection changed; create a new lane epoch.');
           record.bot.system = input.system; record.bot.callback = input.callback; record.bot.selection = selection;
+          // Newer native loops freeze model identity before agent/request.
+          // A cold suspend may have attached with the inert cancel-only model;
+          // select the real model before resuming that same native Session.
+          record.agent.model?.select?.(selection);
           record.bot.answeredQuestions = input.answeredQuestions;
           record.lastUsed = Date.now();
         }
@@ -1254,7 +1261,7 @@ export async function apply(ctx) {
           if (pending?.eventId === input.eventId) await rm(pendingFile, { force: true });
           record.status = status; json(response, { accepted: true, result }); return;
         }
-        if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 65536) throw new Error('Invalid companion message.');
+        if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > maxContextChars) throw new Error('Invalid companion message.');
         if (input.continueAfterSeq !== undefined && (!Number.isSafeInteger(input.continueAfterSeq) || input.continueAfterSeq < 0)) throw new Error('Invalid output continuation checkpoint.');
         if (input.taskContinuation !== undefined && (record.bot.role !== 'worker' || typeof input.taskContinuation?.id !== 'string'
           || !input.taskContinuation.id.length || input.taskContinuation.id.length > 300 || typeof input.taskContinuation.text !== 'string'
@@ -1486,7 +1493,7 @@ export async function apply(ctx) {
       }
       if (request.method === 'POST' && match[2] === 'prompt') {
         const input = await body(request, 6 * 1024 * 1024);
-        if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 65536) throw new Error('Invalid native prompt.');
+        if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > maxContextChars) throw new Error('Invalid native prompt.');
         const visual = observationImages(input, record);
         if (visual.blocks.length) record.visualInputsSubmitted = true;
         if (record.status !== 'running') { record.text = ''; record.reason = undefined; record.artifacts = []; }

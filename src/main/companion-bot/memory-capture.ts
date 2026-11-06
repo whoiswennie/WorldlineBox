@@ -7,6 +7,7 @@ import type { BotMemoryService, BotMemoryMessage, BotMemoryScope, BotMemoryWrite
 import { appBrainRequest, fitsAppBrainRequest } from './app-brain-budget';
 import { resolveBotModelLimits } from './model-limits';
 import { captureCapacity, loadCapturePlan, type CapturePiece } from './memory-capture-plan';
+import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 
 const captureSchema = z.strictObject({ notes: z.array(z.strictObject({
   content: z.string().trim().min(1).max(6000),
@@ -85,7 +86,7 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
   const job = createHash('sha256').update(input.jobId).digest('hex').slice(0, 24);
   const limits = resolveBotModelLimits({ ...input.model, maxTokens: Math.min(input.model.maxTokens ?? 4096, 4096) });
   const model = { ...input.model, maxTokens: limits.maxTokens };
-  const fits = (system: string, text: string) => text.length <= 60000 && fitsAppBrainRequest(appBrainRequest(model, system, [{ role: 'user', content: text }], [], true), model);
+  const fits = (system: string, text: string) => text.length <= DEFAULT_MODEL_CONTEXT_CHARS && fitsAppBrainRequest(appBrainRequest(model, system, [{ role: 'user', content: text }], [], true), model);
   const answerRecord = input.messages.find(message => message.id === input.answerMessageId && message.role === 'assistant');
   const answerSource = { messageId: input.answerMessageId ?? null, role: 'assistant', senderId: answerRecord?.senderId ?? input.scope.companionId,
     senderName: answerRecord?.senderName ?? null, occurredAt: answerRecord ? new Date(answerRecord.timestamp).toISOString() : null,

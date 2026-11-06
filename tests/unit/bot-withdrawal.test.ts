@@ -280,7 +280,8 @@ it('cancels a task derived from forgotten material and rejects its late worker r
     release(); await waitFor(() => service.store.getTask(task.id)?.status === 'cancelled');
     const state = (await service.handle({ type: 'state', conversationId: scope.conversationId })).snapshot!;
     expect(state.messages.some(message => message.content.includes('late secret artifact'))).toBe(false);
-    expect(service.store.getTask(task.id)).toMatchObject({ status: 'cancelled', summary: '' });
+    expect(service.store.getTask(task.id)?.status).toBe('cancelled');
+    expect(service.store.getTask(task.id)?.summary ?? '').toBe('');
   } finally { release(); }
 });
 

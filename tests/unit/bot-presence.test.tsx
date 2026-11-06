@@ -39,7 +39,7 @@ it('aggregates accurate nonterminal task totals and navigates to the real activi
   const first = state({ status: 'working', counts: { ...state().counts, activeTasks: 3, running: 2, stopping: 1 }, activity: { taskId: 'original', conversationId: 'other-room', title: '任务', phase: 'using-tool', updatedAt: '2026-11-04T05:00:00Z' } });
   const second = state({ status: 'replying', counts: { ...state().counts, activeTasks: 2, waiting: 1, queued: 1 } }), open = vi.fn();
   await mount(<BotPresenceSummary companions={companions} presence={{ fish: first, gpt: second }} locale="zh-CN" onOpen={open} />);
-  expect(host.textContent).toContain('正在停止 · 1 项');
+  expect(host.textContent).toContain('执行任务 · 5 项任务');
   await act(() => host.querySelector<HTMLButtonElement>('button')!.click()); expect(open).toHaveBeenCalledWith('other-room', 'original');
   expect(botPresenceLabel({ ...first, counts: { ...first.counts, stopping: 0, activeTasks: 3 } }, 'zh-CN')).toBe('执行任务 · 3 项任务');
 });
@@ -87,11 +87,11 @@ it('bounds parallel updates to the latest 128 observed tasks rather than mountin
   await act(() => root!.render(renderUpdates([], { readConversationId: 'elsewhere' }))); expect(count()).toBe(0);
 });
 
-it('distinguishes queued, paused, waiting for input and blocked stop without inferring progress from counts', () => {
+it('distinguishes queued, paused and waiting for input while keeping old stop intents simple', () => {
   expect(botPresenceLabel(state({ status: 'waiting', counts: { ...state().counts, activeTasks: 1, waiting: 1 } }), 'zh-CN')).toBe('等待处理 · 1 项任务');
   expect(botPresenceLabel(state({ status: 'working', counts: { ...state().counts, activeTasks: 3, queued: 3 } }), 'zh-CN')).toBe('任务排队 · 3 项任务');
   expect(botPresenceLabel(state({ status: 'waiting', counts: { ...state().counts, activeTasks: 2, paused: 2 } }), 'zh-CN')).toBe('已暂停 · 2 项任务');
-  expect(botPresenceLabel(state({ status: 'needs-attention', counts: { ...state().counts, activeTasks: 1, blocked: 1, stopping: 0 }, activity: { taskId: 't', conversationId: 'r', title: '短任务', phase: 'stop-unconfirmed', updatedAt: '2026-11-04T05:00:00Z' } }), 'zh-CN')).toBe('停止待核实 · 1 项任务');
+  expect(botPresenceLabel(state({ status: 'needs-attention', counts: { ...state().counts, activeTasks: 1, blocked: 1, stopping: 0 }, activity: { taskId: 't', conversationId: 'r', title: '短任务', phase: 'stop-unconfirmed', updatedAt: '2026-11-04T05:00:00Z' } }), 'zh-CN')).toBe('已停止');
 });
 
 it('distinguishes same-millisecond historical backfill from a genuine new transition using the SQL sequence', async () => {

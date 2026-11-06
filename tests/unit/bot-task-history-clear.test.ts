@@ -8,7 +8,7 @@ import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runt
 
 const owned: Array<{ store: BotStore; root?: string }> = [];
 afterEach(async () => {
-  vi.restoreAllMocks();
+  vi.restoreAllMocks(); vi.useRealTimers();
   for (const item of owned.splice(0)) {
     item.store.close();
     if (item.root) {
@@ -53,10 +53,25 @@ it('removes ended task bodies and preserves the admission tombstone and exact re
 
 it('rejects live and foreign tasks while allowing a stopped task to be cleared', async () => {
   const f = fixture(), live = f.create('live', false);
-  await expect(clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: live.task.id, requestId: 'reject-live' })).rejects.toThrow('尚未结束');
+  await expect(clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: live.task.id, requestId: 'reject-live' })).rejects.toThrow('请先停止任务');
   await expect(clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: live.task.id, companionId: 'other-agent', requestId: 'reject-owner' })).rejects.toThrow('不属于');
   f.store.updateTask(live.task.id, { status: 'cancelled' });
   expect((await clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: live.task.id, requestId: 'clear-stopped' })).cleared).toBe(1);
+});
+
+it('clears a stopped task immediately while retaining only the native cleanup receipt and frozen timer', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-05T09:59:00.000Z'));
+  const f = fixture(), item = f.create('stopped-cleanup', false);
+  const control = { kind: 'cancel', requestedAt: '2026-11-05T10:00:00.000Z', state: 'pending', attempts: 0, retryAt: 0 };
+  const started = f.store.updateTask(item.task.id, { status: 'running' });
+  vi.setSystemTime(new Date(control.requestedAt));
+  f.store.updateTask(item.task.id, { status: 'cancelled', extra: { ...started.extra, nativeAttempted: true,
+    cancelRequested: true, cancelRequestedAt: control.requestedAt, executorControl: control } });
+  await clearBotTaskHistory(f.store, { conversationId: f.room.id, taskId: item.task.id, requestId: 'clear-with-cleanup' });
+  const retained = f.store.getTask(item.task.id)!;
+  expect(retained.extra).toMatchObject({ removedAt: expect.any(String), executorControl: control, cancelRequested: true, elapsedMs: 60000 });
+  expect(retained.goal).toBe(''); expect(retained.extra).not.toHaveProperty('workerPrompt');
+  expect(f.store.listTaskCatalog({ conversationId: f.room.id, view: 'directory', limit: 6 })).toEqual([]);
 });
 
 it('clears mandate and report bodies while retaining an inactive admission fingerprint when runtime tables exist', async () => {

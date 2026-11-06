@@ -77,13 +77,14 @@ it('does not offer continuation from a retained checkpoint after the task was st
   expect([...host.querySelectorAll('button')].some(button => button.textContent === '继续任务')).toBe(false);
 });
 
-it('shows consistent stop status and exposes the actual recovery cause in the activity tab', async () => {
+it('shows legacy stopped tasks as finished and keeps old diagnostics in the activity tab only', async () => {
   const f = await mount({ ...base, status: 'waiting', cancelRequested: true, progress: { phase: 'stop-unconfirmed' }, diagnostic: { attempts: 58, stage: 'attach', message: 'Timed out attaching to the original session; sanitized host receipt.' } });
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('停止待核实');
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已停止');
   expect(host.querySelector('.bot-task-diagnostic')).toBeNull();
-  expect(host.querySelectorAll('details')).toHaveLength(0);
-  expect(host.textContent).not.toContain('再次请求停止');
-  await click('重新核实停止'); expect(f.requests[0]).toMatchObject({ type: 'task.control', taskId: base.id, operation: 'cancel' });
+  expect(host.querySelector('.bot-task-stage-flow')).toBeNull();
+  expect(host.textContent).not.toContain('核实停止');
+  expect(host.textContent).not.toContain('等待执行器');
+  await click('移除记录'); expect(f.requests[0]).toMatchObject({ type: 'task.control', taskId: base.id, operation: 'remove' });
   await click('执行记录');
   const diagnostic = host.querySelector('.bot-task-diagnostic')!;
   expect(diagnostic.textContent).toContain('接入原会话'); expect(diagnostic.textContent).toContain('已尝试 58 次');
@@ -95,37 +96,41 @@ it('does not present stale connection diagnostics as a current terminal failure'
   expect(host.querySelector('.bot-task-diagnostic')).toBeNull();
 });
 
-it('shows a pending stop immediately without claiming the executor has stopped', async () => {
+it('stops immediately and offers normal record removal after the command is saved', async () => {
   let resolve!: (value: BotResponse) => void;
   const pending = new Promise<BotResponse>(done => { resolve = done; });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(() => root!.render(<BotTaskCard task={base} locale="zh-CN" request={() => pending} changed={async () => undefined} />));
   await click('停止任务');
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('正在停止');
-  expect(host.querySelector('[role="status"]')?.textContent).toContain('正在提交停止请求');
-  expect(host.querySelector('.bot-task-activity')?.textContent).not.toContain('执行器已确认停止');
-  expect([...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '正在停止…')?.disabled).toBe(true);
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已停止');
+  expect(host.querySelector('[role="status"]')?.textContent).toBe('已停止');
+  expect(host.textContent).not.toContain('停止确认');
+  expect(host.querySelector('.bot-task-stage-flow')).toBeNull();
+  expect([...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '移除记录')?.disabled).toBe(true);
   await act(() => resolve({ ok: true }));
-  expect(host.querySelector('[role="status"]')?.textContent).toContain('等待执行器确认停止');
+  expect(host.querySelector('[role="status"]')?.textContent).toBe('已停止');
+  expect([...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '移除记录')?.disabled).toBe(false);
 });
 
-it('keeps stop waiting time separate from task elapsed time and offers bounded recovery controls', async () => {
+it('freezes a legacy stopped task at its original stop time across an overnight wait', async () => {
   vi.useFakeTimers(); const now = new Date('2026-11-04T05:00:00Z'); vi.setSystemTime(now);
   await mount({ ...base, createdAt: new Date(now.getTime() - 120000).toISOString(), stopRequestedAt: new Date(now.getTime() - 35000).toISOString(), cancelRequested: true, progress: { phase: 'stopping' } });
-  expect(host.querySelector('.bot-task-metrics')?.textContent).toContain('等待停止确认35 秒');
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('正在停止');
-  await act(() => vi.advanceTimersByTime(5000));
-  expect(host.querySelector('.bot-task-metrics')?.textContent).toContain('等待停止确认40 秒');
-  expect(host.textContent).toContain('重新核实停止'); expect(host.querySelector('[role="progressbar"]')).toBeNull();
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时1 分 25 秒');
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已停止');
+  const text = host.querySelector('.bot-task-metrics')?.textContent;
+  await act(() => vi.advanceTimersByTime(24 * 60 * 60 * 1000));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe(text);
+  expect(host.textContent).not.toContain('等待停止');
+  expect(host.textContent).not.toContain('核实停止');
 });
 
-it('prioritizes a persisted stop request over a queued execution status without inventing execution progress', async () => {
+it('treats a persisted stop as finished even when an old snapshot still calls it queued', async () => {
   await mount({ ...base, status: 'queued', cancelRequested: true, progress: { phase: 'queued' } });
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('正在停止');
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已停止');
   expect(host.querySelector('.bot-task-heading')?.textContent).not.toContain('排队中');
-  const stages = [...host.querySelectorAll('.bot-task-stage-flow li')];
-  expect(stages.map(item => item.getAttribute('data-state'))).toEqual(['complete', 'pending', 'pending', 'pending']);
-  expect(host.querySelector('.bot-task-stage-flow')?.textContent).not.toContain('执行中');
+  expect(host.querySelector('.bot-task-stage-flow')).toBeNull();
+  expect(host.textContent).not.toContain('执行中');
+  expect(host.textContent).toContain('移除记录');
 });
 
 it('provides keyboard navigation between task tabs and restores the selected tab focus', async () => {
@@ -143,33 +148,35 @@ it('keeps an acknowledged stop request when only the subsequent status refresh f
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(() => root!.render(<BotTaskCard task={base} locale="zh-CN" request={async () => ({ ok: true })} changed={async () => { throw new Error('read transport unavailable'); }} />));
   await click('停止任务');
-  expect(host.querySelector('[role="status"]')?.textContent).toContain('等待执行器确认停止');
+  expect(host.querySelector('[role="status"]')?.textContent).toBe('已停止');
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('请求已记录，但状态刷新失败');
   expect(host.textContent).not.toContain('停止请求的接收状态尚未确认');
 });
 
-it('does not claim a pending pause is resumable, and uses the distinct resume operation only after confirmation', async () => {
+it('pauses immediately and resumes the same task through its distinct operation', async () => {
   const requests: BotRequest[] = []; let resolve!: (response: BotResponse) => void;
   const pending = new Promise<BotResponse>(done => { resolve = done; });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   const request = async (input: BotRequest) => { requests.push(input); return requests.length === 1 ? pending : { ok: true }; };
   await act(() => root!.render(<BotTaskCard task={base} locale="zh-CN" request={request} changed={async () => undefined} />));
   await click('暂停任务');
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('正在暂停');
-  expect(host.querySelector('[role=status]')?.textContent).toContain('正在提交暂停请求');
-  expect([...host.querySelectorAll('button')].some(button => button.textContent === '继续任务')).toBe(false);
-  await act(() => resolve({ ok: true })); expect(host.querySelector('[role=status]')?.textContent).toContain('等待执行器确认暂停');
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已暂停');
+  expect(host.querySelector('[role=status]')?.textContent).toContain('任务已暂停');
+  expect(host.textContent).not.toContain('等待执行器确认暂停');
+  expect([...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '继续任务')?.disabled).toBe(true);
+  await act(() => resolve({ ok: true }));
   await act(() => root!.render(<BotTaskCard task={{ ...base, status: 'paused', pausedAt: '2026-11-04T05:00:00Z', progress: { phase: 'paused' } }} locale="zh-CN" request={request} changed={async () => undefined} />));
   expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已暂停');
-  expect(host.textContent).not.toContain('执行器已确认停止'); await click('继续任务');
+  await click('继续任务');
   expect(requests[0]).toMatchObject({ operation: 'pause', taskId: base.id }); expect(requests[1]).toMatchObject({ operation: 'resume_paused', taskId: base.id });
 });
 
-it('offers explicit pause reconciliation without offering a fabricated resume action', async () => {
+it('turns legacy pause intents into a simple paused view with a resume action', async () => {
   const f = await mount({ ...base, status: 'waiting', pauseRequested: true, progress: { phase: 'pause-unconfirmed' } });
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('暂停待核实');
-  expect([...host.querySelectorAll('button')].some(button => button.textContent === '继续任务')).toBe(false);
-  await click('重新核实暂停'); expect(f.requests[0]).toMatchObject({ operation: 'pause', taskId: base.id });
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已暂停');
+  expect(host.textContent).not.toContain('核实暂停');
+  expect(host.querySelector('.bot-task-stage-flow')).toBeNull();
+  await click('继续任务'); expect(f.requests[0]).toMatchObject({ operation: 'resume_paused', taskId: base.id });
 });
 
 it('removes only a terminal task record and never offers removal for active or paused work', async () => {
@@ -178,4 +185,62 @@ it('removes only a terminal task record and never offers removal for active or p
   await act(() => root!.render(<BotTaskCard task={{ ...base, status: 'paused' }} locale="zh-CN" request={async () => ({ ok: true })} changed={async () => undefined} />));
   expect([...host.querySelectorAll('button')].some(button => button.textContent === '移除记录')).toBe(false);
   expect(host.textContent).toContain('停止任务');
+});
+
+
+it('uses accumulated execution time for pause, resume and terminal updates without counting idle intervals', async () => {
+  vi.useFakeTimers(); const now = new Date('2026-11-06T01:00:00Z'); vi.setSystemTime(now);
+  const pausedTask: BotTask = { ...base, status: 'paused', createdAt: '2026-11-05T01:00:00Z', elapsedMs: 42000, updatedAt: now.toISOString() };
+  await mount(pausedTask);
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时42 秒');
+  await act(() => vi.advanceTimersByTime(12 * 60 * 60 * 1000));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时42 秒');
+  const startedAt = new Date().toISOString();
+  await act(() => root!.render(<BotTaskCard task={{ ...pausedTask, status: 'running', timerStartedAt: startedAt, updatedAt: startedAt }} locale="zh-CN" request={async () => ({ ok: true })} changed={async () => undefined} />));
+  await act(() => vi.advanceTimersByTime(5000));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时47 秒');
+  await act(() => root!.render(<BotTaskCard task={{ ...pausedTask, status: 'cancelled', elapsedMs: 47000, updatedAt: new Date().toISOString() }} locale="zh-CN" request={async () => ({ ok: true })} changed={async () => undefined} />));
+  await act(() => vi.advanceTimersByTime(60 * 60 * 1000));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时47 秒');
+});
+
+it('retains the stop request identity and offers a plain retry when saving the command fails', async () => {
+  let attempts = 0;
+  const f = await mount(base, () => ++attempts === 1 ? { ok: false, error: '停止操作未保存，请重试' } : { ok: true });
+  await click('停止任务');
+  expect(host.querySelector('[role=alert]')?.textContent).toContain('停止操作未保存');
+  expect(host.querySelector('[role=status]')?.textContent).toBe('执行中');
+  await click('停止任务');
+  expect(f.requests).toHaveLength(2); expect(f.requests[1]).toEqual(f.requests[0]);
+  expect(host.querySelector('[role=status]')?.textContent).toBe('已停止');
+});
+
+
+it('freezes the live clock at the click even while saving the stop command is delayed', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-06T01:00:05Z'));
+  let resolve!: (value: BotResponse) => void;
+  const pending = new Promise<BotResponse>(done => { resolve = done; });
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  await act(() => root!.render(<BotTaskCard task={{ ...base, elapsedMs: 20000, timerStartedAt: '2026-11-06T01:00:00Z' }} locale="zh-CN" request={() => pending} changed={async () => undefined} />));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时25 秒');
+  await click('停止任务');
+  await act(() => vi.advanceTimersByTime(16 * 60 * 60 * 1000));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时25 秒');
+  expect(host.querySelector('[role=status]')?.textContent).toBe('已停止');
+  await act(() => resolve({ ok: true }));
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时25 秒');
+});
+
+
+it('does not let a late active snapshot or changed question form revive an accepted stop', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-06T01:00:05Z'));
+  const original = { ...base, elapsedMs: 20000, timerStartedAt: '2026-11-06T01:00:00Z' };
+  await mount(original);
+  await click('停止任务');
+  await act(() => root!.render(<BotTaskCard task={{ ...original, status: 'waiting', attention: { id: 'late-batch', callId: 'late-ask', state: 'queued', questions: [{ id: 'question', question: '旧执行器问题' }] } }} locale="zh-CN" request={async () => ({ ok: true })} changed={async () => undefined} />));
+  await act(() => vi.advanceTimersByTime(60 * 60 * 1000));
+  expect(host.querySelector('[role=status]')?.textContent).toBe('已停止');
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时25 秒');
+  expect(host.textContent).not.toContain('旧执行器问题');
+  expect(host.textContent).toContain('移除记录');
 });

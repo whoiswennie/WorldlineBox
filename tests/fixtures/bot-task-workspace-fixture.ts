@@ -16,15 +16,25 @@ export function seedTaskWorkspace(profile: string, conversationId: string) {
       const title = ['整理项目目录', '生成阅读清单', '核对附件格式', '整理最近的笔记', '准备素材索引', '检索项目说明'][i % 6]!;
       const task = store.createTask({ id, conversationId, companionId: DEFAULT_BOT_COMPANION_ID, sourceEventId: source.id,
         goal: `只读查看隔离任务工作区中的文件名称。${'这是测试用完整任务要求与约束，保留在详情中，不应充当聊天气泡和卡片标题。'.repeat(20)}`,
-        extra: { title: i === 18 ? '等待停止确认的任务' : `${title} ${i + 1}`, retryAt, nativeAttempted: i === 18, workerAccess: 'scoped', ...(i === 2 ? { retryAttempts: 58, lastRecoveryStage: 'attach', lastRecoveryError: 'Fixture: attaching to the original worker session exceeded its deadline.' } : {}),
-          ...(i === 18 ? { cancelRequested: true, cancelRequestedAt: new Date(Date.now() - 45000).toISOString(), cancelRecoveryPaused: true, cancelRecoveryAttempts: 3, retryAttempts: 3, lastRecoveryStage: 'cancel', lastRecoveryError: 'Fixture: the executor has not confirmed the stop outcome. No task was restarted.' } : {}),
-          progress: { phase: i < 2 ? 'using-tool' : i === 2 ? 'recovering' : i === 18 ? 'stop-unconfirmed' : 'queued', toolName: i < 2 ? 'shell' : undefined, updatedAt: stamp },
+        extra: { title: i === 18 ? '已停止的隔夜任务' : `${title} ${i + 1}`, retryAt, nativeAttempted: false, workerAccess: 'scoped', ...(i === 2 ? { retryAttempts: 58, lastRecoveryStage: 'attach', lastRecoveryError: 'Fixture: attaching to the original worker session exceeded its deadline.' } : {}),
+          progress: { phase: i < 2 ? 'using-tool' : i === 2 ? 'recovering' : 'queued', toolName: i < 2 ? 'shell' : undefined, updatedAt: stamp },
           activity: [{ id: `activity-${i}-0`, phase: 'connecting', createdAt: stamp, updatedAt: stamp }, { id: `activity-${i}-1`, phase: i < 2 ? 'using-tool' : 'queued', toolName: i < 2 ? 'shell' : undefined, createdAt: stamp, updatedAt: stamp }] } });
-      store.updateTask(id, { status: i < 2 ? 'running' : i < 13 ? 'queued' : i === 18 ? 'waiting' : 'succeeded', summary: i >= 13 && i < 18 ? `隔离测试执行回执 ${i}。${'原始工具输出留在详情，不重复塞进聊天。'.repeat(30)}` : '', extra: task.extra });
+      store.updateTask(id, { status: i < 2 ? 'running' : i < 13 ? 'queued' : 'succeeded', summary: i >= 13 && i < 18 ? `隔离测试执行回执 ${i}。${'原始工具输出留在详情，不重复塞进聊天。'.repeat(30)}` : '', extra: task.extra });
       // Historical presentation timestamps must precede the seeded stop
       // request; otherwise the screenshot would show waiting > task age.
       store.taskTransaction(sql => sql.prepare('UPDATE bot_tasks SET created_at=? WHERE id=?').run(new Date(Date.now() - 120000 + i * 1000).toISOString(), id));
     }
+    // Simulate a task stopped 18 hours ago after exactly 90 seconds of work.
+    // Fixture SQL supplies historical state; real Main IPC and both visible
+    // clocks must honor the persisted stop rather than count overnight time.
+    const stoppedAt = new Date(Date.now() - 18 * 3600000).toISOString();
+    const stoppedStartedAt = new Date(Date.parse(stoppedAt) - 90000).toISOString();
+    const overnight = store.getTask(ids[18]!)!;
+    store.taskTransaction(sql => sql.prepare("UPDATE bot_tasks SET status='cancelled',created_at=?,updated_at=?,extra_json=? WHERE id=?")
+      .run(stoppedStartedAt, stoppedAt, JSON.stringify({ ...overnight.extra, cancelRequested: true, humanStopped: true, cancelRequestedAt: stoppedAt,
+        elapsedMs: 90000, timerStartedAt: undefined, presenceStartedAt: stoppedStartedAt,
+        executorControl: { kind: 'cancel', requestedAt: stoppedAt, state: 'acknowledged', attempts: 0, retryAt: 0 },
+        progress: { phase: 'cancelled', detail: '已停止。', updatedAt: stoppedAt } }), ids[18]!));
     for (const id of ids.slice(0, 2)) { const task = store.getTask(id)!; store.updateTask(id, { extra: { ...task.extra, retryAt } }); }
     const notice = store.enqueueTaskNotice({ conversationId, senderId: 'task-service', senderName: '任务回执', source: 'task', sourceMessageId: 'task-ui-complete', recipientIds: [DEFAULT_BOT_COMPANION_ID], kind: 'task_done', payload: { taskId: ids[17] }, content: `任务 ${ids[17]} 状态：succeeded\n${'MASSIVE EXECUTOR RECEIPT '.repeat(90)}` });
     if (notice.deferred) throw new Error('Presentation fixture notice unexpectedly deferred.');

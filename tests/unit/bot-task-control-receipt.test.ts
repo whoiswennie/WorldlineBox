@@ -32,7 +32,9 @@ async function fixture() {
   const service = Object.create(BotService.prototype) as BotService;
   Object.assign(service, { store, taskRuntime: runtime, companionRuntime: new BotCompanionRuntime(store), toolRuns,
     taskRuns: new Map(), taskAccessUpgrades: new Map(), scheduler: { wake: vi.fn() },
-    changed: vi.fn(), maintainSafely: vi.fn(), taskProgress: vi.fn(), flushTaskControls: vi.fn(async () => undefined) });
+    toolServer: { releaseWorker: vi.fn() },
+    changed: vi.fn(), maintainSafely: vi.fn(), taskProgress: vi.fn(), flushTaskControls: vi.fn(async () => undefined),
+    flushExecutorControl: vi.fn(async () => undefined) });
   const controller = service as unknown as Controller;
   const task = (id = 'task-1', status: BotTask['status'] = 'running', extra: Record<string, unknown> = {}) => {
     store.createTask({ id, conversationId: room.id, companionId: 'alice', sourceEventId: event.id, goal: '任务原目标', extra: { nativeAttempted: true, workerAccess: 'full', ...extra } });
@@ -43,16 +45,66 @@ async function fixture() {
   const control = async (input: BotToolCall) => controller.controlTask(store.getTask(String(input.args.taskId))!, input.args.operation as Parameters<Controller['controlTask']>[1], typeof input.args.text === 'string' ? input.args.text : undefined,
     requestId(input), { caller: 'brain', source: 'user', sourceEventId: event.id, questionId: typeof input.args.questionId === 'string' ? input.args.questionId : undefined,
       answers: input.args.answers as BotTaskControlInput['answers'] });
-  return { store, room, event, runtime, service, controller, toolRuns, task, call, control, requestId };
+  return { store, room, event, claim: claim!, runtime, service, controller, toolRuns, task, call, control, requestId };
 }
 
-it('reconciles a cancelled router turn from its saved task cancellation intent without claiming DSH already stopped', async () => {
+async function routerTurn(f: Awaited<ReturnType<typeof fixture>>) {
+  f.store.settle({ eventId: f.event.id, leaseToken: f.claim.leaseToken, status: 'done', content: '原用户任务已经交给执行器。' });
+  const event = f.store.enqueue({ conversationId: f.room.id, senderId: 'task-service', senderName: '任务回执', source: 'task',
+    sourceMessageId: 'router-management-event', recipientIds: ['alice'], kind: 'task_progress', content: '执行器返回了阶段进展。',
+    correlationId: f.event.correlationId, causationId: f.event.id, payload: { taskId: 'task-1', hop: 1 } }).events[0]!;
+  const claim = f.store.claim({ workerId: 'router-management' })!; expect(claim.event.id).toBe(event.id);
+  f.store.bindEventNativeEpoch(event.id, 1);
+  let sequence = 0;
+  return { event, execute: (operation: string, taskId = 'task-1', extra: Record<string, unknown> = {}) => f.controller.executeTool(claim.event,
+    { laneId: event.laneId, eventId: event.id, callId: `router-${operation}-${++sequence}`, name: 'dsh_task_control', args: { operation, taskId, ...extra } }, new AbortController().signal) };
+}
+
+it('allows the live owning Router to stop and clear its task from a task event without requesting another user confirmation', async () => {
+  const f = await fixture(); f.task(); const router = await routerTurn(f);
+  expect(await router.execute('cancel')).toMatchObject({ taskId: 'task-1', status: 'cancelled', confirmed: true });
+  expect(await router.execute('remove')).toMatchObject({ cleared: 1 });
+  expect(f.store.getTask('task-1')!.extra.removedAt).toBeTruthy();
+});
+
+it('lets the owning Router pause/resume its own work but never override a user pause or stopped task', async () => {
+  const f = await fixture(); f.task(); const router = await routerTurn(f);
+  expect(await router.execute('pause')).toMatchObject({ status: 'paused' });
+  expect(f.store.getTask('task-1')!.extra).toMatchObject({ pauseOrigin: 'router', userPaused: false });
+  expect(f.runtime.card(f.store.getTask('task-1')!).pauseOrigin).toBe('router');
+  expect(await router.execute('resume_paused')).toMatchObject({ status: 'queued' });
+  await router.execute('pause');
+  const paused = f.store.getTask('task-1')!;
+  await f.controller.controlTask(f.store.getTask('task-1')!, 'pause', undefined, 'human-pause', { caller: 'user' });
+  expect(f.store.getTask('task-1')!.extra.pausedAt).toBe(paused.extra.pausedAt);
+  expect(f.store.getTask('task-1')!.extra.elapsedMs).toBe(paused.extra.elapsedMs);
+  await expect(router.execute('resume_paused')).rejects.toThrow('用户暂停');
+  expect(f.store.getTask('task-1')!.extra).toMatchObject({ pauseOrigin: 'user', userPaused: true });
+  await f.controller.controlTask(f.store.getTask('task-1')!, 'cancel', undefined, 'human-stop', { caller: 'user' });
+  expect(await router.execute('resume_paused')).toMatchObject({ status: 'cancelled', accepted: false });
+  expect(f.store.getTask('task-1')!.status).toBe('cancelled');
+});
+
+it('lets the Router batch-stop and clear only its current conversation tasks and rejects worker access to Router tools', async () => {
+  const f = await fixture(); f.task(); f.task('task-2'); const router = await routerTurn(f);
+  const other = f.store.createGroup({ title: 'Another audience', memberIds: ['alice'] });
+  const source = f.store.enqueue({ conversationId: other.id, senderId: 'user', recipientIds: ['alice'], sourceMessageId: 'other-scope-task', content: 'Foreign room task.' }).events[0]!;
+  f.store.createTask({ id: 'other-task', conversationId: other.id, companionId: 'alice', sourceEventId: source.id, goal: 'Do not change the other room.' });
+  expect(await router.execute('cancel_all', undefined, { conversationId: other.id, companionId: 'bob' })).toMatchObject({ affected: 2, cancelled: 2 });
+  expect(f.store.getTask('other-task')!.status).toBe('queued');
+  expect(await router.execute('clear_finished')).toMatchObject({ cleared: 2 });
+  expect(f.store.getTask('other-task')!.extra.removedAt).toBeUndefined();
+  const workerHost = f.service as unknown as { tool(call: BotToolCall, signal: AbortSignal): Promise<unknown> };
+  await expect(workerHost.tool({ laneId: 'worker-other-task', eventId: 'work-other-task', callId: 'worker-forged-router-control', name: 'dsh_task_control', args: { operation: 'cancel_all' } }, new AbortController().signal)).rejects.toThrow('停止或尚未附着');
+});
+
+it('recovers an immediate local stop from its saved control receipt without requiring a native acknowledgement', async () => {
   const f = await fixture(); f.task(); const call = f.call('cancel'); await f.control(call);
   f.store.cancelEvent(f.event.id);
   const before = f.store.getTask('task-1');
   expect(f.store.getMetadata(`effect:${f.event.id}:${call.callId}`)).toBeUndefined();
   const proof = await f.service.reconcileToolReceipt(call);
-  expect(proof).toMatchObject({ state: 'committed', result: { taskId: 'task-1', accepted: true, cancelRequested: true, confirmed: false, status: 'running' } });
+  expect(proof).toMatchObject({ state: 'committed', result: { taskId: 'task-1', accepted: true, cancelRequested: true, confirmed: true, status: 'cancelled' } });
   expect(f.store.getTask('task-1')).toEqual(before);
   expect(await f.service.reconcileToolReceipt(call)).toEqual(proof);
 });
@@ -61,15 +113,16 @@ it('exposes only minimal stop facts after withdrawal and lets a new user request
   const f = await fixture(); f.task(); await f.control(f.call('cancel'));
   f.store.updateTask('task-1', { summary: 'WITHDRAWN_PRIVATE_REPORT' });
   f.store.withdrawSources('alice', f.room.securityDomainId, [f.event.id]); f.store.cancelEvent(f.event.id);
+  for (const value of f.store.taskTransaction(sql => sql.prepare("SELECT id FROM bot_inbox WHERE source='task' AND status='queued'").all()) as Array<{id:string}>) f.store.cancelEvent(value.id);
   const incoming = f.store.enqueue({ conversationId: f.room.id, senderId: 'user', content: '重新核实刚才的停止', sourceMessageId: 'recheck-stop' }).events[0]!;
   const claim = f.store.claim({ workerId: 'recheck' })!; expect(claim.event.id).toBe(incoming.id);
   const call = (operation: string): BotToolCall => ({ eventId: incoming.id, laneId: incoming.laneId, callId: 'new-' + operation, name: 'dsh_task_control', args: { operation, taskId: 'task-1', text: '不能继续原任务' } });
   const status = await f.controller.executeTool(claim.event, call('status'), new AbortController().signal);
-  expect(status).toMatchObject({ taskId: 'task-1', status: 'running', cancelRequested: true, confirmed: false });
+  expect(status).toMatchObject({ taskId: 'task-1', status: 'cancelled', cancelRequested: true, confirmed: true });
   expect(JSON.stringify(status)).not.toMatch(/WITHDRAWN_PRIVATE_REPORT|任务原目标/);
   expect(status).not.toHaveProperty('summary'); expect(status).not.toHaveProperty('goal');
   await expect(f.controller.executeTool(claim.event, call('send'), new AbortController().signal)).rejects.toThrow('协调视图');
-  expect(await f.controller.executeTool(claim.event, call('cancel'), new AbortController().signal)).toMatchObject({ taskId: 'task-1', cancelRequested: true, confirmed: false });
+  expect(await f.controller.executeTool(claim.event, call('cancel'), new AbortController().signal)).toMatchObject({ taskId: 'task-1', cancelRequested: true, confirmed: true });
 });
 
 it.each(['pause', 'resume_paused', 'continue'] as const)('recovers a saved %s operation without issuing it again', async operation => {
@@ -136,7 +189,7 @@ it('reports exactly which frozen queue cancellation requests landed and never si
   f.store.setMetadata(key, JSON.stringify({ fingerprint: digest(JSON.stringify({ operation: 'cancel_all', companionId: f.event.companionId })), ids: ['task-1', 'task-2'], conversationId: f.room.id, published: false }));
   await f.controller.controlTask(f.store.getTask('task-1')!, 'cancel', undefined, `${requestId}:task-1`, { caller: 'user' });
   const before = f.store.getTask('task-2');
-  expect(await f.service.reconcileToolReceipt(call)).toMatchObject({ state: 'committed', result: { accepted: false, partial: true, affected: 2, pending: 1, notRequested: 1 } });
+  expect(await f.service.reconcileToolReceipt(call)).toMatchObject({ state: 'committed', result: { accepted: false, partial: true, affected: 2, cancelled: 1, notRequested: 1 } });
   expect(f.store.getTask('task-2')).toEqual(before);
 });
 

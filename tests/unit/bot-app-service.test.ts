@@ -15,6 +15,7 @@ import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
 import { BotAppBrainStore } from '../../src/main/companion-bot/app-brain-store';
 import { builtinBotPersonaTemplates } from '../../src/shared/builtin-bot-personas';
 import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
+import { DEFAULT_MODEL_CONTEXT_WINDOW } from '../../src/shared/model-budget';
 
 class Memory extends BotMemoryService {
   readonly records: Array<Parameters<BotMemoryService['remember']>> = [];
@@ -55,9 +56,10 @@ async function fixture(options: { holdFirstReply?: boolean; retention?: BotServi
   const observedTriggers: Array<{ eventId: string; content: string; source: string }> = [];
   const server = createServer((request, response) => {
     void (async () => {
-      let bytes = ''; for await (const chunk of request) bytes += chunk;
+      const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const bytes = Buffer.concat(chunks).toString('utf8');
       const body = JSON.parse(bytes) as ProviderBody; requests.push(body);
-      if (Buffer.byteLength(bytes, 'utf8') + 256 + (body.max_tokens ?? 0) > 32768) throw new Error('The local provider received a request outside its 32k budget');
+      if (Buffer.byteLength(bytes, 'utf8') + 256 + (body.max_tokens ?? 0) > DEFAULT_MODEL_CONTEXT_WINDOW) throw new Error('The local provider received a request outside its 100k template budget');
       if (!request.url?.endsWith('/chat/completions') || body.stream !== true) { response.writeHead(400).end(); return; }
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }); response.flushHeaders();
       const system = body.messages.filter(message => message.role === 'system').map(message => text(message.content)).join('\n');
@@ -118,7 +120,7 @@ async function fixture(options: { holdFirstReply?: boolean; retention?: BotServi
   const preparation = { phase: 'starting-host', elapsedMs: 99000 };
   const service: BotService = new BotService({ root, brain: router, brainRuntime: 'worldlinebox', memory,
     retention: options.retention,
-    runtimePreparation: () => preparation, model: () => ({ apiFormat: 'openai_chat', model: 'local-sse-fixture', baseUrl, apiKey: 'fixture-no-paid-request', maxTokens: 1024, contextWindow: 32768 }),
+    runtimePreparation: () => preparation, model: () => ({ apiFormat: 'openai_chat', model: 'local-sse-fixture', baseUrl, apiKey: 'fixture-no-paid-request', maxTokens: 1024, contextWindow: DEFAULT_MODEL_CONTEXT_WINDOW }),
     onEvent: event => { events.push(event); } });
   cleanups.push(async () => {
     release();

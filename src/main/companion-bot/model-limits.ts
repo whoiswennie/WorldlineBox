@@ -1,3 +1,5 @@
+import { DEFAULT_MODEL_CONTEXT_WINDOW } from '../../shared/model-budget';
+
 /** Model capacity policy, not tokenization or a claim about compression ratios.
  * Discovery is supplied by the caller; resolving limits never calls a model. */
 export interface BotModelLimitInput { model: string; baseUrl: string; contextWindow?: number; maxTokens?: number }
@@ -44,7 +46,7 @@ export function resolveBotModelLimits(input: BotModelLimitInput, discovered?: un
   const metadataWindow = integer(structures, ['context_window', 'context_length', 'contextWindow', 'max_context_tokens', 'max_context_length']);
   const metadataOutput = integer(structures, ['max_output_tokens', 'max_completion_tokens', 'maxOutputTokens', 'output_token_limit']);
   const documented = official(input);
-  const window = input.contextWindow ?? metadataWindow ?? documented?.window ?? 65536;
+  const window = input.contextWindow ?? metadataWindow ?? documented?.window ?? DEFAULT_MODEL_CONTEXT_WINDOW;
   const source: BotModelLimits['source'] = input.contextWindow !== undefined ? 'explicit' : metadataWindow !== undefined ? 'metadata' : documented ? 'official-default' : 'unknown';
   const maxOutputTokens = metadataOutput ?? documented?.maxOutputTokens;
   const requested = input.maxTokens ?? Math.min(4096, Math.max(1, Math.floor(window / 4)));

@@ -92,7 +92,7 @@ it('reconciles a 512-minute attempted task through the lightweight Host proof wi
   const foreign = f.service.store.createGroup({ title: 'Other shared Host lane', memberIds: [DEFAULT_BOT_COMPANION_ID] }), unrelated = f.task({}, foreign.id);
   f.service.store.updateTask(unrelated.id, { status: 'running' });
   await f.stop(old.id); await until(() => f.service.store.getTask(old.id)?.status === 'cancelled');
-  await f.stop(old.id, 'stop-again');
+  await f.stop(old.id, 'stop-again'); await until(() => f.host.calls.length === 1);
   expect(f.host.calls).toHaveLength(1); expect(f.host.calls[0]!.path).toBe('/bot/cancel');
   const body = f.host.calls[0]!.body;
   expect(Object.keys(body).sort()).toEqual(['cwd', 'eventId', 'laneId', 'role', 'sessionId']);
@@ -117,37 +117,54 @@ it('does not turn unresolved admission or a mismatched absence identity into a s
   expect(host.calls.map(call => call.path)).toEqual(['/bot/cancel']);
 });
 
-it('bounds unresolved stop recovery, preserves the first stop time and effect gate, and only resumes reconciliation on a new user request', async () => {
+it('stops immediately with no model replay, freezes the first stop time, and bounds background native cleanup', async () => {
   const f = await fixture(), old = f.task(), neverAdmitted = f.task({ nativeAttempted: false });
   const effects = new BotTaskRuntime(f.service.store);
   effects.startEffect(old, { callId: 'legacy-pending-effect', toolName: 'bash', argsHash: createHash('sha256').update('unconfirmed operation').digest('hex'), argumentsPreview: 'Unconfirmed effect must remain visible.' });
-  f.host.handle(async () => ({ status: 503, body: { error: 'The shared Host cannot yet reconcile this event.' } }));
+  f.host.handle(async () => ({ status: 503, body: { error: 'The shared Host is unavailable.' } }));
   const batch = { type: 'task.queue.control' as const, conversationId: f.room.id, operation: 'cancel_queued' as const, requestId: 'original-batch' };
-  expect((await f.service.handle(batch)).memory).toMatchObject({ affected: 2 });
+  expect((await f.service.handle(batch)).memory).toMatchObject({ affected: 2, cancelled:2, pending:0,blocked:0 });
+  expect(f.service.store.getTask(old.id)?.status).toBe('cancelled');
   expect(f.service.store.getTask(neverAdmitted.id)?.status).toBe('cancelled');
-  await until(() => f.host.calls.length >= 1 && Number(f.service.store.getTask(old.id)!.extra.retryAttempts) >= 1);
-  const firstStop = f.service.store.getTask(old.id)!.extra.cancelRequestedAt; expect(firstStop).toBeTruthy();
+  const state = () => f.service.store.getTask(old.id)!.extra.executorControl as {state:string;attempts:number;retryAt:number};
+  await until(() => state().attempts >= 1);
+  const firstStop = f.service.store.getTask(old.id)!.extra.cancelRequestedAt;
   for (const count of [2, 3]) {
-    const current = f.service.store.getTask(old.id)!; f.service.store.updateTask(old.id, { extra: { ...current.extra, retryAt: 0 } });
-    await until(() => f.host.calls.length >= count);
-    await until(() => f.service.store.getTask(old.id)!.extra.cancelRecoveryPaused === true || Number(f.service.store.getTask(old.id)!.extra.retryAttempts) >= count);
+    const current = f.service.store.getTask(old.id)!;
+    f.service.store.updateTask(old.id, { extra: {...current.extra,executorControl:{...state(),retryAt:0}} });
+    await until(() => state().attempts >= count);
   }
-  await until(() => f.service.store.getTask(old.id)!.extra.cancelRecoveryPaused === true);
-  expect(f.service.store.getTask(old.id)).toMatchObject({ status: 'waiting', extra: { cancelRequested: true, progress: { phase: 'stop-unconfirmed' } } });
-  expect(f.service.store.getTask(old.id)!.extra.cancelRequestedAt).toEqual(firstStop);
-  expect(effects.pendingEffects(old.id)).toMatchObject([{ callId: 'legacy-pending-effect' }]);
-  const pausedCalls = f.host.calls.length; await delay(1200); expect(f.host.calls).toHaveLength(pausedCalls);
-  const card = (await f.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: old.id })).task as unknown as Row;
-  expect(card.stopRequestedAt).toEqual(firstStop);
-  const later = f.task({ nativeAttempted: false });
-  f.host.handle(async call => ({ body: { accepted: false, absent: true, sessionId: call.body.sessionId, eventId: call.body.eventId } }));
-  await f.stop(old.id, 'manual-reconciliation-retry'); await until(() => f.service.store.getTask(old.id)?.status === 'cancelled');
-  expect(f.service.store.getTask(old.id)!.extra.cancelRequestedAt).toEqual(firstStop);
-  expect(effects.pendingEffects(old.id)).toMatchObject([{ callId: 'legacy-pending-effect' }]);
-  expect((await f.service.handle(batch)).memory).toMatchObject({ affected: 2 });
+  expect(state().state).toBe('unavailable');
+  expect(f.service.store.getTask(old.id)).toMatchObject({status:'cancelled',extra:{cancelRequested:true,cancelRequestedAt:firstStop,progress:{phase:'cancelled'}}});
+  expect(effects.pendingEffects(old.id)).toMatchObject([{callId:'legacy-pending-effect'}]);
+  const count=f.host.calls.length; await delay(1200); expect(f.host.calls).toHaveLength(count);
+  const later=f.task({nativeAttempted:false});
+  expect((await f.service.handle(batch)).memory).toMatchObject({affected:2,cancelled:2});
   expect(f.service.store.getTask(later.id)!.extra.cancelRequested).not.toBe(true);
-  const notices = () => f.service.store.messagesPage(f.room.id).items.filter(message => message.senderId === 'task-service');
-  await until(() => notices().some(message => message.content.includes('已停止 2 项')));
-  expect(notices().filter(message => message.content.includes('已停止 2 项'))).toHaveLength(1);
-  expect(f.host.calls.every(call => call.path === '/bot/cancel')).toBe(true);
+  expect(f.service.store.pendingTasks().map(task=>task.id)).not.toContain(old.id);
+  expect(f.host.calls.every(call=>call.path==='/bot/cancel')).toBe(true);
+});
+
+it('clears a stopped task immediately while its background native cancellation retains the original workspace and cannot restore the record', async () => {
+  const f = await fixture(), task = f.task({ workspaceLayout: 'companion-v1' });
+  let release!: (value: Reply) => void;
+  f.host.handle(() => new Promise<Reply>(resolve => { release = resolve; }));
+  await f.stop(task.id); expect(f.service.store.getTask(task.id)?.status).toBe('cancelled');
+  await until(() => f.host.calls.length === 1);
+  const removed = await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: task.id, operation: 'remove', requestId: 'remove-before-native-ack' });
+  expect(removed.memory).toMatchObject({ cleared: 1 });
+  expect(f.service.store.getTask(task.id)!.extra.removedAt).toBeTruthy();
+  release({ status: 503, body: { error: 'Dropped first native shutdown receipt.' } });
+  const control = () => f.service.store.getTask(task.id)!.extra.executorControl as { state: string; attempts: number; retryAt: number };
+  await until(() => control().attempts === 1);
+  f.host.handle(async call => ({ body: { accepted: false, absent: true, sessionId: call.body.sessionId, eventId: call.body.eventId } }));
+  const current = f.service.store.getTask(task.id)!;
+  f.service.store.updateTask(task.id, { extra: { ...current.extra, executorControl: { ...control(), retryAt: 0 } } });
+  await until(() => control().state === 'acknowledged');
+  expect(f.host.calls).toHaveLength(2);
+  expect(f.host.calls[0]!.body.cwd).toBe(f.host.calls[1]!.body.cwd);
+  expect(String(f.host.calls[1]!.body.cwd)).toContain(path.join('workspaces', createHash('sha256').update(task.companionId).digest('hex')));
+  expect(f.service.store.getTask(task.id)).toMatchObject({ status: 'cancelled', goal: '', extra: { removedAt: expect.any(String) } });
+  expect(f.service.store.listTaskCatalog({ conversationId: f.room.id, view: 'directory' })).toEqual([]);
+  expect(f.app.calls.some(call => call.role === 'worker')).toBe(false);
 });

@@ -4,6 +4,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import type { BotDshHandoff } from './dsh-brain';
 import { botTaskRemovalFingerprint } from './task-history';
+import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { BOT_PERSONA_TEMPLATE_LIMIT, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotCompanionPresenceEvent, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
 import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
@@ -299,9 +300,36 @@ export class BotStore {
       }
       this.db.pragma('user_version = 18');
     }).immediate(); } catch (error) { this.db.close(); throw error; }
+    // Older releases exposed executor acknowledgement as an active task.
+    // The user's control is authoritative locally; receipt collection is a
+    // separate bounded background operation and cannot keep a task running.
+    this.db.transaction(() => {
+      for (const raw of this.db.prepare(`SELECT * FROM bot_tasks WHERE status IN ('queued','running','waiting','paused','unknown')
+        AND (json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1
+          OR json_extract(extra_json,'$.progress.phase') IN ('stopping','stop-requesting','stop-unconfirmed','stop-request-unknown','pausing','pause-unconfirmed','pause-request-unknown'))`).all()) {
+        const task = this.task(raw);
+        const progress = task.extra.progress as { phase?: string; updatedAt?: string } | undefined;
+        if (progress?.phase?.startsWith('stop')) { task.extra.cancelRequested = true; task.extra.cancelRequestedAt ??= progress.updatedAt ?? task.updatedAt; }
+        else if (progress?.phase?.startsWith('paus')) { task.extra.pauseRequested = true; task.extra.pauseRequestedAt ??= progress.updatedAt ?? task.updatedAt; }
+        this.updateTask(task.id, { extra: task.extra });
+      }
+    }).immediate();
+    this.suspendTaskTimers(true);
   }
 
   close(): void { this.db.close(); }
+  /** Closing/reopening an application is not executor time. On crash recovery
+   * only the last durable observation can bound the previous live slice. */
+  suspendTaskTimers(restarting = false): void {
+    this.db.transaction(() => {
+      for (const raw of this.db.prepare("SELECT * FROM bot_tasks WHERE status='running'").all()) {
+        const task = this.task(raw), start = Date.parse(String(task.extra.timerStartedAt ?? (validMilliseconds(task.extra.elapsedMs) ? '' : task.extra.presenceStartedAt ?? task.createdAt)));
+        const end = restarting ? Math.min(Date.now(), Date.parse(task.updatedAt)) : Date.now();
+        const elapsed = (validMilliseconds(task.extra.elapsedMs) ? task.extra.elapsedMs : 0) + (Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0);
+        this.db.prepare('UPDATE bot_tasks SET extra_json=? WHERE id=?').run(JSON.stringify({ ...task.extra, elapsedMs: elapsed, timerStartedAt: undefined }), task.id);
+      }
+    }).immediate();
+  }
   /** Internal task domain transactions; callbacks must be synchronous and do no native/network I/O. */
   taskTransaction<T>(operation: (sql: BotTaskSql) => T): T { return this.db.transaction(() => operation(this.db)).immediate(); }
   private bindMessageSources(messageId: string, sourceIds: readonly string[]): void {
@@ -948,7 +976,7 @@ export class BotStore {
   trackNativeAdmission(input: BotNativeAdmission): void {
     const event = this.getEvent(input.eventId), epoch = this.getEventNativeEpoch(input.eventId);
     if (!event || event.status !== 'running' || epoch !== input.epoch || this.getLane(event.laneId)?.epoch !== epoch) throw new Error('原生投递上下文不属于当前事件通道。');
-    if (!input.system || input.system.length > 64000 || !path.isAbsolute(input.cwd) || !Number.isSafeInteger(input.inputBytes) || input.inputBytes < 0) throw new Error('原生投递上下文无效。');
+    if (!input.system || input.system.length > DEFAULT_MODEL_CONTEXT_CHARS || !path.isAbsolute(input.cwd) || !Number.isSafeInteger(input.inputBytes) || input.inputBytes < 0) throw new Error('原生投递上下文无效。');
     const key = `native-admission:${input.eventId}`, value = JSON.stringify(input), prior = this.getMetadata(key);
     if (Buffer.byteLength(value) > 131072 || prior && prior !== value) throw new Error('原生事件投递上下文已改变或过大。');
     this.setMetadata(key, value);
@@ -1008,7 +1036,7 @@ export class BotStore {
   }
   /** The source native session remains cold on disk; only the active pointer moves. */
   commitLaneHandoff(laneId: string, expectedEpoch: number, handoff: BotDshHandoff): boolean {
-    const serialized = JSON.stringify(handoff); if (Buffer.byteLength(serialized) > 65536) throw new Error('原生主脑交接材料过大。');
+    const serialized = JSON.stringify(handoff); if (Buffer.byteLength(serialized) > DEFAULT_MODEL_CONTEXT_CHARS) throw new Error('原生主脑交接材料过大。');
     return this.db.transaction(() => {
       const lane = this.getLane(laneId); if (!lane || lane.epoch !== expectedEpoch) return false;
       const state = this.getLaneRetention(laneId);
@@ -1569,7 +1597,8 @@ export class BotStore {
     }
     this.activityBudget.reserve(source.correlationId, 'tasks', id);
     const stamp = nowIso(); this.db.prepare('INSERT INTO bot_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id, input.conversationId, input.companionId, input.sourceEventId, goal,
-      'queued', input.attemptId ?? randomUUID(), input.dshTaskId ?? null, input.sessionId ?? null, null, null, stamp, stamp, JSON.stringify(input.extra ?? {}));
+      'queued', input.attemptId ?? randomUUID(), input.dshTaskId ?? null, input.sessionId ?? null, null, null, stamp, stamp,
+      JSON.stringify({ ...input.extra, elapsedMs: validMilliseconds(input.extra?.elapsedMs) ? input.extra.elapsedMs : 0 }));
     const contextIds = Array.isArray(input.extra?.handoffSourceIds) ? input.extra.handoffSourceIds : [];
     if (contextIds.some(id => typeof id !== 'string' || !(() => { const message = this.getMessage(id); return message?.conversationId === source.conversationId
       && message.status === 'sent' && message.sequence <= Number(input.extra?.handoffThroughSequence ?? source.sourceMessageSequence); })())
@@ -1621,7 +1650,8 @@ export class BotStore {
         'cancelRequestedAt',json_extract(extra_json,'$.cancelRequestedAt'),'presenceStartedAt',json_extract(extra_json,'$.presenceStartedAt'),
         'cancelRecoveryPaused',json(CASE WHEN json_type(extra_json,'$.cancelRecoveryPaused')='true' THEN 'true' ELSE 'false' END),
         'pauseRequested',json(CASE WHEN json_type(extra_json,'$.pauseRequested')='true' THEN 'true' ELSE 'false' END),
-        'pauseRequestedAt',json_extract(extra_json,'$.pauseRequestedAt'),'pausedAt',json_extract(extra_json,'$.pausedAt'),
+        'pauseRequestedAt',json_extract(extra_json,'$.pauseRequestedAt'),'pausedAt',json_extract(extra_json,'$.pausedAt'),'pauseOrigin',json_extract(extra_json,'$.pauseOrigin'),
+        'elapsedMs',json_extract(extra_json,'$.elapsedMs'),'timerStartedAt',json_extract(extra_json,'$.timerStartedAt'),
         'outputCheckpoint',json_extract(extra_json,'$.outputCheckpoint'),
         'progress',json(CASE WHEN json_type(extra_json,'$.progress')='object' THEN
           json_object('phase',substr(json_extract(extra_json,'$.progress.phase'),1,100),
@@ -1655,10 +1685,43 @@ export class BotStore {
   updateTask(id: string, patch: { status?: BotTaskStatus; summary?: string; error?: string; dshTaskId?: string; sessionId?: string; extra?: Record<string, unknown>; attemptId?: string }): BotTask {
     const task = this.getTask(id); if (!task) throw new Error('任务不存在。');
     if (patch.attemptId && patch.attemptId !== task.attemptId) throw new Error('任务回执来自过期执行轮次。');
-    const status = patch.status ?? task.status; if (!taskStatuses.has(status)) throw new Error('任务状态无效。');
+    let status = patch.status ?? task.status; if (!taskStatuses.has(status)) throw new Error('任务状态无效。');
     if (['succeeded', 'failed', 'cancelled'].includes(task.status) && status !== task.status) throw new Error('任务已结束，不能被迟到回执重新启动。');
-    if (typeof task.extra.removedAt === 'string') return task;
+    if (typeof task.extra.removedAt === 'string') {
+      // A cleared record is an admission tombstone. Native cleanup may update
+      // its input-free receipt, never restore user text or a visible task.
+      if (patch.extra?.executorControl) this.db.prepare("UPDATE bot_tasks SET extra_json=json_set(extra_json,'$.executorControl',json(?)) WHERE id=?")
+        .run(JSON.stringify(patch.extra.executorControl), id);
+      return this.getTask(id)!;
+    }
     const extra = { ...(patch.extra ?? task.extra) }, updatedAt = nowIso();
+    if (!['succeeded', 'failed', 'cancelled'].includes(task.status) && extra.cancelRequested === true) {
+      status = 'cancelled';
+      const stamp = typeof extra.cancelRequestedAt === 'string' ? extra.cancelRequestedAt : updatedAt;
+      Object.assign(extra, { cancelRequestedAt: stamp, humanStopped: true, pauseRequested: false, cancelRecoveryPaused: false, pauseRecoveryPaused: false, retryAt: 0,
+        executorControl: extra.executorControl ?? { kind: 'cancel', requestedAt: stamp, state: extra.nativeAttempted === true ? 'pending' : 'acknowledged', attempts: 0, retryAt: 0, workspaceLayout: extra.workspaceLayout },
+        progress: { phase: 'cancelled', detail: '已停止。', updatedAt: stamp } });
+    } else if (!['succeeded', 'failed', 'cancelled'].includes(task.status) && extra.pauseRequested === true) {
+      status = 'paused';
+      const stamp = typeof extra.pauseRequestedAt === 'string' ? extra.pauseRequestedAt : updatedAt;
+      Object.assign(extra, { pauseRequested: false, userPaused: extra.pauseOrigin !== 'router', pausedAt: stamp, pauseRequestedAt: stamp, pauseRecoveryPaused: false, retryAt: 0,
+        executorControl: extra.executorControl ?? { kind: 'pause', requestedAt: stamp, state: extra.nativeAttempted === true ? 'pending' : 'acknowledged', attempts: 0, retryAt: 0, workspaceLayout: extra.workspaceLayout },
+        progress: { phase: 'paused', detail: '已暂停；继续会使用原任务和工作目录。', updatedAt: stamp } });
+    }
+    // Persist completed timing slices. UI reads this value and the one live
+    // slice; paused time and late executor receipts never increase the total.
+    const priorElapsed = validMilliseconds(task.extra.elapsedMs) ? task.extra.elapsedMs : undefined;
+    const priorStart = typeof task.extra.timerStartedAt === 'string' ? Date.parse(task.extra.timerStartedAt) : NaN;
+    const legacyStart = Date.parse(typeof task.extra.presenceStartedAt === 'string' ? task.extra.presenceStartedAt : task.createdAt);
+    const legacyEnd = Date.parse(String(task.extra.cancelRequestedAt ?? task.extra.pauseRequestedAt ?? task.extra.pausedAt ?? task.updatedAt));
+    let elapsed = priorElapsed ?? (['paused', 'succeeded', 'failed', 'cancelled'].includes(task.status) && Number.isFinite(legacyStart) && Number.isFinite(legacyEnd) ? Math.max(0, legacyEnd - legacyStart) : 0);
+    if (validMilliseconds(patch.extra?.elapsedMs)) elapsed = Math.max(elapsed, patch.extra.elapsedMs);
+    const cutoff = Date.parse(String(status === 'cancelled' ? extra.cancelRequestedAt ?? updatedAt : status === 'paused' ? extra.pauseRequestedAt ?? extra.pausedAt ?? updatedAt : updatedAt));
+    const freezing = status !== 'running';
+    if (Number.isFinite(priorStart) && freezing) elapsed += Math.max(0, cutoff - priorStart);
+    else if (priorElapsed === undefined && !['queued', 'paused', 'succeeded', 'failed', 'cancelled'].includes(task.status) && freezing && Number.isFinite(legacyStart)) elapsed = Math.max(0, cutoff - legacyStart);
+    extra.elapsedMs = elapsed;
+    extra.timerStartedAt = freezing ? undefined : Number.isFinite(priorStart) ? task.extra.timerStartedAt : patch.status === 'running' ? updatedAt : undefined;
     if (task.extra.presenceStartedAt && !extra.presenceStartedAt) extra.presenceStartedAt = task.extra.presenceStartedAt;
     const terminal = ['succeeded', 'failed', 'cancelled'].includes(status);
     const waiting = status === 'waiting' || status === 'unknown' || extra.progress && typeof extra.progress === 'object' && (extra.progress as Record<string, unknown>).phase === 'waiting-approval';

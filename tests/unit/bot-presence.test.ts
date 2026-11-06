@@ -35,16 +35,14 @@ it('aggregates active tasks and simultaneous brain replies across user-visible r
   expect(current.bob).toMatchObject({ status: 'unconfigured', counts: { activeTasks: 0, replying: 0, pendingMessages: 0 } });
 });
 
-it('keeps queued work visible when the model setting is unavailable and distinguishes waiting, stopping and unconfirmed stop states', () => {
+it('keeps queued work visible when the model setting is unavailable and removes stopped work from active presence immediately', () => {
   const room = store.openDirect('alice'), current = task(room);
   expect(presence(false).alice).toMatchObject({ status: 'working', counts: { activeTasks: 1, queued: 1 } });
   store.updateTask(current.id, { status: 'waiting', extra: { title: '用户问题', progress: { phase: 'waiting' } } });
   expect(presence(false).alice).toMatchObject({ status: 'waiting', counts: { activeTasks: 1, waiting: 1 } });
   store.updateTask(current.id, { status: 'queued', extra: { title: '停止中的任务', cancelRequested: true, cancelRequestedAt: new Date().toISOString(), progress: { phase: 'stopping' } } });
-  expect(presence(false).alice).toMatchObject({ status: 'working', counts: { activeTasks: 1, queued: 1, stopping: 1, blocked: 0 } });
-  store.updateTask(current.id, { status: 'waiting', extra: { title: '停止尚未证实', cancelRequested: true, cancelRecoveryPaused: true, progress: { phase: 'stop-unconfirmed' } } });
-  expect(presence(false).alice).toMatchObject({ status: 'needs-attention', counts: { activeTasks: 1, waiting: 1, stopping: 0, blocked: 1 }, activity: { phase: 'stop-unconfirmed' } });
-  store.updateTask(current.id, { status: 'cancelled' });
+  expect(store.getTask(current.id)?.status).toBe('cancelled');
+  expect(() => store.updateTask(current.id, { status: 'waiting' })).toThrow('任务已结束');
   expect(presence(false).alice).toMatchObject({ status: 'unconfigured', counts: { activeTasks: 0, stopping: 0, blocked: 0 } });
   expect(presence(true).alice!.status).toBe('idle');
 });
@@ -88,14 +86,15 @@ it('uses a durable monotonic sequence to distinguish same-millisecond new events
   expect(refilled.filter(event => event.sequence > highWatermark)).toEqual([]);
 });
 
-it('counts only confirmed paused work as paused while pending stop and pause reconciliation remain distinct', () => {
+it('counts paused work immediately and never treats native cleanup as active or blocked work', () => {
   const room = store.openDirect('alice'), current = task(room);
   store.updateTask(current.id, { status: 'paused', extra: { title: '暂停的任务', userPaused: true, progress: { phase: 'paused' } } });
   expect(presence().alice).toMatchObject({ status: 'waiting', counts: { activeTasks: 1, paused: 1, running: 0, blocked: 0 } });
   store.updateTask(current.id, { extra: { title: '请求停止', cancelRequested: true, progress: { phase: 'stopping' } } });
-  expect(presence().alice!.counts).toMatchObject({ paused: 0, stopping: 1 });
-  store.updateTask(current.id, { status: 'waiting', extra: { title: '暂停待核实', pauseRequested: true, pauseRecoveryPaused: true, progress: { phase: 'pause-unconfirmed' } } });
-  expect(presence().alice).toMatchObject({ status: 'needs-attention', counts: { paused: 0, blocked: 1 } });
+  expect(presence().alice).toMatchObject({ status: 'idle', counts: { activeTasks: 0, paused: 0, stopping: 0, blocked: 0 } });
+  const another = task(room);
+  store.updateTask(another.id, { extra: { title: '暂停任务', pauseRequested: true, pauseRecoveryPaused: true, progress: { phase: 'pause-unconfirmed' } } });
+  expect(presence().alice).toMatchObject({ status: 'waiting', counts: { activeTasks: 1, paused: 1, blocked: 0 } });
 });
 
 it('expires a recent failure after ten minutes and never turns historical failed rows into a permanent red presence', () => {

@@ -347,7 +347,7 @@ it('persists real worker lifecycle identities without token content and binds a 
   } finally { gate.resolve('结束'); }
 });
 
-it('reconciles an attempted cancellation after restart with cancelDurable and never re-executes its prompt', async () => {
+it('keeps an attempted legacy stop terminal after restart while collecting native cleanup without re-executing its prompt', async () => {
   const f = await fixture(), task = f.task({ nativeAttempted: true, cancelRequested: true });
   await f.service.shutdown();
   const next = new BrainBoundary(), proof = deferred<BotDshCancelAck>(); next.stopping = async () => proof.promise;
@@ -355,12 +355,12 @@ it('reconciles an attempted cancellation after restart with cancelDurable and ne
   try {
     await restarted.handle({ type: 'state', conversationId: f.conversationId });
     await waitFor(() => next.stops.length === 1);
-    expect(restarted.store.getTask(task.id)?.status).not.toBe('cancelled');
+    expect(restarted.store.getTask(task.id)?.status).toBe('cancelled');
     expect(next.stops[0]).toMatchObject({ laneId: `worker-${task.id}`, eventId: `work-${task.id}`, workerAccess: 'full' });
     expect(next.stops[0]).not.toHaveProperty('prompt'); expect(next.calls.filter(input => input.role === 'worker')).toEqual([]);
     proof.resolve({ accepted: true, absent: true });
-    await waitFor(() => restarted.store.getTask(task.id)?.status === 'cancelled');
-    expect(await taskMessages(restarted, f.conversationId)).toHaveLength(1);
+    await waitFor(() => (restarted.store.getTask(task.id)!.extra.executorControl as {state:string}).state === 'acknowledged');
+    expect(await taskMessages(restarted, f.conversationId)).toHaveLength(0);
   } finally { proof.resolve({ accepted: true, absent: true }); }
 });
 

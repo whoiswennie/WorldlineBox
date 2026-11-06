@@ -62,7 +62,7 @@ async function fixture() {
     services.push(service); return service;
   };
   const brain = new BrainBoundary(), service = open(brain), room = (await service.handle({ type: 'state' })).snapshot!.conversations[0]!;
-  owners.push(async () => { for (const current of services) await current.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-task-pause-')) throw Error('Unexpected pause fixture root.'); await rm(root, { recursive: true, force: true }); });
+  owners.push(async () => { for (const current of services) await current.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-task-pause-')) throw Error('Unexpected pause fixture root.'); await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
   let sequence = 0;
   const task = (extra: Record<string, unknown> = {}) => {
     const source = service.store.enqueue({ conversationId: room.id, senderId: 'user', source: 'user', recipientIds: [DEFAULT_BOT_COMPANION_ID], sourceMessageId: `pause-source-${++sequence}`, content: '继续时必须保留这个原始用户目标。' }).events[0]!;
@@ -92,47 +92,49 @@ it('pauses a never-dispatched queued task locally, survives restart, and resumes
   await f.control(task.id, 'resume_paused', 'explicit-resume', reopened); expect(next.calls.filter(value => value.role === 'worker')).toHaveLength(1);
 });
 
-it('does not claim an attempted task paused until an identity-bound durable suspend acknowledgement arrives, then can cancel it without executing it', async () => {
+it('pauses immediately while native suspension is collected separately, then stops without executing it', async () => {
   const f = await fixture(), task = f.task({ nativeAttempted: true, workerPrompt: 'FROZEN_ORIGINAL_WORKER_REQUEST' }), gate = deferred<BotDshCancelAck>();
   f.brain.stopping = async (_input, suspend) => suspend ? gate.promise : { accepted: false, absent: true };
   await f.control(task.id, 'pause', 'pause-attempted'); await until(() => f.brain.controls.length === 1);
   expect(f.brain.controls[0]!.suspend).toBe(true); expect(f.brain.calls.filter(value => value.role === 'worker')).toHaveLength(0);
-  expect(f.service.store.getTask(task.id)?.status).not.toBe('paused');
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
   const input = f.brain.controls[0]!.input;
   gate.resolve({ accepted: true, paused: true, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId) });
-  await until(() => f.service.store.getTask(task.id)?.status === 'paused');
+  await until(() => (f.service.store.getTask(task.id)!.extra.executorControl as {state:string}).state === 'acknowledged');
   const card = (await f.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: task.id })).task!;
   expect(card).toMatchObject({ status: 'paused', pausedAt: expect.any(String) });
   await f.control(task.id, 'cancel', 'cancel-paused'); await until(() => f.service.store.getTask(task.id)?.status === 'cancelled');
-  expect(f.brain.controls.at(-1)!.suspend).toBe(false); expect(f.brain.calls.filter(value => value.role === 'worker')).toHaveLength(0);
+  await until(() => f.brain.controls.at(-1)!.suspend === false); expect(f.brain.controls.at(-1)!.suspend).toBe(false); expect(f.brain.calls.filter(value => value.role === 'worker')).toHaveLength(0);
 });
 
-it('bounds missing pause proof instead of treating plain accepted as paused and permits a new explicit reconciliation request', async () => {
+it('keeps the local pause stable while bounded native cleanup fails and retries only cleanup on explicit resume', async () => {
   const f = await fixture(), task = f.task({ nativeAttempted: true, workerPrompt: 'FROZEN_REQUEST' });
   f.brain.stopping = async () => ({ accepted: true });
   await f.control(task.id, 'pause', 'pause-without-proof');
-  await until(() => f.brain.controls.length >= 1 && Number(f.service.store.getTask(task.id)!.extra.pauseRecoveryAttempts) >= 1);
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
+  const state = () => f.service.store.getTask(task.id)!.extra.executorControl as {state:string; attempts:number;retryAt:number};
+  await until(() => state().attempts === 1);
   const first = f.service.store.getTask(task.id)!.extra.pauseRequestedAt;
   for (const attempts of [2, 3]) {
-    const current = f.service.store.getTask(task.id)!; f.service.store.updateTask(task.id, { extra: { ...current.extra, retryAt: 0 } });
-    await until(() => f.brain.controls.length >= attempts && Number(f.service.store.getTask(task.id)!.extra.pauseRecoveryAttempts) >= attempts);
+    const current = f.service.store.getTask(task.id)!;
+    f.service.store.updateTask(task.id, { extra: { ...current.extra, executorControl: {...state(),retryAt:0} } });
+    await until(() => state().attempts >= attempts);
   }
-  expect(f.service.store.getTask(task.id)).toMatchObject({ status: 'waiting', extra: { pauseRecoveryPaused: true, progress: { phase: 'pause-unconfirmed' } } });
+  expect(state().state).toBe('unavailable');
   const count = f.brain.controls.length; await delay(1100); expect(f.brain.controls).toHaveLength(count);
-  f.brain.stopping = async input => ({ accepted: true, paused: true, sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId });
-  await f.control(task.id, 'pause', 'pause-new-user-request'); await until(() => f.service.store.getTask(task.id)?.status === 'paused');
-  expect(f.service.store.getTask(task.id)!.extra.pauseRequestedAt).toBe(first);
+  expect(f.service.store.getTask(task.id)).toMatchObject({status:'paused',extra:{pauseRequestedAt:first}});
+  expect(f.service.store.pendingTasks()).toHaveLength(0);
 });
 
 it.each(['succeeded', 'failed', 'cancelled'] as const)('preserves native %s separately from business completion when pause races a terminal receipt', async status => {
   const f = await fixture(), task = f.task({ nativeAttempted: true, workerPrompt: 'ORIGINAL_REQUEST' });
   f.brain.stopping = async input => ({ accepted: true, result: { eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), status, text: '原生持久终态。' } });
-  const business = status === 'succeeded' ? 'paused' : status;
-  await f.control(task.id, 'pause', 'terminal-race'); await until(() => f.service.store.getTask(task.id)?.status === business);
+  const business = 'paused';
+  await f.control(task.id, 'pause', 'terminal-race'); await until(() => !!f.service.store.getTask(task.id)!.extra.turnOutcome);
   expect(f.service.store.getTask(task.id)?.status).toBe(business);
   expect(f.service.store.getTask(task.id)!.extra.turnOutcome).toMatchObject({ status });
-  if (status === 'succeeded') expect(f.service.store.getTask(task.id)!.extra.pausedAt).toBeDefined();
-  else expect(f.service.store.getTask(task.id)?.summary).toBe('原生持久终态。');
+  expect(f.service.store.getTask(task.id)!.extra.pausedAt).toBeDefined();
+  expect((f.service.store.getTask(task.id)!.extra.executorControl as {state:string}).state).toBe('acknowledged');
 });
 
 it('requires explicit user permission to resume and preserves unresolved effects as a gate rather than replaying the task', async () => {
@@ -147,4 +149,36 @@ it('requires explicit user permission to resume and preserves unresolved effects
   expect(runtime.pendingEffects(task.id)).toMatchObject([{ callId: 'uncertain-before-pause' }]);
   expect(f.brain.calls.filter(value => value.role === 'worker')).toHaveLength(0);
   expect(f.service.store.getTask(task.id)?.status).not.toBe('succeeded');
+});
+
+it('keeps an answered question queued while paused even if an earlier native poll has a running slot', async () => {
+  const f = await fixture(), task = f.task(), runtime = new BotTaskRuntime(f.service.store), callId = 'question-at-pause';
+  const questionId = 'question-' + createHash('sha256').update(`work-${task.id}:${callId}`).digest('hex').slice(0, 48);
+  runtime.question(task, { callId, questionId, questions: [{ id: 'decision', question: 'Continue with the original task?' }] });
+  runtime.answer(f.service.store.getTask(task.id)!, { requestId: 'saved-answer', caller: 'user', questionId, answers: [{ id: 'decision', selected: [], custom: 'Keep the original scope.' }] }, false);
+  await f.control(task.id, 'pause', 'pause-before-answer-poll');
+  expect(runtime.questionResult(f.service.store.getTask(task.id)!, questionId, callId, true)).toMatchObject({ state: 'queued' });
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
+  expect(runtime.hasReadyAnswer(task.id)).toBe(true);
+});
+
+it('ignores an old transport emitter and result after pause and resume of the same task', async () => {
+  const f = await fixture(), task = f.task(), first = deferred<BotDshResult>();
+  const originalRun = f.brain.run.bind(f.brain); let oldInput: BotDshRun | undefined;
+  f.brain.run = async input => {
+    if (input.role === 'worker' && !oldInput) { oldInput = input; f.brain.calls.push(input); return first.promise; }
+    return originalRun(input);
+  };
+  f.configure(); f.service.store.updateTask(task.id, { extra: { ...task.extra, retryAt: 0 } });
+  await until(() => !!oldInput);
+  await f.control(task.id, 'pause', 'pause-ignored-abort-worker');
+  await until(() => (f.service.store.getTask(task.id)!.extra.executorControl as {state:string}).state === 'acknowledged');
+  expect(f.service.store.getTask(task.id)?.status).toBe('paused');
+  await f.control(task.id, 'resume_paused', 'resume-same-task');
+  await until(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+  const before = f.service.store.getTask(task.id)!;
+  oldInput!.onEvent?.({ type: 'session', stage: 'tool_start', sessionId: 'old-wrong-session', toolName: 'old-tool', sequence: 999, receivedAt: new Date().toISOString() });
+  first.resolve({ eventId: oldInput!.eventId, sessionId: 'old-wrong-session', status: 'succeeded', text: 'Old uncooperative result.' });
+  await delay(50);
+  expect(f.service.store.getTask(task.id)).toEqual(before);
 });

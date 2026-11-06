@@ -5,6 +5,7 @@ import { botLaneRetentionKey, type BotStore, type BotNativeAdmission } from './s
 import type { BotEvent } from './types';
 import { BOT_ROUTER_TOOLS as BOT_TOOLS } from './tools';
 import type { BotBrain } from './brain-router';
+import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 
 export interface BotRetentionOptions {
   store: BotStore; brain: Pick<BotBrain, 'handoff'> & Partial<Pick<BotBrain, 'cancelDurable'>>; root: string;
@@ -124,7 +125,7 @@ export class BotRetention {
     if (![input.inputBytes, input.outputBytes].every(value => Number.isSafeInteger(value) && value >= 0)) throw new Error('主脑输入输出字节数无效。');
     const bytes = state.bytes + input.inputBytes + input.outputBytes;
     if (!Number.isSafeInteger(bytes) || !Number.isSafeInteger(state.turns + 1)) throw new Error('主脑保留计数超出范围。');
-    if (!input.system || input.system.length > 64000 || !path.isAbsolute(input.cwd)) throw new Error('主脑交接上下文无效。');
+    if (!input.system || input.system.length > DEFAULT_MODEL_CONTEXT_CHARS || !path.isAbsolute(input.cwd)) throw new Error('主脑交接上下文无效。');
     const pendingHandoff = state.handoff && state.handoffEventId === input.event.id && input.inputContextCommitted === false ? state.handoff : undefined;
     return [{ key: botLaneRetentionKey(lane.id), value: JSON.stringify({ epoch, turns: state.turns + 1, bytes,
       last: { eventId: input.event.id, system: input.system, cwd: input.cwd, nativeLaneId: input.nativeLaneId },
@@ -148,7 +149,7 @@ export class BotRetention {
       nativeCursor: value.nativeCursor, summaryText: value.summaryText, summarySeq: value.summarySeq, compactionId: value.compactionId,
       coveredEventSeqs: value.coveredEventSeqs, tail: value.tail };
     // Only this identity plus summary/tail is persisted. Extra native response fields cannot persist credentials.
-    if (Buffer.byteLength(JSON.stringify(checked)) > 65536) throw new Error('DSH原生交接材料过大。');
+    if (Buffer.byteLength(JSON.stringify(checked)) > DEFAULT_MODEL_CONTEXT_CHARS) throw new Error('DSH原生交接材料过大。');
     return checked;
   }
 }

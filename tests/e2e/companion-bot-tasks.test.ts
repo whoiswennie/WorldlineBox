@@ -85,10 +85,18 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await expect(dialog.locator('[data-task-row]')).toHaveCount(6); await expect(dialog.locator('[data-bot-task]')).toHaveCount(1);
     await expect(dialog.locator('.bot-tasks-pagination')).toContainText('19'); await expect(dialog.locator('details')).toHaveCount(0);
     await expect(dialog.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await expect(dialog.locator('.bot-task-heading')).toContainText('停止待核实');
-    await expect(dialog.locator('.bot-task-metrics')).toContainText('等待停止确认');
-    await expect(dialog.getByRole('button', { name: '重新核实停止', exact: true })).toBeVisible();
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill('已停止的隔夜任务');
+    await expect(dialog.locator('[data-task-row]')).toHaveCount(1);
+    await expect(dialog.locator('.bot-task-heading')).toContainText('已停止');
+    await expect(dialog.locator('.bot-task-metrics')).toContainText('执行用时');
+    await expect(dialog.locator('.bot-task-metrics b')).toHaveText('1 分 30 秒');
+    await expect(dialog.locator('[data-task-row="task-presentation-18"] .bot-task-row-activity')).toContainText('1 分 30 秒');
+    await expect(dialog.getByRole('button', { name: '移除记录', exact: true })).toBeVisible();
+    await expect(dialog).not.toContainText('等待停止确认');
+    await expect(dialog).not.toContainText('停止待核实');
+    await expect(dialog.getByRole('button', { name: '重新核实停止', exact: true })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: '再次请求停止', exact: true })).toHaveCount(0);
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill(''); await expect(dialog.locator('[data-task-row]')).toHaveCount(6);
     await dialog.getByRole('button', { name: '下一页任务' }).click(); await expect(dialog.locator('.bot-tasks-pagination')).toContainText('2 / 4');
     await dialog.getByRole('button', { name: '上一页任务' }).click();
     await dialog.getByRole('textbox', { name: '搜索任务' }).fill('整理项目目录 1');
@@ -101,7 +109,7 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await expect(dialog.locator('.bot-task-diagnostic pre')).toContainText('original worker session');
     await dialog.getByRole('tab', { name: '任务详情', exact: true }).click(); await expect(dialog.locator('.bot-task-goal')).toContainText('完整任务要求');
     await dialog.getByRole('tab', { name: '概览', exact: true }).click();
-    await dialog.getByRole('textbox', { name: '搜索任务' }).fill(''); await expect(dialog.locator('[data-task-row]')).toHaveCount(6); await expect(dialog.locator('[data-bot-task]')).toHaveAttribute('data-bot-task', 'task-presentation-18');
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill(''); await expect(dialog.locator('[data-task-row]')).toHaveCount(6);
     const evidence = path.resolve('artifacts/superagent-bot-development/ui'); await mkdir(evidence, { recursive: true });
     const capture = async (name: string) => {
       await expect(page.locator('.application-navigation')).toBeVisible();
@@ -126,8 +134,8 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     const context = page.getByRole('complementary', { name: '聊天信息', exact: true });
     await expect(context).toBeVisible();
     const summaryState = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state', conversationId }), conversationId);
-    expect(summaryState.snapshot?.taskSummary).toMatchObject({ activeCount: 14, queuedCount: 11 });
-    const expectedSummaryIds = ['task-presentation-00', 'task-presentation-01', 'task-presentation-18', 'task-presentation-02', 'task-presentation-03'];
+    expect(summaryState.snapshot?.taskSummary).toMatchObject({ activeCount: 13, queuedCount: 11 });
+    const expectedSummaryIds = ['task-presentation-00', 'task-presentation-01', 'task-presentation-02', 'task-presentation-03', 'task-presentation-04'];
     expect(new Set(summaryState.snapshot?.taskSummary?.items.map(task => task.id))).toEqual(new Set(expectedSummaryIds));
     await expect(context.locator('.bot-context-task')).toHaveCount(5);
     expect(await context.locator('.bot-context-task strong').allTextContents()).toEqual(expectedSummaryIds.map(id => summaryState.snapshot!.taskSummary!.items.find(task => task.id === id)!.title));
@@ -145,6 +153,7 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await capture('chat-summary-collapsed-packaged-light.png');
     await expandContext.click(); await expect(context).toBeVisible();
     await context.getByRole('button', { name: '任务中心', exact: true }).click(); await expect(dialog).toBeVisible();
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill('已停止的隔夜任务');
     await expect(dialog.locator('[data-bot-task]')).toHaveAttribute('data-bot-task', 'task-presentation-18');
     await capture('tasks-workspace-v2-stop-light.png');
     await dialog.getByRole('textbox', { name: '搜索任务' }).fill('整理项目目录 1');
@@ -170,15 +179,44 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
       expect(geometry.footer.bottom).toBeLessThanOrEqual(geometry.panel.bottom); expect(geometry.footer.top).toBeGreaterThan(geometry.panel.top);
       await capture(width < 1000 ? 'tasks-workspace-v2-narrow-dark.png' : 'tasks-workspace-v2-dark.png');
     }
-    // An undelivered task can pause locally through the actual service. We do
-    // not resume synthetic work or claim this exercises a native DSH pause.
+    // Real Main controls pause an undelivered fixture. Moving only renderer
+    // Date forward and reloading simulates the next morning without making
+    // native/model calls or waiting overnight. Both clocks must remain frozen.
     await dialog.getByRole('textbox', { name: '搜索任务' }).fill('整理最近的笔记 4'); await expect(dialog.locator('[data-task-row]')).toHaveCount(1);
     await expect(dialog.locator('[data-bot-task]')).toHaveAttribute('data-bot-task', 'task-presentation-03');
     await dialog.getByRole('button', { name: '暂停任务', exact: true }).click(); await expect(dialog.locator('.bot-task-heading')).toContainText('已暂停');
     await expect(dialog.getByRole('button', { name: '继续任务', exact: true })).toBeVisible(); await expect(dialog.getByRole('button', { name: '移除记录', exact: true })).toHaveCount(0);
+    const pausedClock = await dialog.locator('.bot-task-metrics b').textContent();
+    const pausedReceipt = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'task.get', conversationId, taskId: 'task-presentation-03' }), conversationId);
+    expect(pausedReceipt.task).toMatchObject({ status: 'paused', elapsedMs: 0 });
+    expect(pausedReceipt.task?.timerStartedAt).toBeUndefined();
+    await page.clock.setFixedTime(new Date(Date.now() + 18 * 3600000));
+    await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.locator('.bot-chat-tasks').click();
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill('整理最近的笔记 4');
+    await expect(dialog.locator('.bot-task-heading')).toContainText('已暂停');
+    await expect(dialog.locator('.bot-task-metrics b')).toHaveText(pausedClock!);
+    await expect(dialog.locator('[data-task-row="task-presentation-03"] .bot-task-row-activity')).toContainText(pausedClock!);
     await capture('tasks-workspace-v2-paused-dark.png');
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill('已停止的隔夜任务');
+    await expect(dialog.locator('.bot-task-heading')).toContainText('已停止');
+    await expect(dialog.locator('.bot-task-metrics b')).toHaveText('1 分 30 秒');
+    await expect(dialog.locator('[data-task-row="task-presentation-18"] .bot-task-row-activity')).toContainText('1 分 30 秒');
+    await expect(dialog.locator('.bot-task-stage-flow')).toHaveCount(0);
+    await expect(dialog).not.toContainText('停止待核实');
+    await capture('tasks-workspace-stopped-overnight-dark.png');
+    await page.clock.setFixedTime(new Date());
+    await dialog.getByRole('textbox', { name: '搜索任务' }).fill('整理最近的笔记 4');
+    await expect(dialog.locator('.bot-task-heading')).toContainText('已暂停');
     await dialog.getByRole('button', { name: '停止任务', exact: true }).click(); await expect(dialog.locator('.bot-task-heading')).toContainText('已停止');
     await expect(dialog.getByRole('button', { name: '继续任务', exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: '移除记录', exact: true })).toBeVisible();
+    await expect(dialog.locator('.bot-task-metrics b')).toHaveText(pausedClock!);
+    const stoppedReceipt = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'task.get', conversationId, taskId: 'task-presentation-03' }), conversationId);
+    expect(stoppedReceipt.task).toMatchObject({ status: 'cancelled', elapsedMs: 0 });
+    expect(stoppedReceipt.task?.timerStartedAt).toBeUndefined();
+    const clockEvidence = { simulatedRendererHoursLater: 18, overnightStoppedHoursAgo: 18, overnightExecutionMs: 90000,
+      paused: { label: pausedClock, status: pausedReceipt.task?.status, elapsedMs: pausedReceipt.task?.elapsedMs },
+      stopped: { status: stoppedReceipt.task?.status, elapsedMs: stoppedReceipt.task?.elapsedMs }, rowAndDetailAgree: true, reloadPreservesFrozenTimers: true };
     await dialog.getByRole('textbox', { name: '搜索任务' }).fill(''); await expect(dialog.locator('[data-task-row]')).toHaveCount(6);
     await dialog.getByRole('button', { name: '管理任务队列', exact: true }).click(); await dialog.getByRole('menuitem', { name: '清理排队', exact: true }).click();
     const confirmation = page.getByRole('alertdialog'); await expect(confirmation).toContainText('10 项排队任务'); await confirmation.getByRole('button', { name: '确认', exact: true }).click();
@@ -186,10 +224,10 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     await expect.poll(async () => {
       const state = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'task.list', conversationId, filter: 'all', page: 0, limit: 30 }), conversationId);
       return state.taskPage?.items.filter(task => task.status === 'cancelled').length;
-    }).toBe(11);
+    }).toBe(12);
     const result = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'task.list', conversationId, filter: 'all', page: 0, limit: 30 }), conversationId);
-    expect(result.ok).toBe(true); expect(result.taskPage?.items.filter(task => task.status === 'cancelled')).toHaveLength(11);
-    expect(result.taskPage?.items.filter(task => task.status === 'succeeded')).toHaveLength(5); expect(result.taskPage?.activeCount).toBe(3);
+    expect(result.ok).toBe(true); expect(result.taskPage?.items.filter(task => task.status === 'cancelled')).toHaveLength(12);
+    expect(result.taskPage?.items.filter(task => task.status === 'succeeded')).toHaveLength(5); expect(result.taskPage?.activeCount).toBe(2);
     await dialog.getByRole('textbox', { name: '搜索任务' }).fill('检索项目说明 18'); await expect(dialog.locator('[data-task-row]')).toHaveCount(1);
     await expect(dialog.locator('[data-bot-task]')).toHaveAttribute('data-bot-task', 'task-presentation-17');
     await dialog.getByRole('button', { name: '移除记录', exact: true }).click(); await expect(dialog.locator('[data-task-row]')).toHaveCount(0);
@@ -197,10 +235,10 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
     expect(removed).toMatchObject({ ok: true, taskRemoved: true });
     await dialog.getByRole('textbox', { name: '搜索任务' }).fill(''); await expect(dialog.locator('[data-task-row]')).toHaveCount(6);
     await dialog.getByRole('button', { name: '管理任务队列', exact: true }).click(); await dialog.getByRole('menuitem', { name: '清理已结束', exact: true }).click();
-    await expect(confirmation).toContainText('15 项已结束记录'); await confirmation.getByRole('button', { name: '确认', exact: true }).click();
-    await expect(confirmation).toBeHidden(); await expect(dialog.locator('[data-task-row]')).toHaveCount(3);
+    await expect(confirmation).toContainText('16 项已结束记录'); await confirmation.getByRole('button', { name: '确认', exact: true }).click();
+    await expect(confirmation).toBeHidden(); await expect(dialog.locator('[data-task-row]')).toHaveCount(2);
     const cleared = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'task.list', conversationId, filter: 'all', page: 0, limit: 30 }), conversationId);
-    expect(cleared.taskPage).toMatchObject({ total: 3, activeCount: 3, finishedCount: 0 });
+    expect(cleared.taskPage).toMatchObject({ total: 2, activeCount: 2, finishedCount: 0 });
     const oldNotice = await page.evaluate(async conversationId => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'history.search', conversationId, query: 'MASSIVE', limit: 20 }), conversationId);
     const noticeId = oldNotice.history?.items.find(item => item.taskNotice?.taskId === 'task-presentation-17')?.id; expect(noticeId).toBeTruthy();
     await dialog.getByRole('button', { name: '关闭任务', exact: true }).click(); await expect(dialog).toBeHidden();
@@ -326,6 +364,8 @@ test('task workspace uses real paged IPC and queue controls with compact receipt
       realTaskUpdateTransitions.push({ ...transition, theme, aggregatedGroupCount: 2, independentPrivateCount: 1, readClearedOnlyCurrentRoom: true, automaticOverlay: false });
     }
     const asarAfter = identity.packaged ? await sha256(identity.appPath) : undefined; expect(asarAfter).toBe(asarBefore);
-    await writeFile(testInfo.outputPath('task-workspace-evidence.json'), JSON.stringify({ identity: { ...identity, asarBefore, asarAfter }, seeded, inlineMetadata, realTaskUpdateTransitions, summary: summaryState.snapshot?.taskSummary, summaryClocks: clocks, groupSeed, stoppedOwnerScope, clearedOwnerScope, groupOwnerServerPagingAndIsolation: true, noSyntheticBrainUsage: true, queueResult: result.taskPage, clearedResult: cleared.taskPage, removed, receiptCompact: true, actualIpc: true, syntheticProgress: true, localUndeliveredPauseOnly: true }, null, 2));
+    const taskEvidence = { identity: { ...identity, asarBefore, asarAfter }, seeded, inlineMetadata, clockEvidence, realTaskUpdateTransitions, summary: summaryState.snapshot?.taskSummary, summaryClocks: clocks, groupSeed, stoppedOwnerScope, clearedOwnerScope, groupOwnerServerPagingAndIsolation: true, noSyntheticBrainUsage: true, queueResult: result.taskPage, clearedResult: cleared.taskPage, removed, receiptCompact: true, actualIpc: true, syntheticProgress: true, localUndeliveredPauseOnly: true };
+    await writeFile(testInfo.outputPath('task-workspace-evidence.json'), JSON.stringify(taskEvidence, null, 2));
+    await writeFile(path.join(evidence, 'task-stop-clock-evidence.json'), JSON.stringify(taskEvidence, null, 2));
   } finally { await application.close(); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });

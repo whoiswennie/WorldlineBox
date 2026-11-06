@@ -231,3 +231,23 @@ it('rejects late owner pages after switching the group owner filter', async () =
   expect(host.querySelector('.bot-tasks-pagination')?.textContent).toContain('共 8 项');
   expect([...host.querySelectorAll('[data-task-row] .bot-task-owner')].every(element => element.getAttribute('data-task-owner') === 'other')).toBe(true);
 });
+
+
+it('keeps paused and legacy stopped row clocks frozen and equal to the selected detail', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(new Date('2026-11-06T01:00:00Z'));
+  tasks = [
+    { ...tasks[0]!, status: 'paused', elapsedMs: 62000, pausedAt: '2026-11-05T01:01:02Z' },
+    { ...tasks[1]!, status: 'waiting', createdAt: '2026-11-05T01:00:00Z', updatedAt: '2026-11-06T00:00:00Z', cancelRequested: true, stopRequestedAt: '2026-11-05T01:01:30Z', progress: { phase: 'stop-unconfirmed' } },
+  ];
+  await mount();
+  const row = () => host.querySelector('[data-task-row="task-0"] .bot-task-row-activity')?.textContent;
+  const stoppedRow = () => host.querySelector('[data-task-row="task-1"] .bot-task-row-activity')?.textContent;
+  expect(row()).toContain('1 分 2 秒'); expect(stoppedRow()).toBe('已停止 · 1 分 30 秒');
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时1 分 2 秒');
+  await act(() => vi.advanceTimersByTime(12 * 60 * 60 * 1000));
+  expect(row()).toContain('1 分 2 秒'); expect(stoppedRow()).toBe('已停止 · 1 分 30 秒');
+  await act(() => host.querySelector<HTMLButtonElement>('[data-task-row="task-1"]')!.click());
+  expect(host.querySelector('.bot-task-metrics')?.textContent).toBe('执行用时1 分 30 秒');
+  expect(host.textContent).not.toContain('停止待核实');
+  expect(host.textContent).not.toContain('等待停止确认');
+});

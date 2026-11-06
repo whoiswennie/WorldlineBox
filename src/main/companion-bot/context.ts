@@ -3,6 +3,7 @@ import { botTaskQuestionSchema, type BotTaskAttention } from '../../shared/compa
 import { botMessageEvidence } from '../../shared/bot-message-content';
 import type { BotTaskOutput } from '../../shared/companion-bot';
 import type { BotAgentView } from './companion-runtime';
+import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import type { BotHandoffFile } from './task-handoff';
 
 export const BOT_ROUTER_CONTRACT = `你是世界线盒子自身运行的长期伙伴主脑，保持人格，理解当前trigger并协调工具；DSH是独立执行器，不是你的身份或聊天会话。
@@ -18,7 +19,7 @@ files是宿主按本受众和历史水位核验的真实附件绝对路径与哈
 提交不等于完成；只根据真实回执说明执行、产物和记忆状态，不捏造。progress.recovering是连接/回执核实，不是普通排队。用户要求停止/清队列时实际调用dsh_task_control。task_done后自然传达有用成果，不复制内部编号、不可点击路径或整篇报告；优先发送真实文件。
 执行器询问到达时先status读取该任务原始目标、约束、问题；已授权范围内可依据事实和实现细节自行answer，逐项绑定questionId及原选项。缺用户偏好、事实或新授权才问用户并保留waiting。不捏造用户选择，不用send冒充answer；仅处理当前回执任务，不重复回答或新建。unknown需用户核实外部效果，不自行假定或重跑。
 单次输出额度不是整个任务容量。max-tokens检查点沿原任务continue，保留范围与工作，不擅缩成几条/几十字或另建任务；失败如实说明，不称排队。
-执行轮次正常结束不等于业务完成。任务只有根执行器的ready/dropped结构化报告及实际执行回执共同确认才结束；waiting/blocked先status查原始目标、报告和待决事项。awaiting-report表示缺少有效完成报告，沿原任务send要求补充核验与worker_report，不重建同目标任务或重做已有操作。普通进度保持内部，确实缺用户事实或新授权才询问；task/world等回执不能代替用户停止授权。
+执行轮次结束不等于业务完成，须根Worker的ready/dropped报告及真实回执。waiting/blocked先status读目标和问题；awaiting-report沿原任务send补核验与worker_report，不重建或重做。Router管理自己的获准任务，Worker只执行和报告。dsh_task_control一次生效，不为停止或清理反复查询确认。用户停止不可重启，用户暂停须明确继续；Router自暂停可在原授权内恢复。普通进度留内部，缺用户事实或新授权才问。
 及时用memory_write记录明确事实、偏好、承诺、共同互动、已验证知识和未决事项，不等用户强调。更新先memory_note读全并带checksum，整理逐篇读全、保留作者/来源/变化；conflict重读，pending/partial不称已可召回。后台也会提炼互动，无需阻塞聊天；寒暄、推测和口头声称不作完成证据。
 memory_maintenance生成待审整理/梦境候选，周期由宿主安排，不每轮提交或自行批准。梦境、联想、非用户事实不是用户经历；归档冗余不等于忘记。
 companion_contact必须明确destination和最小必要message；联系始终进入你与目标的独立伙伴私聊，发送即产生真实消息，不在目标和用户的私聊里代目标说话。“让GPT跟我说下午好”用user，目标收到一次向用户回复的宿主授权；“你和GPT私下讨论”用peer，仅双方伙伴参加，用户旁观。收到peerContact.responseDestination=user-direct时，用companion_reply_user以本人身份向用户发消息，普通正文仍只回应当前伙伴；peer时回应伙伴。不要新建群、假扮目标或复制无关私聊全文/秘密。转达不增加其他权限。message_peer仅联系同房真实伙伴；有意义才回应，不为活跃互相刷屏。
@@ -45,7 +46,7 @@ export interface BotContextInput {
   /** Publication watermark captured when a serialized group speaker starts. */
   historyThroughSequence?: number;
 }
-export type BotContextTask = Pick<BotTask, 'id' | 'goal' | 'conversationId' | 'companionId' | 'summary' | 'summaryIsPreview'> & { status: string; attention?: BotTaskAttention; outputs?: BotTaskOutput[]; progress?: { phase: string; detail?: string }; cancelRequested?: boolean; pauseRequested?: boolean; continuationAvailable?: boolean };
+export type BotContextTask = Pick<BotTask, 'id' | 'goal' | 'conversationId' | 'companionId' | 'summary' | 'summaryIsPreview'> & { status: string; attention?: BotTaskAttention; outputs?: BotTaskOutput[]; progress?: { phase: string; detail?: string }; cancelRequested?: boolean; pauseRequested?: boolean; pauseOrigin?: 'user' | 'router'; continuationAvailable?: boolean };
 export function botClock(now = new Date()) {
   const timeZone = 'Asia/Shanghai', utcOffset = '+08:00';
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(now);
@@ -70,7 +71,7 @@ export function buildBotContext(input: BotContextInput): { system: string; user:
   const through = input.historyThroughSequence ?? event.sourceMessageSequence;
   const legal = input.messages.filter(message => message.conversationId === event.conversationId && message.status === 'sent'
     && message.sequence <= through && message.id !== event.sourceMessageRecordId && (message.content.trim() || message.attachments?.length));
-  const selected: BotMessage[] = [], budget = Math.max(0, input.maxHistoryChars ?? 24000); let size = 0;
+  const selected: BotMessage[] = [], budget = Math.max(0, input.maxHistoryChars ?? DEFAULT_MODEL_CONTEXT_CHARS); let size = 0;
   for (let index = legal.length - 1; index >= 0; index--) {
     const message = legal[index]!;
     const chars = botMessageEvidence(message).length;
@@ -80,17 +81,18 @@ export function buildBotContext(input: BotContextInput): { system: string; user:
   const tasks = (input.tasks ?? []).filter(task => task.conversationId === event.conversationId && task.companionId === companion.id).slice(0, 12)
     .map(task => {
       const attention = task.attention;
-      const stopping = task.cancelRequested && !['succeeded', 'failed', 'cancelled'].includes(task.status);
-      const pausing = task.pauseRequested && !['succeeded', 'failed', 'cancelled'].includes(task.status);
+      const stopping = task.status === 'cancelled' || task.cancelRequested && !['succeeded', 'failed'].includes(task.status);
+      const pausing = !stopping && (task.status === 'paused' || task.pauseRequested && !['succeeded', 'failed'].includes(task.status));
       const questions = attention?.state === 'queued' && Array.isArray(attention.questions)
         ? attention.questions.map(question => botTaskQuestionSchema.safeParse(question)).filter(result => result.success).map(result => result.data) : [];
-      return { id: task.id, goal: task.goal.slice(0, 2000), status: task.status,
+      return { id: task.id, goal: task.goal.slice(0, 2000), status: stopping ? 'cancelled' : pausing ? 'paused' : task.status,
         summary: stopping
-          ? task.progress?.phase === 'stop-unconfirmed' ? '停止尚未得到执行器确认，已暂停自动重试，等待重新核实；不能声称任务已停止或队列已清空。' : '停止请求已保存，正在等待执行器确认；任务尚未确认结束。'
-          : pausing ? task.progress?.phase === 'pause-unconfirmed' ? '暂停尚未确认，等待重新核实；不能声称任务已经暂停。' : '已请求暂停，等待执行器确认。'
-            : task.status === 'paused' ? '已确认暂停，继续时沿原任务和会话恢复，不能另建同目标任务。' : task.summary?.slice(0, 2000),
-        summaryIsPreview: !stopping && !pausing && task.status !== 'paused' && (task.summaryIsPreview === true || (task.summary?.length ?? 0) > 2000),
-        progress: task.progress, cancelRequested: task.cancelRequested, pauseRequested: task.pauseRequested, continuationAvailable: task.continuationAvailable,
+          ? '任务已停止，后续执行和自动接续授权已撤回。保留已有产物，不重启、不重发；后台连接清理不需要用户核实。'
+          : pausing ? task.pauseOrigin === 'router' ? 'Router已暂停，计时已冻结；可在原授权范围内恢复原任务，不能另建同目标任务。'
+            : '用户已暂停，计时已冻结；仅在用户明确继续后沿原任务和会话恢复，不能另建同目标任务。' : task.summary?.slice(0, 2000),
+        summaryIsPreview: !stopping && !pausing && (task.summaryIsPreview === true || (task.summary?.length ?? 0) > 2000),
+        progress: stopping || pausing ? { phase: stopping ? 'cancelled' : 'paused' } : task.progress,
+        cancelRequested: task.cancelRequested, pauseRequested: task.pauseRequested, pauseOrigin: task.pauseOrigin, continuationAvailable: !stopping && !pausing && task.continuationAvailable,
         outputs: task.outputs?.slice(-16),
         attention: questions.length ? { questionId: attention!.id, questions } : undefined };
     });
@@ -127,7 +129,7 @@ export function buildBotContext(input: BotContextInput): { system: string; user:
     memoryEvidence: input.memories ?? '', memoryEvidenceOmitted: false, tasks };
   // Budget the serialized wire envelope, including attribution and escaping.
   // The current request is never silently cut; missing recall remains available through tools.
-  const limit = Math.min(60000, input.maxEnvelopeChars ?? 60000);
+  const limit = Math.min(DEFAULT_MODEL_CONTEXT_CHARS, input.maxEnvelopeChars ?? DEFAULT_MODEL_CONTEXT_CHARS);
   let user = JSON.stringify(body);
   const fits = () => user.length <= limit && (!input.fitsEnvelope || input.fitsEnvelope(system, user));
   while (!fits() && body.agent?.recentEvents.length) { body.agent = { ...body.agent, recentEvents: body.agent.recentEvents.slice(1) }; user = JSON.stringify(body); }

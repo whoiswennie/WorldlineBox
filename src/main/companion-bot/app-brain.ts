@@ -14,6 +14,7 @@ import { BotDshAbortAcknowledgedError, BotDshDeliveryUnknownError, BotDshLaneBus
 import { BotAppBrainStore, type AppBrainCall, type AppBrainMessage, type AppBrainStoredCall, type AppBrainTurn } from './app-brain-store';
 import { APP_TOOL_RESULT_READER, toolResultPage, toolResultView, type ToolResultPageInput } from './app-brain-tool-view';
 import { abortable } from './abortable';
+import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 
 export type { AppBrainMessage } from './app-brain-store';
 export type AppToolReconciliation = { state: 'committed'; result: unknown } | { state: 'absent' } | { state: 'unknown' };
@@ -193,7 +194,7 @@ export class BotAppBrain {
     const choice = row(list(row(body).choices)[0]), message = row(choice.message);
     if (!['stop', 'tool_calls', 'function_call'].includes(String(choice.finish_reason))) throw new Error('主脑模型回复未完整结束。');
     const text = typeof message.content === 'string' ? message.content : '';
-    if (text.length > 65536) throw new Error('主脑模型正文超过容量。');
+    if (text.length > DEFAULT_MODEL_CONTEXT_CHARS) throw new Error('主脑模型正文超过容量。');
     const calls = list(message.tool_calls).map((value, index) => {
       const source = row(value), fn = row(source.function);
       if (typeof fn.name !== 'string' || !fn.name || fn.name.length > 100 || typeof fn.arguments !== 'string' || fn.arguments.length > 24000) throw new Error('主脑模型工具调用无效。');

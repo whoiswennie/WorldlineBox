@@ -11,6 +11,15 @@ const event: BotEvent = { id: 'e1', eventId: 'e1', companionId: 'alice', convers
   replyMessageId: 'reply', status: 'running', attempts: 1, occurredAt: '2026-11-02', receivedAt: '2026-11-02' };
 const message = (id: string, sequence: number, content: string, overrides: Partial<BotMessage> = {}): BotMessage => ({ id, eventId: id,
   conversationId: 'c1', senderId: 'user', senderName: '我', senderType: 'user', content, status: 'sent', sequence, kind: 'message', correlationId: 'root', createdAt: '2026-11-02', ...overrides });
+it('gives the Router direct task controls while retaining priority of a human pause', () => {
+  const task = { id: 'own-task', conversationId: 'c1', companionId: 'alice', goal: '原授权内的文件任务', status: 'paused' };
+  const router = buildBotContext({ companion, event, messages: [], tasks: [{ ...task, pauseOrigin: 'router' }] });
+  const human = buildBotContext({ companion, event, messages: [], tasks: [{ ...task, pauseOrigin: 'user' }] });
+  expect(JSON.parse(router.user).tasks[0].summary).toContain('可在原授权范围内恢复原任务');
+  expect(JSON.parse(human.user).tasks[0].summary).toContain('仅在用户明确继续');
+  expect(router.system).toContain('Worker只执行和报告');
+  expect(router.system).toContain('不为停止或清理反复查询确认');
+});
 it('provides a host-formatted Shanghai clock across the UTC date boundary instead of asking the model to convert it', () => {
   expect(botClock(new Date('2026-11-05T00:34:37.000Z'))).toEqual({ now: '2026-11-05T00:34:37.000Z', timeZone: 'Asia/Shanghai', utcOffset: '+08:00', localDateTime: '2026-11-05T08:34:37+08:00', timeOfDay: '早上' });
   expect(botClock(new Date('2026-11-04T16:01:02.000Z')).localDateTime).toBe('2026-11-05T00:01:02+08:00');

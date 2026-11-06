@@ -20,10 +20,11 @@ class Memory extends BotMemoryService{
 }
 class Brain extends BotDshBrain{
   controls:BotDshRun[]=[];
+  modelCalls=0;
   proof:(input:Omit<BotDshRun,'prompt'|'onEvent'>)=>Promise<BotDshCancelAck>=async input=>({accepted:false,absent:true,sessionId:BotDshBrain.sessionId(input.laneId),eventId:input.eventId});
   constructor(){super({getHost:async()=>{throw Error('Group test never starts DSH.');}});}
   override async cancelDurable(input:Omit<BotDshRun,'prompt'|'onEvent'>){this.controls.push({...input,prompt:''});return this.proof(input);}
-  override async run():Promise<never>{throw Error('Group administration never asks a model to execute.');}
+  override async run():Promise<never>{this.modelCalls++;throw Error('Group administration never asks a model to execute.');}
   override async archive(){}
   override async close(){}
 }
@@ -55,7 +56,7 @@ it('keeps the user as group owner, validates partners, and applies an idempotent
   expect(botRequestSchema.safeParse({type:'conversation.members',conversationId:f.room.id,memberIds:[]}).success).toBe(false);
 });
 
-it('revokes old event leases and task capabilities immediately, while an admitted native task waits for actual stop proof',async()=>{
+it('revokes old event leases and stops the task immediately while native shutdown completes in the background',async()=>{
   const f=await fixture(),original=f.source();
   expect(f.store.settle({eventId:original.event.id,leaseToken:original.claim.leaseToken,status:'done',content:'原始请求已接收。'})).toBe(true);
   const task=f.store.createTask({conversationId:f.room.id,companionId:'alice',sourceEventId:original.event.id,goal:'已投递的旧任务',extra:{nativeAttempted:true,retryAt:Date.now()+60000}});
@@ -65,11 +66,14 @@ it('revokes old event leases and task capabilities immediately, while an admitte
   await f.service.handle({type:'conversation.members',conversationId:f.room.id,memberIds:['bob','carol']});
   expect(f.store.getEvent(running.event.id)!.status).toBe('cancelled');
   expect(f.store.settle({eventId:running.event.id,leaseToken:running.claim.leaseToken,status:'done',content:'晚到的旧回复'})).toBe(false);
-  expect(f.store.getTask(task.id)).toMatchObject({status:'queued',extra:{cancelRequested:true}});expect(f.store.taskSourcesWithdrawn(task.id)).toBe(true);
+  expect(f.store.getTask(task.id)).toMatchObject({status:'cancelled',extra:{cancelRequested:true,executorControl:{kind:'cancel',state:'pending'}}});expect(f.store.taskSourcesWithdrawn(task.id)).toBe(true);
   expect(()=>f.store.createTask({conversationId:f.room.id,companionId:'alice',sourceEventId:original.event.id,goal:'不得从旧权限再委派'})).toThrow('权限已变化');
   expect(()=>f.store.publishForTask(task.id,'late-file',{attachments:[{id:'fake-file',name:'x.txt',mimeType:'text/plain',size:1,url:'worldlinebox://bot-media/fake',kind:'file'}]})).toThrow('有效');
-  await until(()=>f.brain.controls.length===1);expect(f.store.getTask(task.id)!.status).toBe('queued');
-  stop();await until(()=>f.store.getTask(task.id)!.status==='cancelled');
+  await until(()=>f.brain.controls.length===1);expect(f.store.getTask(task.id)!.status).toBe('cancelled');
+  expect(f.store.pendingTasks().some(value=>value.id===task.id)).toBe(false);
+  expect(f.brain.modelCalls).toBe(0);expect(JSON.stringify(f.brain.controls)).not.toContain('已投递的旧任务');
+  stop();await until(()=>(f.store.getTask(task.id)!.extra.executorControl as {state:string}).state==='acknowledged');
+  expect(f.store.getTask(task.id)!.status).toBe('cancelled');expect(f.brain.modelCalls).toBe(0);
   expect(f.store.messagesPage(f.room.id).items.some(message=>message.content==='晚到的旧回复')).toBe(false);
 });
 
@@ -90,24 +94,33 @@ it('archives a dissolved room, retains history, blocks every old access path, an
   const replacement=f.store.createGroup({title:f.room.title,memberIds:['alice','bob']});expect(replacement.id).not.toBe(f.room.id);expect(f.store.getConversation(direct.id)).toEqual(direct);
 });
 
-it('retains an uncertain native effect after dissolution and exposes an unconfirmed stop instead of inventing a terminal result',async()=>{
+it('stops dissolved-room work immediately while preserving uncertain effects and bounded private native cleanup',async()=>{
   const f=await fixture(),original=f.source();f.store.settle({eventId:original.event.id,leaseToken:original.claim.leaseToken,status:'done',content:'已接收'});
   const task=f.store.createTask({conversationId:f.room.id,companionId:'alice',sourceEventId:original.event.id,goal:'外部结果尚未核实',extra:{nativeAttempted:true,retryAt:Date.now()+60000}});
   f.store.updateTask(task.id,{status:'running'});
   const runtime=new BotTaskRuntime(f.store);runtime.startEffect(f.store.getTask(task.id)!,{callId:'uncertain-before-dissolve',toolName:'write',argsHash:'a'.repeat(64),argumentsPreview:'an external result needs verification'});
   f.brain.proof=async()=>{throw Object.assign(new Error('Native stop has no durable proof.'),{code:'BOT_DELIVERY_UNKNOWN'});};
   await f.service.handle({type:'conversation.dissolve',conversationId:f.room.id});
-  await until(()=>f.store.getTask(task.id)!.extra.cancelRecoveryPaused===true);
-  expect(f.store.getTask(task.id)).toMatchObject({status:'waiting',extra:{cancelRequested:true,cancelRecoveryAttempts:3,progress:{phase:'stop-unconfirmed'}}});
-  expect(runtime.pendingEffects(task.id)).toHaveLength(1);expect(f.brain.controls).toHaveLength(3);
+  expect(f.store.getTask(task.id)).toMatchObject({status:'cancelled',extra:{cancelRequested:true,progress:{phase:'cancelled'}}});
+  const control=()=>f.store.getTask(task.id)!.extra.executorControl as {state:string;attempts:number;retryAt:number};
+  await until(()=>control().attempts>=1);
+  for(const attempts of [2,3]){
+    const current=f.store.getTask(task.id)!;
+    f.store.updateTask(task.id,{extra:{...current.extra,executorControl:{...control(),retryAt:0}}});
+    await until(()=>control().attempts>=attempts);
+  }
+  expect(control()).toMatchObject({kind:'cancel',state:'unavailable',attempts:3});
+  expect(runtime.pendingEffects(task.id)).toMatchObject([{callId:'uncertain-before-dissolve',toolName:'write'}]);expect(f.brain.controls).toHaveLength(3);
+  expect(f.brain.modelCalls).toBe(0);expect(JSON.stringify(f.brain.controls)).not.toContain('外部结果尚未核实');
   expect(f.store.pendingTasks().some(value=>value.id===task.id)).toBe(false);
   const status=await f.service.handle({type:'task.get',conversationId:f.room.id,taskId:task.id});
-  expect(status.task).toMatchObject({status:'waiting',goal:'已解散群聊的后台任务',continuationAvailable:false});
+  expect(status.task).toMatchObject({status:'cancelled',goal:'已解散群聊的后台任务',continuationAvailable:false});
   expect(JSON.stringify(status)).not.toContain('外部结果尚未核实');expect(status.task?.pendingEffects).toBeUndefined();expect(status.task?.summary).toBeUndefined();
   const list=await f.service.handle({type:'task.list',conversationId:f.room.id,filter:'all',page:0,limit:6,query:'不得基于私有正文过滤'});
   expect(list.taskPage?.items.map(item=>item.id)).toContain(task.id);expect(JSON.stringify(list)).not.toContain('外部结果尚未核实');
   await expect(f.service.handle({type:'task.control',conversationId:f.room.id,taskId:task.id,operation:'resume_paused',requestId:'cannot-resume-archived'})).rejects.toThrow('已经解散');
-  f.brain.proof=async input=>({accepted:false,absent:true,sessionId:BotDshBrain.sessionId(input.laneId),eventId:input.eventId});
-  await f.service.handle({type:'task.control',conversationId:f.room.id,taskId:task.id,operation:'cancel',requestId:'owner-rechecks-archived-stop'});
-  await until(()=>f.store.getTask(task.id)!.status==='cancelled');expect(runtime.pendingEffects(task.id)).toHaveLength(1);
+  const repeat=await f.service.handle({type:'task.control',conversationId:f.room.id,taskId:task.id,operation:'cancel',requestId:'owner-stops-archived-again'});
+  expect(repeat.memory).toMatchObject({status:'cancelled',confirmed:true});
+  expect(f.store.getTask(task.id)!.status).toBe('cancelled');expect(runtime.pendingEffects(task.id)).toHaveLength(1);
+  expect(control().state).toBe('unavailable');expect(f.brain.controls).toHaveLength(3);expect(f.brain.modelCalls).toBe(0);
 },10000);

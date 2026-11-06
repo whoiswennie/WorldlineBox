@@ -60,7 +60,7 @@ async function clearHistory(store: BotStore, input: ClearInput, key: string, fin
     if (input.taskId) {
       const target = sql.prepare('SELECT conversation_id,companion_id,status FROM bot_tasks WHERE id=?').get(input.taskId) as { conversation_id: string; companion_id: string; status: string } | undefined;
       if (!target || target.conversation_id !== input.conversationId || input.companionId && target.companion_id !== input.companionId) throw new Error('任务不属于当前聊天和伙伴。');
-      if (!['succeeded', 'failed', 'cancelled'].includes(target.status)) throw new Error('任务尚未结束，请先停止并核实执行结果，再移除记录。');
+      if (!['succeeded', 'failed', 'cancelled'].includes(target.status)) throw new Error('任务仍在进行，请先停止任务再移除记录。');
       predicates.push('id=?'); args.push(input.taskId);
     }
     predicates.push("status IN ('succeeded','failed','cancelled')", "json_extract(extra_json,'$.removedAt') IS NULL");
@@ -84,7 +84,15 @@ async function clearHistory(store: BotStore, input: ClearInput, key: string, fin
         if (extra.removedAt) { sql.prepare('DELETE FROM bot_task_history_clear_targets WHERE request_key=? AND task_id=?').run(key, task.id); continue; }
         const minimal = { removedAt: current.stamp, removedFingerprint: botTaskRemovalFingerprint({ sourceEventId: task.source_event_id, goal: task.goal, attachmentIds: extra.attachmentIds, title: extra.title }),
           attachmentIds: attachments(extra.attachmentIds), ...(typeof extra.title === 'string' ? { title: extra.title.slice(0, 120) } : {}),
-          ...(extra.nativeAttempted === true ? { nativeAttempted: true } : {}) };
+          ...(extra.nativeAttempted === true ? { nativeAttempted: true } : {}),
+          // Clearing the catalog is immediate. Keep the small, input-free
+          // native cancellation receipt so background cleanup survives restart.
+          ...(extra.executorControl ? { executorControl: extra.executorControl } : {}),
+          ...(extra.cancelRequested === true ? { cancelRequested: true } : {}),
+          ...(typeof extra.cancelRequestedAt === 'string' ? { cancelRequestedAt: extra.cancelRequestedAt } : {}),
+          ...(typeof extra.pauseRequestedAt === 'string' ? { pauseRequestedAt: extra.pauseRequestedAt } : {}),
+          ...(typeof extra.pausedAt === 'string' ? { pausedAt: extra.pausedAt } : {}),
+          ...(typeof extra.elapsedMs === 'number' ? { elapsedMs: extra.elapsedMs } : {}) };
         sql.prepare("UPDATE bot_tasks SET goal='',summary=NULL,error=NULL,extra_json=? WHERE id=?").run(JSON.stringify(minimal), task.id);
         sql.prepare('DELETE FROM bot_task_presence_events WHERE task_id=?').run(task.id);
         sql.prepare('DELETE FROM bot_task_controls WHERE task_id=?').run(task.id);

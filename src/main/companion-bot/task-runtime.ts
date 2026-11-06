@@ -79,6 +79,9 @@ export class BotTaskRuntime {
       stopRequestedAt: typeof task.extra.cancelRequestedAt === 'string' ? task.extra.cancelRequestedAt : undefined,
       pauseRequested: task.extra.pauseRequested === true, pauseRequestedAt: typeof task.extra.pauseRequestedAt === 'string' ? task.extra.pauseRequestedAt : undefined,
       pausedAt: typeof task.extra.pausedAt === 'string' ? task.extra.pausedAt : undefined,
+      pauseOrigin: task.extra.pauseOrigin === 'router' ? 'router' : task.extra.pauseOrigin === 'user' ? 'user' : undefined,
+      elapsedMs: typeof task.extra.elapsedMs === 'number' && Number.isFinite(task.extra.elapsedMs) ? task.extra.elapsedMs : undefined,
+      timerStartedAt: typeof task.extra.timerStartedAt === 'string' ? task.extra.timerStartedAt : undefined,
       continuationAvailable: task.status === 'waiting' && task.extra.cancelRequested !== true && Number.isSafeInteger(task.extra.outputCheckpoint),
       report: details && report ? { state: report.state, summary: report.summary, verification: report.verification, receivedAt: report.receivedAt } : undefined,
       executionTurn: details && turn ? { status: turn.status, receivedAt: turn.receivedAt } : undefined,
@@ -173,6 +176,7 @@ export class BotTaskRuntime {
       const saved = sql.prepare('SELECT * FROM bot_task_questions WHERE task_id=? AND question_id=?').get(task.id, questionId);
       if (!saved || row(saved).call_id !== callId) throw new Error('问题不属于本执行器调用。');
       const current = this.store.getTask(task.id)!;
+      if (current.status === 'paused') return { state: 'queued', questionId };
       if (current.extra.cancelRequested || ['cancelled', 'failed', 'succeeded', 'unknown'].includes(current.status)) return { state: 'closed', questionId, reason: '任务已停止或等待核实。' };
       const value = this.questionRow(row(saved));
       if (!value.answers || !hasRunningSlot) return { state: 'queued', questionId };
@@ -267,7 +271,7 @@ export class BotTaskRuntime {
   }
   markUnknown(task: BotTask): void {
     this.store.taskTransaction(() => {
-      const current = this.store.getTask(task.id)!; if (['succeeded', 'failed', 'cancelled'].includes(current.status)) return;
+      const current = this.store.getTask(task.id)!; if (['paused', 'succeeded', 'failed', 'cancelled'].includes(current.status)) return;
       this.store.updateTask(task.id, { status: 'unknown', error: '外部操作结果未确认，请逐项核实后再继续。', extra: { ...current.extra, retryAt: Date.now() + 30000 } });
       this.notice(task, 'unknown:' + digest(JSON.stringify(this.pendingEffects(task.id).map(item => item.callId))), `任务 ${task.id} 的外部操作结果未确认，已暂停；需要用户核实，未重新执行。`);
     });

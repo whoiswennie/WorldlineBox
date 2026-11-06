@@ -41,7 +41,9 @@ export interface BotMessage {
 export interface BotTaskProgress { phase: string; detail?: string; updatedAt?: string; toolName?: string }
 export interface BotTask { id: string; conversationId: string; companionId: string; companionName?: string; goal: string; status: string; summary?: string; summaryIsPreview?: boolean; error?: string;
   title?: string; createdAt?: string; startedAt?: string; updatedAt?: string; sessionId?: string; progress?: BotTaskProgress; cancelRequested?: boolean; stopRequestedAt?: string; continuationAvailable?: boolean;
-  pauseRequested?: boolean; pauseRequestedAt?: string; pausedAt?: string; followupAvailable?: boolean; humanStopped?: boolean;
+  pauseRequested?: boolean; pauseRequestedAt?: string; pausedAt?: string; pauseOrigin?: 'user' | 'router'; followupAvailable?: boolean; humanStopped?: boolean;
+  /** Completed execution intervals; paused and stopped time never accumulates. */
+  elapsedMs?: number; timerStartedAt?: string;
   report?: { state: 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'; summary: string; verification: string[]; receivedAt: string };
   executionTurn?: { status: string; receivedAt: string };
   activity?: Array<BotTaskProgress & { id: string; createdAt: string }>;

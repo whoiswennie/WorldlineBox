@@ -38,15 +38,15 @@
 .bot-workspace .bot-task-row[aria-current=true] { border-color:color-mix(in srgb,var(--ui-action-accent) 24%,var(--ui-border-subtle));background:color-mix(in srgb,var(--ui-action-accent) 8%,var(--ui-surface-raised)); }
 .bot-task-dot { flex-shrink:0;width:6px;height:6px;margin-top:5px;border-radius:50%;background:var(--ui-content-tertiary); }
 .bot-task-dot.is-running,.bot-task-dot.is-queued { background:var(--ui-content-accent); }
-.bot-task-dot.is-pausing,.bot-task-dot.is-pause-unconfirmed,.bot-task-dot.is-paused { background:var(--ui-status-warning); }
-.bot-task-dot.is-stopping,.bot-task-dot.is-stop-unconfirmed,.bot-task-dot.is-unknown,.bot-task-dot.is-failed { background:var(--ui-status-danger-content); }
+.bot-task-dot.is-paused { background:var(--ui-status-warning); }
+.bot-task-dot.is-unknown,.bot-task-dot.is-failed { background:var(--ui-status-danger-content); }
 .bot-task-row-main { display:flex;flex:1;flex-direction:column;gap:7px;min-width:0; }
 .bot-task-row-title { display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:550;line-height:1.4; }
 .bot-task-row-activity { font-size:10px;font-weight:400;color:var(--ui-content-tertiary);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis; }
 .bot-task-badge { display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap;font-size:10px;font-weight:500;line-height:1.5;color:var(--ui-content-secondary); }
 .bot-task-badge.is-running { color:var(--ui-content-accent); }
-.bot-task-badge:is(.is-pausing,.is-pause-unconfirmed,.is-paused) { color:var(--ui-status-warning-content); }
-.bot-task-badge:is(.is-stopping,.is-stop-unconfirmed,.is-unknown,.is-failed,.is-waiting) { color:var(--ui-status-danger-content); }
+.bot-task-badge.is-paused { color:var(--ui-status-warning-content); }
+.bot-task-badge:is(.is-unknown,.is-failed,.is-waiting) { color:var(--ui-status-danger-content); }
 .bot-tasks-pagination { display:flex;align-items:center;gap:8px;padding:12px 2px 0;font-size:10px;color:var(--ui-content-tertiary);font-variant-numeric:tabular-nums; }
 .bot-tasks-pagination>span:first-child { margin-right:auto; }
 .bot-workspace .bot-tasks-pagination button { width:24px;height:24px;padding:0;border:0;font-size:16px; }
@@ -70,8 +70,6 @@
 .bot-task-activity-current>div { display:grid;gap:5px;min-width:0; }
 .bot-task .bot-task-activity-current strong { font-size:15px;line-height:1.5;font-weight:600;overflow-wrap:anywhere; }
 .bot-task .bot-task-activity>p { margin:13px 0 0;font-size:12px;line-height:1.9;color:var(--ui-content-secondary); }
-.bot-task-activity[data-state=stop-unconfirmed] { border-color:color-mix(in srgb,var(--ui-status-danger-content) 25%,var(--ui-border-subtle)); }
-.bot-task-activity[data-state=pause-unconfirmed] { border-color:color-mix(in srgb,var(--ui-status-warning-content) 25%,var(--ui-border-subtle)); }
 .bot-task-metrics { display:flex;flex-wrap:wrap;gap:22px;padding-top:16px;margin-top:15px;border-top:1px solid var(--ui-border-subtle); }
 .bot-task-metrics>span { display:flex;align-items:center;gap:10px;font-size:10px;color:var(--ui-content-tertiary); }
 .bot-task-metrics b { color:var(--ui-content-secondary);font-size:11px;font-weight:500;font-variant-numeric:tabular-nums; }
@@ -129,13 +127,8 @@
 .bot-workspace .bot-task-actionbar .bot-task-stop-action { border-color:color-mix(in srgb,var(--ui-status-danger-content) 25%,var(--ui-border-control));color:var(--ui-status-danger-content); }
 .bot-workspace .bot-task-actionbar .bot-task-stop-action:hover:not(:disabled) { background:var(--ui-status-danger-surface); }
 .bot-workspace .bot-task-actionbar .bot-task-primary { background:#4658c4;border-color:#4658c4;color:#fff; }
-.bot-workspace .bot-task-actionbar .bot-task-stopping-action { opacity:1;background:var(--ui-surface-pane);color:var(--ui-content-secondary);cursor:default; }
 .bot-task-control-error { position:absolute;left:20px;right:20px;bottom:73px;z-index:3;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 13px;background:var(--ui-status-danger-surface);color:var(--ui-status-danger-content);font-size:11px;line-height:1.8;border:1px solid var(--ui-border-subtle);border-radius:8px;box-shadow:var(--ui-shadow-menu); }
 .bot-workspace .bot-task-control-error>button { flex-shrink:0;padding:0 4px;border:0;font-size:20px;color:inherit; }
-.bot-task-stop-help { padding-top:14px;margin-top:14px;border-top:1px solid var(--ui-border-subtle); }
-.bot-task .bot-task-stop-help>p { margin:0 0 12px;font-size:11px;line-height:1.8;color:var(--ui-content-secondary); }
-.bot-task-stop-help>div { display:flex;flex-wrap:wrap;gap:7px; }
-.bot-workspace .bot-task-stop-help button { padding:6px 9px;border:1px solid var(--ui-border-control);border-radius:7px;font-size:11px;background:var(--ui-surface-raised); }
 .bot-tasks-blank { display:flex;flex:1;min-height:250px;align-items:center;justify-content:center;flex-direction:column;text-align:center;gap:12px;padding:25px;color:var(--ui-content-tertiary);font-size:12px; }
 .bot-tasks-blank>.bot-icon { width:32px;height:32px;opacity:.4; }
 .bot-tasks-blank strong { color:var(--ui-content-secondary);font-weight:500; }
