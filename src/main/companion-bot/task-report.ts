@@ -15,8 +15,8 @@ export interface BotStoredWorkerReport extends BotWorkerReport {
   callId: string; nativeSessionId: string; nativeCallId: string; receivedAt: string; effectRow: number;
 }
 
-/** Business reports belong to the task's root executor. A successful native
- * turn, child report, or final prose alone cannot close authorized work. */
+/** Optional business reports belong to the task's root executor. They can
+ * explain a pause or failure; child reports cannot close the parent task. */
 export class BotTaskReports {
   constructor(private readonly store: BotStore) {}
   record(task: BotTask, callId: string, input: unknown): BotStoredWorkerReport {

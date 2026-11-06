@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
+import { BotIcon } from './BotIcon';
 
 export function BotExecutorNotice({ api, zh, onOpenLauncher }: { api?: WorldlineBoxDshLauncherApi; zh:boolean; onOpenLauncher?():void }) {
   const [state,setState]=useState<DshLauncherState>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0);
+  const [detailsOpen,setDetailsOpen]=useState(false),detailsId=useId();
   const revision=useRef(0),generation=useRef(0);
   useEffect(()=>{
     if(!api)return;
@@ -26,15 +28,18 @@ export function BotExecutorNotice({ api, zh, onOpenLauncher }: { api?: Worldline
   const warming=readiness?.instanceId===instance?.id&&readiness?.status==='warming';
   const starting=busy||instance?.status==='starting',preparing=instance?.status==='running'&&warming,stopping=instance?.status==='stopping',unsupported=state?.supported===false;
   if(instance?.status==='running'&&!error&&!starting&&!preparing&&!failed&&!unsupported)return null;
-  const text=error?(instance?(zh?'默认 DSH 实例启动失败。':'The default DSH instance failed to start.'):(zh?'无法确认默认 DSH 实例状态。':'The default DSH instance status could not be confirmed.'))
-    :unsupported?(zh?'当前系统不支持本地 DSH 执行器。':'Local DSH execution is unavailable on this system.')
-    :!state?(zh?'正在读取默认 DSH 实例状态…':'Checking the default DSH instance…')
-    :starting?(zh?'正在启动默认 DSH 实例…':'Starting the default DSH instance…')
-    :preparing?(zh?'默认 DSH 实例已启动，正在准备执行环境…':'The default DSH instance is running; preparing its execution environment…')
-    :stopping?(zh?'正在停止默认 DSH 实例…':'Stopping the default DSH instance…')
-    :failed?(zh?'默认 DSH 实例启动或执行环境准备失败。':'The default DSH instance or its execution environment failed to start.')
-    :instance?(zh?'默认 DSH 实例尚未启动。':'The default DSH instance is stopped.')
-    :(zh?'尚未配置默认 DSH 实例。':'No default DSH instance is configured.');
+  const pending=starting||preparing||stopping||!state&&!error;
+  const text=error?(zh?'DSH 暂时不可用':'DSH is unavailable')
+    :unsupported?(zh?'此系统暂不支持 DSH':'DSH is unavailable on this system')
+    :!state?(zh?'正在连接 DSH…':'Checking DSH…')
+    :starting?(zh?'DSH 正在启动…':'DSH is starting…')
+    :preparing?(zh?'DSH 正在准备…':'DSH is preparing…')
+    :stopping?(zh?'DSH 正在关闭…':'DSH is stopping…')
+    :failed?(zh?'DSH 启动失败':'DSH could not start')
+    :instance?(zh?'DSH 未启动':'DSH is stopped')
+    :(zh?'尚未配置 DSH':'DSH is not configured');
+  const diagnostic=error||(failed?instance?.lastError:undefined);
+  const hint=zh?'聊天可照常进行，执行电脑任务时会连接默认 DSH 实例。':'Chat is available. Delegated computer tasks use the default DSH instance.';
   const start=async()=>{
     if(!instance||busy||starting||preparing||stopping||unsupported)return;
     const current=generation.current,requestedAt=revision.current;
@@ -48,5 +53,15 @@ export function BotExecutorNotice({ api, zh, onOpenLauncher }: { api?: Worldline
     }catch(failure){if(current===generation.current&&requestedAt===revision.current)setError(failure instanceof Error?failure.message:String(failure));}
     finally{if(current===generation.current)setBusy(false);}
   };
-  return <div className="bot-executor-notice" role={error||failed?'alert':'status'}><span><strong>{text}</strong><small>{error||(failed?instance?.lastError:undefined)||(zh?'伙伴仍可聊天；执行任务时需要 DSH 实例。':'Chat remains available; delegated tasks require DSH.')}</small></span>{error&&<button type="button" disabled={busy} onClick={()=>setRefresh(value=>value+1)}>{zh?'重试读取':'Retry status'}</button>}{instance&&!unsupported&&<button type="button" disabled={starting||preparing||stopping} onClick={()=>void start()}>{starting?zh?'启动中…':'Starting…':preparing?zh?'准备中…':'Preparing…':stopping?zh?'停止中…':'Stopping…':zh?'启动实例':'Start instance'}</button>}{onOpenLauncher&&<button type="button" onClick={onOpenLauncher}>{zh?'前往启动器':'Open launcher'}</button>}</div>;
+  return <aside className="bot-executor-notice" data-state={error||failed?'failed':pending?'pending':'idle'} aria-label={zh?'DSH 执行器状态':'DSH executor status'}>
+    <div className="bot-executor-status-row">
+      <span className="bot-executor-status-icon" aria-hidden="true"><BotIcon name={pending?'history':'tasks'} /></span>
+      <span className="bot-executor-status-label" role={error||failed?'alert':'status'} title={hint}>{text}</span>
+      {instance&&!unsupported&&!pending&&<button className="bot-executor-primary" type="button" onClick={()=>void start()}>{zh?'启动':'Start'}</button>}
+      {error&&<button type="button" disabled={busy} onClick={()=>setRefresh(value=>value+1)}>{zh?'重试':'Retry'}</button>}
+      {diagnostic&&<button type="button" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={()=>setDetailsOpen(value=>!value)}>{zh?'详情':'Details'}</button>}
+      {onOpenLauncher&&<button className="bot-executor-launcher" type="button" onClick={onOpenLauncher} title={zh?'前往启动器':'Open launcher'} aria-label={zh?'前往启动器':'Open launcher'}><BotIcon name="external" /></button>}
+    </div>
+    {diagnostic&&detailsOpen&&<p id={detailsId} className="bot-executor-diagnostic">{diagnostic}</p>}
+  </aside>;
 }

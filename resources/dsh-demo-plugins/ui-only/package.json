@@ -1,0 +1,1 @@
+{"name":"@worldlinebox-demo/ui-only","version":"1.0.0","type":"module","main":"index.js","description":"A presentation-only native bundle marker. Deliberately registers no model tools or skills.","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}

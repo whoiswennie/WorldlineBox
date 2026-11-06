@@ -50,6 +50,23 @@ async function mount() {
   await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} onOpenSettings={() => undefined} /></LocaleProvider>));
 }
 const composer = () => host.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
+it('shows a disabled companion clearly and re-enables through the shared runtime command before chatting', async () => {
+  snapshots.a!.companions[0]!.enabled = false;
+  override = request => {
+    if (request.type !== 'companion.runtime') return undefined;
+    snapshots.a!.companions[0]!.enabled = request.operation === 'start';
+    return Promise.resolve({ ok: true, snapshot: snapshots.a });
+  };
+  await mount();
+  expect(host.querySelector('.bot-chat-title-status')?.textContent).toContain('已关闭');
+  expect(host.querySelector('.bot-sidebar .bot-contact-status')?.textContent).toBe('已关闭');
+  expect(host.querySelector('.bot-composer')).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>('.bot-call-entry')?.disabled).toBe(true);
+  await click('启用伙伴');
+  expect(requests).toContainEqual({ type: 'companion.runtime', companionId: 'alice', operation: 'start' });
+  expect(host.querySelector('.bot-companion-disabled')).toBeNull();
+  expect(composer()).not.toBeNull();
+});
 it('stops a group discussion through a user message without erasing the current composer draft', async () => {
   snapshots.a!.conversations[0] = { ...snapshots.a!.conversations[0]!, kind: 'group', memberIds: ['user', 'alice', 'bob'] };
   await mount(); await input(composer(), '还没发出的草稿'); await click('停止讨论');

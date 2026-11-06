@@ -72,6 +72,42 @@ it('shows a terminal result even when its last live phase was finalizing', async
   expect(host.textContent).not.toContain('正在整理结果');
 });
 
+it('asks for an answer only when an actual unanswered question exists', async () => {
+  await mount({ ...base, status: 'waiting', summary: '已经拿到执行结果。', progress: { phase: 'awaiting-report' } });
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('等待处理');
+  expect(host.textContent).not.toContain('等待回答');
+  expect(host.textContent).toContain('当前没有需要你回答的问题');
+  expect(host.querySelector('form')).toBeNull();
+  await act(() => root!.render(<BotTaskCard task={{ ...base, status: 'waiting', waitingForAnswer: true }} locale="zh-CN" request={async () => ({ ok: true })} changed={async () => undefined} />));
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('等待回答');
+});
+
+it('keeps failed execution in an ended state with direct record removal', async () => {
+  const f = await mount({ ...base, status: 'failed', error: 'Missing input file.' });
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已结束 · 失败');
+  expect(host.textContent).toContain('本次执行已结束，结果为失败');
+  expect(host.textContent).not.toContain('停止任务');
+  await click('移除记录'); expect(f.requests[0]).toMatchObject({ operation: 'remove' });
+});
+
+it.each(['queued', 'running', 'paused'] as const)('discards a %s task in one remove command without an acknowledgement step', async status => {
+  const f = await mount({ ...base, status });
+  const remove = [...host.querySelectorAll('button')].find(button => button.textContent === '移除任务')!;
+  expect(remove.title).toContain('保留已有文件');
+  await act(() => remove.click());
+  expect(f.requests).toHaveLength(1);
+  expect(f.requests[0]).toMatchObject({ type: 'task.control', taskId: base.id, operation: 'remove' });
+  expect(host.querySelector('[role="alertdialog"]')).toBeNull();
+});
+
+it('shows a paused unfinished segment with its actual guidance instead of a phantom answer request', async () => {
+  await mount({ ...base, status: 'paused', pauseOrigin: 'router', progress: { phase: 'blocked', detail: '缺少第二张图片，请补充后继续。' } });
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已暂停');
+  expect(host.textContent).toContain('缺少第二张图片，请补充后继续。');
+  expect(host.textContent).not.toContain('等待回答');
+  expect([...host.querySelectorAll('button')].some(button => button.textContent === '继续任务')).toBe(true);
+});
+
 it('does not offer continuation from a retained checkpoint after the task was stopped', async () => {
   await mount({ ...base, status: 'cancelled', continuationAvailable: true, cancelRequested: true });
   expect([...host.querySelectorAll('button')].some(button => button.textContent === '继续任务')).toBe(false);

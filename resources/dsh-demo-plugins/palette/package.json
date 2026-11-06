@@ -1,0 +1,1 @@
+{"name":"@worldlinebox-demo/palette","version":"1.0.0","type":"module","main":"index.js","description":"Pure colour palette inspection for native DSH isolation acceptance.","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}

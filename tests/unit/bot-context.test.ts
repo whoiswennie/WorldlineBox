@@ -13,8 +13,9 @@ const message = (id: string, sequence: number, content: string, overrides: Parti
   conversationId: 'c1', senderId: 'user', senderName: '我', senderType: 'user', content, status: 'sent', sequence, kind: 'message', correlationId: 'root', createdAt: '2026-11-02', ...overrides });
 it('gives the Router direct task controls while retaining priority of a human pause', () => {
   const task = { id: 'own-task', conversationId: 'c1', companionId: 'alice', goal: '原授权内的文件任务', status: 'paused' };
-  const router = buildBotContext({ companion, event, messages: [], tasks: [{ ...task, pauseOrigin: 'router' }] });
-  const human = buildBotContext({ companion, event, messages: [], tasks: [{ ...task, pauseOrigin: 'user' }] });
+  const router = buildBotContext({ companion, event, messages: [], taskFollowup: { taskId: task.id }, tasks: [{ ...task, pauseOrigin: 'router' }] });
+  const human = buildBotContext({ companion, event, messages: [], taskFollowup: { taskId: task.id }, tasks: [{ ...task, pauseOrigin: 'user' }] });
+  expect(JSON.parse(buildBotContext({ companion, event, messages: [], tasks: [task] }).user).tasks).toEqual([]);
   expect(JSON.parse(router.user).tasks[0].summary).toContain('可在原授权范围内恢复原任务');
   expect(JSON.parse(human.user).tasks[0].summary).toContain('仅在用户明确继续');
   expect(router.system).toContain('Worker只执行和报告');
@@ -61,15 +62,18 @@ it('does not include task cards from another audience or another companion', () 
   expect(JSON.parse(built.user).tasks.map((item: { id: string }) => item.id)).toEqual(['mine']);
   expect(() => buildBotContext({ companion: { ...companion, id: 'bob' }, event, messages: [] })).toThrow('不匹配');
 });
-it('retains SQL projection preview metadata and also marks directly supplied full reports when excerpting them', () => {
+it('keeps ended task reports out of ordinary chat but includes the selected result with correct preview metadata', () => {
   const tasks = [
     { id: 'projected', conversationId: 'c1', companionId: 'alice', goal: 'projected report', status: 'succeeded', summary: 'R'.repeat(2000), summaryIsPreview: true },
     { id: 'full', conversationId: 'c1', companionId: 'alice', goal: 'full report', status: 'succeeded', summary: 'R'.repeat(2001), summaryIsPreview: false },
     { id: 'complete', conversationId: 'c1', companionId: 'alice', goal: 'complete report', status: 'succeeded', summary: 'R'.repeat(2000), summaryIsPreview: false },
   ];
-  const body = JSON.parse(buildBotContext({ companion, event, messages: [], tasks }).user);
-  expect(body.tasks.map((task: { summaryIsPreview: boolean }) => task.summaryIsPreview)).toEqual([true, true, false]);
-  expect(body.tasks.every((task: { summary: string }) => task.summary.length === 2000)).toBe(true);
+  expect(JSON.parse(buildBotContext({ companion, event, messages: [], tasks }).user).tasks).toEqual([]);
+  for (const [index, task] of tasks.entries()) {
+    const body = JSON.parse(buildBotContext({ companion, event: { ...event, source: 'task', payload: { taskId: task.id } }, messages: [], tasks }).user);
+    expect(body.tasks).toHaveLength(1); expect(body.tasks[0].summaryIsPreview).toBe(index < 2);
+    expect(body.tasks[0].summary).toHaveLength(2000);
+  }
 });
 it('budgets JSON escaping and whole supplemental records while preserving the request', () => {
   const built = buildBotContext({ companion, event, messages: [message('old', 1, '\\'.repeat(4000))], memories: 'large'.repeat(1000), maxEnvelopeChars: 1600 });

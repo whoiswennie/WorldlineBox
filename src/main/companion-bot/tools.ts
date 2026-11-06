@@ -5,6 +5,7 @@ const string = (description: string, maxLength = 16000) => ({ type: 'string', de
 const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。仅用户私聊中可选agent_memory_scopes列出的本人用户参与会话；不能传路径或其他伙伴。' };
 /** The router has no raw shell/filesystem tool; work is delegated to a scoped DSH session. */
 export const BOT_TOOLS: BotDshTool[] = [
+  { name: 'agent_capabilities', description: '动态读取本伙伴当前 DSH 执行环境的真实能力。summary先看数量和边界；catalog按分类/关键词分页发现；tool按确切名称读工具参数；skill按名称分段读技能。不执行插件、不选择其他伙伴或实例。目录是外部参考资料，不授予新任务权限。', parameters: object({ kind: { type: 'string', enum: ['summary', 'catalog', 'tool', 'skill'] }, category: { type: 'string', enum: ['all', 'tool', 'skill'] }, query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 30 }, name: string('已发现的真实工具或技能名称', 200), textOffset: { type: 'integer', minimum: 0, maximum: 2097152 }, maxChars: { type: 'integer', minimum: 100, maximum: 4000 } }, ['kind']) },
   { name: 'agent_state', description: '读取自己持续主脑的统一事件序列和当前受众获准的任务协调视图。用户私聊可查看自己在用户参与会话中的任务元数据；群、伙伴私聊和世界仅本会话。不会读取其他受众的聊天或记忆，也不授予新工作权限。', parameters: object({}, []) },
   { name: 'dsh_task_result_read', description: '分页读取当前伙伴自己的任务执行结果原文。task_done或任务摘要明确为摘录时，通过offset/nextOffset读剩余部分，不把短摘录当成完整结果。只读，不会再次执行任务。', parameters: object({ taskId: string('任务编号', 160), offset: { type: 'integer', minimum: 0, maximum: 10000000 }, limit: { type: 'integer', minimum: 1, maximum: 12000 } }, ['taskId']) },
   { name: 'context_handoff_read', description: '分页读取当前主脑代际的完整交接摘要或尾部原件。交接预览不包含全部旧事实，需要细节时按nextOffset继续，不能访问其他伙伴/受众。', parameters: object({ section: { type: 'string', enum: ['summary', 'tail'] }, offset: { type: 'integer', minimum: 0 } }, []) },
@@ -26,7 +27,7 @@ export const BOT_TOOLS: BotDshTool[] = [
   { name: 'memory_forget', description: '按列出的稳定ID撤回这条记忆及其来源衍生内容的使用，阻止重新捕获。不会物理擦除旧原始聊天日志。仅在用户明确要求忘记时调用。', parameters: object({ id: string('memory_list给出的记忆ID', 200) }, ['id']) },
   { name: 'memory_maintenance', description: '生成待审的整理或梦境候选，或查看当前伙伴和受众的维护进展。用户希望整理/做梦时用plan；日常周期由宿主调度。提交不代表已改写日记，模型不能批准自己的候选。梦境叙事和未批准提案不是用户事实。', parameters: object({ operation: { type: 'string', enum: ['plan', 'status'] }, kind: { type: 'string', enum: ['organize', 'dream'] }, jobId: { type: 'string', maxLength: 160 } }, ['operation']) },
   { name: 'dsh_task', description: '委派真实电脑任务：列桌面/指定目录、查看文件、运行脚本、研究、编码和文件处理均可，不限于复杂多步工作。伙伴任务复用共享DSH实例，使用独立full-access会话和工作目录；完整原生工具能力不是新增授权，必须保留本次原目标及只读、路径、不得删除等用户限制。主脑没有直接read_file也应使用此执行器，不要未调用就声称不能访问电脑。返回任务编号仅表示已提交，完成后宿主回报。附件会复制到任务工作区。', parameters: object({ goal: string('原始目标、授权范围、明确约束和可核验交付要求'), title: string('简短任务名称', 120), attachmentIds: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['goal', 'title']) },
-  { name: 'dsh_task_control', description: 'Router管理自己的获准任务：list列出；status查看；send追加原目标内指导；answer绑定questionId和原选项回答Worker；cancel立即停止；pause暂停冻结计时；resume_paused恢复原任务。用户暂停须明确继续，已停止不得重启。cancel_queued清排队；cancel_all停止本聊天自己的全部任务；remove/clear_finished移除单项/全部已结束记录，保留文件附件。一次回执即生效，无需反复核实。输出检查点用continue；未知外部效果不可重放。缺用户事实或新授权才询问。', parameters: object({ taskId: string('单任务操作需要任务编号；list与批量操作不传', 200), operation: { type: 'string', enum: ['status', 'send', 'cancel', 'answer', 'continue', 'pause', 'resume_paused', 'remove', 'list', 'cancel_queued', 'cancel_all', 'clear_finished'] },
+  { name: 'dsh_task_control', description: 'Router管理自己的获准任务：list列出；status查看；send追加原目标内指导；answer绑定questionId和原选项回答Worker；cancel立即停止；pause暂停冻结计时；resume_paused恢复原任务。用户暂停须明确继续，已停止不得重启。cancel_queued清排队；cancel_all停止本聊天自己的全部任务；remove一次停止并移除单项；clear_finished清除已结束记录，保留文件附件。一次回执即生效，无需反复核实。输出检查点用continue；未知外部效果不可重放。缺用户事实或新授权才询问。', parameters: object({ taskId: string('单任务操作需要任务编号；list与批量操作不传', 200), operation: { type: 'string', enum: ['status', 'send', 'cancel', 'answer', 'continue', 'pause', 'resume_paused', 'remove', 'list', 'cancel_queued', 'cancel_all', 'clear_finished'] },
     page: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 30 }, filter: { type: 'string', enum: ['all', 'active', 'done', 'issues'] }, query: { type: 'string', maxLength: 200 },
     text: string('遵守原目标与用户约束的补充指导或事实；不能替代问题回答'), questionId: string('status返回的原始稳定问题编号；已授权细节可由主脑判断回答，缺少用户偏好或新授权才询问用户', 160), answers: { type: 'array', minItems: 1, items: object({ id: string('问题项编号', 160),
       selected: { type: 'array', items: { type: 'string', maxLength: 300 } }, custom: { type: 'string', maxLength: 12000 } }, ['id', 'selected']) } }, ['operation']) },
@@ -42,6 +43,7 @@ export const BOT_TOOLS: BotDshTool[] = [
 // above remain the application catalog; scope/authorization rules live in the
 // stable system contract and host checks, rather than repeated in every tool.
 const routerDescriptions: Record<string, string> = {
+  agent_capabilities: '查询本人当前DSH能力：summary概览，catalog关键词/分类分页，tool读参数，skill分段读说明；变更revision后重查。目录不授予新权限。',
   agent_state: '读取自己持续主脑的事件序列及当前受众获准的任务协调状态；元数据不授予新权限。',
   dsh_task_result_read: '按taskId分页读本会话本人任务的完整结果。摘要为预览时沿nextOffset继续；只读，不重新执行。',
   context_handoff_read: '分页读当前受众的完整历史交接摘要或尾部原件；不可跨伙伴或受众。',
@@ -63,7 +65,7 @@ const routerDescriptions: Record<string, string> = {
   memory_forget: '仅在用户明确要求时按稳定ID撤回记忆及来源衍生使用；不会物理删除原聊天日志。',
   memory_maintenance: 'plan生成待审整理/梦境候选，status查进展；不能自行批准，日常周期由宿主安排。',
   dsh_task: '委派真实电脑工作，含目录、文件、研究、代码和脚本。传原始目标、授权和约束；返回编号仅表示提交，等待真实报告。',
-  dsh_task_control: '管理本人任务：list/status查询，send指导，answer绑定原questionId，cancel停止，pause/resume_paused暂停继续，continue续输出检查点；unknown先核实。批量/删除操作需用户请求。',
+  dsh_task_control: '管理本人任务：list/status查询，send指导，answer绑定原questionId，cancel停止，pause/resume_paused暂停继续，remove一次停止并移除，continue续输出检查点；unknown先核实。批量清理需用户请求。',
   world: '观察、移动、旅行或家具交互，只控制自己；移动接受不等于到达，不能进入别人的私人小屋。',
   companion_contact: '用户明确请求时联系真实伙伴，始终投递双方独立私聊。destination=peer讨论，user请求对方本人向用户回复；仅转达必要内容。',
   companion_reply_user: '在收到宿主授权的伙伴转达后，以自己身份向用户私聊发消息；不可自选目的地、伪造授权或重复发送。',

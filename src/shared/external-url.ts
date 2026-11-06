@@ -117,6 +117,8 @@ export type RevealAppLogResult =
   | { ok: false; code: 'unauthorized_sender' | 'log_missing' | 'shell_failure' };
 
 export interface WorldlineBoxShellApi {
+  /** Read-only cursor sample for active companion gaze, in CSS viewport space. */
+  getCompanionGazePointer?: import('./companion-gaze').CompanionGazeReader;
   /** 打开外部 HTTP(S) 链接；失败时返回公开错误码（不含 URL）。 */
   openExternalUrl(url: string): Promise<OpenExternalUrlResult>;
   /**

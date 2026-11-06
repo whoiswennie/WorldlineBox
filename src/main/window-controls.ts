@@ -28,6 +28,7 @@ import {
 } from "./linux-window-resize";
 import { ensureRendererKeyboardFocus } from "./renderer-keyboard-focus";
 import { sendToLiveWebContents } from "./web-contents-send";
+import { registerCompanionGazePointer } from './companion-gaze-pointer';
 
 type WindowControlLogger = {
   info: (scope: string, message: string, meta?: Record<string, unknown>) => void;
@@ -92,6 +93,8 @@ export function registerWindowControls(options: {
   logger?: WindowControlLogger;
 }): void {
   const { getMainWindow, logger } = options;
+
+  registerCompanionGazePointer({ ipcMain, getMainWindow, readCursor: () => screen.getCursorScreenPoint() });
 
   ipcMain.handle(
     WINDOW_CONTROL_CHANNEL,

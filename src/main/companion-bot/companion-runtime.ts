@@ -266,7 +266,7 @@ export class BotCompanionRuntime {
     try { const mandate = this.mandate(taskId); return !mandate || mandate.state === 'active'; }
     catch { return false; }
   }
-  view(event: BotEvent): BotAgentView {
+  view(event: BotEvent, options: { includeEnded?: boolean } = {}): BotAgentView {
     this.assertEvent(event);
     const visible = this.visibleSql(event);
     return this.store.taskTransaction(sql => {
@@ -274,6 +274,7 @@ export class BotCompanionRuntime {
       const tasks = sql.prepare(`SELECT t.id,t.conversation_id,substr(COALESCE(json_extract(t.extra_json,'$.title'),'任务'),1,120) AS title,t.status,t.updated_at,
         json_extract(t.extra_json,'$.cancelRequested') AS cancel_requested
         FROM bot_tasks t WHERE t.companion_id=? AND json_extract(t.extra_json,'$.removedAt') IS NULL
+        ${options.includeEnded ? '' : "AND t.status IN ('queued','running','waiting','unknown')"}
         AND ${visible.predicate} ORDER BY CASE WHEN t.status IN ('queued','running','waiting','paused','unknown') THEN 0 ELSE 1 END,t.updated_at DESC,t.id LIMIT 16`)
         .all(event.companionId, ...visible.args) as Row[];
       const events = sql.prepare(`SELECT t.sequence,t.event_id,t.conversation_id,t.source,t.state FROM bot_brain_events t

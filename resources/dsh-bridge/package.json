@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "main": "index.js",
-  "files": ["index.js", "workspace.js", "cordis.patch.yml"],
+  "files": ["index.js", "workspace.js", "idle.js", "cordis.patch.yml"],
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
   "engines": { "dsh": ">=0.0.0-0" },
   "peerDependencies": {

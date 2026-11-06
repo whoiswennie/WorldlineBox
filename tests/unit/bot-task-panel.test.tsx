@@ -214,7 +214,7 @@ it('coalesces changed snapshots and refreshes an old selected task outside the r
   expect(calls.filter(call => call.type === 'task.get')).toHaveLength(before);
   await act(() => vi.advanceTimersByTime(1));
   expect(calls.filter(call => call.type === 'task.get')).toHaveLength(before + 1);
-  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('执行失败');
+  expect(host.querySelector('.bot-task-heading')?.textContent).toContain('已结束 · 失败');
 });
 
 

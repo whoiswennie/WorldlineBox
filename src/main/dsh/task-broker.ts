@@ -264,7 +264,8 @@ export class DshTaskBroker {
   async discover(instanceId?: string, execution?: DshTaskExecutionOptions): Promise<DshTaskCapabilities> {
     const { instance, runtime, client } = await this.options.getHost(instanceId);
     const sessionId = `worldlinebox-catalog-${instance.id}`;
-    const value = await client.request<object>('/capabilities', { sessionId, cwd: instance.workspacePath, query: execution?.capabilityQuery });
+    const value = await client.request<object>('/capabilities', { sessionId, cwd: instance.workspacePath, query: execution?.capabilityQuery,
+      ...(execution?.companionCapabilities ? { companion: true } : {}) });
     return dshTaskCapabilitiesSchema.parse({ ...value, instanceId: instance.id, runtimeId: runtime.id, runtimeVersion: runtime.version,
       workspacePath: instance.workspacePath, capturedAt: new Date().toISOString() });
   }

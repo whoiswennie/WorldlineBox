@@ -44,7 +44,7 @@ for (const bundle of ['embedding-models', 'speech-models', 'speech-runtime']) {
 }
 
 const requiredPaths = [
-  ...['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
+  ...['package.json', 'index.js', 'workspace.js', 'idle.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
   path.join(resourcesPath, 'embedding-models', 'manifest.json'),
   path.join(resourcesPath, 'speech-models', 'manifest.json'),
   path.join(resourcesPath, 'speech-runtime', 'worker.cjs'),
@@ -107,10 +107,19 @@ for (const entry of speechNativeFiles) {
     throw new Error(`Packaged speech native payload is missing or differs from the pinned dependency: ${relative}`);
   }
 }
-for (const name of ['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml']) {
+for (const name of ['package.json', 'index.js', 'workspace.js', 'idle.js', 'cordis.patch.yml']) {
   const expected = readFileSync(path.join(projectRoot, 'resources', 'dsh-bridge', name));
   const actual = readFileSync(path.join(resourcesPath, 'dsh-bridge', name));
   if (!expected.equals(actual)) throw new Error(`Packaged native DSH bridge differs from source: ${name}`);
+}
+for (const entry of readdirSync(path.join(projectRoot, 'resources', 'dsh-demo-plugins'), { withFileTypes: true })) {
+  if (!entry.isDirectory()) continue;
+  for (const name of ['package.json', 'index.js', 'cordis.patch.yml']) {
+    const relative = path.join('dsh-demo-plugins', entry.name, name);
+    const expected = readFileSync(path.join(projectRoot, 'resources', relative));
+    const actualPath = path.join(resourcesPath, relative);
+    if (!existsSync(actualPath) || !expected.equals(readFileSync(actualPath))) throw new Error(`Packaged native DSH example differs from source: ${relative}`);
+  }
 }
 
 if (sqliteVecPackage) {

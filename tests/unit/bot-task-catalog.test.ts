@@ -37,7 +37,7 @@ it('projects reports and frozen inputs in SQL before crossing the SQLite boundar
   const envelope = JSON.parse(buildBotContext({ companion: f.store.getCompanion('catalog-agent')!, event: f.source, messages: [], tasks: [{ ...card, cancelRequested: false }] }).user);
   expect(envelope.tasks[0]).toMatchObject({ summaryIsPreview: true }); expect(envelope.tasks[0].summary).toHaveLength(2000);
   const stopping = JSON.parse(buildBotContext({ companion: f.store.getCompanion('catalog-agent')!, event: f.source, messages: [], tasks: [{ ...card, cancelRequested: true }] }).user);
-  expect(stopping.tasks[0]).toMatchObject({ status: 'cancelled', summaryIsPreview: false, summary: expect.stringContaining('任务已停止') });
+  expect(stopping.tasks).toEqual([]);
   const page = f.runtime.page({ conversationId: f.conversation.id, filter: 'all', query: 'SEARCH_ORIGINAL_TAIL', page: 0, limit: 6 });
   expect(page.total).toBe(1); expect(page.items[0]?.goal).toHaveLength(200); expect(page.items[0]?.summary).toBeUndefined();
   expect(page.items[0]?.cancelRequested).toBe(false); expect(page.items[0]?.continuationAvailable).toBe(false);

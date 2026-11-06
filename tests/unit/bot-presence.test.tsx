@@ -35,6 +35,15 @@ it('uses the actual single-person status while group portraits share one frame w
   expect([...host.querySelectorAll<HTMLElement>('.bot-group-portrait')].map(tile => tile.dataset.companionId)).toEqual(['fish', 'gpt']);
 });
 
+it('overrides stale active presence for disabled companions and excludes them from group activity', async () => {
+  const disabled = { ...companions[0]!, enabled: false }, busy = state({ status: 'working', counts: { ...state().counts, activeTasks: 5, running: 5 } });
+  await mount(<><BotAvatar companion={disabled} presence={busy} /><BotPresenceSummary companions={[disabled]} presence={{ fish: busy }} locale="zh-CN" onOpen={vi.fn()} /><BotPresenceSummary companions={[disabled, companions[1]!]} presence={{ fish: busy, gpt: state() }} locale="zh-CN" onOpen={vi.fn()} /></>);
+  expect(host.querySelector('.bot-presence-dot')?.getAttribute('data-presence')).toBe('disabled');
+  expect(host.textContent).toContain('已关闭');
+  expect(host.querySelector('.bot-presence-summary')?.textContent).toBe('待命');
+  expect(host.textContent).not.toContain('5 项任务');
+});
+
 it('aggregates accurate nonterminal task totals and navigates to the real activity room', async () => {
   const first = state({ status: 'working', counts: { ...state().counts, activeTasks: 3, running: 2, stopping: 1 }, activity: { taskId: 'original', conversationId: 'other-room', title: '任务', phase: 'using-tool', updatedAt: '2026-11-04T05:00:00Z' } });
   const second = state({ status: 'replying', counts: { ...state().counts, activeTasks: 2, waiting: 1, queued: 1 } }), open = vi.fn();

@@ -406,7 +406,11 @@ export class BotStore {
   }
   getCompanion(id: string): BotCompanion | undefined {
     const raw = this.db.prepare('SELECT c.*,p.active_id FROM bot_companions c LEFT JOIN bot_persona_settings p ON p.companion_id=c.id WHERE c.id=?').get(id); if (!raw) return;
-    const r = asRow(raw); return { id: String(r.id), name: String(r.name), persona: String(r.persona), createdAt: String(r.created_at), updatedAt: String(r.updated_at), activePersonaId: optional(r.active_id) };
+    const r = asRow(raw); return { id: String(r.id), name: String(r.name), persona: String(r.persona), createdAt: String(r.created_at), updatedAt: String(r.updated_at), activePersonaId: optional(r.active_id), enabled: this.getMetadata(`companion-enabled:${id}`) !== '0' };
+  }
+  setCompanionEnabled(id: string, enabled: boolean): void {
+    if (!this.getCompanion(id) || this.isRetiredDevelopmentDefault(id)) throw new Error('伙伴不存在。');
+    this.setMetadata(`companion-enabled:${id}`, enabled ? '1' : '0');
   }
   listCompanions(): BotCompanion[] { return this.db.prepare('SELECT id FROM bot_companions ORDER BY created_at,id').all().map(raw => this.getCompanion(String(asRow(raw).id))!).filter(companion => !this.isRetiredDevelopmentDefault(companion.id)); }
   isRetiredDevelopmentDefault(id: string): boolean { return id === developmentDefault && !!this.getMetadata(defaultCleanupKey); }
@@ -793,7 +797,7 @@ export class BotStore {
       ...(r.kind === 'group' ? { participationMode: (this.getMetadata(`conversation-participation:${id}`) || 'all') as 'automatic' | 'all' | 'mentions', announcement: this.groupAnnouncement(id) } : {}) };
   }
   private routeGroup(conversation: BotConversation, senderId: string, content: string): GroupRouting {
-    const actors = conversation.memberIds.filter(id => id !== 'user' && id !== senderId).map(id => this.getCompanion(id)!).filter(Boolean);
+    const actors = conversation.memberIds.filter(id => id !== 'user' && id !== senderId).map(id => this.getCompanion(id)!).filter(actor => actor && actor.enabled !== false);
     const key = `group-candidate-offset:${conversation.id}`, offset = Number(this.getMetadata(key) ?? 0) % Math.max(1, actors.length);
     const result = routeGroupAttention([...actors.slice(offset), ...actors.slice(0, offset)], content, conversation.participationMode ?? 'automatic');
     if (result.candidate) this.setMetadata(key, String((offset + GROUP_CANDIDATE_LIMIT) % Math.max(1, actors.length)));
@@ -1275,6 +1279,7 @@ export class BotStore {
         + (input.interactiveOnly ? " AND i.source IN ('user','task','gateway')" : '');
       const raw = this.db.prepare(`SELECT i.* FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id
         WHERE i.status='queued' AND i.available_at<=?${skip}
+        AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||i.companion_id AND disabled.value='0')
         AND NOT EXISTS(SELECT 1 FROM bot_inbox older WHERE older.lane_id=i.lane_id AND older.sequence<i.sequence AND older.status IN ('queued','running'))
         AND NOT EXISTS(SELECT 1 FROM bot_inbox active WHERE active.lane_id=i.lane_id AND active.status='running')
         AND NOT EXISTS(SELECT 1 FROM bot_inbox room_active JOIN bot_conversations room ON room.id=room_active.conversation_id
@@ -1667,6 +1672,7 @@ export class BotStore {
     return this.db.prepare(`SELECT * FROM bot_tasks WHERE (status IN ('queued','running','unknown')
         OR (status IN ('waiting','paused') AND (json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 OR status='waiting' AND EXISTS(SELECT 1 FROM bot_task_questions q WHERE q.task_id=bot_tasks.id AND q.state='answered'))))
       AND COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)<>1
+      AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||bot_tasks.companion_id AND disabled.value='0')
       AND (COALESCE(json_extract(extra_json,'$.pauseRecoveryPaused'),0)<>1 OR json_extract(extra_json,'$.cancelRequested')=1)
       AND (COALESCE(json_extract(extra_json,'$.retryAt'),0)<=?
         OR (json_extract(extra_json,'$.cancelRequested')=1 AND COALESCE(json_extract(extra_json,'$.nativeAttempted'),0)<>1))

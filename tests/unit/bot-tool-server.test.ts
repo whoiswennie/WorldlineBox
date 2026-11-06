@@ -1,6 +1,22 @@
 import { expect, it } from 'vitest';
 import { BotToolServer } from '../../src/main/companion-bot/tool-server';
 
+it('drains aborted asynchronous callbacks before shutdown returns and rejects new capabilities', async () => {
+  let entered!: () => void, release!: () => void, drained = false, closed = false;
+  const ready = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const server = new BotToolServer(async (_call, signal) => { entered(); await gate; expect(signal.aborted).toBe(true); drained = true; return {}; });
+  const capability = await server.start();
+  const request = fetch(capability.url, { method: 'POST', headers: { authorization: `Bearer ${capability.token}` },
+    body: JSON.stringify({ laneId: 'router', eventId: 'event', callId: 'files', name: 'chat_list_files', args: {} }) }).catch(() => undefined);
+  await ready;
+  const shutdown = server.close().then(() => { closed = true; });
+  try {
+    await Promise.resolve(); expect(closed).toBe(false);
+    await expect(server.start()).rejects.toThrow('正在关闭');
+    release(); await shutdown; await request; expect(drained).toBe(true); expect(closed).toBe(true);
+  } finally { release(); await shutdown; }
+});
+
 it('revokes in-flight callbacks before a paused task obtains a fresh callback capability', async () => {
   let release!: () => void, entered!: () => void, oldSignal: AbortSignal | undefined, publications = 0;
   const gate = new Promise<void>(resolve => { release = resolve; }), admitted = new Promise<void>(resolve => { entered = resolve; });

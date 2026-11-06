@@ -13,7 +13,7 @@ export async function acceptanceProcesses() {
   const { stdout } = await command('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress'], { windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
   const value = JSON.parse(stdout || '[]'); return Array.isArray(value) ? value : [value];
 }
-export async function inspectAcceptanceRoot(root, processes, allowedOwnerPid) {
+export async function inspectAcceptanceRoot(root, processes, allowedOwnerPid, expectedInstances) {
   const temporary = await realpath(os.tmpdir()), resolved = path.resolve(root), info = await lstat(resolved);
   if (!path.isAbsolute(root) || !equal(path.dirname(resolved), temporary) || !prefix.test(path.basename(resolved))
     || !info.isDirectory() || info.isSymbolicLink() || !equal(await realpath(resolved), resolved)) throw new Error('Acceptance cleanup target is not an ordinary owned temporary root.');
@@ -26,7 +26,18 @@ export async function inspectAcceptanceRoot(root, processes, allowedOwnerPid) {
   if (ownerPid && ownerPid !== allowedOwnerPid && alive.has(Number(ownerPid))) active.push(Number(ownerPid));
   if (path.basename(resolved).startsWith('worldlinebox-bot-host-')) {
     const records = JSON.parse(await readFile(path.join(resolved, 'native-instances.json'), 'utf8'));
-    if (!Array.isArray(records) || !records.length || records.some(record => record.name !== 'Bot native acceptance' || record.runtimeId !== 'runtime-bot-acceptance' || !/^[a-z0-9-]{1,80}$/.test(record.id))) throw new Error('Native acceptance ownership metadata differs.');
+    if (expectedInstances !== undefined && (owner !== 'native-host-fixture' || !allowedOwnerPid || ownerPid !== allowedOwnerPid
+      || !Array.isArray(expectedInstances) || !expectedInstances.length || new Set(expectedInstances.map(record => record.id)).size !== expectedInstances.length)) throw new Error('Explicit native acceptance ownership is unavailable.');
+    const expected = expectedInstances && new Map(expectedInstances.map(record => [record.id, record]));
+    if (!Array.isArray(records) || !records.length || expected && records.length !== expected.size || records.some(record => {
+      if (!/^[a-z0-9-]{1,80}$/.test(record.id)) return true;
+      if (!expected) return record.name !== 'Bot native acceptance' || record.runtimeId !== 'runtime-bot-acceptance';
+      const trusted = expected.get(record.id), instanceRoot = path.join(resolved, 'instances', record.id);
+      return !trusted || trusted.name !== record.name || trusted.runtimeId !== record.runtimeId
+        || typeof trusted.name !== 'string' || !trusted.name.length || !/^[a-z0-9-]{1,100}$/.test(trusted.runtimeId)
+        || !equal(record.homePath, path.join(instanceRoot, 'home')) || !equal(record.agentsPath, path.join(instanceRoot, 'agents'))
+        || !equal(record.workspacePath, path.join(instanceRoot, 'workspace'));
+    })) throw new Error('Native acceptance ownership metadata differs.');
     for (const record of records) try {
       const bridge = JSON.parse(await readFile(path.join(resolved, 'instances', record.id, 'bridge.json'), 'utf8'));
       if (alive.has(Number(bridge.pid))) active.push(Number(bridge.pid));
@@ -50,11 +61,11 @@ export async function inspectAcceptanceRoot(root, processes, allowedOwnerPid) {
   return { path: resolved, owner, rootReparse: false, nestedLinks, files, alivePids: [...new Set(active)] };
 }
 /** Links inside a fixture are unlinked themselves, never traversed. */
-export async function removeAcceptanceRoot(root, allowedOwnerPid) {
+export async function removeAcceptanceRoot(root, allowedOwnerPid, expectedInstances) {
   const temporary = await realpath(os.tmpdir()), resolved = path.resolve(root);
   if (!path.isAbsolute(root) || !equal(path.dirname(resolved), temporary) || !prefix.test(path.basename(resolved))) throw new Error('Acceptance cleanup target is outside its owned temporary namespace.');
   try { await lstat(resolved); } catch (error) { if (error.code === 'ENOENT') return { path: resolved, alreadyRemoved: true }; throw error; }
-  const proof = await inspectAcceptanceRoot(root, await acceptanceProcesses(), allowedOwnerPid);
+  const proof = await inspectAcceptanceRoot(root, await acceptanceProcesses(), allowedOwnerPid, expectedInstances);
   if (proof.alivePids.length) throw new Error('Acceptance root still belongs to a live process: ' + proof.alivePids.join(','));
   const remove = async directory => {
     let entries;

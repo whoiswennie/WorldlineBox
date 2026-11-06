@@ -6,7 +6,7 @@ import type { DshHostStartupProgress } from '../../src/main/dsh/instance-service
 import { canonicalRuntimeEntryPaths } from '../../src/main/dsh/runtime-paths';
 import { OperationStore } from '../../src/main/dsh/operations';
 import { dshRuntimeSchema } from '../../src/shared/dsh-launcher';
-import { removeAcceptanceRoot } from '../../scripts/bot-acceptance-cleanup-lib.mjs';
+import { removeAcceptanceRoot, type AcceptanceOwnedInstance } from '../../scripts/bot-acceptance-cleanup-lib.mjs';
 
 /** Real installed CLI and Host in a fresh profile. No old companion service,
  * borrowed user history, global credentials or fabricated native events. */
@@ -29,10 +29,10 @@ export async function createBotNativeHost(program: string, options?: {
   await instances.init(); const instance = await instances.create('Bot native acceptance', runtime.id);
   let closed = false;
   return { root, instances, instance, runtimeVersion: manifest.version,
-    close: async () => {
+    close: async (expectedInstances?: readonly AcceptanceOwnedInstance[]) => {
       if (closed) return; closed = true;
       await instances.shutdown(); await operations.shutdown();
-      try { await removeAcceptanceRoot(root, process.pid); }
+      try { await removeAcceptanceRoot(root, process.pid, expectedInstances); }
       catch (error) {
         process.stderr.write(JSON.stringify({ kind: 'bot-native-cleanup-retained', root: path.basename(root), reason: error instanceof Error ? error.message : 'Cleanup could not verify process termination.' }) + '\n');
         throw error;

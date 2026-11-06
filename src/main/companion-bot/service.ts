@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress } from '../../shared/companion-bot';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
-import type { BotDshModel, BotDshResult } from './dsh-brain';
+import { BotDshBrain, type BotDshModel, type BotDshResult } from './dsh-brain';
 import type { BotBrain } from './brain-router';
 import { appBrainRequest, fitsAppBrainRequest } from './app-brain-budget';
 import type { AppToolReconciliation } from './app-brain';
@@ -13,6 +13,7 @@ import type { BotMemoryService, BotMemoryPrepared, BotMemoryScope, BotMemoryMess
 import { BotScheduler } from './scheduler';
 import { BotStore } from './store';
 import { botLocalTimestamp, buildBotContext } from './context';
+import { taskContextPolicy } from './task-context-policy';
 import { botHandoffFile, botTaskFileEvidence, buildBotTaskPrompt, type BotHandoffMessage } from './task-handoff';
 import { BotToolServer, type BotToolCall } from './tool-server';
 import { BOT_ROUTER_TOOLS as BOT_TOOLS } from './tools';
@@ -40,6 +41,8 @@ import { GROUP_ATTENTION_SYSTEM, parseGroupAttention, isGroupStop, type GroupAtt
 import { resolveBotModelLimits } from './model-limits';
 import { BotCompanionRuntime } from './companion-runtime';
 import { abortable } from './abortable';
+import type { BotCapabilityState } from '../../shared/companion-capabilities';
+import { dshTaskCapabilityQuerySchema, type DshTaskCapabilityQuery, type DshTaskCapabilities } from '../../shared/dsh-task-spec';
 
 export interface BotServiceOptions {
   root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel;
@@ -55,11 +58,15 @@ export interface BotServiceOptions {
   runtimePreparation?(): { phase: string; elapsedMs: number } | undefined;
   hostMigration?: { fromHostId: string; toHostId: string };
   onHostMigrationComplete?(instanceId: string): Promise<void>;
+  capabilityState?(companionId: string): BotCapabilityState;
+  capabilities?(companionId: string, query: DshTaskCapabilityQuery, signal: AbortSignal): Promise<DshTaskCapabilities>;
+  companionRuntime?(companionId: string, name: string, operation: 'start' | 'stop', signal: AbortSignal): Promise<void>;
+  restoreCompanionEnvironments?(companions: ReadonlyArray<{ id: string; name: string; enabled?: boolean }>, signal: AbortSignal): Promise<void>;
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const workerSystem = `你是世界线盒子伙伴委派的DSH执行器。完成当前明确目标，验证实际产物。本任务会话可使用DSH完整原生工具和本机文件访问能力；这不是额外任务授权。严格遵守下面原始目标、用户明确限制和已提供事实，不擅自扩大范围；只读、不得删除、指定路径等约束始终有效。产物优先写入自己的任务工作区。遇到可依据原始目标和已知事实判断的执行细节，交由委派主脑回答；缺少用户偏好或新的操作授权时提出真实问题。不读取其他会话或伙伴记忆目录。不发送未经请求的外部消息。依据真实执行结果报告，未完成要说明。
-业务状态通过worker_report结构化回传：progress表示阶段进展，waiting表示等待后续事件，blocked表示阻碍，failed表示确实失败，dropped表示无需继续，ready表示当前目标已完成。结束前必须提交报告；最终正文或模型正常结束不代表任务完成。ready须逐项说明实际verification依据，文字答复也可核验，不强制创建文件。完成报告之后不要再修改产物；有新工作或跟进时沿原任务继续，并重新核验、重新报告。子Agent不能代替根执行器提交业务完成报告。`;
+业务状态可通过worker_report结构化回传：progress表示阶段进展，waiting表示等待后续事件，blocked表示阻碍，failed表示确实失败，dropped表示无需继续，ready表示当前目标已完成。ready须说明实际verification依据，文字答复也可核验，不强制创建文件。需要回答时提出真实问题，不用一段最终正文假装工具仍在运行。正常结束且没有未决问题或外部操作时，宿主按原生执行结果结束任务，缺少报告不会制造等待状态。完成报告之后不要再修改产物；有新工作或跟进时沿原任务继续，并重新核验。子Agent不能代替根执行器提交业务完成报告。`;
 const nonempty = z.string().trim().min(1).max(24000);
 const maxCausalHop = 6;
 const causalHop = (event: BotEvent): number => event.source === 'user' || event.payload.hop === undefined ? 0
@@ -88,6 +95,10 @@ export class BotService {
   private readonly taskControlRuns = new Map<string, Promise<void>>();
   private readonly executorControlRuns = new Map<string, Promise<void>>();
   private readonly taskAccessUpgrades = new Map<string, Promise<void>>();
+  private readonly companionControls = new Map<string, Promise<void>>();
+  private readonly companionControlRevisions = new Map<string, number>();
+  private readonly companionStartWaiters = new Map<string, Set<AbortController>>();
+  private restoringCompanions?: Promise<void>;
   private readonly toolRuns = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
   private readonly retirementRuns = new Map<string, Promise<void>>();
   private readonly sourceWithdrawalRuns = new Map<string, Promise<void>>();
@@ -151,9 +162,12 @@ export class BotService {
       else this.detail = '旧执行记录尚待核实，相关会话已保留；其他伙伴使用默认 DSH 实例。';
     }
     this.historyClearRun = resumeBotTaskHistoryClears(this.store).then(() => this.changed()).catch(error => this.options.report?.(error));
+    this.reconcileFinishedTasks();
     this.scheduler.start();
     this.maintenance = setInterval(() => { this.maintainSafely(); }, 1000); this.maintenance.unref?.();
     this.maintainSafely();
+    if (this.options.restoreCompanionEnvironments) this.restoringCompanions = this.options.restoreCompanionEnvironments(this.store.listCompanions(), this.maintenanceAbort.signal)
+      .catch(error => { if (!this.closed) this.options.report?.(error); });
   }
   private emit(event: UiEvent): void { try { this.options.onEvent(event); } catch (error) { this.options.report?.(error); } }
   configurationChanged(): void { this.ready = false; this.presenceModelConfigured = undefined; this.detail = undefined; this.changed(); }
@@ -219,6 +233,36 @@ export class BotService {
       .finally(() => { this.memoryWarmRuns.delete(key); this.memoryWarmPhases.delete(key); });
     this.memoryWarmRuns.set(key, run);
   }
+  private async controlCompanion(companionId: string, operation: 'start' | 'stop', signal: AbortSignal): Promise<void> {
+    const companion = this.store.getCompanion(companionId); if (!companion) throw new Error('伙伴不存在。');
+    if (operation === 'start') signal.throwIfAborted();
+    // Fence admission before any asynchronous native shutdown. Starting does
+    // not implicitly resume tasks the user previously paused or cancelled.
+    this.store.setCompanionEnabled(companionId, operation === 'start'); this.changed();
+    if (operation === 'stop') {
+      const ids = this.store.taskTransaction(sql => sql.prepare("SELECT id FROM bot_inbox WHERE companion_id=? AND status IN ('queued','running')").all(companionId) as Array<{ id: string }>);
+      for (const event of ids) this.scheduler.cancel(event.id);
+      for (;;) {
+        const tasks = this.store.taskTransaction(sql => sql.prepare("SELECT id FROM bot_tasks WHERE companion_id=? AND status IN ('queued','running','waiting','unknown') AND json_extract(extra_json,'$.removedAt') IS NULL ORDER BY id LIMIT 100").all(companionId) as Array<{ id: string }>);
+        if (!tasks.length) break;
+        for (const { id } of tasks) await this.controlTask(this.store.getTask(id)!, 'pause', undefined, `companion-stop:${randomUUID()}`, { caller: 'user' });
+      }
+      // Cleanup is separate from frozen business state; unrelated shared
+      // environments and other companions are never stopped by this callback.
+      await Promise.allSettled([...this.executorControlRuns.entries()].filter(([id]) => this.store.getTask(id)?.companionId === companionId).map(([, work]) => work));
+      await Promise.allSettled([
+        ...[...this.taskRuns.entries()].filter(([id]) => this.store.getTask(id)?.companionId === companionId).map(([, work]) => work.promise),
+        ...[...this.taskControlRuns.entries(), ...this.taskAccessUpgrades.entries()].filter(([id]) => this.store.getTask(id)?.companionId === companionId).map(([, work]) => work),
+        ...[...this.retirementRuns.entries()].filter(([id]) => this.store.getLane(id)?.companionId === companionId).map(([, work]) => work),
+      ]);
+    }
+    try { await this.options.companionRuntime?.(companionId, companion.name, operation, signal); }
+    finally { this.scheduler.wake(); this.changed(); }
+  }
+  /** Native cancellation may finish during this bounded close, not afterwards. */
+  isCompanionStopping(companionId: string): boolean {
+    return this.store.getCompanion(companionId)?.enabled === false && this.companionControls.has(companionId);
+  }
   async handle(input: BotRequest): Promise<BotResponse> {
     await this.starting; if (this.closed) return { ok: false, error: '伙伴正在关闭。' };
     const archivedRoom='conversationId'in input&&typeof input.conversationId==='string'?this.store.getConversation(input.conversationId):undefined;
@@ -239,6 +283,26 @@ export class BotService {
         const conversation = this.store.openDirect(companion.id); this.changed(); return { ok: true, conversationId: conversation.id };
       }
       case 'companion.update': this.store.updateCompanion(input.companionId, { name: input.name, persona: input.persona === undefined ? undefined : input.persona.trim() || '作为真诚可靠的长期伙伴与用户相处。' }); this.changed(); return { ok: true };
+      case 'companion.runtime': {
+        const revision = (this.companionControlRevisions.get(input.companionId) ?? 0) + 1;
+        this.companionControlRevisions.set(input.companionId, revision);
+        const controller = new AbortController(), waiters = this.companionStartWaiters.get(input.companionId) ?? new Set<AbortController>();
+        if (input.operation === 'stop') {
+          this.store.setCompanionEnabled(input.companionId, false); this.changed();
+          for (const waiting of waiters) waiting.abort(new Error('用户已关闭伙伴，停止等待启动。'));
+        } else { waiters.add(controller); this.companionStartWaiters.set(input.companionId, waiters); }
+        const prior = this.companionControls.get(input.companionId);
+        const operation = (prior ?? Promise.resolve()).catch(() => undefined).then(() => {
+          if (input.operation === 'start' && this.companionControlRevisions.get(input.companionId) !== revision) return;
+          return this.controlCompanion(input.companionId, input.operation, AbortSignal.any([this.maintenanceAbort.signal, controller.signal]));
+        });
+        this.companionControls.set(input.companionId, operation);
+        try { await operation; } finally {
+          waiters.delete(controller); if (!waiters.size) this.companionStartWaiters.delete(input.companionId);
+          if (this.companionControls.get(input.companionId) === operation) this.companionControls.delete(input.companionId);
+        }
+        return { ok: true, snapshot: this.snapshot() };
+      }
       case 'companion.personas.list': return { ok: true, personas: this.store.listPersonaTemplates(input.companionId) };
       case 'companion.personas.get': return { ok: true, persona: this.store.getPersonaTemplate(input.companionId, input.id) };
       case 'companion.personas.save': {
@@ -278,6 +342,7 @@ export class BotService {
       case 'message.send': case 'world.event': {
         const conversation = this.store.getConversation(input.conversationId);
         if (!conversation?.memberIds.includes('user')) throw new Error('当前用户不能向这个会话发送消息。');
+        if (!conversation.memberIds.some(id => id !== 'user' && this.store.getCompanion(id)?.enabled !== false)) throw new Error('伙伴已关闭，请先在能力管理中启用；消息草稿已保留。');
         if (input.type === 'message.send' && input.replyToTaskId && input.attachmentIds?.length) throw new Error('当前任务跟进支持文字；新附件请先作为单独消息发送并明确需要新的任务输入。');
         if (input.type === 'message.send' && input.replyToTaskId && (!input.content.trim() || input.content.length > 16000)) throw new Error('任务跟进需要1至16000字符的文字，请拆分发送；草稿已保留。');
         let attachments = input.type === 'message.send' && input.attachmentIds?.length ? await this.requireMedia().resolveForConversation(input.conversationId, input.attachmentIds) : undefined;
@@ -762,6 +827,21 @@ export class BotService {
     const grouped = ['group', 'peer'].includes(this.store.getConversation(event.conversationId)?.kind ?? '');
     const contextThrough = grouped ? this.store.publishedWatermark(event.conversationId) : event.sourceMessageSequence;
     if (!companion) throw new Error('伙伴不存在。');
+    if (companion.enabled === false) { this.scheduler.cancel(event.id); return; }
+    // Queued callbacks are historical receipts, never fresh authorization.
+    // Do not wake the Router or memory encoder for obsolete task reminders.
+    if (event.source === 'task' && typeof event.payload.taskId === 'string') {
+      const task = this.store.getTask(event.payload.taskId);
+      const stopped = !task || task.extra.removedAt || task.extra.cancelRequested || task.extra.humanStopped || task.status === 'cancelled';
+      const finishedProgress = event.kind === 'task_progress' && task && ['succeeded', 'failed'].includes(task.status);
+      const questionId = typeof event.payload.attention === 'string' && event.payload.attention.startsWith('question:') ? event.payload.attention.slice(9) : undefined;
+      const question = questionId ? this.taskRuntime.attention(event.payload.taskId, questionId) : undefined;
+      const outdatedQuestion = questionId && (question?.id !== questionId || question.state !== 'queued');
+      if (stopped || finishedProgress || outdatedQuestion) {
+        this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: 'done', content: '' });
+        this.changed(event.conversationId); return;
+      }
+    }
     let prepared: BotMemoryPrepared | undefined, text = '', completion: BotTurnCompletion | undefined;
     let dispatch: NativeDispatch | undefined;
     const dispatchKey = `native-input:${event.id}`;
@@ -841,7 +921,7 @@ export class BotService {
         const taskFollowup = followed ? { taskId: followed.id, ...(followedAttention?.state === 'queued' ? { questionId: followedAttention.id } : {}) } : undefined;
         const files = await this.verifiedAttachmentFiles(event, undefined, contextThrough);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        const context = buildBotContext({ companion, event, taskFollowup, files, historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
+        const context = buildBotContext({ companion, event, taskFollowup, files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
           referenceLongTriggers: this.options.brainRuntime === 'worldlinebox',
           fitsEnvelope: this.options.brainRuntime === 'worldlinebox' ? (system, user) => {
             const prompt = handoffView ? JSON.stringify({ ...JSON.parse(user), nativeHandoff: handoffView }) : user;
@@ -1020,7 +1100,7 @@ export class BotService {
   }
   private assertCurrentEvent(event: BotEvent): void {
     const live = this.store.getEvent(event.id), lane = this.store.getLane(event.laneId);
-    if (live?.status !== 'running' || !lane || this.store.getEventNativeEpoch(event.id) !== lane.epoch
+    if (this.store.getCompanion(event.companionId)?.enabled === false || live?.status !== 'running' || !lane || this.store.getEventNativeEpoch(event.id) !== lane.epoch
       || this.store.withdrawnIn(event.companionId, event.securityDomainId, this.store.eventSourceIds(event.id)).size) throw new Error('原主脑事件已经停止或来源已撤回。');
   }
   private authorizedAttachmentGrants(event: BotEvent, requested: string[]): BotAttachmentGrant[] {
@@ -1096,9 +1176,22 @@ export class BotService {
       || call.name === 'dsh_task_control' && !['status', 'list'].includes(String(args.operation))
       || call.name === 'memory_maintenance' && args.operation === 'plan') this.store.reserveAutomaticAction(event.id, call.callId, call.name);
     switch (call.name) {
+      case 'agent_capabilities': {
+        if (this.store.getCompanion(event.companionId)?.enabled === false) throw new Error('伙伴已关闭。');
+        const query = dshTaskCapabilityQuerySchema.parse(args);
+        if (!this.options.capabilities) return { available: false, reason: 'DSH 能力目录尚未连接，不能据此断言某项能力存在或不存在。' };
+        const before = this.options.capabilityState?.(event.companionId);
+        const result = await this.options.capabilities(event.companionId, query, signal);
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        const environment = this.options.capabilityState?.(event.companionId);
+        if (environment && (environment.instanceId !== result.instanceId || before?.instanceId !== environment.instanceId || before?.revision !== environment.revision))
+          return { available: false, changed: true, environment, reason: '查询期间装备环境发生变化，请重新读取当前能力，不使用上一版本目录。' };
+        return { available: true, authority: 'capability-reference-data', owner: event.companionId,
+          environment, ...result };
+      }
       case 'agent_state': {
         const room = this.store.getConversation(event.conversationId);
-        return { ...this.companionRuntime.view(event), conversation: {
+        return { ...this.companionRuntime.view(event, { includeEnded: true }), conversation: {
           id: room?.id, memberCount: room?.memberIds.length,
           members: room?.memberIds.slice(0, 1024).map(id => ({ id, name: id === 'user' ? '用户' : this.store.getCompanion(id)?.name })),
         }, companionDirectory: this.store.listCompanions().slice(0, 1024).map(actor => ({ id: actor.id, name: actor.name })) };
@@ -1288,7 +1381,7 @@ export class BotService {
           page: z.number().int().min(0).max(1000000).default(0).parse(args.page), limit: z.number().int().min(1).max(30).default(20).parse(args.limit) });
         if (operation === 'cancel_queued' || operation === 'cancel_all' || operation === 'clear_finished') {
           signal.throwIfAborted(); this.assertCurrentEvent(event);
-          return this.controlQueue(event.conversationId, operation, `${event.id}:${call.callId}`, event.companionId);
+          return this.controlQueue(event.conversationId, operation, `${event.id}:${call.callId}`, event.companionId, event.id);
         }
         let task: BotTask, stopOnly = false;
         try { task = this.companionRuntime.taskInView(event, nonempty.parse(args.taskId)); }
@@ -1553,8 +1646,24 @@ export class BotService {
     }
     this.settleWorkerTurn(current, result);
   }
-  /** A native segment can finish while the authorized business work remains
-   * open. Only an explicit root report can declare that work ready/dropped. */
+  /** Reconcile legacy projections from an already persisted native outcome.
+   * Never resubmit the original request merely to obtain an optional report. */
+  private reconcileFinishedTasks(): void {
+    const ids = this.store.taskTransaction(sql => sql.prepare(`SELECT id FROM bot_tasks WHERE status='waiting'
+      AND json_extract(extra_json,'$.removedAt') IS NULL AND json_extract(extra_json,'$.outputCheckpoint') IS NULL
+      AND json_extract(extra_json,'$.turnOutcome.status') IN ('succeeded','failed','cancelled')
+      AND NOT EXISTS(SELECT 1 FROM bot_task_effects e WHERE e.task_id=bot_tasks.id AND e.state IN ('pending','unknown'))
+      AND NOT EXISTS(SELECT 1 FROM bot_task_questions q WHERE q.task_id=bot_tasks.id AND q.state='queued')
+      ORDER BY updated_at,id LIMIT 100`).all() as Array<{ id: string }>);
+    for (const { id } of ids) {
+      const task = this.store.getTask(id); if (!task || this.taskRuns.has(id)) continue;
+      const outcome = task.extra.turnOutcome as { status: BotDshResult['status']; eventId?: string };
+      this.settleWorkerTurn(task, { sessionId: task.sessionId ?? BotDshBrain.sessionId(`worker-${id}`),
+        eventId: outcome.eventId ?? `work-${id}`, status: outcome.status, text: task.summary ?? '', error: task.error });
+    }
+  }
+  /** Native terminal receipts close normal work. Reports explain incomplete
+   * segments; only real questions or uncertain effects can require an answer. */
   private settleWorkerTurn(task: BotTask, result: BotDshResult): void {
     const current = this.store.getTask(task.id); if (!current || current.status === 'paused' || ['succeeded', 'failed', 'cancelled'].includes(current.status)) return;
     this.store.updateTask(task.id, { sessionId: result.sessionId, extra: { ...current.extra,
@@ -1574,21 +1683,34 @@ export class BotService {
       this.store.setMetadata(`task-control:${task.id}:${intent!.id}`, JSON.stringify({ fingerprint: digest(intent!.text), state: 'continuation' }));
       this.changed(task.conversationId); return;
     }
+    const question = this.taskRuntime.attention(task.id);
+    if (question?.state === 'queued') {
+      this.store.updateTask(task.id, { status: 'waiting', summary: result.text || report?.summary, extra: { ...this.store.getTask(task.id)!.extra,
+        progress: { phase: 'waiting-question', detail: '执行器提出了需要回答的问题。', updatedAt: new Date().toISOString() } } });
+      this.changed(task.conversationId); return;
+    }
     const verified = report && this.taskReports.readyIsCurrent(current, report);
     if (report?.state === 'failed') { this.finishTask(current, 'failed', report.summary, report.summary, result.sessionId); return; }
     if (report && ['ready', 'dropped'].includes(report.state) && verified) {
       this.finishTask(current, 'succeeded', result.text || report.summary, undefined, result.sessionId); return;
     }
-    const phase = !report || !verified && report.state === 'ready' ? 'awaiting-report' : report.state === 'blocked' ? 'blocked' : 'waiting-event';
-    const detail = phase === 'awaiting-report' ? '执行轮次已结束，业务完成尚未得到有效报告；沿原任务补充核验后继续。'
-      : report!.state === 'blocked' ? report!.summary : '当前执行段已结束，任务等待后续事件或指导。';
+    // A missing or stale optional report must not leave a finished native turn
+    // permanently open. All root tool effects were reconciled above.
+    if (!report || ['ready', 'dropped'].includes(report.state)) {
+      const latest = this.store.getTask(task.id)!;
+      this.store.updateTask(task.id, { extra: { ...latest.extra, completionBasis: verified ? 'verified-report' : 'native-terminal' } });
+      this.finishTask(this.store.getTask(task.id)!, 'succeeded', result.text || report?.summary, undefined, result.sessionId); return;
+    }
+    const phase = report.state === 'blocked' ? 'blocked' : report.state === 'waiting' ? 'waiting-event' : 'incomplete';
+    const detail = report.summary;
     const latest = this.store.getTask(task.id)!;
-    this.store.updateTask(task.id, { status: 'waiting', summary: report?.summary ?? result.text, error: '', extra: { ...latest.extra,
+    this.store.updateTask(task.id, { status: 'paused', summary: report.summary || result.text, error: '', extra: { ...latest.extra,
+      pauseOrigin: 'router', userPaused: false, pausedAt: new Date().toISOString(), pauseReason: phase,
       progress: { phase, detail, updatedAt: new Date().toISOString() } } });
     const source = this.store.getEvent(task.sourceEventId)!;
     this.store.enqueueTaskNotice({ conversationId: task.conversationId, senderId: 'task-service', senderName: '任务回执', source: 'task',
       sourceMessageId: `task-open:${task.id}:${report?.callId ?? String(latest.extra.taskContinuationId ?? 'initial')}`, recipientIds: [task.companionId], kind: 'task_progress',
-      content: `任务 ${task.id} 保持未完成。${detail}\n${(report?.summary ?? result.text).slice(0, 12000)}`,
+      content: `任务 ${task.id} 已暂停，保留当前结果。${detail}\n${result.text.slice(0, 12000)}`,
       correlationId: source.correlationId, causationId: source.id, payload: { taskId: task.id, reportState: report?.state ?? 'missing', hop: derivedCause(source).hop } });
     this.scheduler.wake(); this.changed(task.conversationId);
   }
@@ -1614,7 +1736,15 @@ export class BotService {
       payload: { taskId: task.id, attemptId: task.attemptId, hop: derivedCause(source).hop } });
     this.scheduler.wake();
   }
+  private suppressStoppedTaskNotices(taskId: string, controllingEventId?: string): void {
+    const notices = this.store.taskTransaction(sql => sql.prepare(`SELECT id FROM bot_inbox WHERE source='task'
+      AND status IN ('queued','running') AND json_extract(payload_json,'$.taskId')=?`).all(taskId) as Array<{ id: string }>);
+    for (const notice of notices) if (notice.id !== controllingEventId) {
+      this.store.cancelEvent(notice.id, true); this.scheduler.cancel(notice.id);
+    }
+  }
   private async controlTask(task: BotTask, operation: 'status' | 'send' | 'cancel' | 'answer' | 'resume' | 'continue' | 'pause' | 'resume_paused' | 'remove', text?: string, messageId: string = randomUUID(), input: Omit<BotTaskControlInput, 'requestId' | 'text'> = { caller: 'brain' }): Promise<unknown> {
+    if (!['status', 'cancel', 'pause', 'remove'].includes(operation) && this.store.getCompanion(task.companionId)?.enabled === false) throw new Error('伙伴已关闭，请先启用后再继续任务。');
     const userControl = input.caller === 'user' || input.source === 'user';
     let routerControl = false;
     if (!userControl && input.caller === 'brain' && input.sourceEventId && ['cancel', 'pause', 'resume_paused', 'remove', 'continue'].includes(operation)) {
@@ -1629,11 +1759,20 @@ export class BotService {
     if (!['cancel', 'remove'].includes(operation) && this.store.taskSourcesWithdrawn(task.id)) throw new Error('任务输入的授权来源已撤回，不能继续使用其摘要或文件。');
     if (operation === 'remove') {
       if (!userControl && !routerControl) throw new Error('主脑只能清理当前聊天中自己的任务记录。');
+      const current = this.store.getTask(task.id)!;
+      if (!['succeeded', 'failed', 'cancelled'].includes(current.status))
+        await this.controlTask(current, 'cancel', undefined, `${messageId}:cancel`, input);
       const result = await clearBotTaskHistory(this.store, { conversationId: task.conversationId, taskId: task.id, requestId: messageId, companionId: input.caller === 'brain' ? task.companionId : undefined });
+      this.suppressStoppedTaskNotices(task.id, input.sourceEventId);
       this.changed(task.conversationId); return result;
     }
     if (task.extra.removedAt) throw new Error('任务记录已移除。');
-    if (operation === 'status') return this.taskRuntime.card(task);
+    if (operation === 'status') {
+      const event = input.sourceEventId ? this.store.getEvent(input.sourceEventId) : undefined;
+      const attention = event?.source === 'task' && event.payload.taskId === task.id && typeof event.payload.attention === 'string'
+        && event.payload.attention.startsWith('question:') ? event.payload.attention.slice(9) : undefined;
+      return input.caller === 'brain' ? this.taskRuntime.routerStatus(task, attention) : this.taskRuntime.card(task);
+    }
     if (operation === 'answer' || operation === 'send') {
       await this.upgradeTaskAccess(task); task = this.store.getTask(task.id)!;
       // An access/Host wait yields to membership changes and withdrawal. A
@@ -1723,7 +1862,7 @@ export class BotService {
         this.maintainSafely(); this.changed(task.conversationId);
         return { taskId: task.id, accepted: true, meaning: '用户的后续指导已保存，沿原任务、原授权和会话继续；不会重发原始执行。' };
       }
-      if (current.status === 'waiting' && current.extra.turnOutcome) {
+      if ((current.status === 'waiting' || current.status === 'paused' && current.extra.pauseOrigin === 'router' && current.extra.userPaused !== true) && current.extra.turnOutcome) {
         // The previous native segment has a terminal receipt. Reopen it with
         // a new guidance receipt, never by replaying the original work input.
         this.store.updateTask(task.id, { status: 'queued', extra: { ...current.extra,
@@ -1748,6 +1887,7 @@ export class BotService {
         this.store.updateTask(task.id, { extra: { ...current.extra, humanStopped: true, humanStoppedAt: new Date().toISOString() } });
         this.store.setMetadata(`task-cancel:${task.id}:${messageId}`, JSON.stringify({ acceptedAt: new Date().toISOString(), humanStopped: true }));
       });
+      this.suppressStoppedTaskNotices(task.id, input.sourceEventId);
       this.changed(task.conversationId);
       return { taskId: task.id, status: current.status, humanStopped: true, followupAvailable: false, confirmed: true,
         meaning: '已撤回此任务的后续自动接续授权，保留此前真实完成或失败结果。' };
@@ -1767,13 +1907,14 @@ export class BotService {
       this.toolServer.releaseWorker(`worker-${task.id}`);
       void this.flushExecutorControl(task.id);
       this.finishTask(this.store.getTask(task.id)!, 'cancelled', current.summary ?? '');
+      this.suppressStoppedTaskNotices(task.id, input.sourceEventId);
       this.maintainSafely(); this.changed(task.conversationId);
     }
     const result = this.store.getTask(task.id)!;
     return { taskId: task.id, cancelRequested: result.extra.cancelRequested === true, status: result.status, confirmed: result.status === 'cancelled',
       meaning: result.status === 'cancelled' ? '已停止。' : '任务此前已经结束，保留真实执行结果。' };
   }
-  private async controlQueue(conversationId: string, operation: 'cancel_queued' | 'cancel_all' | 'clear_finished', requestId: string, companionId?: string): Promise<unknown> {
+  private async controlQueue(conversationId: string, operation: 'cancel_queued' | 'cancel_all' | 'clear_finished', requestId: string, companionId?: string, controllingEventId?: string): Promise<unknown> {
     if (!this.store.getConversation(conversationId)) throw new Error('聊天不存在。');
     if (operation === 'clear_finished') { const result = await clearBotTaskHistory(this.store, { conversationId, requestId, companionId }); this.changed(conversationId); return result; }
     const key = `task-queue-control:${conversationId}:${requestId}`, fingerprint = digest(JSON.stringify({ operation, companionId }));
@@ -1791,7 +1932,7 @@ export class BotService {
     });
     if (receipt.fingerprint !== fingerprint) throw new Error('同一队列操作标识对应不同请求。');
     for (const id of receipt.ids) {
-      const task = this.store.getTask(id); if (task) await this.controlTask(task, 'cancel', undefined, `${requestId}:${id}`, { caller: 'user' });
+      const task = this.store.getTask(id); if (task) await this.controlTask(task, 'cancel', undefined, `${requestId}:${id}`, { caller: 'user', sourceEventId: controllingEventId });
     }
     this.publishQueueBatches();
     const items = receipt.ids.map(id => this.store.getTask(id)).filter((task): task is BotTask => !!task).map(task => ({ taskId: task.id, status: task.status,
@@ -1853,12 +1994,14 @@ export class BotService {
   }
   private async maintain(): Promise<void> {
     if (this.closed) return;
+    this.reconcileFinishedTasks();
     this.publishQueueBatches();
     const cleanup = this.store.taskTransaction(sql => sql.prepare(`SELECT id FROM bot_tasks WHERE json_extract(extra_json,'$.executorControl.state')='pending'
       AND COALESCE(json_extract(extra_json,'$.executorControl.retryAt'),0)<=? ORDER BY updated_at,id LIMIT 8`).all(Date.now()) as Array<{ id: string }>);
-    for (const task of cleanup) if (this.executorControlRuns.size < 4) void this.flushExecutorControl(task.id);
+    for (const task of cleanup) if (this.executorControlRuns.size < 4 && this.store.getCompanion(this.store.getTask(task.id)?.companionId ?? '')?.enabled !== false) void this.flushExecutorControl(task.id);
     this.memoryMaintenance.poll();
     for (const laneId of this.store.readyNativeRetirementLanes()) {
+      if (this.store.getCompanion(this.store.getLane(laneId)?.companionId ?? '')?.enabled === false) continue;
       if (this.retirementRuns.size >= 2) break;
       if (this.retirementRuns.has(laneId)) continue;
       const operation = this.retention.reconcileCancelled(laneId, this.maintenanceAbort.signal).catch(error => {
@@ -1951,6 +2094,8 @@ export class BotService {
     this.maintenanceAbort.abort(Object.assign(new Error('应用关闭，记忆作业保留待恢复。'), { code: 'BOT_SUSPEND' }));
     await this.memoryMaintenance.close();
     await this.scheduler.close();
+    await Promise.allSettled([...this.companionControls.values()]);
+    await this.restoringCompanions;
     for (const active of this.taskRuns.values()) active.controller.abort(Object.assign(new Error('应用关闭，原任务保留待恢复。'), { code: 'BOT_SUSPEND' }));
     await Promise.allSettled([...this.taskRuns.values()].map(item => item.promise));
     await Promise.allSettled([...this.taskControlRuns.values()]);
@@ -1961,8 +2106,9 @@ export class BotService {
     await this.developmentCleanupRun;
     await this.historyClearRun;
     await Promise.allSettled([...this.groupAttentionRuns.values()]);
+    await this.toolServer.close();
     const outcomes = await Promise.allSettled([this.options.brain.close(), this.options.memory.close(), this.memoryRun]);
-    try { await this.toolServer.close(); } finally { this.store.close(); }
+    this.store.close();
     const errors = outcomes.flatMap(outcome => outcome.status === 'rejected' ? [outcome.reason as unknown] : []);
     if (errors.length) throw new AggregateError(errors, '伙伴资源关闭时存在错误，耐久记录已保留。');
   }

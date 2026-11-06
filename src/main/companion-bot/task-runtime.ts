@@ -88,8 +88,29 @@ export class BotTaskRuntime {
       diagnostic: details && (recoveryMessage || recoveryStage || attempts > 0) ? { attempts: Number.isSafeInteger(attempts) && attempts >= 0 ? attempts : 0, stage: recoveryStage, message: recoveryMessage ?? '此前没有保留更详细的连接错误。' } : undefined,
       activity: details && Array.isArray(task.extra.activity) ? task.extra.activity as BotTaskCard['activity'] : undefined,
       progress: task.extra.progress && typeof task.extra.progress === 'object' ? task.extra.progress as BotTaskCard['progress'] : undefined,
-      summary: details ? task.summary : undefined, summaryIsPreview: details ? task.summaryIsPreview : undefined, error: task.error, attention: details ? this.attention(task.id) : undefined,
+      summary: details ? task.summary : undefined, summaryIsPreview: details ? task.summaryIsPreview : undefined, error: task.error,
+      waitingForAnswer: task.status === 'waiting' && this.store.taskTransaction(sql => Boolean(sql.prepare("SELECT 1 FROM bot_task_questions WHERE task_id=? AND state='queued' LIMIT 1").get(task.id))),
+      attention: details ? this.attention(task.id) : undefined,
       pendingEffects: details ? this.pendingEffects(task.id) : undefined, outputs: details ? this.store.publicationsForTask(task.id) : undefined };
+  }
+  /** Router status is a read-only snapshot, not a worker transcript. Keep the
+   * original goal/question intact while paging long result text separately. */
+  routerStatus(task: BotTask, questionId?: string) {
+    const card = this.card(task), chars = Array.from(task.summary ?? ''), preview = chars.slice(0, 1200).join('');
+    const effects = card.pendingEffects ?? [], outputs = card.outputs ?? [];
+    return { ...card, summary: task.summary === undefined ? undefined : preview,
+      summaryIsPreview: chars.length > 1200 || card.summaryIsPreview === true,
+      result: { totalChars: chars.length, complete: chars.length <= 1200,
+        ...(chars.length > 1200 ? { readTool: 'dsh_task_result_read', nextOffset: 1200 } : {}) },
+      report: card.report ? { ...card.report, summary: card.report.summary.slice(0, 1200),
+        verification: card.report.verification.slice(0, 3).map(value => value.slice(0, 300)) } : undefined,
+      activity: card.activity?.slice(-6).map(item => ({ id: item.id, phase: item.phase, toolName: item.toolName,
+        createdAt: item.createdAt, updatedAt: item.updatedAt })),
+      pendingEffectCount: effects.length,
+      pendingEffects: effects.slice(0, 8).map(effect => ({ callId: effect.callId, toolName: effect.toolName, state: effect.state,
+        argsHash: effect.argsHash, nativeSessionId: effect.nativeSessionId, nativeCallId: effect.nativeCallId })),
+      outputCount: outputs.length, outputs: outputs.slice(0, 8),
+      attention: questionId ? this.attention(task.id, questionId) : card.attention };
   }
   page(input: { conversationId: string; companionId?: string; filter: 'all' | 'active' | 'done' | 'issues'; query?: string; page: number; limit: number }) {
     if (!this.store.getConversation(input.conversationId)) throw new Error('聊天不存在。');
@@ -109,9 +130,10 @@ export class BotTaskRuntime {
       return { items, total, page, limit: input.limit, activeCount: Number(counts.active), queuedCount: Number(counts.queued), finishedCount: Number(finished.count) };
     });
   }
-  attention(taskId: string): BotTaskAttention | undefined {
+  attention(taskId: string, questionId?: string): BotTaskAttention | undefined {
     return this.store.taskTransaction(sql => {
-      const value = sql.prepare("SELECT * FROM bot_task_questions WHERE task_id=? AND state<>'closed' ORDER BY created_at,question_id LIMIT 1").get(taskId);
+      const value = sql.prepare(`SELECT * FROM bot_task_questions WHERE task_id=? AND state<>'closed' ${questionId ? 'AND question_id=?' : ''}
+        ORDER BY CASE state WHEN 'queued' THEN 0 ELSE 1 END,created_at,question_id LIMIT 1`).get(taskId, ...(questionId ? [questionId] : []));
       return value ? this.questionRow(row(value)) : undefined;
     });
   }

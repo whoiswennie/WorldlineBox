@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
 import { BotAppBrainStore } from '../../src/main/companion-bot/app-brain-store';
 import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
-import { projectAppHistoricalPrompt } from '../../src/main/companion-bot/app-brain-history-view';
+import { projectAppHistoricalPrompt, staleTaskNoticeIds } from '../../src/main/companion-bot/app-brain-history-view';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) {
@@ -18,6 +18,18 @@ const prompt = (eventId: string, memory = '被动记忆短卡', extra: Record<st
   history: [{ id: 'late-peer-' + eventId, senderId: 'bob', senderName: 'Bob', senderType: 'companion', content: '群里迟到的伙伴补充：只搬右侧的书。', createdAt: '2026-11-03T05:59:59Z' }],
   historyCoverage: { selected: 1, omitted: 0 }, room: { kind: 'group', title: '伙伴群', members: [{ id: 'alice', name: 'Alice' }, { id: 'bob', name: 'Bob' }] },
   memoryEvidence: memory, memoryEvidenceOmitted: false, tasks: [{ id: 'old-task', status: 'running', summary: '旧任务动态快照' }], ...extra,
+});
+
+it('omits old closed-task callbacks from live model context while retaining explicit selected-task discussion and raw history', () => {
+  const notice = JSON.parse(prompt('old-notice')); notice.trigger.source = 'task'; notice.trigger.task = { taskId: 'stopped' };
+  const past = [{ turn: { eventId: 'old-notice', laneId: 'logical-lane', prompt: JSON.stringify(notice) } }];
+  const current = { eventId: 'new-chat', laneId: 'logical-lane', prompt: prompt('new-chat', '旧记忆仍说任务在等待', {
+    taskPolicy: { authority: 'current-host-state', endedTaskIds: ['stopped'], pausedTaskIds: [] } }) };
+  expect([...staleTaskNoticeIds(current, past)]).toEqual(['old-notice']);
+  expect(JSON.parse(past[0]!.turn.prompt).trigger.task.taskId).toBe('stopped');
+  const selected = JSON.parse(current.prompt); selected.trigger.taskFollowup = { taskId: 'stopped' };
+  expect(staleTaskNoticeIds({ ...current, prompt: JSON.stringify(selected) }, past).size).toBe(0);
+  expect(staleTaskNoticeIds({ ...current, eventId: 'not-the-host-event' }, past).size).toBe(0);
 });
 
 it('projects trusted historical envelopes into source-attributed dialogue without repeating dynamic RAG or task cards', () => {
@@ -81,4 +93,26 @@ it('sends the latest passive card once while preserving original dialogue and la
     model: { model: 'fixture', apiFormat: 'openai_chat', apiKey: 'no-billing', baseUrl: 'https://fixture.invalid', contextWindow: 32768, maxTokens: 256 } }); }
   finally { await brain.close(); }
   expect(index).toBe(4);
+});
+
+it('does not resend a closed task notification and its old assistant reminder on the next ordinary App request', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'bot-app-history-')); roots.push(root);
+  let calls = 0;
+  const brain = new BotAppBrain({ root, fetchFn: async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    if (calls++) {
+      expect(JSON.stringify(body.messages)).not.toContain('OBSOLETE_TASK_REMINDER');
+      const current = JSON.parse(body.messages.at(-1).content);
+      expect(current.taskPolicy.endedTaskIds).toEqual(['old-task']);
+    }
+    return Response.json({ choices: [{ message: { content: calls === 1 ? 'OBSOLETE_TASK_REMINDER' : '我们聊今天的新话题。' }, finish_reason: 'stop' }] });
+  } });
+  const run = { laneId: 'logical-lane', cwd: root, system: '当前宿主任务状态优先；不主动提醒已结束任务。', tools: [],
+    callback: { url: 'http://127.0.0.1:1/bot/tool', token: 'unused' }, model: { model: 'fixture', apiFormat: 'openai_chat' as const, apiKey: 'fixture', baseUrl: 'https://fixture.invalid', contextWindow: 100000, maxTokens: 256 } };
+  const old = JSON.parse(prompt('notice')); old.trigger.source = 'task'; old.trigger.task = { taskId: 'old-task' }; old.trigger.content = 'OBSOLETE_TASK_REMINDER';
+  try {
+    await brain.run({ ...run, eventId: 'notice', prompt: JSON.stringify(old) });
+    await brain.run({ ...run, eventId: 'fresh', prompt: prompt('fresh', '旧日记提过它', { taskPolicy: { authority: 'current-host-state', endedTaskIds: ['old-task'], pausedTaskIds: [] } }) });
+  } finally { await brain.close(); }
+  expect(calls).toBe(2);
 });

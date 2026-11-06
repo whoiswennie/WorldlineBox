@@ -4,6 +4,7 @@ import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { botProjectDirectory, prepareBotWorkspace, attachBotWorkspace as registerBotWorkspace } from './workspace.js';
+import { inspectNativeIdle } from './idle.js';
 
 export const name = 'worldlinebox-bridge';
 export const inject = ['loader', 'sessionController', 'workspaceRegistry', 'agents', 'sessions', 'tools', 'agentPresets', 'llm'];
@@ -17,6 +18,21 @@ const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'wo
 const observationalWorkerTools = new Set(['read', 'read_image', 'glob', 'grep', 'present', 'working_directory', 'web_search', 'web_fetch',
   'ask_user_question', 'job_output', 'job_list', 'skill', 'cordis_inspect_list', 'cordis_inspect_query']);
 const maxWorkerContinuations = 4;
+/** Reference data is selected from actual native registrations, never from
+ * installed-package counts. Schemas are disclosed only by the detail query. */
+export function capabilityCatalogPage(tools, skills, query) {
+  const category = query.category ?? 'all', offset = query.offset ?? 0, limit = query.limit ?? 20;
+  if (!['tool', 'skill', 'all'].includes(category) || typeof (query.query ?? '') !== 'string' || (query.query?.length ?? 0) > 200
+    || !Number.isSafeInteger(offset) || offset < 0 || offset > 1000000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 30) throw new Error('Invalid capability catalog page.');
+  const search = (query.query ?? '').trim().toLocaleLowerCase();
+  const entries = [...(category === 'skill' ? [] : tools.map(tool => ({ kind: 'tool', name: tool.name, description: String(tool.description ?? '').slice(0, 2000) }))),
+    ...(category === 'tool' ? [] : skills.map(skill => ({ kind: 'skill', name: skill.name, description: String(skill.description ?? '').slice(0, 2000) })))];
+  const selected = entries.filter(entry => !search || (entry.name + ' ' + entry.description).toLocaleLowerCase().includes(search))
+    .sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  return { kind: 'catalog', category, ...(query.query ? { query: query.query } : {}), offset, limit, total: selected.length,
+    items: selected.slice(offset, offset + limit), ...(offset + limit < selected.length ? { nextOffset: offset + limit } : {}),
+    source: 'native-agent-scope', trust: 'capability_reference_data' };
+}
 const setWorkerAccess = (agent, full) => {
   if (full) {
     // Select the official per-Session bundle (sandbox + approval), never its
@@ -134,9 +150,16 @@ function observationImages(input, record) {
 /** A normal profile plugin. Native Web owns Agents, presets, policy and persistence. */
 export async function registerCompanionPreset(ctx) {
   const id = "worldlinebox-companion-v2";
-  if ((await ctx.agentPresets.list()).some(row => row.id === id)) return { id, release: async () => {} };
+  if ((await ctx.agentPresets.list()).some(row => row.id === id)) return { id, revision: 'externally-managed',
+    refresh: async () => ({ id, revision: 'externally-managed', sourceRevision: 'externally-managed' }),
+    use: action => action({ id, revision: 'externally-managed', sourceRevision: 'externally-managed' }), release: async () => {} };
     const [{ load }, { entryListSchema }] = await Promise.all([import('js-yaml'), import('@deepseek-ai/cordis-plugin-include')]);
+  let release, definition, revision, sourceRevision, failure, changes = Promise.resolve();
+  const refresh = () => {
+    const operation = changes.then(async () => {
     const document = await ctx.agentPresets.readDocument(ctx.agentPresets.defaultId);
+    sourceRevision = createHash('sha256').update(document.content).digest('hex');
+    if (revision === sourceRevision) return { id, revision, sourceRevision };
     const plugins = load(document.content, { schema: entryListSchema });
     let found = false;
     const configure = rows => {
@@ -151,8 +174,35 @@ export async function registerCompanionPreset(ctx) {
     configure(plugins);
     if (!found) plugins.push({ name: '@deepseek-ai/dsh-compaction-basic', config: { auto: true, thresholdRatio: 0.6, retainRatio: 0.2,
       headroomTokens: 2048, maxTokens: 2048, compactionRetries: 1, maxOverflowRetries: 1 } });
-    const release = await ctx.agentPresets.register({ id, name: 'WorldlineBox Super Agent', plugins });
-    return { id, release };
+    const next = { id, name: 'WorldlineBox Super Agent', plugins }, previous = definition;
+    const retired = release?.();
+    // Native unregister removes the definition synchronously before its first
+    // await; register publishes its replacement synchronously. Keep this pair
+    // contiguous so native callers never observe a missing preset identity.
+    const registration = ctx.agentPresets.register(next);
+    let candidate;
+    try {
+      candidate = await registration; await retired;
+      // A startup Host row must not ask for a global activation diagnostic
+      // while that same row is still activating. Later HTTP refreshes can.
+      if (previous) { const actual = await ctx.agentPresets.resolve(id); if (actual.broken) throw Error(actual.broken); }
+      release = candidate; definition = next; revision = sourceRevision; failure = undefined;
+    } catch (error) {
+      const rejected = candidate?.();
+      const restored = previous ? ctx.agentPresets.register(previous) : undefined;
+      await rejected; if (!restored) throw error;
+      release = await restored; failure = String(error.message ?? error).slice(0, 1000);
+    }
+    return { id, revision, sourceRevision, ...(failure ? { reason: failure } : {}) };
+    });
+    changes = operation.catch(() => undefined); return operation;
+  };
+  const use = action => {
+    const operation = changes.then(() => action({ id, revision, sourceRevision, ...(failure ? { reason: failure } : {}) }));
+    changes = operation.catch(() => undefined); return operation;
+  };
+  await refresh();
+  return { id, get revision() { return revision; }, refresh, use, release: async () => { await changes; await release?.(); } };
 }
 
 export async function apply(ctx) {
@@ -165,8 +215,9 @@ export async function apply(ctx) {
   if (!token) return;
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('The WorldlineBox Host capability is invalid.');
   const sessions = new Map(), requests = new Map(), clients = new Set(), workerOwners = new Map(), workerAgents = new Map(), botOpenings = new Map(), botCancelChecks = new Map();
+  const pendingWorkerQuestions = new Set();
+  let pluginMutations = 0;
   let botProvider;
-  const botPreset = Promise.resolve(registeredPreset.id);
   let closing = false;
   const authorized = request => {
     const value = request.headers.authorization;
@@ -326,7 +377,7 @@ export async function apply(ctx) {
     }
   };
   const service = agent => agent.ctx.get('skills');
-  const capabilities = async (record, query = { kind: 'overview' }) => {
+  const readCapabilities = async (record, query = { kind: 'overview' }, presetState) => {
     const agent = record.agent;
     const allTools = ctx.tools.schemas(agent);
     const tools = record.policy.cognitiveOnly ? [] : allTools.filter(tool => !record.policy.tools || record.policy.tools.includes(tool.name) || ['report_to_parent', 'wait_for_parent'].includes(tool.name) && record.policy.parentMailbox);
@@ -335,6 +386,18 @@ export async function apply(ctx) {
     const skills = record.policy.cognitiveOnly ? [] : allSkills.filter(skill => !record.policy.skills || record.policy.skills.includes(skill.name));
     const effective = { digest: createHash('sha256').update(JSON.stringify({ preset: record.preset, tools, skills })).digest('hex'),
       mode: record.preset === 'ptc' ? 'ptc' : 'native', preset: record.preset, toolCount: tools.length, skillCount: skills.length };
+    const stale = presetState ? [...sessions.values()].filter(entry => entry.bot?.role === 'worker' && entry.presetRevision !== presetState.revision) : [];
+    const scope = presetState ? { kind: 'companion-worker', revision: record.presetRevision ?? presetState.revision,
+      sourceRevision: presetState.sourceRevision, pending: stale.length > 0 || record.presetRevision !== presetState.revision || !!presetState.reason,
+      deferredWorkers: stale.length, deferredActiveWorkers: stale.filter(entry => entry.status === 'running' || entry.agent.status === 'running').length,
+      ...((presetState.reason || stale.length || record.presetDeferredReason) ? { reason: presetState.reason || record.presetDeferredReason || '已有任务仍绑定其原生能力作用域；新的作用域能力供新任务使用。' } : {}) } : undefined;
+    if (query.kind === 'summary' || query.kind === 'catalog') {
+      const result = { modes: ['native', ...((await ctx.agentPresets.list()).some(preset => preset.id === 'ptc') ? ['ptc'] : [])], preset: record.preset,
+        tools: [], skills: [], toolsTotal: tools.length, skillsTotal: skills.length, truncated: tools.length > 0 || skills.length > 0,
+        toolRestrictions: typeof ctx.tools.guard === 'function', skillSelection: true, effective, ...(scope ? { scope } : {}) };
+      if (query.kind === 'summary') return result;
+      return { ...result, catalog: capabilityCatalogPage(tools, skills, query) };
+    }
     let detail;
     if (query.kind === 'tool') detail = { kind: 'tool', name: query.name, available: tools.some(tool => tool.name === query.name),
       tool: tools.find(tool => tool.name === query.name), source: 'native-agent-scope', trust: 'capability_reference_data' };
@@ -356,7 +419,12 @@ export async function apply(ctx) {
       tools: tools.slice(0, 500).map(tool => ({ name: tool.name, description: String(tool.description ?? '').slice(0, 2000) })),
       skills: skills.slice(0, 500).map(skill => ({ name: skill.name, description: String(skill.description ?? '').slice(0, 2000) })),
       toolsTotal: tools.length, skillsTotal: skills.length, truncated: tools.length > 500 || skills.length > 500,
-      toolRestrictions: typeof ctx.tools.guard === 'function', skillSelection: true, effective, ...(detail ? { detail } : {}) };
+      toolRestrictions: typeof ctx.tools.guard === 'function', skillSelection: true, effective, ...(scope ? { scope } : {}), ...(detail ? { detail } : {}) };
+  };
+  const capabilities = async (record, query) => {
+    if (!record.companionCatalog && record.bot?.role !== 'worker') return readCapabilities(record, query);
+    await registeredPreset.refresh();
+    return registeredPreset.use(state => readCapabilities(record, query, state));
   };
   const continueWorkerOutput = async record => {
     if (record.bot?.role !== 'worker' || record.reason?.kind !== 'max-tokens' || record.cancelled || record.bot.suspended || closing) return false;
@@ -427,8 +495,8 @@ export async function apply(ctx) {
           }
         }
         if (await continueWorkerOutput(record)) continue;
-        // This is the native execution segment's outcome. Business completion
-        // belongs to the host's durable worker_report, not a completed turn.
+        // The host combines this native terminal receipt with effect proofs
+        // and any explicit incomplete-business report before closing its task.
         record.status = record.cancelled ? 'cancelled' : record.reason?.kind === 'completed' ? 'succeeded' : 'failed';
         if (record.bot?.eventId) await botWriteReceipt(record, { eventId: record.bot.eventId, status: 'complete',
           result: { eventId: record.bot.eventId, sessionId: record.id, status: record.status, text: record.text,
@@ -597,6 +665,8 @@ export async function apply(ctx) {
           ...(question.multi_select === undefined ? {} : { multiSelect: question.multi_select }) }));
         const questionId = 'question-' + createHash('sha256').update(record.bot.eventId + ':' + callId).digest('hex').slice(0, 48);
         let admitted = false;
+        pendingWorkerQuestions.add(record.id + ':' + callId);
+        try {
         while (!execution.signal.aborted) {
           try {
             const answer = await workerCallback(record, admitted ? 'worker_question_result' : 'worker_question',
@@ -618,6 +688,7 @@ export async function apply(ctx) {
           await wait(1000);
         }
         execution.signal.throwIfAborted();
+        } finally { pendingWorkerQuestions.delete(record.id + ':' + callId); }
       }
       if (!observationalWorkerTools.has(execution.name)) {
         const argsHash = createHash('sha256').update(JSON.stringify(execution.arguments)).digest('hex');
@@ -657,7 +728,7 @@ export async function apply(ctx) {
       // so restoring an older task does not require replacing its Session.
       record.disposers.push(record.agent.ctx.tools.register({
         name: 'worker_report',
-        description: '提交本任务的结构化业务报告。progress为重要阶段，waiting等待后续事件，blocked受阻，failed失败，dropped无需继续；当前目标已完成才用ready，并列出实际核验依据。最终正文或本轮正常结束不会自动完成任务。ready后若又修改产物须重新核验报告；不要求一定创建文件。只有根执行器可提交，子Agent向父Agent汇报。',
+        description: '提交本任务的补充结构化业务报告。progress为重要阶段，waiting等待后续事件，blocked受阻，failed失败，dropped无需继续；当前目标已完成才用ready，并列出实际核验依据。原生终态及真实工具回执决定任务完成，缺此可选报告不表示等待用户。ready后若又修改产物须重新核验报告；不要求一定创建文件。只有根执行器可提交，子Agent向父Agent汇报。',
         parameters: { type: 'object', properties: { state: { type: 'string', enum: ['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped'] },
           summary: { type: 'string', minLength: 1, maxLength: 16000 }, verification: { type: 'array', maxItems: 16, items: { type: 'string', minLength: 1, maxLength: 2000 } } },
           required: ['state', 'summary', 'verification'], additionalProperties: false },
@@ -743,7 +814,7 @@ export async function apply(ctx) {
     for (const agent of agents) { setWorkerAccess(agent, true); await ctx.sessions.flush(agent.session); }
     return { previousAccess, workerAccess: 'full', sessionId: record.id, sameSessionId: record.id, eventId: record.bot.eventId };
   };
-  const ensureBotPreset = () => botPreset;
+  const ensureBotPreset = () => registeredPreset.refresh();
   const createBot = async input => {
     const record = { id: input.sessionId, cwd: input.cwd, preset: 'companion', policy: input.role === 'brain' ? { tools: input.tools.map(tool => tool.name) }
       : input.workerAccess === 'full' ? {} : { tools: [...scopedWorkerTools, ...(input.workerTools ?? []).map(tool => tool.name)] },
@@ -751,9 +822,13 @@ export async function apply(ctx) {
       artifacts: [], disposers: [], eventBytes: 0, bot: input, lastUsed: Date.now() };
     const project = botProjectDirectory(input);
     await mkdir(input.cwd, { recursive: true }); await mkdir(project, { recursive: true });
-    const preset = await ensureBotPreset();
+    const currentPreset = await ensureBotPreset(), preset = currentPreset.id;
+    record.preset = preset; record.presetRevision = currentPreset.revision;
     const setup = async (scope, agent) => {
-      await ctx.agentPresets.mount(scope, preset);
+      await registeredPreset.use(async actual => {
+        await ctx.agentPresets.mount(scope, actual.id);
+        record.preset = actual.id; record.presetRevision = actual.revision;
+      });
       record.agent = agent; sessions.set(record.id, record); decorateBot(record);
       // A recovered cancel intent must not wake a persisted worker inbox
       // before the subsequent authenticated cancel reconciliation request.
@@ -764,6 +839,7 @@ export async function apply(ctx) {
       }
       await prepareBotWorkspace(ctx, record, input);
     };
+    record.setup = setup;
     try {
       try { record.handle = await ctx.agents.resume({ resumeSessionId: input.sessionId, agentOptions: input.selection, setup }); }
       catch (error) {
@@ -784,6 +860,15 @@ export async function apply(ctx) {
       if (record.status === 'running') void settle(record);
       return record;
     } catch (error) { sessions.delete(record.id); for (const dispose of record.disposers) dispose(); throw error; }
+  };
+  const deferWorkerPresetRefresh = (record, target) => {
+    if (record.presetRevision === target.revision || record.bot?.role !== 'worker') return;
+    // runMaintenance can park a wake only while its task remains active. Native
+    // handle.dispose then awaits scope/persistence teardown before unregistering
+    // the Agent, and has no public atomic ingress-close/rebind transaction.
+    // Retain the original scope instead of losing direct Workbench/plugin input
+    // during that asynchronous gap. New tasks mount the current generation.
+    record.presetDeferredReason = '已有任务保留原生能力作用域；当前运行时没有带入站隔离的会话迁移接口，新作用域能力将用于新任务。';
   };
   const create = async input => {
     if (typeof input.sessionId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(input.sessionId)
@@ -928,6 +1013,10 @@ export async function apply(ctx) {
       if (request.method === 'GET' && url.pathname === '/health') { json(response, { protocol, pid: process.pid, profile: ctx.get('profileContext')?.name, home: process.env.DSH_HOME,
         botLanes: [...sessions.values()].filter(record => record.bot).length, botCompactions: [...sessions.values()].reduce((sum, record) => sum + (record.compactions ?? 0), 0),
         botRunningJobs: ownedJobs([...new Set([...sessions.values()].filter(record => record.bot).map(record => record.id).concat([...workerOwners.keys()]))]).length }); return; }
+      if (request.method === 'POST' && url.pathname === '/idle') {
+        await body(request);
+        json(response, await inspectNativeIdle(ctx, { sessions, botOpenings, botCancelChecks, pendingWorkerQuestions, pluginMutations, closing })); return;
+      }
       if (request.method === 'POST' && url.pathname === '/shutdown') {
         closing = true; json(response, { accepted: true }); setTimeout(() => process.emit('SIGTERM'), 20); return;
       }
@@ -1059,6 +1148,8 @@ export async function apply(ctx) {
         const selection = (await botProvider).configure(input.cancelIntent === true
           ? { apiFormat: 'openai_chat', model: 'cancel-only', baseUrl: 'http://127.0.0.1:1', apiKey: 'cancel-only' } : input.model);
         let record = sessions.get(input.sessionId);
+        const currentPreset = await ensureBotPreset();
+        if (record?.bot?.role === 'worker' && record.presetRevision !== currentPreset.revision) deferWorkerPresetRefresh(record, currentPreset);
         if (record?.backgroundStop) await record.backgroundStop;
         input.workerAccess ??= 'scoped';
         if (record && (!record.bot || record.bot.laneId !== input.laneId || record.bot.role !== input.role
@@ -1463,8 +1554,16 @@ export async function apply(ctx) {
       }
       if (request.method === 'POST' && url.pathname === '/capabilities') {
         const input = await body(request);
-        const preset = input.preset ?? ctx.agentPresets.defaultId;
-        const record = await create({ sessionId: input.sessionId + '-' + preset, cwd: input.cwd, preset });
+        const selected = input.companion === true ? await ensureBotPreset() : undefined;
+        const preset = selected?.id ?? input.preset ?? ctx.agentPresets.defaultId;
+        // A new declaration gets its own never-prompted discovery Session.
+        // This also works on native releases without turnBoundaryOf/select:
+        // a previous discovery Session is never guessed blank or recomposed.
+        const record = selected ? await registeredPreset.use(async actual => {
+          const record = await create({ sessionId: input.sessionId + '-' + preset + '-' + actual.revision.slice(0, 16), cwd: input.cwd, preset: actual.id });
+          record.companionCatalog = true; record.presetRevision = actual.revision;
+          return record;
+        }) : await create({ sessionId: input.sessionId + '-' + preset, cwd: input.cwd, preset });
         json(response, await capabilities(record, input.query)); return;
       }
       if (request.method === 'POST' && url.pathname === '/plugins') {
@@ -1473,12 +1572,13 @@ export async function apply(ctx) {
         const requestId = randomUUID();
         const disconnected = () => { if (!response.writableEnded && input.action === 'add') void manager.cancelInstall(requestId).catch(() => undefined); };
         response.once('close', disconnected);
+        pluginMutations++;
         try {
           const value = input.action === 'add' ? await manager.installBundle(input.spec, { requestId })
             : input.action === 'remove' ? await manager.removeBundle(input.spec)
             : input.action === 'toggle' ? await manager.setBundleEnabled(input.spec, input.enabled) : await manager.listBundles();
           json(response, value); return;
-        } finally { response.removeListener('close', disconnected); }
+        } finally { pluginMutations--; response.removeListener('close', disconnected); }
       }
       const match = /^\/sessions\/([A-Za-z0-9_-]+)\/(events|prompt|cancel|capabilities)$/.exec(url.pathname);
       const record = match && sessions.get(match[1]);

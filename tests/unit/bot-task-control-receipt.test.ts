@@ -31,7 +31,7 @@ async function fixture() {
   // No constructor starts a background lane, Host, memory encoder or provider.
   const service = Object.create(BotService.prototype) as BotService;
   Object.assign(service, { store, taskRuntime: runtime, companionRuntime: new BotCompanionRuntime(store), toolRuns,
-    taskRuns: new Map(), taskAccessUpgrades: new Map(), scheduler: { wake: vi.fn() },
+    taskRuns: new Map(), taskAccessUpgrades: new Map(), scheduler: { wake: vi.fn(), cancel: vi.fn() },
     toolServer: { releaseWorker: vi.fn() },
     changed: vi.fn(), maintainSafely: vi.fn(), taskProgress: vi.fn(), flushTaskControls: vi.fn(async () => undefined),
     flushExecutorControl: vi.fn(async () => undefined) });
@@ -81,8 +81,20 @@ it('lets the owning Router pause/resume its own work but never override a user p
   await expect(router.execute('resume_paused')).rejects.toThrow('用户暂停');
   expect(f.store.getTask('task-1')!.extra).toMatchObject({ pauseOrigin: 'user', userPaused: true });
   await f.controller.controlTask(f.store.getTask('task-1')!, 'cancel', undefined, 'human-stop', { caller: 'user' });
-  expect(await router.execute('resume_paused')).toMatchObject({ status: 'cancelled', accepted: false });
+  await expect(router.execute('resume_paused')).rejects.toThrow('有效运行事件');
   expect(f.store.getTask('task-1')!.status).toBe('cancelled');
+});
+
+it.each(['running', 'paused'] as const)('lets the Router discard a %s task in one call without a separate stop confirmation', async status => {
+  const f = await fixture(); f.task('task-1', status, { workerPrompt: 'PRIVATE_OLD_WORKER_INPUT', nativeAttempted: true });
+  const router = await routerTurn(f);
+  expect(await router.execute('remove')).toMatchObject({ cleared: 1 });
+  const task = f.store.getTask('task-1')!;
+  expect(task.status).toBe('cancelled'); expect(task.goal).toBe('');
+  expect(task.extra).toMatchObject({ removedAt: expect.any(String), executorControl: { kind: 'cancel' } });
+  expect(task.extra.workerPrompt).toBeUndefined();
+  expect(f.runtime.page({ conversationId: f.room.id, filter: 'all', page: 0, limit: 6 }).items).toEqual([]);
+  expect(() => f.store.updateTask(task.id, { status: 'running', summary: 'late result' })).toThrow('已结束');
 });
 
 it('lets the Router batch-stop and clear only its current conversation tasks and rejects worker access to Router tools', async () => {

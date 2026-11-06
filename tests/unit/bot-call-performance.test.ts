@@ -82,3 +82,12 @@ it('preserves continuous message emotion and binds only the neutral native clip,
   expect(Math.max(...snapshots.map(snapshot => snapshot.live2dParams.key7 ?? 0))).toBeLessThan(.2);
   expect(snapshots.some(snapshot => (snapshot.live2dParams.key7 ?? 0) > .01)).toBe(true);
 });
+
+it('smoothly turns the eyes toward a new pointer target instead of snapping across UI boundaries', () => {
+  const f = fixture(); f.performance.point(-1, -.6); const before = f.tick(.7).live2dParams.ParamEyeBallX!;
+  f.performance.point(1, .6); const immediate = f.tick(1 / 60).live2dParams.ParamEyeBallX!;
+  expect(before).toBeLessThan(-.8); expect(immediate).toBeLessThan(0);
+  expect(immediate - before).toBeLessThan(.4);
+  const settled = f.tick(.7).live2dParams;
+  expect(settled.ParamEyeBallX).toBeGreaterThan(.8); expect(settled.ParamEyeBallY).toBeGreaterThan(.4);
+});

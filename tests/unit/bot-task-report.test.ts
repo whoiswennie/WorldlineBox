@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,7 +62,7 @@ class Memory extends BotMemoryService {
 }
 class Brain extends BotDshBrain {
   workers: BotDshRun[] = [];
-  worker: (input: BotDshRun) => Promise<string> = async () => '这一轮正常结束，但没有声明业务完成。';
+  worker: (input: BotDshRun) => Promise<string> = async () => '原生执行器已完成三项事实的文字解释。';
   constructor() { super({ getHost: async () => { throw Error('No native Host in report fixture'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
     if (input.role === 'worker') this.workers.push(input);
@@ -72,22 +73,64 @@ class Brain extends BotDshBrain {
   override async close() {}
 }
 async function until(check: () => boolean, timeout = 8000) { const end = Date.now() + timeout; while (!check()) { if (Date.now() > end) throw Error('Task report fixture timed out'); await new Promise(resolve => setTimeout(resolve, 10)); } }
-async function serviceFixture() {
+async function serviceFixture(initialReport?: BotWorkerReport) {
   const directory = await root(), brain = new Brain(), memory = new Memory({ root: path.join(directory, 'memory'), runtime: async () => { throw Error('No VCP'); }, embedding: async () => { throw Error('No embedding'); } });
+  if (initialReport) brain.worker = async input => { await reportWorkerOutcome(input, initialReport); return initialReport.summary; };
   const service = new BotService({ root: directory, brain, memory, model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined });
   cleanup.push(() => service.shutdown());
   await service.handle({ type: 'state' }); const room = service.store.openDirect(DEFAULT_BOT_COMPANION_ID);
   const source = service.store.enqueue({ conversationId: room.id, senderId: 'user', content: '请解释三个已知事实。' }).events[0]!;
   const task = service.store.createTask({ conversationId: room.id, companionId: DEFAULT_BOT_COMPANION_ID, sourceEventId: source.id, goal: '解释三个已知事实', extra: { workerAccess: 'full' } });
   await service.handle({ type: 'message.send', conversationId: room.id, requestId: 'wake', content: '你好' });
-  return { service, brain, task, room };
+  const restart = async () => {
+    await service.shutdown(); const restartedBrain = new Brain();
+    const reopened = new BotService({ root: directory, brain: restartedBrain, memory: new Memory({ root: path.join(directory, 'memory'), runtime: async () => { throw Error('No VCP'); }, embedding: async () => { throw Error('No embedding'); } }),
+      model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined });
+    cleanup.push(() => reopened.shutdown()); await reopened.handle({ type: 'state' }); return { service: reopened, brain: restartedBrain };
+  };
+  return { service, brain, task, room, restart };
 }
 
-it('keeps a successful native turn without a business report open and continues the same task on explicit guidance', async () => {
+it('repairs a legacy completed waiting projection on startup without repeating its worker or inventing verification', async () => {
+  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
+  const current = f.service.store.getTask(f.task.id)!;
+  f.service.store.taskTransaction(sql => sql.prepare("UPDATE bot_tasks SET status='waiting',extra_json=? WHERE id=?").run(JSON.stringify({ ...current.extra,
+    progress: { phase: 'awaiting-report', detail: '旧版仍等待结构化报告' } }), current.id));
+  const next = await f.restart(), task = next.service.store.getTask(current.id)!;
+  expect(task.status).toBe('succeeded'); expect(task.summary).toBe(current.summary);
+  expect(task.extra.completionBasis).toBe('native-terminal'); expect(task.extra.workerReport).toBeUndefined();
+  expect(next.brain.workers).toHaveLength(0);
+  const response = await next.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: task.id });
+  expect(response.task).toMatchObject({ status: 'succeeded', waitingForAnswer: false });
+  expect((await next.service.handle({ type: 'task.list', conversationId: f.room.id, filter: 'active', page: 0, limit: 6 })).taskPage?.items).toEqual([]);
+});
+
+it('keeps real queued questions waiting and uncertain native effects fenced during legacy completion repair', async () => {
+  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
+  const prior = f.service.store.getTask(f.task.id)!;
+  const seed = (id: string) => {
+    const task = f.service.store.createTask({ id, conversationId: prior.conversationId, companionId: prior.companionId, sourceEventId: prior.sourceEventId,
+      goal: '原范围内的旧任务', extra: { nativeAttempted: true, retryAt: Date.now() + 60000, turnOutcome: { status: 'succeeded', eventId: `work-${id}` } } });
+    return f.service.store.updateTask(id, { status: 'waiting', extra: { ...task.extra, progress: { phase: 'awaiting-report' } } });
+  };
+  const question = seed('legacy-real-question'), effect = seed('legacy-unknown-write'), runtime = new BotTaskRuntime(f.service.store);
+  const callId = 'real-question-call', questionId = 'question-' + createHash('sha256').update(`work-${question.id}:${callId}`).digest('hex').slice(0, 48);
+  runtime.question(question, { callId, questionId, questions: [{ id: 'choice', question: '需要哪个文件？' }] });
+  runtime.startEffect(effect, { callId: 'unknown-write', toolName: 'write', argsHash: 'b'.repeat(64), argumentsPreview: 'Outcome unconfirmed.' });
+  const next = await f.restart();
+  expect(next.service.store.getTask(question.id)?.status).toBe('waiting');
+  expect((await next.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: question.id })).task?.waitingForAnswer).toBe(true);
+  expect((await next.service.handle({ type: 'task.list', conversationId: f.room.id, filter: 'all', page: 0, limit: 6 })).taskPage?.items.find(task => task.id === question.id)?.waitingForAnswer).toBe(true);
+  expect(next.service.store.getTask(effect.id)?.status).toBe('waiting');
+  expect(new BotTaskRuntime(next.service.store).pendingEffects(effect.id)).toMatchObject([{ callId: 'unknown-write', state: 'pending' }]);
+  expect(next.brain.workers).toHaveLength(0);
+});
+
+it('finishes a successful native text result without requiring an optional report and accepts explicit same-task guidance', async () => {
   const f = await serviceFixture();
   await until(() => f.service.store.getTask(f.task.id)?.extra.turnOutcome !== undefined);
   const waiting = f.service.store.getTask(f.task.id)!;
-  expect(waiting.status).toBe('waiting'); expect(waiting.extra.progress).toMatchObject({ phase: 'awaiting-report' });
+  expect(waiting.status).toBe('succeeded'); expect(waiting.extra.completionBasis).toBe('native-terminal');
   expect(f.brain.workers).toHaveLength(1);
   f.brain.worker = async input => { await reportWorkerOutcome(input, { state: 'ready', summary: '已完成文字解释', verification: ['已逐项核对三项事实并给出解释'] }); return '完整文字解释'; };
   await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: f.task.id, operation: 'send', text: '请补充核验并提交结构化报告。', requestId: 'followup-report' });
@@ -99,15 +142,15 @@ it('keeps a successful native turn without a business report open and continues 
 
 it('does not turn blocked or progress reports into completion and does not inherit an old ready report into new work', async () => {
   const f = await serviceFixture();
-  await until(() => f.service.store.getTask(f.task.id)?.status === 'waiting');
+  await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
   f.brain.worker = async input => { await reportWorkerOutcome(input, { state: 'blocked', summary: '缺少确认事实，保持任务开放', verification: [] }); return '尚未完成'; };
   await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: f.task.id, operation: 'send', text: '检查当前阻碍。', requestId: 'inspect-blocker' });
-  await until(() => (f.service.store.getTask(f.task.id)?.extra.workerReport as { state?: string } | undefined)?.state === 'blocked' && f.service.store.getTask(f.task.id)?.status === 'waiting');
+  await until(() => (f.service.store.getTask(f.task.id)?.extra.workerReport as { state?: string } | undefined)?.state === 'blocked' && f.service.store.getTask(f.task.id)?.status === 'paused');
   expect(f.service.store.getTask(f.task.id)?.extra.progress).toMatchObject({ phase: 'blocked' });
 });
 
 it('invalidates a ready report when later running guidance is admitted even if the next reply uses no tool', async () => {
-  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'waiting');
+  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
   let release!: () => void, reportSent = false;
   const held = new Promise<void>(resolve => { release = resolve; });
   f.brain.send = async () => undefined;
@@ -119,13 +162,13 @@ it('invalidates a ready report when later running guidance is admitted even if t
   await until(() => reportSent);
   await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: f.task.id, operation: 'send', text: '还有这个新的核对条件。', requestId: 'after-ready' });
   release();
-  await until(() => f.service.store.getTask(f.task.id)?.status === 'waiting');
-  expect(f.service.store.getTask(f.task.id)?.extra.progress).toMatchObject({ phase: 'awaiting-report' });
+  await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
+  expect(f.service.store.getTask(f.task.id)?.status).toBe('succeeded');
   expect(f.brain.workers).toHaveLength(2);
 });
 
 it('keeps a detached guidance intent on the original task instead of completing from its earlier ready report', async () => {
-  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'waiting');
+  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
   let release!: () => void, reportSent = false;
   const held = new Promise<void>(resolve => { release = resolve; });
   f.brain.worker = async input => {
@@ -139,14 +182,15 @@ it('keeps a detached guidance intent on the original task instead of completing 
   await until(() => reportSent);
   await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: f.task.id, operation: 'send', text: '尚未确认送达的新条件。', requestId: 'detached-guidance' });
   release();
-  await until(() => f.brain.workers.length === 3 && f.service.store.getTask(f.task.id)?.status === 'waiting');
+  await until(() => f.brain.workers.length === 3 && f.service.store.getTask(f.task.id)?.status === 'succeeded');
   expect(f.brain.workers[2]).toMatchObject({ eventId: f.brain.workers[0]!.eventId, laneId: f.brain.workers[0]!.laneId,
     taskContinuation: { id: 'detached-guidance', text: '尚未确认送达的新条件。' } });
-  expect(f.service.store.getTask(f.task.id)?.extra.progress).toMatchObject({ phase: 'awaiting-report' });
+  expect(f.service.store.getTask(f.task.id)?.status).toBe('succeeded');
 });
 
 it('revalidates a guidance grant after an asynchronous Host access wait before publishing its instruction', async () => {
-  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'waiting');
+  const f = await serviceFixture({ state: 'blocked', summary: '等待原目标内的已知事实', verification: [] });
+  await until(() => f.service.store.getTask(f.task.id)?.status === 'paused');
   let release!: () => void, upgrading = false;
   const held = new Promise<void>(resolve => { release = resolve; });
   const current = f.service.store.getTask(f.task.id)!;
@@ -162,7 +206,7 @@ it('revalidates a guidance grant after an asynchronous Host access wait before p
 });
 
 it.each(['succeeded', 'failed'] as const)('resumes %s work only on explicit human guidance with the same mandate and separate terminal notices, and preserves a human stop', async ending => {
-  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'waiting');
+  const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
   let reports = 0;
   f.brain.worker = async input => { reports++; await reportWorkerOutcome(input, { state: reports === 1 && ending === 'failed' ? 'failed' : 'ready', summary: '已核验第' + reports + '轮', verification: ['核对了本轮用户明确条件'] }); return '第' + reports + '轮结果'; };
   await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: f.task.id, operation: 'send', text: '完成第一段核验。', requestId: 'finish-first' });
@@ -180,7 +224,7 @@ it.each(['succeeded', 'failed'] as const)('resumes %s work only on explicit huma
   expect(f.brain.workers[2]!.taskContinuation?.id).toMatch(/^followup:event-/);
   expect(f.service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_task_mandates WHERE task_id=?').get(before.id))).toEqual(mandateBefore);
   const notices = f.service.store.taskTransaction(sql => sql.prepare("SELECT source_message_id FROM bot_inbox WHERE source='task' AND kind='task_done' AND json_extract(payload_json,'$.taskId')=?").all(f.task.id)) as Array<{ source_message_id: string }>;
-  expect(notices).toHaveLength(2); expect(new Set(notices.map(notice => notice.source_message_id)).size).toBe(2);
+  expect(notices).toHaveLength(3); expect(new Set(notices.map(notice => notice.source_message_id)).size).toBe(3);
   const stopped = await f.service.handle({ type: 'task.control', conversationId: f.room.id, taskId: f.task.id, operation: 'cancel', requestId: 'human-stop-finished' });
   expect(stopped.memory).toMatchObject({ status: 'succeeded', humanStopped: true, confirmed: true });
   expect((await f.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: f.task.id })).task).toMatchObject({ status: 'succeeded', humanStopped: true, followupAvailable: false });

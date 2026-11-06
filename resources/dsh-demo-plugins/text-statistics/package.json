@@ -1,0 +1,1 @@
+{"name":"@worldlinebox-demo/text-statistics","version":"1.0.0","type":"module","main":"index.js","description":"Pure Unicode text statistics for native DSH isolation acceptance.","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}

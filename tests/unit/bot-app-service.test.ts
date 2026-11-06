@@ -260,7 +260,7 @@ it('dispatches only an explicit dsh_task to the worker and consumes its actual t
 }, 20000);
 it('delivers a host-bound chat followup to the existing worker without rerouting it through the main model', async () => {
   const f = await fixture({ workerWaitFirst: true }); await f.send('委派一个测试任务。', 'followup-original');
-  const work = await until(async () => { const work = f.service.store.listTasks(f.conversationId)[0]; return work?.status === 'waiting' && work.extra.turnOutcome ? work : undefined; });
+  const work = await until(async () => { const work = f.service.store.listTasks(f.conversationId)[0]; return work?.status === 'paused' && work.extra.turnOutcome ? work : undefined; });
   const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: 'bound-guidance',
     content: '保留原目标，请核验并提交完成报告。', replyToTaskId: work.id });
   const first = sent.messageId!;

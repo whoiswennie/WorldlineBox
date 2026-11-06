@@ -21,9 +21,11 @@ else {const token=process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;const server=http.cr
 if(req.url==='/?fixture'){const reply=()=>{res.writeHead(303,{location:'./','set-cookie':'native=fixture; HttpOnly'});res.end();};
 if(process.env.FIXTURE_READY_GATE){fs.writeFileSync(process.env.FIXTURE_READY_GATE+'.waiting','1');const timer=setInterval(()=>{if(fs.existsSync(process.env.FIXTURE_READY_GATE)){clearInterval(timer);reply();}},10);req.on('close',()=>clearInterval(timer));}else reply();return;}
 if(req.headers.authorization!=='Bearer '+token){res.writeHead(401).end();return;}
+if(req.url==='/idle'){res.setHeader('content-type','application/json');const state=path.join(process.env.DSH_HOME,'idle-state.json');res.end(fs.existsSync(state)?fs.readFileSync(state):JSON.stringify({known:true,idle:true,activeTurns:0,backgroundJobs:0,pendingQuestions:0,pendingInbox:0,settling:0,activeSubagents:0}));return;}
 if(req.url==='/shutdown'){res.end('{}');setTimeout(()=>process.emit('SIGTERM'),5);return;}
 res.setHeader('content-type','application/json');res.end(JSON.stringify({protocol:'worldlinebox-native-web-host-v1',pid:process.pid,userProfile:process.env.USERPROFILE,home:process.env.DSH_HOME,version:process.env.FIXTURE_VERSION}));});
 server.listen(0,'127.0.0.1',()=>{console.log('dsh web: http://127.0.0.1:'+server.address().port+'/?fixture');console.log('WORLDLINEBOX_DSH_BRIDGE_READY '+server.address().port);});
+if(fs.existsSync(path.join(process.env.DSH_HOME,'fail-version'))&&fs.readFileSync(path.join(process.env.DSH_HOME,'fail-version'),'utf8')===process.env.FIXTURE_VERSION){fs.writeFileSync(path.join(process.env.DSH_HOME,'migration-data.txt'),'damaged by failed migration');process.exit(9);}
 process.on('SIGTERM',()=>server.close(()=>process.exit(0)));}
 `);
   const runtimes = ['runtime-a', 'runtime-b'].map((id, index) => dshRuntimeSchema.parse({ id, version: `0.2.${index}`, nodeVersion: TEST_NODE_VERSION,
@@ -31,12 +33,13 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));}
   const verify = vi.fn(async () => undefined), openWorkbench = vi.fn(async () => undefined), startup = vi.fn();
   const readyGate = path.join(root, 'token-exchange-released');
   const operations = new OperationStore(path.join(root, 'operations'), () => undefined); await operations.init();
-  const service = new InstanceService({ rootPath: root, bridgePackagePath: path.resolve('resources/dsh-bridge'), operations,
+  const serviceOptions: ConstructorParameters<typeof InstanceService>[0] = { rootPath: root, bridgePackagePath: path.resolve('resources/dsh-bridge'), operations,
     runtimes: { list: () => runtimes, get: id => runtimes.find(value => value.id === id)!, directory: () => program,
       plan: id => ({ executable: TEST_NODE_EXECUTABLE, cli, env: { FIXTURE_VERSION: runtimes.find(value => value.id === id)!.version, ...(holdTokenExchange ? { FIXTURE_READY_GATE: readyGate } : {}) } }), verify },
-    onChanged: () => undefined, onStartup: startup, openWorkbench, closeWorkbench: async () => undefined, clearBrowserData: async () => undefined });
+    onChanged: () => undefined, onStartup: startup, openWorkbench, closeWorkbench: async () => undefined, clearBrowserData: async () => undefined };
+  const service = new InstanceService(serviceOptions);
   await service.init(); cleanup.push(async () => { await service.shutdown(); await operations.shutdown(); await rm(root, { recursive: true, force: true }); });
-  return { service, operations, root, verify, openWorkbench, startup, readyGate };
+  return { service, serviceOptions, operations, root, verify, openWorkbench, startup, readyGate };
 }
 it('deduplicates concurrent starts and opens the same native Host for the user', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a');
@@ -98,4 +101,124 @@ it('backs up native data without dropping ordinary workspace directories and res
   const commands = await readFile(path.join(copy.homePath, 'commands.log'), 'utf8'); expect(commands).toContain('plugin');
   await f.service.ensureHost(copy.id); await f.service.stop(copy.id);
   expect(JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8')).find((value: { id: string }) => value.id === copy.id).status).toBe('stopped');
+});
+
+const upgradeOperation = () => ({ id: 'fixture-upgrade', signal: new AbortController().signal, update: vi.fn(async () => undefined), log: vi.fn(async () => undefined) });
+it('creates each companion environment once on demand while sharing immutable runtime code', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a');
+  const first = await Promise.all(Array.from({ length: 6 }, () => f.service.ensureCompanion('partner-a', '甲', base)));
+  const second = await f.service.ensureCompanion('partner-b', '乙', base);
+  expect(new Set(first.map(value => value.id)).size).toBe(1);
+  expect(f.service.list()).toHaveLength(3); expect(f.verify).not.toHaveBeenCalled();
+  expect(first[0]).toMatchObject({ companionId: 'partner-a', runtimeId: base.runtimeId, isDefault: false, status: 'stopped' });
+  expect(second.runtimeId).toBe(base.runtimeId); expect(second.homePath).not.toBe(first[0]!.homePath);
+  expect(second.browserPartition).not.toBe(first[0]!.browserPartition); expect(second.agentsPath).not.toBe(first[0]!.agentsPath);
+  const a = await f.service.ensureHost(first[0]!.id), b = await f.service.ensureHost(second.id);
+  expect(a.pid).not.toBe(b.pid);
+  for (const [environment, value] of [[first[0]!, 'qq-one'], [second, 'qq-two']] as const) {
+    await writeFile(path.join(environment.homePath, 'profiles/web/private-plugin.json'), JSON.stringify({ qq: value }));
+  }
+  expect(await readFile(path.join(first[0]!.homePath, 'profiles/web/private-plugin.json'), 'utf8')).toContain('qq-one');
+  expect(await readFile(path.join(second.homePath, 'profiles/web/private-plugin.json'), 'utf8')).toContain('qq-two');
+  expect(JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8')).filter((value: { companionId?: string }) => value.companionId)).toHaveLength(2);
+  expect(f.service.get(base.id).status).toBe('stopped');
+});
+it('recycles only private environments with no leases and a complete native idle proof', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  const client = await f.service.ensureHost(own.id), release = f.service.acquireCompanionLease(own.id, 'task');
+  expect(await f.service.recycleCompanionIfIdle(own.id)).toBe(false); release(); release();
+  const proof = { known: true, idle: true, activeTurns: 0, backgroundJobs: 0, pendingQuestions: 0, pendingInbox: 0, settling: 0, activeSubagents: 0 };
+  for (const key of ['activeTurns', 'backgroundJobs', 'pendingQuestions', 'pendingInbox', 'settling', 'activeSubagents']) {
+    await writeFile(path.join(own.homePath, 'idle-state.json'), JSON.stringify({ ...proof, [key]: 1 }));
+    expect(await f.service.recycleCompanionIfIdle(own.id)).toBe(false); await client.health();
+  }
+  await writeFile(path.join(own.homePath, 'idle-state.json'), JSON.stringify({ idle: true }));
+  expect(await f.service.recycleCompanionIfIdle(own.id)).toBe(false);
+  await rm(path.join(own.homePath, 'idle-state.json')); expect(await f.service.recycleCompanionIfIdle(own.id)).toBe(true);
+  expect(f.service.get(own.id).status).toBe('stopped');
+  const shared = await f.service.ensureHost(base.id); expect(await f.service.recycleCompanionIfIdle(base.id)).toBe(false); await shared.health();
+  await f.service.configureCompanion(own.id, true); expect(await f.service.recycleCompanionIfIdle(own.id)).toBe(false);
+  await f.service.stop(own.id); expect(f.service.get(own.id)).toMatchObject({ status: 'stopped', keepAlive: true });
+});
+it('rejects an idle proof if another use arrived while the native check was in flight', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  const client = await f.service.ensureHost(own.id), original = client.request.bind(client);
+  let resume!: () => void; const gate = new Promise<void>(resolve => { resume = resolve; });
+  vi.spyOn(client, 'request').mockImplementation(async <T>(endpoint: string, input?: unknown, signal?: AbortSignal, timeout?: number): Promise<T> => {
+    if (endpoint === '/idle') await gate;
+    return original<T>(endpoint, input, signal, timeout);
+  });
+  const recycling = f.service.recycleCompanionIfIdle(own.id);
+  const release = f.service.acquireCompanionLease(own.id, 'question'); resume();
+  expect(await recycling).toBe(false); await client.health(); release();
+});
+it('does not revive an explicitly stopped companion when an automatic plugin restart was already shutting down', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  await f.service.ensureHost(own.id); await f.service.recordPluginChange(own.id, { application: 'restart-required' });
+  const stop = f.service.stop.bind(f.service); let released!: () => void, waiting!: () => void;
+  const gate = new Promise<void>(resolve => { released = resolve; }), reached = new Promise<void>(resolve => { waiting = resolve; });
+  let intercepted = false;
+  vi.spyOn(f.service, 'stop').mockImplementation(async (id, options) => {
+    await stop(id, options);
+    if (options?.automatic && !intercepted) { intercepted = true; waiting(); await gate; }
+  });
+  const restart = f.service.recycleCompanionIfIdle(own.id); await reached;
+  await f.service.stop(own.id); released(); expect(await restart).toBe(true);
+  expect(f.service.get(own.id).status).toBe('stopped'); expect(f.verify).toHaveBeenCalledTimes(1);
+  await f.service.ensureHost(own.id); expect(f.service.get(own.id).status).toBe('running');
+});
+it('reclaims the least recently used idle private Host before warming a fourth environment', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = [];
+  for (let index = 0; index < 4; index++) own.push(await f.service.ensureCompanion(`partner-${index}`, `伙伴${index}`, base));
+  await f.service.ensureHost(own[0]!.id); await f.service.ensureHost(own[1]!.id); await f.service.ensureHost(own[2]!.id);
+  // The old first Host was used again; the second is now the oldest cache entry.
+  await f.service.ensureHost(own[0]!.id); await f.service.ensureHost(own[3]!.id);
+  expect(f.service.get(own[1]!.id).status).toBe('stopped');
+  for (const index of [0, 2, 3]) expect(f.service.get(own[index]!.id).status).toBe('running');
+});
+it('treats the private Host cache size as a soft target and never kills held work to admit another authorized request', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = [], releases = [];
+  for (let index = 0; index < 4; index++) own.push(await f.service.ensureCompanion(`partner-${index}`, `伙伴${index}`, base));
+  for (const instance of own.slice(0, 3)) { await f.service.ensureHost(instance.id); releases.push(f.service.acquireCompanionLease(instance.id, 'task')); }
+  await f.service.ensureHost(own[3]!.id);
+  expect(own.map(instance => f.service.get(instance.id).status)).toEqual(['running', 'running', 'running', 'running']);
+  for (const release of releases) release();
+});
+it('upgrades the same private environment and preserves plugin configuration, sessions, media and workspace', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  await f.service.ensureHost(own.id);
+  const data = ['profiles/web/private-plugin.json', 'sessions/session-1.json', 'attachments/picture.png', 'storages/qq/message.json'];
+  for (const relative of data) { const target = path.join(own.homePath, relative); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, relative); }
+  await writeFile(path.join(own.agentsPath, 'agent.json'), 'agent-settings'); await writeFile(path.join(own.workspacePath, 'result.txt'), 'work');
+  await f.service.upgradeCompanion(own.id, 'runtime-b', upgradeOperation());
+  expect(f.service.get(own.id)).toMatchObject({ id: own.id, companionId: 'partner-a', runtimeId: 'runtime-b', homePath: own.homePath, browserPartition: own.browserPartition });
+  for (const relative of data) expect(await readFile(path.join(own.homePath, relative), 'utf8')).toBe(relative);
+  expect(await readFile(path.join(own.agentsPath, 'agent.json'), 'utf8')).toBe('agent-settings');
+  expect(await readFile(path.join(own.workspacePath, 'result.txt'), 'utf8')).toBe('work');
+  expect(await (await f.service.ensureHost(own.id)).request('/health')).toMatchObject({ version: '0.2.1', home: own.homePath });
+  expect(f.service.snapshots()).toHaveLength(1); expect(f.service.snapshots()[0]!.runtimeId).toBe('runtime-a');
+  expect(f.service.get(base.id).runtimeId).toBe('runtime-a');
+});
+it('blocks upgrades during active use and rolls a failed native migration back to original bytes and runtime', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  await f.service.ensureHost(own.id);
+  const release = f.service.acquireCompanionLease(own.id, 'background');
+  await expect(f.service.upgradeCompanion(own.id, 'runtime-b', upgradeOperation())).rejects.toThrow('仍在使用'); release();
+  await writeFile(path.join(own.homePath, 'migration-data.txt'), 'original plugin state'); await writeFile(path.join(own.homePath, 'fail-version'), '0.2.1');
+  await expect(f.service.upgradeCompanion(own.id, 'runtime-b', upgradeOperation())).rejects.toThrow();
+  expect(f.service.get(own.id)).toMatchObject({ runtimeId: 'runtime-a', status: 'stopped', homePath: own.homePath });
+  expect(await readFile(path.join(own.homePath, 'migration-data.txt'), 'utf8')).toBe('original plugin state');
+  expect(await (await f.service.ensureHost(own.id)).request('/health')).toMatchObject({ version: '0.2.0' });
+});
+it('recovers an interrupted upgrade from its verified snapshot while retaining the durable companion identity', async () => {
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  await writeFile(path.join(own.homePath, 'plugin-state.json'), 'before upgrade');
+  await f.service.upgradeCompanion(own.id, 'runtime-b', upgradeOperation()); await f.service.shutdown();
+  await writeFile(path.join(own.homePath, 'plugin-state.json'), 'interrupted migration');
+  await writeFile(path.join(f.service.getRoot(own.id), 'upgrade.json'), JSON.stringify({ format: 'worldlinebox-dsh-upgrade-v1', previousRuntimeId: 'runtime-a', snapshotId: f.service.snapshots()[0]!.id }));
+  const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
+  expect(restored.companion('partner-a')).toMatchObject({ id: own.id, runtimeId: 'runtime-a', status: 'stopped', homePath: own.homePath });
+  expect(await readFile(path.join(own.homePath, 'plugin-state.json'), 'utf8')).toBe('before upgrade');
+  expect((await restored.ensureCompanion('partner-a', '甲', base)).id).toBe(own.id);
+  expect(restored.list()).toHaveLength(2);
 });

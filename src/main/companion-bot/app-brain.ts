@@ -15,6 +15,7 @@ import { BotAppBrainStore, type AppBrainCall, type AppBrainMessage, type AppBrai
 import { APP_TOOL_RESULT_READER, toolResultPage, toolResultView, type ToolResultPageInput } from './app-brain-tool-view';
 import { abortable } from './abortable';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
+import { staleTaskNoticeIds } from './app-brain-history-view';
 
 export type { AppBrainMessage } from './app-brain-store';
 export type AppToolReconciliation = { state: 'committed'; result: unknown } | { state: 'absent' } | { state: 'unknown' };
@@ -31,7 +32,7 @@ const row = (value: unknown): Row => value && typeof value === 'object' && !Arra
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const terminal = (state: string) => ['succeeded', 'failed', 'cancelled'].includes(state);
-const safeRead = (call: BotToolCall) => ['agent_state', 'agent_memory_scopes', 'memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
+const safeRead = (call: BotToolCall) => ['agent_capabilities', 'agent_state', 'agent_memory_scopes', 'memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
   || call.name === 'memory_maintenance' && call.args.operation === 'status'
   || call.name === 'dsh_task_result_read' || call.name === 'dsh_task_control' && ['status', 'list'].includes(String(call.args.operation)) || call.name === 'world' && call.args.operation === 'observe';
 const capacity = () => Object.assign(new Error('当前主脑输入超过有界上下文容量，请缩小本次输入或工具查询。'), { code: 'BOT_CONTEXT_CAPACITY' });
@@ -93,6 +94,8 @@ export class BotAppBrain {
   }
   private async context(input: BotDshRun, turn: AppBrainTurn, signal: AbortSignal): Promise<AppBrainMessage[]> {
     let summary = this.store.summary(input.laneId), history = this.store.history(input.laneId).filter(item => item.turn.seq < turn.seq);
+    const staleNotices = staleTaskNoticeIds(turn, history);
+    history = history.filter(item => !staleNotices.has(item.turn.eventId));
     let current = this.store.messages(turn);
     // Work on bounded views of durable receipts, not ever-growing raw results.
     // At 85% capacity reduce views, then replace whole confirmed current steps

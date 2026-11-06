@@ -1,9 +1,9 @@
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, DSH_TASK_EVENT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance } from '../../shared/dsh-launcher';
+import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, DSH_TASK_EVENT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance, type DshCompanionCapabilityState } from '../../shared/dsh-launcher';
 import { atomicJson, copyTree, inventoryTree, readJson, redact, removeManaged } from './files';
 import { OperationStore } from './operations';
 import { RuntimeService } from './runtime-service';
@@ -25,6 +25,8 @@ import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
 import type { DshRecordQuery } from '../../shared/dsh-task-record';
 import { dshTaskCapabilityQuerySchema, type DshTaskCapabilities, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
+import type { CompanionInstanceLeaseKind } from './companion-instance-leases';
+import { restoreCompanionKeepAlive, type CompanionEnvironmentOwner } from './companion-keep-alive';
 
 export class DshLauncher {
   private botInstanceId?: string;
@@ -46,13 +48,13 @@ export class DshLauncher {
     }
     // The retired dedicated instance is eligible only through an explicit
     // durable lane binding, while its existing native context is still used.
-    const compatible = this.instances.list().filter(instance => instance.name !== 'WorldlineBox 伙伴主脑'
+    const compatible = this.instances.list().filter(instance => !instance.companionId && instance.name !== 'WorldlineBox 伙伴主脑'
       && this.runtimes.get(instance.runtimeId).adapter === 'node-cli-web-v1');
     const selected = compatible.find(instance => instance.isDefault);
     if (!selected) {
       // A brand-new installation can create its ordinary default instance.
       // Existing profiles are never replaced by a companion-specific one.
-      if (!this.instances.list().length) return this.creatingDefaultInstance ??= (async () => {
+      if (!this.instances.list().some(instance => !instance.companionId)) return this.creatingDefaultInstance ??= (async () => {
         const runtime = this.runtimes.list().filter(value => value.adapter === 'node-cli-web-v1')
           .sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0];
         if (!runtime) throw new Error('请先在 DSH 启动器安装官方 DSH 或导入原生 Node Web 运行环境。');
@@ -78,6 +80,44 @@ export class DshLauncher {
   /** Resolve the trusted execution instance before a native admission, so the
    * caller can persist a lane binding before any model/tool work is submitted. */
   async resolveBotInstance(instanceId?: string): Promise<DshInstance> { return this.instances.get(await this.botInstance(instanceId)); }
+  async resolveCompanionInstance(companionId: string, name: string, options: { ensurePrivate?: boolean } = {}): Promise<DshInstance> {
+    await this.initialization;
+    if (this.closed) throw new Error('DSH 启动器正在关闭。');
+    const existing = this.instances.companion(companionId); if (existing) return existing;
+    const base = await this.resolveBotInstance();
+    return options.ensurePrivate ? this.instances.ensureCompanion(companionId, name, base) : base;
+  }
+  acquireCompanionLease(instanceId: string, kind: CompanionInstanceLeaseKind): () => void { return this.instances.acquireCompanionLease(instanceId, kind); }
+  companionCapabilityState(companionId: string): DshCompanionCapabilityState {
+    const own = this.instances.companion(companionId), instance = own ?? this.instances.list().find(value => value.isDefault && !value.companionId);
+    const runtime = instance && this.runtimes.list().find(value => value.id === instance.runtimeId);
+    const mutations = this.operations.list().filter(value => value.instanceId === instance?.id && value.status === 'succeeded'
+      && /(?:plugin|skill|upgrade)/.test(value.kind)).map(value => value.id).sort();
+    const revision = createHash('sha256').update(JSON.stringify([instance?.id, runtime?.contentSha256, instance?.updatedAt,
+      this.companionCapabilityEpoch.get(instance?.id ?? '') ?? 0, mutations])).digest('hex');
+    return { mode: own ? 'private' : 'shared', instanceId: instance?.id, runtimeVersion: runtime?.version, revision,
+      status: instance?.status ?? 'unconfigured', configured: !!instance && !!runtime, keepAlive: own?.keepAlive };
+  }
+  async startCompanionEnvironment(companionId: string, name: string, signal?: AbortSignal): Promise<DshInstance> {
+    signal?.throwIfAborted();
+    const instance = await this.resolveCompanionInstance(companionId, name);
+    signal?.throwIfAborted(); await this.instances.ensureHost(instance.id, signal); return this.instances.get(instance.id);
+  }
+  async stopCompanionEnvironment(companionId: string): Promise<void> {
+    await this.initialization;
+    const own = this.instances.companion(companionId);
+    if (own && !own.isDefault) await this.instances.stop(own.id);
+  }
+  async restoreCompanionEnvironments(companions: readonly CompanionEnvironmentOwner[], signal?: AbortSignal, isEnabled?: (id: string) => boolean): Promise<void> {
+    await this.initialization; signal?.throwIfAborted();
+    if (this.closed) throw new Error('DSH 启动器正在关闭。');
+    const instances = this.instances.list(), epochs = new Map(instances.map(instance => [instance.id, this.instances.companionStopEpoch(instance.id)]));
+    await restoreCompanionKeepAlive(companions, instances, async (owner, instance) => {
+      const current = this.instances.companion(owner.id);
+      if (this.closed || isEnabled?.(owner.id) === false || current?.id !== instance.id || !current.keepAlive || this.instances.companionStopEpoch(instance.id) !== epochs.get(instance.id)) return;
+      signal?.throwIfAborted(); await this.instances.ensureHost(instance.id, signal);
+    }, signal, isEnabled);
+  }
   async stopRetiredBotHost(instanceId: string): Promise<void> {
     const instance = this.instances.get(instanceId);
     if (instance.name !== 'WorldlineBox 伙伴主脑') throw new Error('只能退休旧伙伴专用实例。');
@@ -135,6 +175,9 @@ export class DshLauncher {
   private capabilityIdentity?: string;
   private watchedCapabilityIdentity?: string;
   private readonly capabilityWatchers: FSWatcher[] = [];
+  private readonly companionCapabilityEpoch = new Map<string, number>();
+  private readonly companionCapabilityWatchers = new Map<string, FSWatcher[]>();
+  private companionCapabilityTimer?: ReturnType<typeof setTimeout>;
   private readonly capabilityMutations = new Set<string>();
   private capabilityChangeTimer?: ReturnType<typeof setTimeout>;
   private prewarmTimer?: ReturnType<typeof setTimeout>;
@@ -149,6 +192,7 @@ export class DshLauncher {
     const onChanged = () => {
       if (!this.ready || this.closed) return;
       this.observeExecutionCapabilities();
+      this.watchCompanionCapabilities(onChanged);
       const main = getMainWindow();
       if (main && !main.isDestroyed()) {
         const state = this.state();
@@ -187,6 +231,8 @@ export class DshLauncher {
       bridgePackagePath: app.isPackaged ? path.join(process.resourcesPath, 'dsh-bridge') : path.join(app.getAppPath(), 'resources', 'dsh-bridge'),
       networkEnvironment: env => this.network.environment(env),
       isCliInUse: id => (this.cliTerminal.state().terminals ?? []).some(terminal => terminal.status === 'running' && (!id || terminal.instanceId === id)),
+      isExternallyInUse: id => !!this.windows.get(id) && !this.windows.get(id)!.isDestroyed()
+        || this.operations.list().some(value => value.instanceId === id && value.status === 'running' && value.kind !== 'companion.environment.upgrade'),
       openWorkbench: (instance, url) => this.openWorkbench(instance, url),
       closeWorkbench: async id => { const window = this.windows.get(id); if (window && !window.isDestroyed()) window.destroy(); this.windows.delete(id); },
       clearBrowserData: async id => { await session.fromPartition(`persist:dsh-instance-${id}`).clearStorageData(); },
@@ -225,8 +271,37 @@ export class DshLauncher {
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
     this.observeExecutionCapabilities();
+    this.watchCompanionCapabilities(() => {
+      this.onExecutionCapabilitiesChanged?.();
+      const main = this.getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_LAUNCHER_CHANGED_CHANNEL, this.state());
+    });
     // Installation and actual execution own compatibility/integrity checks.
     // Listing the home page must never boot every installed runtime or CLI.
+  }
+  private watchCompanionCapabilities(changed: () => void): void {
+    for (const instance of this.instances.list()) {
+      if (!instance.companionId || this.companionCapabilityWatchers.has(instance.id)) continue;
+      const watchers: FSWatcher[] = []; this.companionCapabilityWatchers.set(instance.id, watchers);
+      for (const [directory, profileOnly] of [[instance.homePath, true], [instance.agentsPath, false]] as const) {
+        try {
+          const watcher = watch(directory, { recursive: true }, (_event, filename) => {
+            const relative = String(filename ?? '').replaceAll('\\', '/');
+            if (profileOnly && relative && !relative.startsWith('profiles/')) return;
+            if (/(?:^|\/)(?:node_modules|\.plugin-manager|logs|cache)(?:\/|$)/.test(relative)) return;
+            this.companionCapabilityEpoch.set(instance.id, (this.companionCapabilityEpoch.get(instance.id) ?? 0) + 1);
+            if (this.companionCapabilityTimer) clearTimeout(this.companionCapabilityTimer);
+            this.companionCapabilityTimer = setTimeout(() => { this.companionCapabilityTimer = undefined; this.onExecutionCapabilitiesChanged?.(); changed(); }, 150);
+            this.companionCapabilityTimer.unref();
+          });
+          watcher.on('error', () => { this.companionCapabilityEpoch.set(instance.id, (this.companionCapabilityEpoch.get(instance.id) ?? 0) + 1); });
+          watchers.push(watcher);
+        } catch { /* A newly created profile may not exist until its first native start. */ }
+      }
+    }
+    for (const [id, watchers] of this.companionCapabilityWatchers) {
+      if (this.instances.list().some(instance => instance.id === id)) continue;
+      for (const watcher of watchers) watcher.close(); this.companionCapabilityWatchers.delete(id); this.companionCapabilityEpoch.delete(id);
+    }
   }
   /** Capability facts depend on selection/configuration; task stream updates do not invalidate them. */
   private observeExecutionCapabilities(): void {
@@ -374,6 +449,35 @@ export class DshLauncher {
     if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel', 'task.events', 'task.result', 'task.cancel', 'task.terminate'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
     switch (request.type) {
+      case 'companion.environment.capabilities': {
+        const instance = await this.resolveCompanionInstance(request.companionId, request.name);
+        const release = this.acquireCompanionLease(instance.id, 'discovery');
+        try { return { ok: true, taskCapabilities: await this.taskCapabilities(instance.id, { companionCapabilities: true }, request.query ?? { kind: 'summary' }) }; }
+        finally { release(); }
+      }
+      case 'companion.environment.state': case 'companion.environment.ensure': case 'companion.environment.open': {
+        const instance = await this.resolveCompanionInstance(request.companionId, request.name, { ensurePrivate: request.type === 'companion.environment.ensure' });
+        const companionEnvironment = { mode: instance.companionId ? 'private' as const : 'shared' as const, instance };
+        if (request.type === 'companion.environment.open') {
+          const opened = await this.instances.handle({ type: 'instance.open', instanceId: instance.id });
+          return opened.ok ? { ...opened, companionEnvironment } : opened;
+        }
+        return { ok: true, companionEnvironment };
+      }
+      case 'companion.environment.configure': {
+        const own = await this.resolveCompanionInstance(request.companionId, request.name, { ensurePrivate: true });
+        return { ok: true, companionEnvironment: { mode: 'private', instance: await this.instances.configureCompanion(own.id, request.keepAlive) } };
+      }
+      case 'companion.environment.refresh': {
+        const own = this.instances.companion(request.companionId); if (!own) throw new Error('请先为伙伴配置私有能力环境。');
+        await this.instances.recordPluginChange(own.id, { application: 'restart-required' });
+        return { ok: true, companionEnvironment: { mode: 'private', instance: this.instances.get(own.id) } };
+      }
+      case 'companion.environment.upgrade': {
+        const own = this.instances.companion(request.companionId); if (!own) throw new Error('请先为伙伴配置私有能力环境。');
+        return { ok: true, operationId: await this.operations.run(request.type, `升级 ${request.name} 的能力环境`, own.id,
+          op => this.instances.upgradeCompanion(own.id, request.runtimeId, op)) };
+      }
       case 'operation.cancel': this.operations.cancel(request.operationId); return { ok: true };
       case 'operation.clear-finished': return { ok: true, removedOperations: await this.operations.clearFinished(), state: this.state() };
       case 'task.run': {
@@ -541,6 +645,9 @@ export class DshLauncher {
   }
   async shutdown(): Promise<void> {
     this.closed = true;
+    clearTimeout(this.companionCapabilityTimer);
+    for (const watchers of this.companionCapabilityWatchers.values()) for (const watcher of watchers) watcher.close();
+    this.companionCapabilityWatchers.clear();
     clearTimeout(this.prewarmTimer); this.prewarmRevision++;
     clearTimeout(this.capabilityChangeTimer); for (const watcher of this.capabilityWatchers.splice(0)) watcher.close();
     await this.initialization.catch(() => undefined);

@@ -1,0 +1,1 @@
+{"name":"@worldlinebox-demo/notebook","version":"1.0.0","type":"module","main":"index.js","description":"Small profile-private native DSH notebook; no arbitrary paths.","dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}

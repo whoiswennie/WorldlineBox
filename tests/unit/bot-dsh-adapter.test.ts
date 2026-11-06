@@ -7,6 +7,37 @@ const input: BotDshRun = { laneId: 'lane', eventId: 'event', cwd: 'C:/bot-test',
   tools: [], callback: { url: 'http://127.0.0.1/bot/tool', token: 'a'.repeat(64) } };
 const succeeded = (eventId: string, sessionId: string) => ({ text: 'done', eventId, sessionId, status: 'succeeded' });
 
+it('holds a private Host lease through native work and releases it on success, attachment failure and inspection failure', async () => {
+  let leases = 0, mode: 'success' | 'failure' = 'success';
+  const client = { request: async (endpoint: string, body: Record<string, string>) => {
+    expect(leases).toBe(1);
+    if (mode === 'failure') throw new Error('native unavailable');
+    if (endpoint === '/bot/lanes') return { sessionId: body.sessionId, cursor: 0 };
+    return { accepted: true, result: succeeded(body.eventId!, 'session') };
+  } } as unknown as NativeHostClient;
+  const brain = new BotDshBrain({ getHost: async () => ({ client, instance: { id: 'private' } }),
+    acquireLease: host => { expect(host.instance?.id).toBe('private'); leases++; return () => { leases--; }; } });
+  await brain.run(input); expect(leases).toBe(0);
+  mode = 'failure'; await expect(brain.run(input)).rejects.toThrow(); expect(leases).toBe(0);
+  await expect(brain.inspectEffects({ laneId: input.laneId, eventId: input.eventId })).rejects.toThrow(); expect(leases).toBe(0);
+  await expect(brain.cancelDurable(input)).rejects.toThrow(); expect(leases).toBe(0);
+});
+
+it('keeps a guidance lease alive after the native turn completes while its input acknowledgement is still in flight', async () => {
+  let leases = 0, ready!: () => void, complete!: () => void, releaseInput!: () => void;
+  const running = new Promise<void>(resolve => { ready = resolve; }), terminal = new Promise<void>(resolve => { complete = resolve; }), pendingInput = new Promise<void>(resolve => { releaseInput = resolve; });
+  const client = { request: async (endpoint: string, body: Record<string, string>) => {
+    if (endpoint === '/bot/lanes') return { sessionId: body.sessionId, cursor: 0 };
+    if (endpoint.endsWith('/input')) { await pendingInput; return { accepted: true }; }
+    return { accepted: true };
+  }, async *events() { ready(); await terminal; yield { type: 'complete', eventId: input.eventId, status: 'succeeded', text: 'done' }; } } as unknown as NativeHostClient;
+  const brain = new BotDshBrain({ getHost: async () => ({ client }), acquireLease: () => { leases++; return () => { leases--; }; } });
+  const turn = brain.run(input); await running;
+  const guidance = brain.send(input.laneId, { messageId: 'new-guidance', text: '已授权的补充', mode: 'steer' });
+  expect(leases).toBe(2); complete(); await turn; expect(leases).toBe(1);
+  releaseInput(); await guidance; expect(leases).toBe(0);
+});
+
 it('distinguishes durable terminal failures from an unknown delivery outcome', async () => {
   let replay = false;
   const client = { request: async (endpoint: string, body: Record<string, string>) => endpoint === '/bot/lanes'

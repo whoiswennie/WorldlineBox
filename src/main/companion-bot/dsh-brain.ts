@@ -47,7 +47,10 @@ export class BotDshAbortAcknowledgedError extends Error {
   constructor(readonly result: BotDshResult) { super('Native event cancellation reconciled with a durable terminal receipt.'); }
 }
 export interface BotDshHost { client: NativeHostClient; instance?: { id: string }; runtime?: { id: string; version: string } }
-export interface BotDshBrainOptions { getHost(instanceId?: string, signal?: AbortSignal, nativeLaneId?: string): Promise<BotDshHost> }
+export interface BotDshBrainOptions {
+  getHost(instanceId?: string, signal?: AbortSignal, nativeLaneId?: string): Promise<BotDshHost>;
+  acquireLease?(host: BotDshHost): () => void;
+}
 export interface BotDshHandoff {
   format: 'worldlinebox-bot-handoff-v1'; laneId: string; sessionId: string; throughEventId: string; nativeCursor: number;
   summaryText: string; summarySeq: number; compactionId: string; coveredEventSeqs: number[];
@@ -81,10 +84,15 @@ export class BotDshEffectUnknownError extends Error {
 /** DSH owns inference, tool dispatch, native history and compaction. This
  * adapter only submits durable, idempotent lane events and observes output. */
 export class BotDshBrain {
-  private readonly active = new Map<string, { client: NativeHostClient; eventId: string; finished: Promise<void>; stopStream(reason: Error): void }>();
+  private readonly active = new Map<string, { client: NativeHostClient; eventId: string; finished: Promise<void>; acquireUse(): () => void; stopStream(reason: Error): void }>();
   private readonly pendingStops = new Map<string, Promise<BotDshCancelAck>>();
   private readonly openingLanes = new Set<string>();
   constructor(private readonly options: BotDshBrainOptions) {}
+  private async withHost<T>(instanceId: string | undefined, signal: AbortSignal | undefined, laneId: string,
+    work: (host: BotDshHost) => Promise<T>): Promise<T> {
+    const host = await this.options.getHost(instanceId, signal, laneId), release = this.options.acquireLease?.(host);
+    try { return await work(host); } finally { release?.(); }
+  }
   static sessionId(laneId: string): string { return 'wlb-bot-' + createHash('sha256').update(laneId).digest('hex'); }
 
   async run(input: BotDshRun): Promise<BotDshResult> {
@@ -99,9 +107,13 @@ export class BotDshBrain {
     input.signal?.throwIfAborted();
     if (this.active.has(sessionId) || this.openingLanes.has(sessionId)) throw new BotDshLaneBusyError();
     this.openingLanes.add(sessionId);
-    let client: NativeHostClient, created: { sessionId: string; cursor: number }, attachmentStage: 'host' | 'attach' = 'host';
+    let client: NativeHostClient, release: (() => void) | undefined,
+      created: { sessionId: string; cursor: number }, attachmentStage: 'host' | 'attach' = 'host';
+    let acquireUse!: () => () => void;
     try {
-      client = (await this.options.getHost(input.instanceId, input.signal, input.laneId)).client;
+      const host = await this.options.getHost(input.instanceId, input.signal, input.laneId);
+      release = this.options.acquireLease?.(host); client = host.client;
+      acquireUse = () => this.options.acquireLease?.(host) ?? (() => undefined);
       attachmentStage = 'attach';
       created = await client.request('/bot/lanes', {
         sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system,
@@ -111,6 +123,7 @@ export class BotDshBrain {
         answeredQuestions: input.answeredQuestions,
       }, input.signal);
     } catch (error) {
+      release?.();
       if (error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
       if (/active turn|active maintenance admission|capacity is occupied|lane is busy/.test(error instanceof Error ? error.message : '')) throw new BotDshLaneBusyError(error instanceof Error ? error.message : undefined);
       if (input.signal?.aborted) throw error;
@@ -118,10 +131,10 @@ export class BotDshBrain {
       // response does not prove that the original event failed or stayed idle.
       throw new BotDshDeliveryUnknownError(error, attachmentStage);
     } finally { this.openingLanes.delete(sessionId); }
-    if (created.sessionId !== sessionId) throw new Error('Native DSH lane identity changed.');
+    if (created.sessionId !== sessionId) { release?.(); throw new Error('Native DSH lane identity changed.'); }
     let finished!: () => void;
     const streamAbort = new AbortController();
-    this.active.set(sessionId, { client, eventId: input.eventId, finished: new Promise<void>(resolve => { finished = resolve; }), stopStream: reason => streamAbort.abort(reason) });
+    this.active.set(sessionId, { client, eventId: input.eventId, acquireUse, finished: new Promise<void>(resolve => { finished = resolve; }), stopStream: reason => streamAbort.abort(reason) });
     let stopRequested: Promise<BotDshCancelAck> | undefined;
     const abort = () => {
       const reason = input.signal?.reason;
@@ -191,23 +204,24 @@ export class BotDshBrain {
       if (/active turn|active maintenance admission|capacity is occupied|lane is busy/.test(error instanceof Error ? error.message : '')) throw new BotDshLaneBusyError(error instanceof Error ? error.message : undefined);
       throw new BotDshDeliveryUnknownError(error, deliveryStage);
     } finally {
-      input.signal?.removeEventListener('abort', abort); streamAbort.abort(); this.active.delete(sessionId); finished();
+      input.signal?.removeEventListener('abort', abort); streamAbort.abort(); this.active.delete(sessionId); finished(); release?.();
     }
   }
 
   async cancel(laneId: string): Promise<void> {
     const sessionId = BotDshBrain.sessionId(laneId), active = this.active.get(sessionId);
-    if (active) await active.client.request(`/bot/lanes/${sessionId}/cancel`, { eventId: active.eventId });
+    if (active) { const release = active.acquireUse(); try { await active.client.request(`/bot/lanes/${sessionId}/cancel`, { eventId: active.eventId }); } finally { release(); } }
   }
   async cancelDurable(input: Omit<BotDshRun, 'prompt' | 'onEvent'>, suspend = false): Promise<BotDshCancelAck> {
     const sessionId = BotDshBrain.sessionId(input.laneId);
-    let client: NativeHostClient;
-    try { ({ client } = await this.options.getHost(input.instanceId, input.signal, input.laneId)); }
+    let client: NativeHostClient, release: (() => void) | undefined;
+    try { const host = await this.options.getHost(input.instanceId, input.signal, input.laneId); release = this.options.acquireLease?.(host); client = host.client; }
     catch (error) {
       if (input.signal?.aborted || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
       // Host unavailability is not proof that the admitted worker stopped.
       throw new BotDshDeliveryUnknownError(error, 'host');
     }
+    try {
     const previous = this.pendingStops.get(sessionId); if (previous) await previous.catch(() => undefined);
     if (!suspend) try {
       const proof = await client.request<BotDshCancelAck>('/bot/cancel', { sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, role: input.role ?? 'brain' }, input.signal);
@@ -240,19 +254,20 @@ export class BotDshBrain {
       if (input.signal?.aborted || error instanceof BotDshDeliveryUnknownError) throw error;
       throw new BotDshDeliveryUnknownError(error, 'cancel');
     } finally { if (this.pendingStops.get(sessionId) === stopping) this.pendingStops.delete(sessionId); }
+    } finally { release?.(); }
   }
   async send(laneId: string, input: { messageId: string; text: string; mode: 'steer' | 'queue' }): Promise<void> {
     const sessionId = BotDshBrain.sessionId(laneId), active = this.active.get(sessionId);
     if (!active) throw new Error('The native task is not attached or running.');
-    await active.client.request(`/bot/lanes/${sessionId}/input`, { ...input, eventId: active.eventId });
+    const release = active.acquireUse();
+    try { await active.client.request(`/bot/lanes/${sessionId}/input`, { ...input, eventId: active.eventId }); } finally { release(); }
   }
   /** Monotonic permission change only: no Agent restore, inbox delivery or turn. */
   async upgradeWorkerAccess(input: BotDshAccessInput): Promise<BotDshAccessAck> {
     const sessionId = BotDshBrain.sessionId(input.laneId);
     try {
-      const { client } = await this.options.getHost(input.instanceId, input.signal, input.laneId);
-      const result = await client.request<BotDshAccessAck>(`/bot/lanes/${sessionId}/access`,
-        { laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, role: 'worker', workerAccess: 'full' }, input.signal);
+      const result = await this.withHost(input.instanceId, input.signal, input.laneId, ({ client }) => client.request<BotDshAccessAck>(`/bot/lanes/${sessionId}/access`,
+        { laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, role: 'worker', workerAccess: 'full' }, input.signal));
       if (result.sessionId !== sessionId || result.eventId !== input.eventId || result.absent !== true && (result.workerAccess !== 'full' || result.sameSessionId !== sessionId)) throw new BotDshDeliveryUnknownError('Native worker access upgrade was not confirmed.', 'attach');
       return result;
     } catch (error) {
@@ -263,34 +278,33 @@ export class BotDshBrain {
   /** Native read-only persistence handle: no Agent restore and no synthetic
    * interrupted-turn closers from the balanced SessionQuery projection. */
   async inspectEffects(input: { laneId: string; eventId: string; callIds?: string[]; effects?: Array<BotNativeCallRef & { callId: string }>; instanceId?: string; signal?: AbortSignal }): Promise<BotWorkerEffectInspection[]> {
-    const { client } = await this.options.getHost(input.instanceId, input.signal, input.laneId);
-    return client.request('/bot/effects/inspect', { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, callIds: input.callIds, effects: input.effects }, input.signal);
+    return this.withHost(input.instanceId, input.signal, input.laneId, ({ client }) => client.request('/bot/effects/inspect', { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, callIds: input.callIds, effects: input.effects }, input.signal));
   }
   async inspectQuestionAnswers(input: { laneId: string; eventId: string; questions: Array<BotNativeCallRef & { questionId: string; callId: string; answersHash: string }>; afterOffset?: number; afterOffsets?: Record<string, number>; instanceId?: string; signal?: AbortSignal }): Promise<BotQuestionAnswerInspection[]> {
-    const { client } = await this.options.getHost(input.instanceId, input.signal, input.laneId);
-    return client.request('/bot/questions/inspect', { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, questions: input.questions, afterOffset: input.afterOffset, afterOffsets: input.afterOffsets }, input.signal);
+    return this.withHost(input.instanceId, input.signal, input.laneId, ({ client }) => client.request('/bot/questions/inspect', { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, questions: input.questions, afterOffset: input.afterOffset, afterOffsets: input.afterOffsets }, input.signal));
   }
   async handoff(input: Omit<BotDshRun, 'prompt' | 'onEvent'>): Promise<BotDshHandoff> {
     const sessionId = BotDshBrain.sessionId(input.laneId);
     if (this.active.has(sessionId) || this.openingLanes.has(sessionId)) throw new Error('Handoff requires a completed native lane.');
-    const { client } = await this.options.getHost(input.instanceId, input.signal, input.laneId);
-    await client.request('/bot/lanes', { ...input, sessionId, role: input.role ?? 'brain', workerAccess: input.workerAccess ?? 'scoped' }, input.signal);
-    return client.request<BotDshHandoff>(`/bot/lanes/${sessionId}/handoff`, { eventId: input.eventId }, input.signal, 120000);
+    return this.withHost(input.instanceId, input.signal, input.laneId, async ({ client }) => {
+      await client.request('/bot/lanes', { ...input, sessionId, role: input.role ?? 'brain', workerAccess: input.workerAccess ?? 'scoped' }, input.signal);
+      return client.request<BotDshHandoff>(`/bot/lanes/${sessionId}/handoff`, { eventId: input.eventId }, input.signal, 120000);
+    });
   }
   /** Release a completed encoder/worker from RAM while retaining its native
    * log and durable receipts. Never cancels an active task. */
   async archive(laneId: string, instanceId?: string): Promise<void> {
     const sessionId = BotDshBrain.sessionId(laneId);
     if (this.active.has(sessionId) || this.openingLanes.has(sessionId)) throw new Error('Archive requires a completed native lane.');
-    const { client } = await this.options.getHost(instanceId, undefined, laneId);
-    await client.request(`/bot/lanes/${sessionId}/archive`, {});
+    await this.withHost(instanceId, undefined, laneId, async ({ client }) => { await client.request(`/bot/lanes/${sessionId}/archive`, {}); });
   }
   async close(): Promise<void> {
     // Shutdown preserves Inbox/cancel intents for reconciliation. A failed
     // transport stop cannot prevent memory/store/Host cleanup from running.
     await Promise.allSettled([...this.active.entries()].map(async ([sessionId, active]) => {
-      try { await active.client.request(`/bot/lanes/${sessionId}/cancel`, { eventId: active.eventId, suspend: true }); }
-      finally { active.stopStream(Object.assign(new Error('The native companion adapter stopped; the durable event remains resumable.'), { code: 'BOT_SUSPEND' })); }
+      let release: (() => void) | undefined;
+      try { release = active.acquireUse(); await active.client.request(`/bot/lanes/${sessionId}/cancel`, { eventId: active.eventId, suspend: true }); }
+      finally { release?.(); active.stopStream(Object.assign(new Error('The native companion adapter stopped; the durable event remains resumable.'), { code: 'BOT_SUSPEND' })); }
     }));
     await Promise.allSettled([...this.pendingStops.values()]);
   }

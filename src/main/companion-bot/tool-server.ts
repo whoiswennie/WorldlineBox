@@ -12,10 +12,16 @@ export class BotToolServer {
   private server?: Server;
   private starting?: Promise<{ url: string; token: string }>;
   private readonly controllers = new Set<AbortController>();
+  private readonly pending = new Set<Promise<void>>();
+  private closing = false;
   constructor(private readonly execute: (call: BotToolCall, signal: AbortSignal) => Promise<unknown>) {}
   start(): Promise<{ url: string; token: string }> {
+    if (this.closing) return Promise.reject(new Error('伙伴工具服务正在关闭。'));
     return this.starting ??= new Promise((resolve, reject) => {
       const server = createServer(async (request, response) => {
+        if (this.closing) { response.writeHead(503).end(); return; }
+        let finish!: () => void;
+        const pending = new Promise<void>(resolve => { finish = resolve; }); this.pending.add(pending);
         const controller = new AbortController(); this.controllers.add(controller);
         request.on('aborted', () => controller.abort());
         response.on('close', () => { if (!response.writableEnded) controller.abort(); });
@@ -40,7 +46,7 @@ export class BotToolServer {
         } catch (error) {
           if (!response.headersSent) response.writeHead(400, { 'content-type': 'application/json' });
           response.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : '工具执行失败。' }));
-        } finally { binding?.requests.delete(controller); this.controllers.delete(controller); }
+        } finally { binding?.requests.delete(controller); this.controllers.delete(controller); this.pending.delete(pending); finish(); }
       });
       this.server = server; server.once('error', reject);
       server.listen(0, '127.0.0.1', () => { const address = server.address(); if (!address || typeof address === 'string') { reject(new Error('工具服务没有可用端口。')); return; } resolve({ url: `http://127.0.0.1:${address.port}/bot/tool`, token: this.token }); });
@@ -57,9 +63,13 @@ export class BotToolServer {
     }
   }
   async close(): Promise<void> {
+    this.closing = true;
     for (const controller of this.controllers) controller.abort(new Error('伙伴工具服务正在关闭。'));
     this.server?.closeAllConnections();
     if (this.server) await new Promise<void>(resolve => this.server!.close(() => resolve()));
+    // Closing a socket does not finish its asynchronous handler. Drain file
+    // imports and receipt commits before the owner closes SQLite/resources.
+    await Promise.allSettled([...this.pending]);
     this.scopedTokens.clear();
   }
 }

@@ -154,6 +154,7 @@ const config: ForgeConfig = {
     // checks against this copied directory.
     extraResource: [
       path.join(projectRoot, 'resources', 'dsh-bridge'),
+      path.join(projectRoot, 'resources', 'dsh-demo-plugins'),
       path.join(projectRoot, '.tools', 'bot-memory-release', 'vcp-memory'),
       path.join(projectRoot, 'resources', 'embedding-models'),
       path.join(projectRoot, 'resources', 'speech-models'),

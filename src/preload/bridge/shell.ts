@@ -1,4 +1,5 @@
 import { ipcRenderer } from 'electron';
+import { COMPANION_GAZE_POINTER_CHANNEL, parseCompanionGazeResult } from '../../shared/companion-gaze';
 
 import type { ApplicationMenuCommand, ApplicationMenuCommandEvent } from '../../shared/application-menu';
 import {
@@ -133,6 +134,9 @@ export function parseReadAppLogResult(input: unknown): ReadAppLogResult {
 }
 
 export const shell: WorldlineBoxShellApi = Object.freeze({
+  async getCompanionGazePointer() {
+    return parseCompanionGazeResult(await ipcRenderer.invoke(COMPANION_GAZE_POINTER_CHANNEL));
+  },
   async openExternalUrl(url: string) {
     const result: unknown = await ipcRenderer.invoke(OPEN_EXTERNAL_URL_CHANNEL, { url });
     return parseOpenExternalUrlResult(result);

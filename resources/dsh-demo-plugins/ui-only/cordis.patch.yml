@@ -1,0 +1,3 @@
+- insert:
+    - id: worldlinebox-demo-ui-only
+      name: '@worldlinebox-demo/ui-only'

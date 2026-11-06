@@ -4,6 +4,7 @@ import { dshMarketplaceStateSchema, dshMarketPageSchema, dshSkillInspectionSchem
 import { dshPackDistributionSchema, dshPackPublicationSchema } from './dsh-pack-distribution';
 import { dshInstalledPluginSchema } from './dsh-plugins';
 import { dshTaskInputSchema, dshTaskRecordSchema, dshTaskResultSchema, dshTaskEventSchema, type DshTaskEvent } from './dsh-tasks';
+import { dshTaskCapabilitiesSchema, dshTaskCapabilityQuerySchema } from './dsh-task-spec';
 
 export const DSH_LAUNCHER_CHANNEL = 'worldlinebox:dsh-launcher';
 export const DSH_LAUNCHER_CHANGED_CHANNEL = 'worldlinebox:dsh-launcher:changed';
@@ -31,8 +32,16 @@ export const dshInstanceSchema = z.object({
   lastError: z.string().optional(), lastExitCode: z.number().nullable().optional(),
   parentInstanceId: id.optional(), isDefault: z.boolean(),
   restartRequired: z.boolean().optional(),
+  /** Stable owner of an automatically managed, private native plugin environment. */
+  companionId: z.string().min(1).max(160).optional(), companionName: name.optional(), keepAlive: z.boolean().optional(),
 });
 export type DshInstance = z.infer<typeof dshInstanceSchema>;
+export const dshCompanionEnvironmentSchema = z.object({ mode: z.enum(['shared', 'private']), instance: dshInstanceSchema });
+export type DshCompanionEnvironment = z.infer<typeof dshCompanionEnvironmentSchema>;
+export interface DshCompanionCapabilityState {
+  mode: 'shared' | 'private'; instanceId?: string; runtimeVersion?: string; revision: string;
+  status: DshInstance['status'] | 'unconfigured'; configured: boolean; keepAlive?: boolean;
+}
 export const dshSnapshotSchema = z.object({
   id, instanceId: id, name, runtimeId: id, createdAt: z.string(),
   contentSha256: sha256, fileCount: z.number(), byteLength: z.number(),
@@ -135,6 +144,14 @@ export type DshLauncherState = z.infer<typeof dshLauncherStateSchema>;
 
 export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }),
+  z.strictObject({ type: z.literal('companion.environment.state'), companionId: z.string().min(1).max(160), name }),
+  z.strictObject({ type: z.literal('companion.environment.ensure'), companionId: z.string().min(1).max(160), name }),
+  z.strictObject({ type: z.literal('companion.environment.open'), companionId: z.string().min(1).max(160), name }),
+  z.strictObject({ type: z.literal('companion.environment.capabilities'), companionId: z.string().min(1).max(160), name,
+    query: dshTaskCapabilityQuerySchema.optional() }),
+  z.strictObject({ type: z.literal('companion.environment.configure'), companionId: z.string().min(1).max(160), name, keepAlive: z.boolean() }),
+  z.strictObject({ type: z.literal('companion.environment.refresh'), companionId: z.string().min(1).max(160), name }),
+  z.strictObject({ type: z.literal('companion.environment.upgrade'), companionId: z.string().min(1).max(160), name, runtimeId: id }),
   z.strictObject({ type: z.literal('versions.refresh') }),
   z.strictObject({ type: z.literal('runtime.install'), version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/) }),
   z.strictObject({ type: z.literal('network.save'), settings: dshNetworkSettingsSchema }),
@@ -208,6 +225,8 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
 export type DshLauncherRequest = z.infer<typeof dshLauncherRequestSchema>;
 export const dshLauncherResponseSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), state: dshLauncherStateSchema.optional(),
+    companionEnvironment: dshCompanionEnvironmentSchema.optional(),
+    taskCapabilities: dshTaskCapabilitiesSchema.optional(),
     marketPage: dshMarketPageSchema.optional(), skillInspection: dshSkillInspectionSchema.optional(), installedSkills: z.array(dshInstalledSkillSchema).optional(),
     packDistribution: dshPackDistributionSchema.optional(),
     installedPlugins: z.array(dshInstalledPluginSchema).optional(),

@@ -16,4 +16,9 @@
 .bot-chat-title { display:grid;gap:5px;min-width:0; }
 .bot-chat-title .bot-peer-label { margin-left:0; }
 .bot-chat-title-status { display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0; }
+.bot-presence-text[data-presence=disabled] { color:var(--ui-content-tertiary); }
+.bot-companion-disabled { display:flex;align-items:center;justify-content:space-between;gap:16px;margin:16px 20px 20px;padding:18px 20px;border:1px solid var(--ui-border-subtle);border-radius:16px;background:var(--ui-surface-pane);color:var(--ui-content-primary); }
+.bot-companion-disabled strong { font-size:14px; }
+.bot-companion-disabled p { margin:6px 0 0;color:var(--ui-content-secondary);font-size:12px;line-height:1.6; }
+.bot-companion-disabled button { flex-shrink:0;border:0;border-radius:8px;padding:9px 14px;background:var(--ui-action-accent-soft);color:var(--ui-content-accent);cursor:pointer; }
 @media(max-width:850px) { .bot-workspace .bot-chat-header { gap:8px; }.bot-chat-title-status { gap:5px; }.bot-peer-label { display:none; } }

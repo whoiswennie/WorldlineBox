@@ -27,6 +27,8 @@ export interface DshTaskExecutionOptions {
   workspaceRootPath?: string;
   allowedWorkspaceRoots?: string[];
   capabilityQuery?: DshTaskCapabilityQuery;
+  /** Main-owned discovery of the preset actually mounted by companion workers. */
+  companionCapabilities?: true;
 }
 export const DSH_TASK_VISUAL_MAX_IMAGES = 4;
 export const DSH_TASK_VISUAL_MAX_IMAGE_BYTES = 1024 * 1024;
@@ -48,6 +50,7 @@ const executionSchema = z.strictObject({
   task: dshTaskSpecSchema.optional(), workspaceRootPath: z.string().min(1).max(4096).optional(),
   allowedWorkspaceRoots: z.array(z.string().min(1).max(4096)).max(20).optional(),
   capabilityQuery: dshTaskCapabilityQuerySchema.optional(),
+  companionCapabilities: z.literal(true).optional(),
   inputs: z.array(z.strictObject({ id: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/), content: z.string().min(1).max(16000), mode: z.enum(['steer', 'queue']) })).max(100).optional(),
 });
 export function snapshotDshTaskExecution(input?: DshTaskExecutionOptions): DshTaskExecutionOptions {

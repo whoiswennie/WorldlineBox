@@ -186,7 +186,8 @@ it('records router-delivered task files and reuses only the same current artifac
     const body = JSON.parse(input.prompt), text = body.trigger.content;
     if (text === '生成文件') { taskId = String((await callback(input, 'dsh_task', 'produce-file', { goal: '生成cedar-proof.txt', title: '产物交付' })).result!.taskId); return '任务已提交'; }
     if (body.trigger.source === 'task' || ['只核对回执', '明确再发', '发送新版本'].includes(text)) {
-      const output = body.tasks.find((task: { id: string }) => task.id === taskId)?.outputs;
+      const output = body.tasks.find((task: { id: string }) => task.id === taskId)?.outputs
+        ?? (await callback(input, 'dsh_task_control', 'read-current-output', { operation: 'status', taskId })).result?.outputs;
       if (text === '只核对回执') expect(output).toEqual([expect.objectContaining({ messageId: receipts[0]!.messageId, relativePath: 'cedar-proof.txt' })]);
       const result = await callback(input, 'chat_send_file', `deliver-${body.trigger.source}-${text}`, { taskId, path: './cedar-proof.txt', ...(text === '明确再发' ? { resend: true } : {}) });
       expect(result.status).toBe(200); receipts.push(result.result!); return '已根据真实文件与回执处理';

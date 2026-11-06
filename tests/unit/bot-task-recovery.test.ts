@@ -212,9 +212,9 @@ it('publishes one durable batch notice for eleven immediately stopped queued tas
   const notices = await taskMessages(f.service, f.conversationId);
   expect(notices).toHaveLength(1); expect(notices[0]!.content).toContain('已停止 11 项');
   const taskEvents = () => f.service.store.taskTransaction(sql => sql.prepare("SELECT id,status FROM bot_inbox WHERE source='task' AND conversation_id=?").all(f.conversationId)) as Array<{ id: string; status: string }>;
-  await waitFor(() => taskEvents().length === 1 && taskEvents()[0]!.status === 'done');
+  await waitFor(() => taskEvents().length === 1 && ['done', 'cancelled'].includes(taskEvents()[0]!.status));
   const feedback = f.brain.calls.filter(input => input.role !== 'worker' && !input.laneId.startsWith('memory-encoder-') && JSON.parse(input.prompt).trigger.source === 'task');
-  expect(feedback).toHaveLength(1); expect(feedback[0]!.prompt).toContain('已停止 11 项');
+  expect(feedback).toHaveLength(0); // Stop is acknowledged by the task UI; old task callbacks do not wake the Router.
   const later = f.task({ nativeAttempted: false, retryAt: Date.now() + 60000 });
   expect((await f.service.handle(request)).memory).toMatchObject({ affected: 11 });
   expect((await f.service.handle(request)).memory).toMatchObject({ affected: 11 });
@@ -320,7 +320,7 @@ it('waits at a durable output checkpoint until an explicit deduplicated continue
   } finally { gate.resolve('结束'); }
 });
 
-it('persists real worker lifecycle identities without token content and binds a short workspace title and provider output budget', async () => {
+it('lets the Router read real running progress and page finished results without replaying the worker or exposing its tokens', async () => {
   const brain = new BrainBoundary(), gate = deferred<string>();
   brain.worker = async input => {
     for (let step = 0; step < 20; step++) {
@@ -332,6 +332,29 @@ it('persists real worker lifecycle identities without token content and binds a 
   };
   const f = await fixture(brain, { model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1', apiKey: 'fixture', contextWindow: 1048576, maxTokens: 4096, maxOutputTokens: 393216 }) });
   const task = f.task({ title: '专业任务标题'.repeat(24) });
+  const completeText = '已实际交付并核对完整结果。'.repeat(180);
+  let progressReads = 0, resultReads = 0;
+  brain.router = async input => {
+    const context = JSON.parse(input.prompt);
+    if (context.trigger.content === '核实当前进度') {
+      const status = await callback(input, 'dsh_task_control', 'read-running-progress', { operation: 'status', taskId: task.id });
+      expect(status).toMatchObject({ status: 200, result: { id: task.id, status: 'running', goal: task.goal,
+        progress: { phase: 'using-tool', toolName: 'web_search' } } });
+      expect(status.result?.activity).toHaveLength(6);
+      expect(JSON.stringify(status)).not.toMatch(/PRIVATE_REASONING|PRIVATE_TOOL_ARGUMENTS/);
+      progressReads++; return '执行器正在查询资料，原任务仍在运行。';
+    }
+    if (context.trigger.content === '读取已经交付的结果') {
+      const status = await callback(input, 'dsh_task_control', 'read-finished-status', { operation: 'status', taskId: task.id });
+      expect(status).toMatchObject({ status: 200, result: { status: 'succeeded', summaryIsPreview: true,
+        result: { totalChars: completeText.length, complete: false, readTool: 'dsh_task_result_read', nextOffset: 1200 } } });
+      expect(status.result?.summary).toBe(completeText.slice(0, 1200));
+      const remainder = await callback(input, 'dsh_task_result_read', 'read-result-remainder', { taskId: task.id, offset: 1200, limit: 12000 });
+      expect(remainder).toMatchObject({ status: 200, result: { text: completeText.slice(1200), totalChars: completeText.length } });
+      expect(remainder.result).not.toHaveProperty('nextOffset'); resultReads++; return '完整交付已经读完。';
+    }
+    return '已收到';
+  };
   try {
     await nudge(f.service, f.conversationId, 'launch-progress-budget');
     await waitFor(() => f.service.store.getTask(task.id)?.extra.progress !== undefined && brain.calls.some(input => input.role === 'worker'));
@@ -343,7 +366,13 @@ it('persists real worker lifecycle identities without token content and binds a 
     expect(card.progress).toMatchObject({ phase: 'using-tool', toolName: 'web_search' });
     expect(card.activity).toHaveLength(30); expect(JSON.stringify(card)).not.toMatch(/PRIVATE_REASONING|PRIVATE_TOOL_ARGUMENTS/);
     expect(brain.calls.filter(input => input.role !== 'worker' && !input.laneId.startsWith('memory-encoder-'))[0]?.model.maxTokens).toBe(4096);
-    gate.resolve('交付已核验结果'); await waitFor(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+    await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核实当前进度', requestId: 'read-running-progress' });
+    await waitFor(() => progressReads === 1);
+    expect(brain.calls.filter(input => input.role === 'worker')).toHaveLength(1); expect(brain.guidance).toHaveLength(0);
+    gate.resolve(completeText); await waitFor(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+    await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '读取已经交付的结果', requestId: 'read-finished-result' });
+    await waitFor(() => resultReads === 1);
+    expect(brain.calls.filter(input => input.role === 'worker')).toHaveLength(1); expect(brain.guidance).toHaveLength(0);
   } finally { gate.resolve('结束'); }
 });
 
@@ -479,6 +508,43 @@ it('routes a native question HTTP callback through the router and returns one va
   expect(nativeAnswers).toEqual([{ id: 'format', selected: ['JSON'] }]); expect(autoAnswers).toBe(1);
   expect(f.brain.guidance).toHaveLength(0); expect(f.service.store.getTask(other.id)?.status).toBe('queued');
   expect(f.brain.calls.filter(input => input.role === 'worker')).toHaveLength(1);
+});
+
+it('wakes the Router for each simultaneous Worker question and reads the exact bound question after an earlier answer', async () => {
+  const f = await fixture(), task = f.task();
+  const entries = [
+    { callId: 'first-known-detail', key: 'format', selected: 'JSON' },
+    { callId: 'second-known-detail', key: 'layout', selected: '紧凑' },
+  ].map(entry => ({ ...entry, id: questionId(task, entry.callId) }));
+  const answers = new Set<string>(), delivered: unknown[] = [];
+  f.brain.router = async input => {
+    const context = JSON.parse(input.prompt), entry = entries.find(item => item.id === context.trigger.task?.questionId);
+    if (!entry) return '已收到';
+    const status = await callback(input, 'dsh_task_control', `status-${entry.callId}`, { operation: 'status', taskId: task.id });
+    expect(status).toMatchObject({ status: 200, result: { status: 'waiting', attention: { id: entry.id, state: 'queued',
+      questions: [{ id: entry.key, question: `按已知要求采用${entry.selected}吗？` }] } } });
+    expect(await callback(input, 'dsh_task_control', `answer-${entry.callId}`, { operation: 'answer', taskId: task.id,
+      questionId: entry.id, answers: [{ id: entry.key, selected: [entry.selected] }] })).toMatchObject({ status: 200, result: { accepted: true } });
+    answers.add(entry.id); return '已按原目标补充已知细节。';
+  };
+  f.brain.worker = async input => {
+    for (const entry of entries) expect(await callback(input, 'worker_question', entry.callId, { questionId: entry.id, callId: entry.callId,
+      questions: [{ id: entry.key, question: `按已知要求采用${entry.selected}吗？`, options: [{ label: entry.selected }] }] })).toMatchObject({ status: 200 });
+    // Both wake-up events must run before the Worker consumes either answer.
+    // An answered first question must not hide the still-queued second one.
+    for (let attempt = 0; answers.size < 2 && attempt < 150; attempt++) await waitAbortably(input, new Promise(resolve => setTimeout(() => resolve('poll'), 20)));
+    expect(answers.size).toBe(2);
+    for (const entry of entries) {
+      const answer = await callback(input, 'worker_question_result', entry.callId, { questionId: entry.id });
+      expect(answer).toMatchObject({ status: 200, result: { state: 'answered', answers: [{ id: entry.key, selected: [entry.selected] }] } });
+      delivered.push(answer.result?.answers);
+    }
+    return '原任务已按两个已知要求完成。';
+  };
+  await nudge(f.service, f.conversationId, 'launch-two-known-questions');
+  await waitFor(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+  expect(delivered).toHaveLength(2); expect(answers.size).toBe(2);
+  expect(f.brain.calls.filter(input => input.role === 'worker')).toHaveLength(1); expect(f.brain.guidance).toHaveLength(0);
 });
 
 it('does not use automatic question authority after cancellation or withdrawal, and never authorizes task_done as a question', async () => {

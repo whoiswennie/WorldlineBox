@@ -27,9 +27,11 @@
 
 伙伴联系先进入双方独立peer会话。请求对方向用户发消息时，目标伙伴凭宿主绑定的一次性reply grant自行发布本人消息；发送者不会写入用户与目标的direct。真实peer消息自动出现在聊天列表，浏览入口只筛选已有记录，用户保持旁观只读。
 
-任务工作台的跟进入口将用户消息绑定原taskId；执行器问题还绑定该轮原questionId。明确跟进不会变成第二份同目标任务。Worker用worker_report提交progress/waiting/ready/blocked/failed/dropped，宿主结合真实效果回执结算；缺报告保持等待。续投沿原任务和原DSH Session，原始请求及已完成效果不重发。
+任务工作台的跟进入口将用户消息绑定原taskId；执行器问题还绑定该轮原questionId。明确跟进不会变成第二份同目标任务。Worker可用worker_report补充progress/waiting/ready/blocked/failed/dropped，宿主结合根执行器真实终态、问题和效果回执结算；正常结束而缺少可选报告不会制造等待回答。只有真实未答问题才进入需答状态。明确未完的blocked/waiting报告会保留原任务并暂停，Router可按原授权处理；续投沿原任务和原DSH Session，原始请求及已完成效果不重发。
 
-启动器只预热默认实例，所有伙伴委派的任务复用该Host，普通主脑对话不连接它。玩家停止实例后，普通聊天保持独立，下一次真正委派任务才沿原ID/home恢复Host。VCP使用软件内置Node24，不经DSH解析Node或启动Host。伙伴有可读目录、受众子目录与独立任务工作区。
+启动器可预热默认实例；普通伙伴共用它，有私有装备的伙伴使用自动管理的独立原生环境，共用同一份不可变运行版本。普通主脑对话不调用DSH。`worker-host-selection.ts`优先保存的任务Host绑定，装备或默认选择变化不搬移已有任务。VCP使用软件内置Node24，不经DSH解析Node或启动Host。伙伴有可读目录、受众子目录与独立任务工作区。
+
+`agent_capabilities`按宿主绑定的当前伙伴读取真实原生目录，模型不能指定instanceId或其他伙伴。每轮只附配置revision和入口，summary返回数量，catalog最多30项，工具schema和技能正文按需读取；当前查询期间绑定变化时返回changed要求重查。外部插件描述不成为新授权。私有实例租用、原生空闲证明、显式停止代次共同防止回收与准入竞争；保活插件不参与空闲退出。`companion.runtime`停止会先禁止新准入、暂停任务、冻结计时、取消Router轮次，清理后只停对应私有Host；重新启用不自动恢复用户暂停的任务。
 
 旧DSH主脑的闲置lane先完成VCP原文投影，再原子轮换epoch、清delivered、标记近期历史重建；保留聊天/记忆/原生日志，不复制或重放旧Session。未确认投递、取消或未知效果阻止对应lane切换并保留绑定；不能用App journal中“不存在”证明旧DSH执行已停止。
 

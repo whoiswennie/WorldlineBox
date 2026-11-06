@@ -33,12 +33,15 @@ export const dshTaskSpecSchema = z.strictObject({
 });
 export type DshTaskSpec = z.infer<typeof dshTaskSpecSchema>;
 /** Read only the reference material needed for the current task. Skill text can be continued without truncation loss. */
-export const dshTaskCapabilityQuerySchema = z.strictObject({ kind: z.enum(['overview', 'tool', 'skill', 'commands']),
+export const dshTaskCapabilityQuerySchema = z.strictObject({ kind: z.enum(['overview', 'summary', 'catalog', 'tool', 'skill', 'commands']),
   name: z.string().trim().min(1).max(200).optional(), textOffset: z.number().int().min(0).max(2 * 1024 * 1024).optional(),
   maxChars: z.number().int().min(100).max(64000).optional(),
+  category: z.enum(['tool', 'skill', 'all']).optional(), query: z.string().trim().max(200).optional(),
+  offset: z.number().int().min(0).max(1000000).optional(), limit: z.number().int().min(1).max(30).optional(),
 }).superRefine((query, ctx) => {
   if (['tool', 'skill'].includes(query.kind) && !query.name) ctx.addIssue({ code: 'custom', message: 'A tool or skill query requires its exact native name.' });
   if (query.kind !== 'skill' && (query.textOffset !== undefined || query.maxChars !== undefined)) ctx.addIssue({ code: 'custom', message: 'Text ranges apply only to skill instructions.' });
+  if (query.kind !== 'catalog' && [query.category, query.query, query.offset, query.limit].some(value => value !== undefined)) ctx.addIssue({ code: 'custom', message: 'Catalog selection applies only to catalog queries.' });
 });
 export type DshTaskCapabilityQuery = z.infer<typeof dshTaskCapabilityQuerySchema>;
 export const dshTaskCapabilityDetailSchema = z.object({ kind: z.enum(['tool', 'skill', 'commands']), name: z.string().optional(), available: z.boolean(),
@@ -59,8 +62,14 @@ export const dshTaskCapabilitiesSchema = z.object({ instanceId: z.string(), runt
   skills: z.array(z.object({ name: z.string().max(200), description: z.string().max(2000) })).max(500),
   toolRestrictions: z.boolean(), skillSelection: z.boolean(), workspacePath: z.string(),
   toolsTotal: z.number().int().nonnegative().optional(), skillsTotal: z.number().int().nonnegative().optional(), truncated: z.boolean().optional(),
+  catalog: z.object({ kind: z.literal('catalog'), category: z.enum(['tool', 'skill', 'all']), query: z.string().max(200).optional(),
+    offset: z.number().int().nonnegative(), limit: z.number().int().min(1).max(30), total: z.number().int().nonnegative(),
+    items: z.array(z.object({ kind: z.enum(['tool', 'skill']), name: z.string().max(200), description: z.string().max(2000) })).max(30),
+    nextOffset: z.number().int().nonnegative().optional(), source: z.literal('native-agent-scope'), trust: z.literal('capability_reference_data') }).optional(),
   detail: dshTaskCapabilityDetailSchema.optional(),
   effective: dshEffectiveCapabilitiesSchema.optional(),
+  scope: z.object({ kind: z.literal('companion-worker'), revision: z.string().max(200), sourceRevision: z.string().max(200),
+    pending: z.boolean(), deferredActiveWorkers: z.number().int().nonnegative(), deferredWorkers: z.number().int().nonnegative(), reason: z.string().max(1000).optional() }).optional(),
 });
 export type DshTaskCapabilities = z.infer<typeof dshTaskCapabilitiesSchema>;
 export const dshTaskArtifactSchema = z.object({ path: z.string().max(4096), description: z.string().max(1000).optional(),

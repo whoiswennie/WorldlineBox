@@ -8,6 +8,6 @@ export function BotAvatar({ companion, name, symbol, large = false, presence, lo
   const portrait = companion && builtinBotCompanion(companion.id)?.portrait;
   return <span className={`bot-avatar${large ? ' bot-avatar-large' : ''}${portrait ? ' has-portrait' : ''}${presence ? ' has-presence' : ''}`} aria-hidden="true">
     {portrait ? <img alt="" src={botAssetUrl(portrait.url)} draggable={false} /> : symbol ?? (companion?.name ?? name ?? '?').slice(0, 1)}
-    {presence && <BotPresenceDot presence={presence} locale={locale} />}
+    {presence && <BotPresenceDot presence={presence} locale={locale} enabled={companion?.enabled} />}
   </span>;
 }

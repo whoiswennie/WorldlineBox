@@ -12,6 +12,7 @@ import { inspectManagedProcess, instanceEnvironment, launchCli, parseReadyUrl, r
   sanitizeOutput, terminateOwnedProcess, verifyReadyUrl, type ProcessIdentity, type RuntimeLaunchPlan } from './instance-process';
 import type { DshCliSelection } from './cli-terminal';
 import { NativeHostClient } from './native-host-client';
+import { CompanionInstanceLeases, nativeIdleConfirmed, type CompanionInstanceLeaseKind } from './companion-instance-leases';
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[]; get(id: string): DshRuntime; directory(id: string): string; plan(id: string): RuntimeLaunchPlan;
@@ -23,6 +24,8 @@ interface Options {
   closeWorkbench: (instanceId: string) => Promise<void>; clearBrowserData: (instanceId: string) => Promise<void>;
   networkEnvironment?: (base: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>;
   isCliInUse?: (instanceId?: string) => boolean;
+  isExternallyInUse?: (instanceId: string) => boolean;
+  companionIdleMs?: number;
   onStartup?: (progress: DshHostStartupProgress) => void;
 }
 export interface DshHostStartupProgress {
@@ -33,6 +36,7 @@ export interface DshHostStartupProgress {
   error?: string;
 }
 interface Host { child: ChildProcessWithoutNullStreams; client?: NativeHostClient; url?: string; stopping: boolean; finished: Promise<void> }
+const upgradeJournalSchema = z.object({ format: z.literal('worldlinebox-dsh-upgrade-v1'), previousRuntimeId: z.string(), snapshotId: z.string().uuid() });
 const manifestSchema = z.object({ format: z.literal('worldlinebox-native-dsh-backup-v1'), instance: dshInstanceSchema,
   runtimeContentSha256: z.string(), createdAt: z.string(), inventory: z.object({ contentSha256: z.string(), fileCount: z.number(), byteLength: z.number() }) });
 // Dependencies are restored by the native package manager, never by rewriting pnpm links.
@@ -52,6 +56,14 @@ export class InstanceService {
   private readonly startControllers = new Map<string, AbortController>();
   private readonly busy = new Set<string>();
   private readonly recoveryBlocked = new Set<string>();
+  private readonly creatingCompanions = new Map<string, Promise<DshInstance>>();
+  private readonly leases = new CompanionInstanceLeases();
+  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly idleStops = new Map<string, Promise<boolean>>();
+  private readonly manualStops = new Map<string, number>();
+  private readonly suspendedCompanions = new Set<string>();
+  private readonly lastCompanionUse = new Map<string, number>();
+  private companionUseOrder = 0;
   private writes = Promise.resolve();
   private closing = false;
   constructor(private readonly options: Options) {}
@@ -59,9 +71,13 @@ export class InstanceService {
     for (const directory of ['instances', 'snapshots', 'staging']) await mkdir(path.join(this.options.rootPath, directory), { recursive: true });
     this.instances = (await readJson<unknown[]>(path.join(this.options.rootPath, 'native-instances.json')) ?? []).map(value => dshInstanceSchema.parse(value));
     this.snapshotRecords = (await readJson<unknown[]>(path.join(this.options.rootPath, 'native-snapshots.json')) ?? []).map(value => dshSnapshotSchema.parse(value));
-    const ids = new Set<string>();
+    const ids = new Set<string>(), companionIds = new Set<string>();
     for (const instance of this.instances) {
       if (ids.has(instance.id)) throw new Error('Duplicate DSH instance identity.'); ids.add(instance.id);
+      if (instance.companionId) {
+        if (companionIds.has(instance.companionId)) throw new Error('Duplicate companion environment identity.');
+        companionIds.add(instance.companionId);
+      }
       const paths = this.paths(instance.id);
       if (instance.homePath !== paths.homePath || instance.agentsPath !== paths.agentsPath || instance.workspacePath !== paths.workspacePath
         || instance.browserPartition !== `persist:dsh-instance-${instance.id}`) throw new Error('DSH registry contains an unmanaged path.');
@@ -75,9 +91,18 @@ export class InstanceService {
           await recoverOwnedProcess(journal); await rm(journalPath, { force: true });
         } catch (error) { this.recoveryBlocked.add(instance.id); instance.lastError = sanitizeOutput(String(error)); }
       }
+      const upgrade = await readJson(path.join(this.getRoot(instance.id), 'upgrade.json'));
+      if (upgrade && !this.recoveryBlocked.has(instance.id)) {
+        try {
+          const pending = upgradeJournalSchema.parse(upgrade); this.options.runtimes.get(pending.previousRuntimeId);
+          await this.restoreUpgradeData(instance.id, pending.snapshotId);
+          instance.runtimeId = pending.previousRuntimeId;
+          await this.save(); await rm(path.join(this.getRoot(instance.id), 'upgrade.json'), { force: true });
+        } catch (error) { this.recoveryBlocked.add(instance.id); instance.lastError = `升级恢复失败：${sanitizeOutput(String(error))}`; }
+      }
       instance.status = this.recoveryBlocked.has(instance.id) ? 'failed' : 'stopped'; delete instance.pid; delete instance.port;
     }
-    if (this.instances.length && !this.instances.some(value => value.isDefault)) this.instances[0]!.isDefault = true;
+    if (!this.instances.some(value => value.isDefault)) { const ordinary = this.instances.find(value => !value.companionId); if (ordinary) ordinary.isDefault = true; }
     await this.save();
   }
   list() { return this.instances.map(value => ({ ...value })); }
@@ -85,6 +110,82 @@ export class InstanceService {
   getRoot(id: string): string { if (!/^[a-z0-9-]{1,80}$/.test(id)) throw new Error('Invalid instance ID.'); return path.join(this.options.rootPath, 'instances', id); }
   get(id: string): DshInstance { return { ...this.require(id) }; }
   getUrl(id: string) { return this.hosts.get(id)?.url; }
+  companion(companionId: string): DshInstance | undefined { const value = this.instances.find(instance => instance.companionId === companionId); return value && { ...value }; }
+  companionStopEpoch(id: string): number { return this.manualStops.get(id) ?? 0; }
+  async ensureCompanion(companionId: string, name: string, base: DshInstance): Promise<DshInstance> {
+    const owner = dshInstanceSchema.shape.companionId.unwrap().parse(companionId);
+    const label = dshInstanceSchema.shape.companionName.unwrap().parse(name);
+    const existing = this.companion(owner); if (existing) return existing;
+    let pending = this.creatingCompanions.get(owner);
+    if (!pending) {
+      pending = this.create(`${label} 的能力环境`.slice(0, 100), base.runtimeId, undefined, { companionId: owner, companionName: label, parentInstanceId: base.id, keepAlive: false });
+      this.creatingCompanions.set(owner, pending);
+      void pending.finally(() => { if (this.creatingCompanions.get(owner) === pending) this.creatingCompanions.delete(owner); }).catch(() => undefined);
+    }
+    return pending;
+  }
+  touchInstance(id: string): void {
+    this.require(id); this.leases.touch(id);
+    this.lastCompanionUse.set(id, ++this.companionUseOrder);
+    const timer = this.idleTimers.get(id); if (timer) clearTimeout(timer); this.idleTimers.delete(id);
+  }
+  acquireCompanionLease(id: string, kind: CompanionInstanceLeaseKind): () => void {
+    this.available(id); this.touchInstance(id);
+    return this.leases.acquire(id, kind, () => { this.lastCompanionUse.set(id, ++this.companionUseOrder); this.scheduleIdle(id); });
+  }
+  async configureCompanion(id: string, keepAlive: boolean): Promise<DshInstance> {
+    const instance = this.available(id); if (!instance.companionId) throw new Error('Only private companion environments have a connection policy.');
+    this.touchInstance(id); instance.keepAlive = keepAlive; instance.updatedAt = new Date().toISOString(); await this.changed();
+    if (keepAlive) await this.ensureHost(id); else this.scheduleIdle(id);
+    return this.get(id);
+  }
+  private held(id: string): boolean {
+    return this.leases.count(id) > 0 || !!this.options.isCliInUse?.(id) || !!this.options.isExternallyInUse?.(id);
+  }
+  /** A warm-cache target, never an admission limit: busy or unknown Hosts stay alive. */
+  private async reclaimCompanionCacheBeforeStart(id: string): Promise<void> {
+    const wanted = this.require(id); if (!wanted.companionId || wanted.isDefault || wanted.keepAlive) return;
+    const warm = this.instances.filter(instance => instance.companionId && !instance.isDefault && !instance.keepAlive && this.hosts.has(instance.id));
+    if (warm.length < 3) return;
+    const candidates = warm.filter(instance => instance.id !== id && !this.held(instance.id) && !this.busy.has(instance.id) && !this.starts.has(instance.id))
+      .sort((a, b) => (this.lastCompanionUse.get(a.id) ?? 0) - (this.lastCompanionUse.get(b.id) ?? 0));
+    for (const candidate of candidates) if (await this.recycleCompanionIfIdle(candidate.id).catch(() => false)) break;
+  }
+  private scheduleIdle(id: string, soon = false): void {
+    const instance = this.instances.find(value => value.id === id);
+    if (soon) { const previous = this.idleTimers.get(id); if (previous) clearTimeout(previous); this.idleTimers.delete(id); }
+    if (!instance?.companionId || instance.isDefault || this.closing || this.suspendedCompanions.has(id) || this.idleTimers.has(id)
+      || !this.hosts.has(id) || this.leases.count(id) || instance.keepAlive && !instance.restartRequired) return;
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(id);
+      void this.recycleCompanionIfIdle(id).catch(() => false).finally(() => this.scheduleIdle(id));
+    }, soon ? 1000 : this.options.companionIdleMs ?? 120_000);
+    timer.unref(); this.idleTimers.set(id, timer);
+  }
+  /** An idle HTTP proof is mandatory even when no application lease remains. */
+  async recycleCompanionIfIdle(id: string): Promise<boolean> {
+    const previous = this.idleStops.get(id); if (previous) return previous;
+    const instance = this.require(id);
+    if (!instance.companionId || instance.isDefault || this.suspendedCompanions.has(id) || instance.keepAlive && !instance.restartRequired
+      || this.closing || this.busy.has(id) || this.starts.has(id) || this.held(id)) return false;
+    const host = this.hosts.get(id); if (!host?.client || host.stopping) return false;
+    const epoch = this.leases.epoch(id), stopEpoch = this.manualStops.get(id) ?? 0;
+    const pending = (async () => {
+      const proof = await host.client!.request('/idle', {}, undefined, 5000).catch(() => undefined);
+      if (!nativeIdleConfirmed(proof) || this.leases.epoch(id) !== epoch || this.held(id) || this.busy.has(id)
+        || this.hosts.get(id) !== host || instance.keepAlive && !instance.restartRequired) return false;
+      this.busy.add(id);
+      const restart = instance.restartRequired === true;
+      try { await this.stop(id, { automatic: true }); }
+      finally { this.busy.delete(id); }
+      if (restart && !this.closing && !this.suspendedCompanions.has(id) && (this.manualStops.get(id) ?? 0) === stopEpoch) {
+        this.idleStops.delete(id); await this.ensureHost(id, undefined, { automatic: true });
+      }
+      return true;
+    })();
+    this.idleStops.set(id, pending);
+    try { return await pending; } finally { if (this.idleStops.get(id) === pending) this.idleStops.delete(id); }
+  }
   launchPlan(id: string) { return this.options.runtimes.plan(this.require(id).runtimeId); }
   private require(id: string) { const value = this.instances.find(value => value.id === id); if (!value) throw new Error('DSH instance was not found.'); return value; }
   private paths(id: string) { const root = this.getRoot(id); return { homePath: path.join(root, 'home'), agentsPath: path.join(root, 'agents'), workspacePath: path.join(root, 'workspace') }; }
@@ -95,7 +196,7 @@ export class InstanceService {
   private available(id: string, stopped = false) {
     const instance = this.require(id);
     if (this.closing || this.busy.has(id) || this.recoveryBlocked.has(id)) throw new Error('This DSH instance is busy or its previous process could not be recovered.');
-    if (stopped && (this.hosts.has(id) || this.starts.has(id) || this.options.isCliInUse?.(id))) throw new Error('Stop this instance and its terminal before changing its data.');
+    if (stopped && (this.hosts.has(id) || this.starts.has(id) || this.held(id))) throw new Error('Stop this instance and its terminal before changing its data.');
     return instance;
   }
   async withStoppedInstance<T>(id: string, work: () => Promise<T>): Promise<T> {
@@ -122,7 +223,7 @@ export class InstanceService {
   private async initializeProfile(instance: DshInstance, signal: AbortSignal) {
     const profile = path.join(instance.homePath, 'profiles', 'web');
     if (!await readJson(path.join(profile, 'package.json'))) await this.command(instance, ['web', '--dump-default-config'], signal);
-    const names = ['package.json', 'index.js', 'workspace.js', 'cordis.patch.yml'];
+    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'cordis.patch.yml'];
     const sources = await Promise.all(names.map(name => readFile(path.join(this.options.bridgePackagePath, name))));
     const digest = createHash('sha256'); for (const source of sources) digest.update(source);
     const hash = digest.digest('hex'), target = path.join(instance.homePath, '.worldlinebox', 'bridge', hash);
@@ -136,8 +237,21 @@ export class InstanceService {
       await atomicJson(stamp, { hash });
     }
   }
-  async ensureHost(id: string, signal?: AbortSignal): Promise<NativeHostClient> {
+  async ensureHost(id: string, signal?: AbortSignal, options: { automatic?: boolean } = {}): Promise<NativeHostClient> {
     signal?.throwIfAborted();
+    if (options.automatic && this.suspendedCompanions.has(id)) throw new Error('伙伴环境已明确停止，等待重新启用。');
+    if (!options.automatic) this.suspendedCompanions.delete(id);
+    this.touchInstance(id);
+    const stopping = this.idleStops.get(id);
+    if (stopping && signal) await new Promise<void>((resolve, reject) => {
+      const abort = () => reject(signal.reason); signal.addEventListener('abort', abort, { once: true });
+      stopping.then(() => resolve(), reject).finally(() => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
+    });
+    else await stopping;
+    signal?.throwIfAborted();
+    if (options.automatic && this.suspendedCompanions.has(id)) throw new Error('伙伴环境已明确停止，等待重新启用。');
+    this.available(id);
     let pending = this.starts.get(id);
     if (!pending) {
       const existing = this.hosts.get(id);
@@ -145,10 +259,16 @@ export class InstanceService {
       // A bridge may announce its port before the Web token exchange and
       // final startup checks finish. Only the shared startup result publishes
       // a usable Host; another caller cannot skip those checks.
-      if (existing?.client) { await existing.client.health(signal); return existing.client; }
-      this.available(id); const controller = new AbortController(); this.startControllers.set(id, controller);
-      pending = this.startHost(id, controller.signal).finally(() => { this.starts.delete(id); this.startControllers.delete(id); });
-      this.starts.set(id, pending);
+      if (existing?.client) { await existing.client.health(signal); this.scheduleIdle(id); return existing.client; }
+      await this.reclaimCompanionCacheBeforeStart(id); signal?.throwIfAborted(); this.available(id);
+      if (options.automatic && this.suspendedCompanions.has(id)) throw new Error('伙伴环境已明确停止，等待重新启用。');
+      // Another waiter may have started this same environment while LRU checked another Host.
+      pending = this.starts.get(id);
+      if (!pending) {
+        this.available(id); const controller = new AbortController(); this.startControllers.set(id, controller);
+        pending = this.startHost(id, controller.signal).finally(() => { this.starts.delete(id); this.startControllers.delete(id); });
+        this.starts.set(id, pending);
+      }
     }
     // Cancelling one caller must not stop the shared Host or another partner's work.
     return signal ? new Promise((resolve, reject) => {
@@ -221,13 +341,17 @@ export class InstanceService {
       await new Promise<void>((resolve, reject) => { const abort = () => reject(timeout.reason); timeout.addEventListener('abort', abort, { once: true });
         readiness.then(resolve, reject).finally(() => timeout.removeEventListener('abort', abort)); if (timeout.aborted) abort(); });
       await owned.client!.health(timeout); await verifyReadyUrl(owned.url!, timeout);
-      instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); progress('ready'); return owned.client!;
+      instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); progress('ready'); this.scheduleIdle(id); return owned.client!;
     } catch (error) {
       if (host) { host.stopping = true; await terminateOwnedProcess(host.child); await host.finished; }
       instance.status = 'failed'; instance.lastError = sanitizeOutput(String(error)); await this.changed(); progress('failed', undefined, instance.lastError); throw error;
     }
   }
-  async stop(id: string): Promise<void> {
+  async stop(id: string, options: { automatic?: boolean } = {}): Promise<void> {
+    if (!options.automatic && this.require(id).companionId) {
+      this.manualStops.set(id, (this.manualStops.get(id) ?? 0) + 1); this.suspendedCompanions.add(id);
+    }
+    this.touchInstance(id);
     this.startControllers.get(id)?.abort(new Error('DSH instance stopped.'));
     await this.starts.get(id)?.catch(() => undefined);
     const host = this.hosts.get(id); if (!host) return;
@@ -236,13 +360,76 @@ export class InstanceService {
       await Promise.race([host.finished, new Promise<never>((_, reject) => { const timer = setTimeout(() => reject(new Error('Native Host shutdown timed out.')), 15000); timer.unref(); host.finished.finally(() => clearTimeout(timer)); })]);
     } finally { await terminateOwnedProcess(host.child); await host.finished; }
   }
-  async create(name: string, runtimeId: string, op?: OperationContext): Promise<DshInstance> {
+  async create(name: string, runtimeId: string, op?: OperationContext, companion?: Pick<DshInstance, 'companionId' | 'companionName' | 'parentInstanceId' | 'keepAlive'>): Promise<DshInstance> {
     if (this.closing) throw new Error('DSH launcher is closing.'); this.options.runtimes.get(runtimeId); op?.signal.throwIfAborted();
     const id = randomUUID(), now = new Date().toISOString();
     const instance = dshInstanceSchema.parse({ id, name, runtimeId, ...this.paths(id), browserPartition: `persist:dsh-instance-${id}`,
-      profile: 'web', status: 'stopped', isDefault: !this.instances.length, createdAt: now, updatedAt: now });
+      profile: 'web', status: 'stopped', isDefault: !companion && !this.instances.some(value => !value.companionId), createdAt: now, updatedAt: now, ...companion });
     await instanceEnvironment(this.getRoot(id), instance, this.options.runtimes.plan(runtimeId));
     this.instances.push(instance); await this.changed(); return { ...instance };
+  }
+  /** Switch code only; all stable environment paths and browser identity are retained. */
+  async upgradeCompanion(id: string, runtimeId: string, op: OperationContext): Promise<void> {
+    const instance = this.available(id), next = this.options.runtimes.get(runtimeId);
+    if (!instance.companionId) throw new Error('Only private companion environments can be upgraded here.');
+    if (next.adapter !== 'node-cli-web-v1') throw new Error('伙伴需要原生 Node Web 运行环境。');
+    if (runtimeId === instance.runtimeId) return;
+    if (this.held(id) || this.starts.has(id)) throw new Error('伙伴环境仍在使用中，请等待任务、问题或工作台结束后升级。');
+    this.touchInstance(id); this.busy.add(id);
+    const previousRuntimeId = instance.runtimeId, journal = path.join(this.getRoot(id), 'upgrade.json');
+    const wasRunning = this.hosts.has(id), wasSuspended = this.suspendedCompanions.has(id), stopEpoch = this.manualStops.get(id) ?? 0;
+    const stillAuthorized = () => {
+      op.signal.throwIfAborted();
+      if ((this.manualStops.get(id) ?? 0) !== stopEpoch) throw new Error('伙伴环境升级期间被明确停止，已取消本次升级。');
+    };
+    let snapshotId: string | undefined, switched = false;
+    try {
+      const host = this.hosts.get(id);
+      if (host && (!host.client || !nativeIdleConfirmed(await host.client.request('/idle', {}, op.signal, 5000)))) throw new Error('原生执行器仍有活动或无法确认空闲，请稍后升级。');
+      if (this.held(id)) throw new Error('伙伴环境仍在使用中。');
+      await this.options.runtimes.verify(runtimeId, op.signal);
+      stillAuthorized();
+      await this.stop(id, { automatic: true }); op.signal.throwIfAborted(); await op.update('保存升级前完整数据', 20);
+      snapshotId = randomUUID(); const destination = path.join(this.options.rootPath, 'snapshots', snapshotId);
+      const inventory = await this.exportData(id, destination, op);
+      this.snapshotRecords.unshift({ id: snapshotId, instanceId: id, name: `升级前 · ${this.options.runtimes.get(previousRuntimeId).version}`,
+        runtimeId: previousRuntimeId, createdAt: new Date().toISOString(), contentSha256: inventory.contentSha256, fileCount: inventory.fileCount, byteLength: inventory.byteLength });
+      await this.changed();
+      await atomicJson(journal, { format: 'worldlinebox-dsh-upgrade-v1', previousRuntimeId, snapshotId });
+      stillAuthorized(); instance.runtimeId = runtimeId; switched = true;
+      instance.updatedAt = new Date().toISOString(); await this.changed(); await op.update('验证新版本与原环境', 55);
+      stillAuthorized();
+      const controller = new AbortController(); this.startControllers.set(id, controller);
+      const pending = this.startHost(id, AbortSignal.any([op.signal, controller.signal])); this.starts.set(id, pending);
+      try { await pending; } finally { this.starts.delete(id); this.startControllers.delete(id); }
+      stillAuthorized();
+      if (wasSuspended || !wasRunning && !instance.keepAlive) await this.stop(id, { automatic: true });
+      await rm(journal, { force: true }); await op.log(`伙伴环境升级完成；回退快照 ${snapshotId}。`);
+    } catch (error) {
+      if (switched && snapshotId) {
+        try {
+          await this.stop(id, { automatic: true }); await this.restoreUpgradeData(id, snapshotId); instance.runtimeId = previousRuntimeId;
+          instance.status = 'stopped'; delete instance.pid; delete instance.port; delete instance.restartRequired;
+          instance.updatedAt = new Date().toISOString(); await this.changed(); await rm(journal, { force: true });
+        } catch (rollback) {
+          this.recoveryBlocked.add(id); instance.status = 'failed'; instance.lastError = `升级失败且恢复尚未完成：${sanitizeOutput(String(rollback))}`;
+          await this.changed(); throw new AggregateError([error, rollback], '升级失败，已保留回退快照，请恢复后再启动。', { cause: rollback });
+        }
+      } else if (snapshotId) await rm(journal, { force: true });
+      throw error;
+    } finally { this.busy.delete(id); this.scheduleIdle(id); }
+  }
+  private async restoreUpgradeData(id: string, snapshotId: string): Promise<void> {
+    const backup = path.join(this.options.rootPath, 'snapshots', snapshotId), manifest = manifestSchema.parse(await readJson(path.join(backup, 'manifest.json')));
+    if (manifest.instance.id !== id) throw new Error('Upgrade snapshot belongs to another instance.');
+    const data = path.join(backup, 'data'), inventory = await inventoryTree(data);
+    if (inventory.contentSha256 !== manifest.inventory.contentSha256) throw new Error('Upgrade snapshot inventory changed.');
+    const root = this.getRoot(id); await assertOwnedDirectory(this.options.rootPath, root);
+    for (const name of ['home', 'agents', 'workspace']) {
+      await removeManaged(this.options.rootPath, path.join(root, name));
+      await copyTree(path.join(data, name), path.join(root, name));
+    }
+    await rm(path.join(root, 'bridge.json'), { force: true });
   }
   async plugin(id: string, action: 'list' | 'add' | 'remove', spec: string | undefined, op: OperationContext): Promise<string> {
     const instance = this.require(id);
@@ -257,8 +444,9 @@ export class InstanceService {
     return this.command(instance, ['plugin', '--profile', 'web', action, ...(spec ? [spec] : [])], op.signal);
   }
   async recordPluginChange(id: string, result: { application?: string }): Promise<void> {
-    if (result.application !== 'restart-required') return;
-    this.require(id).restartRequired = true; await this.changed();
+    const instance = this.require(id); instance.updatedAt = new Date().toISOString();
+    if (result.application === 'restart-required') instance.restartRequired = true;
+    await this.changed(); if (instance.restartRequired) this.scheduleIdle(id, true);
   }
   /** Restore dependencies through the native manager instead of copying package-manager stores. */
   async installDependencies(id: string, signal?: AbortSignal): Promise<void> {
@@ -292,14 +480,18 @@ export class InstanceService {
     const instance = this.available(id, true); this.busy.add(id);
     try {
       await this.options.closeWorkbench(id); await this.options.clearBrowserData(id);
+      this.touchInstance(id); this.leases.forget(id);
+      this.manualStops.delete(id); this.suspendedCompanions.delete(id);
+      this.lastCompanionUse.delete(id);
       await removeManaged(this.options.rootPath, this.getRoot(id)); this.instances = this.instances.filter(value => value.id !== id);
-      if (instance.isDefault && this.instances[0]) this.instances[0].isDefault = true; await this.changed();
+      if (instance.isDefault) { const ordinary = this.instances.find(value => !value.companionId); if (ordinary) ordinary.isDefault = true; }
+      await this.changed();
     } finally { this.busy.delete(id); }
   }
   async handle(request: DshLauncherRequest): Promise<DshLauncherResponse> {
     try {
       if (request.type === 'instance.rename') { this.available(request.instanceId).name = request.name; await this.changed(); return { ok: true }; }
-      if (request.type === 'instance.default') { this.require(request.instanceId); for (const value of this.instances) value.isDefault = value.id === request.instanceId; await this.changed(); return { ok: true }; }
+      if (request.type === 'instance.default') { if (this.require(request.instanceId).companionId) throw new Error('伙伴私有能力环境不能设为共享默认实例。'); for (const value of this.instances) value.isDefault = value.id === request.instanceId; await this.changed(); return { ok: true }; }
       if (request.type === 'instance.logs') return { ok: true, text: sanitizeOutput((await readFile(path.join(this.getRoot(request.instanceId), 'logs', 'host.log'), 'utf8').catch(() => '')).slice(-128000)) };
       if (request.type === 'snapshot.delete') { const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
         await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'snapshots', snapshot.id)); this.snapshotRecords = this.snapshotRecords.filter(value => value.id !== snapshot.id); await this.changed(); return { ok: true }; }
@@ -344,6 +536,7 @@ export class InstanceService {
     } catch (error) { return { ok: false, error: sanitizeOutput(String(error)) }; }
   }
   async shutdown(): Promise<void> {
+    for (const timer of this.idleTimers.values()) clearTimeout(timer); this.idleTimers.clear();
     this.closing = true; for (const controller of this.startControllers.values()) controller.abort(new Error('Launcher closing.'));
     await Promise.allSettled(this.starts.values()); await Promise.allSettled([...this.hosts.keys()].map(id => this.stop(id))); await this.writes;
   }

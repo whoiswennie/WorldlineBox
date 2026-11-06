@@ -9,7 +9,7 @@ export type { BotBrainContextSummary, BotBrainRequestMetrics } from './companion
 export const BOT_CHANNEL = 'companion-bot:request';
 export const BOT_EVENT_CHANNEL = 'companion-bot:event';
 const id = z.string().min(1).max(160);
-export interface BotCompanion { id: string; name: string; persona: string; createdAt: string; activePersonaId?: string }
+export interface BotCompanion { id: string; name: string; persona: string; createdAt: string; activePersonaId?: string; enabled?: boolean }
 export const BOT_PERSONA_TEMPLATE_LIMIT = 64;
 export interface BotPersonaTemplateSummary {
   id: string; name: string; builtin: boolean; isDefault: boolean; modified: boolean; charCount: number; updatedAt: string;
@@ -44,6 +44,8 @@ export interface BotTask { id: string; conversationId: string; companionId: stri
   pauseRequested?: boolean; pauseRequestedAt?: string; pausedAt?: string; pauseOrigin?: 'user' | 'router'; followupAvailable?: boolean; humanStopped?: boolean;
   /** Completed execution intervals; paused and stopped time never accumulates. */
   elapsedMs?: number; timerStartedAt?: string;
+  /** A real, unanswered Worker question; directory cards do not carry its full body. */
+  waitingForAnswer?: boolean;
   report?: { state: 'progress' | 'waiting' | 'ready' | 'blocked' | 'failed' | 'dropped'; summary: string; verification: string[]; receivedAt: string };
   executionTurn?: { status: string; receivedAt: string };
   activity?: Array<BotTaskProgress & { id: string; createdAt: string }>;
@@ -87,6 +89,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('history.search'), conversationId: id, query: z.string().max(200).refine(value => !value.includes('\0')).default(''), filter: z.enum(['all', 'media', 'stickers', 'files', 'links']).optional(), before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(80).optional() }),
   z.strictObject({ type: z.literal('companion.create'), name: z.string().trim().min(1).max(80), persona: z.string().max(24000) }),
   z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000).optional() }),
+  z.strictObject({ type: z.literal('companion.runtime'), companionId: id, operation: z.enum(['start', 'stop']) }),
   z.strictObject({ type: z.literal('companion.personas.list'), companionId: id }),
   z.strictObject({ type: z.literal('companion.personas.get'), companionId: id, id }),
   z.strictObject({ type: z.literal('companion.personas.save'), companionId: id, id: id.optional(), name: z.string().trim().min(1).max(80), prompt: z.string().min(1).max(24000).refine(value => !!value.trim() && !value.includes('\0')), activate: z.boolean().optional() }),

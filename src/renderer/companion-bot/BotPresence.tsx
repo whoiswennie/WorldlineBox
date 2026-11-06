@@ -34,21 +34,24 @@ function usePresenceClock(presence?: BotCompanionPresence) {
   }, [presence?.expiresAt]);
   return now;
 }
-export function BotPresenceDot({ presence, locale = 'zh-CN' }: { presence: BotCompanionPresence; locale?: Locale }) {
+export function BotPresenceDot({ presence, locale = 'zh-CN', enabled = true }: { presence: BotCompanionPresence; locale?: Locale; enabled?: boolean }) {
   const now = usePresenceClock(presence);
+  if (!enabled) return <span className="bot-presence-dot" data-presence="disabled" title={locale === 'zh-CN' ? '已关闭' : 'Disabled'} aria-hidden="true" />;
   return <span className="bot-presence-dot" data-presence={botPresenceStatus(presence, now)} title={botPresenceLabel(presence, locale, now)} aria-hidden="true" />;
 }
-export function BotPresenceText({ presence, locale }: { presence: BotCompanionPresence; locale: Locale }) {
+export function BotPresenceText({ presence, locale, enabled = true }: { presence?: BotCompanionPresence; locale: Locale; enabled?: boolean }) {
   const now = usePresenceClock(presence);
+  if (!enabled) return <span className="bot-presence-text" data-presence="disabled">{locale === 'zh-CN' ? '已关闭' : 'Disabled'}</span>;
+  if (!presence) return null;
   return <span className="bot-presence-text" data-presence={botPresenceStatus(presence, now)}>{botPresenceLabel(presence, locale, now)}</span>;
 }
 export function BotPresenceSummary({ companions, presence, locale, onOpen }: { companions: readonly BotCompanion[]; presence?: Record<string, BotCompanionPresence>; locale: Locale; onOpen(conversationId?: string, taskId?: string): void }) {
   const order: Status[] = ['needs-attention', 'error', 'working', 'replying', 'waiting', 'idle', 'unconfigured'];
-  const entries = companions.flatMap(person => presence?.[person.id] ? [{ person, state: presence[person.id]! }] : []);
+  const entries = companions.flatMap(person => person.enabled !== false && presence?.[person.id] ? [{ person, state: presence[person.id]! }] : []);
   const now = usePresenceClock(entries.find(item => item.state.expiresAt)?.state);
   entries.sort((a, b) => order.indexOf(botPresenceStatus(a.state, now)) - order.indexOf(botPresenceStatus(b.state, now)));
   const first = entries[0];
-  if (!first) return null;
+  if (!first) return companions.length && companions.every(person => person.enabled === false) ? <span className="bot-presence-text" data-presence="disabled">{locale === 'zh-CN' ? companions.length === 1 ? '已关闭' : '伙伴均已关闭' : 'Disabled'}</span> : null;
   const tasks = entries.reduce((count, item) => count + item.state.counts.activeTasks, 0), zh = locale === 'zh-CN';
   const sum = (key: keyof BotCompanionPresence['counts']) => entries.reduce((count, item) => count + (item.state.counts[key] ?? 0), 0);
   const aggregate = entries.length === 1 ? first.state : { ...first.state, counts: { activeTasks: tasks, queued: sum('queued'), running: sum('running'), waiting: sum('waiting'), stopping: sum('stopping'), blocked: sum('blocked'), replying: sum('replying'), pendingMessages: sum('pendingMessages'), paused: sum('paused') } };

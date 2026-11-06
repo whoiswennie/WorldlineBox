@@ -14,6 +14,33 @@ it('registers the companion preset during direct CLI startup even without a Host
   } finally { if (previous !== undefined) process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN = previous; }
 });
 
+it('discovers the actual companion scope without assuming newer native turn-boundary APIs exist', async () => {
+  const previous = process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN, token = 'c'.repeat(64);
+  process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN = token;
+  const disposers: Array<() => unknown> = [], created: string[] = [];
+  let port = 0;
+  const output = vi.spyOn(process.stdout, 'write').mockImplementation(((value: string | Uint8Array) => {
+    const match = /^WORLDLINEBOX_DSH_BRIDGE_READY (\d+)/u.exec(String(value)); if (match) port = Number(match[1]); return true;
+  }) as typeof process.stdout.write);
+  const agent = { status: 'idle', session: { id: 'discovery', seq: 0 }, ctx: { get: () => undefined } };
+  const ctx = { loader: { await: async () => undefined }, tools: { guard: () => () => undefined, schemas: () => [{ name: 'actual_scoped_tool', parameters: { private: true } }] },
+    workspaceRegistry: {}, agents: { get: () => agent }, agentPresets: { defaultId: 'standard', list: async () => [{ id: 'standard' }, { id: 'worldlinebox-companion-v2' }] },
+    get: () => undefined, on: vi.fn(), effect: (callback: () => (() => unknown)) => disposers.push(callback()),
+    sessionController: { create: async (input: { sessionId: string; agentPreset: string }) => { expect(input.agentPreset).toBe('worldlinebox-companion-v2'); created.push(input.sessionId); return { sessionId: input.sessionId }; },
+      resolveAgent: async () => ({ agent }) } };
+  try {
+    const bridgePath = '../../resources/dsh-bridge/index.js', bridge = await import(bridgePath); await bridge.apply(ctx); output.mockRestore();
+    const query = () => fetch(`http://127.0.0.1:${port}/capabilities`, { method: 'POST', headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: 'discovery', cwd: tmpdir(), companion: true, query: { kind: 'summary' } }) });
+    const first = await query(); expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ preset: 'worldlinebox-companion-v2', effective: { toolCount: 1 }, tools: [], scope: { kind: 'companion-worker', pending: false } });
+    expect((await query()).status).toBe(200); expect(created).toHaveLength(1);
+  } finally {
+    output.mockRestore(); for (const dispose of disposers.reverse()) await dispose();
+    if (previous === undefined) delete process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN; else process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN = previous;
+  }
+});
+
 it('does not emit the old completion when guidance arrives during native persistence or prompt admission', async () => {
   const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
   const flushing = deferred(), flushRelease = deferred(), admissionRelease = deferred();

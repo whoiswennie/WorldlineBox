@@ -1,4 +1,5 @@
 export const launcherZh = {
+  companionCapabilities: '伙伴能力',
   pluginRestartRequired: 'DSH 已保存插件配置，重启此实例后生效。请先结束当前任务，再停止并启动实例。',
   'executionReadiness.warming': "正在连接 DSH Web Host（不会调用模型）…",
   'executionReadiness.ready': "DSH Web Host 已就绪，用户与伙伴共用此实例。",
@@ -94,6 +95,7 @@ export const launcherZh = {
 } as const;
 
 export const launcherEn = {
+  companionCapabilities: 'Companion capabilities',
   pluginRestartRequired: 'DSH saved the plugin configuration and requires an instance restart. Finish current tasks, then stop and start this instance.',
   'executionReadiness.warming': "Connecting to the DSH Web Host without a model request…",
   'executionReadiness.ready': "The DSH Web Host is ready for user and partner Sessions.",

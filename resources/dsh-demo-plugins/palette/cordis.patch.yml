@@ -1,0 +1,3 @@
+- insert:
+    - id: worldlinebox-demo-palette
+      name: '@worldlinebox-demo/palette'

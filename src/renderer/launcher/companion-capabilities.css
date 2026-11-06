@@ -1,0 +1,34 @@
+.companion-capabilities-backdrop { position: fixed; inset: 0; z-index: 130; display: grid; place-items: center; padding: 28px; background: #0005; backdrop-filter: blur(8px); }
+.companion-capabilities-dialog.ui-dialog-shell { width: min(1100px, 94vw); height: min(820px, 91vh); max-height: 91vh; display: flex; flex-direction: column; border: 1px solid var(--ui-border-subtle); border-radius: 18px; background: var(--ui-surface-pane); color: var(--ui-content-primary); overflow: hidden; box-shadow: 0 24px 90px #0003; }
+.companion-capabilities-content { padding: 20px 24px; overflow: auto; min-height: 0; }
+.companion-capabilities { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.companion-capabilities-page > .companion-capabilities { margin-top: 20px; }
+.companion-capability-summary { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 18px 20px; background: color-mix(in srgb, var(--ui-action-accent-soft) 45%, var(--ui-surface-raised)); border: 1px solid var(--ui-border-subtle); border-radius: 12px; }
+.companion-capability-summary strong { font-size: 16px; }
+.companion-capability-summary p, .companion-capability-onboarding p { color: var(--ui-content-secondary); line-height: 1.7; margin: 8px 0; font-size: 13px; }
+.companion-capability-summary span { color: var(--ui-content-tertiary); font-size: 12px; }
+.companion-capability-summary > .ui-button { flex: 0 0 auto; }
+.companion-capability-onboarding { padding: 30px 24px; border: 1px dashed var(--ui-border-subtle); border-radius: 12px; }
+.companion-capability-onboarding h2 { font-size: 19px; margin: 0; }
+.companion-capability-onboarding .ui-button { margin-top: 12px; }
+.companion-capability-tabs { margin-bottom: 0; }
+.companion-capability-tabs button[aria-pressed=true] { background:var(--ui-action-accent-soft);border-color:var(--ui-action-accent);color:var(--ui-content-accent);font-weight:600; }
+.companion-native-capabilities > .launcher-help { margin:10px 0 12px; }
+.companion-runtime-control { display: flex; gap: 20px; align-items: center; justify-content: space-between; padding: 14px 18px; border: 1px solid var(--ui-border-subtle); border-radius: 10px; }
+.companion-runtime-control p { margin: 6px 0 0; font-size: 12px; color: var(--ui-content-secondary); line-height: 1.6; }
+.companion-runtime-control > .ui-button { flex: 0 0 auto; }
+.companion-capability-catalog-filter { display: grid; grid-template-columns: minmax(160px, 1fr) 180px; gap: 12px; align-items: end; }
+.companion-capabilities .launcher-marketplace-page { padding: 0; }
+.companion-capabilities .launcher-market-grid { grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); }
+.companion-capability-install { display: flex; gap: 12px; align-items: flex-end; margin-top: 14px; }
+.companion-capability-install > :first-child { flex: 1; min-width: 0; }
+.companion-capability-install > .ui-button { flex: 0 0 auto; }
+.companion-capability-environment { display: flex; flex-direction: column; gap: 16px; }
+.companion-capability-keepalive { display: flex; align-items: flex-start; gap: 12px; cursor: pointer; margin: 16px 0 20px; }
+.companion-capability-keepalive input { accent-color: var(--ui-action-accent); margin-top: 3px; }
+.companion-capability-keepalive span { display: flex; flex-direction: column; gap: 6px; }
+.companion-capability-keepalive small { color: var(--ui-content-secondary); line-height: 1.7; }
+.companion-capability-error, .companion-capability-notice { margin: 0; padding: 12px 16px; border-radius: 10px; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.companion-capability-error { background: color-mix(in srgb, var(--ui-content-error, #a33) 8%, var(--ui-surface-raised)); color: var(--ui-content-error, #a33); }
+.companion-capability-notice { background: var(--ui-action-accent-soft); color: var(--ui-content-secondary); }
+@media (max-width: 760px) { .companion-capabilities-backdrop { padding: 10px; } .companion-capabilities-dialog.ui-dialog-shell { width: 100%; height: 95vh; max-height: 95vh; } .companion-capabilities-content { padding: 14px; } .companion-capability-install { flex-direction: column; align-items: stretch; } .companion-capability-tabs { flex-wrap: wrap; } }

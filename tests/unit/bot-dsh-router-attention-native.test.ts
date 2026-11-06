@@ -22,7 +22,7 @@ class NoMemoryModel extends BotMemoryService {
   override async appendHistory() { return { ok: true }; }
   override async close() {}
 }
-type Message = { role: string; content?: unknown };
+type Message = { role: string; content?: unknown; tool_call_id?: string };
 type Envelope = { envelope: { eventId: string }; trigger: { source: string; content: string; task?: { taskId: string; questionId?: string } };
   tasks: Array<{ id: string; goal: string; attention?: { questionId: string } }> };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -41,6 +41,8 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('uses a full-access group w
   const protectedFile = path.join(destination, 'preserve.txt'); await writeFile(protectedFile, 'MUST_REMAIN_UNCHANGED');
   const goal = (kind: 'AUTO' | 'PREF') => `NATIVE_${kind}: 只在 ${destination} 写入 ${kind.toLowerCase()}-proof.txt；AUTO采用JSON，PREF颜色尚未指定；不得读取或修改 preserve.txt，不删除文件，不扫描其他目录。`;
   const appSteps = new Map<string, number>(), requestLog: Array<Record<string, unknown>> = [], hostRequests: Array<string | undefined> = [];
+  let releaseAuto!: () => void, autoReachedFinal = false, statusWhileRunning = false;
+  const holdAuto = new Promise<void>(resolve => { releaseAuto = resolve; });
   let service: BotService | undefined, appBrain: BotAppBrain | undefined, worker: BotDshBrain | undefined;
   const server = createServer(async (request, response) => {
     try {
@@ -57,6 +59,19 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('uses a full-access group w
         if (trigger.source === 'user' && /^NATIVE_(AUTO|PREF)$/u.test(trigger.content) && step === 0) {
           const kind = trigger.content.endsWith('AUTO') ? 'AUTO' : 'PREF';
           call = { name: 'dsh_task', args: { title: `原生${kind}验收`, goal: goal(kind) }, id: `delegate-${kind}` };
+        } else if (trigger.source === 'user' && trigger.content === 'NATIVE_STATUS') {
+          const task = service!.store.listTasks().find(task => task.goal.startsWith('NATIVE_AUTO'))!;
+          if (step === 0) call = { name: 'dsh_task_control', args: { operation: 'status', taskId: task.id }, id: 'read-running-native-progress' };
+          else {
+            const lastUser = body.messages.findLastIndex(message => message.role === 'user');
+            const receipt = body.messages.slice(lastUser + 1).findLast(message => message.role === 'tool');
+            const saved = JSON.parse(String(receipt?.content)) as { view?: Record<string, unknown> } & Record<string, unknown>;
+            const status = saved.view ?? saved;
+            expect(status).toMatchObject({ id: task.id, status: 'running', goal: goal('AUTO') });
+            expect(status.activity).toBeInstanceOf(Array); expect((status.activity as unknown[]).length).toBeLessThanOrEqual(6);
+            expect(JSON.stringify(status.activity)).toContain('write');
+            statusWhileRunning = true; content = '执行器已经写入产物，正在完成本轮；我只查询了原任务进度。';
+          }
         } else if (trigger.source === 'task' && trigger.task?.questionId) {
           const task = service!.store.getTask(trigger.task.taskId)!;
           if (task.goal.startsWith('NATIVE_PREF')) content = '你希望选择Blue还是Green？';
@@ -80,7 +95,11 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('uses a full-access group w
         else if (tools.length === 1) {
           expect(JSON.stringify(tools[0])).toContain(prefix === 'AUTO' ? 'JSON' : 'Blue');
           call = { name: 'write', id: `write-${prefix}`, args: { file_path: path.join(destination, `${prefix.toLowerCase()}-proof.txt`), content: `FULL_NATIVE_${prefix}` } };
-        } else { expect(JSON.stringify(tools.at(-1))).not.toMatch(/Error:|denied/iu); content = `实际产物 FULL_NATIVE_${prefix} 已写入`; }
+        } else {
+          expect(JSON.stringify(tools.at(-1))).not.toMatch(/Error:|denied/iu);
+          if (prefix === 'AUTO') { autoReachedFinal = true; await holdAuto; }
+          content = `实际产物 FULL_NATIVE_${prefix} 已写入`;
+        }
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       const delta = call ? { tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } }] } : { content };
@@ -100,6 +119,11 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('uses a full-access group w
     const created = await service.handle({ type: 'conversation.create', kind: 'group', title: '真实DSH主脑问答验收', memberIds: [DEFAULT_BOT_COMPANION_ID], participationMode: 'all' });
     const room = created.conversationId!;
     await service.handle({ type: 'message.send', conversationId: room, content: 'NATIVE_AUTO', requestId: 'native-auto' });
+    await until(() => autoReachedFinal, 'native worker remains running after its actual write');
+    await service.handle({ type: 'message.send', conversationId: room, content: 'NATIVE_STATUS', requestId: 'native-status-while-running' });
+    await until(() => statusWhileRunning, 'Router reads real native activity without resubmission');
+    expect(service.store.listTasks(room)).toHaveLength(1); expect(service.store.listTasks(room)[0]?.status).toBe('running');
+    releaseAuto();
     await until(() => service!.store.listTasks(room).some(task => task.goal.startsWith('NATIVE_AUTO') && task.status === 'succeeded'), 'auto task result');
     const auto = service.store.listTasks(room).find(task => task.goal.startsWith('NATIVE_AUTO'))!;
     expect(auto.extra.workerAccess).toBe('full'); expect(auto.goal).toBe(goal('AUTO'));
@@ -128,8 +152,10 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('uses a full-access group w
     }
     await writeFile(path.join(output, 'receipt.json'), JSON.stringify({ actualNativeHost: true, actualAppHttp: true, actualToolHttp: true, usesPaidModel: false, modelQualityAcceptance: false,
       hostPid, sharedInstanceId: native.instance.id, taskIds: [auto.id, pref.id], nativeFullAccessSessions: workerJournals.length, knownDetailAnsweredAutomatically: true,
-      missingPreferenceWaitedForUser: true, nativeExternalWorkspaceWritesVerified: 2, protectedFileUnchanged: true, originalGoalAndConstraintsUnchanged: true, requestLog }, null, 2));
+      missingPreferenceWaitedForUser: true, routerReadRunningNativeActivity: statusWhileRunning, nativeExternalWorkspaceWritesVerified: 2,
+      protectedFileUnchanged: true, originalGoalAndConstraintsUnchanged: true, requestLog }, null, 2));
   } finally {
+    releaseAuto();
     await writeFile(path.join(output, 'requests.json'), JSON.stringify(requestLog, null, 2));
     await preserveBotNativeJournals(native.root, path.join(output, 'native-journals.json'), value => value).catch(() => undefined);
     if (service) await writeFile(path.join(output, 'task-records.json'), JSON.stringify(service.store.listTasks(), null, 2));

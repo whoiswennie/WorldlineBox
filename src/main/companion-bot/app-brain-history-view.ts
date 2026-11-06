@@ -2,6 +2,28 @@ import type { AppBrainTurn } from './app-brain-store';
 
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row | undefined => value && typeof value === 'object' && !Array.isArray(value) ? value as Row : undefined;
+function trustedBody(turn: Pick<AppBrainTurn, 'eventId' | 'laneId' | 'prompt'>): Row | undefined {
+  let value: unknown; try { value = JSON.parse(turn.prompt); } catch { return; }
+  const body = row(value), envelope = row(body?.envelope);
+  if (!body || envelope?.eventId !== turn.eventId || typeof envelope.laneId !== 'string'
+    || (turn.laneId !== envelope.laneId && !turn.laneId.startsWith(envelope.laneId + '-epoch-'))) return;
+  return body;
+}
+/** Historical task callbacks are notifications, not permanent pending work.
+ * Keep their raw prompt/results readable, but don't repeatedly prime the model
+ * with a callback for work the current host has already ended or paused. */
+export function staleTaskNoticeIds(current: Pick<AppBrainTurn, 'eventId' | 'laneId' | 'prompt'>,
+  past: ReadonlyArray<{ turn: Pick<AppBrainTurn, 'eventId' | 'laneId' | 'prompt'> }>): Set<string> {
+  const body = trustedBody(current), policy = row(body?.taskPolicy), selected = row(row(body?.trigger)?.taskFollowup)?.taskId ?? row(row(body?.trigger)?.task)?.taskId;
+  if (policy?.authority !== 'current-host-state') return new Set();
+  const ids = new Set([...(Array.isArray(policy.endedTaskIds) ? policy.endedTaskIds : []), ...(Array.isArray(policy.pausedTaskIds) ? policy.pausedTaskIds : [])].filter(id => typeof id === 'string'));
+  const envelope = row(body?.envelope);
+  return new Set(past.filter(({ turn }) => {
+    const old = trustedBody(turn), prior = row(old?.envelope), trigger = row(old?.trigger), taskId = row(trigger?.task)?.taskId;
+    return prior?.conversationId === envelope?.conversationId && prior?.companionId === envelope?.companionId
+      && trigger?.source === 'task' && typeof taskId === 'string' && ids.has(taskId) && taskId !== selected;
+  }).map(item => item.turn.eventId));
+}
 /** A view of a trusted host envelope. The durable prompt remains untouched.
  * Dynamic retrieval/task snapshots belong to their current turn, rather than
  * becoming a second copy of long-term memory on every subsequent request. */

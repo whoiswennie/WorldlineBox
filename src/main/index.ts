@@ -5081,12 +5081,16 @@ async function startApplication(): Promise<void> {
         onDiagnostic: diagnostic => logger?.error('companion-bot.memory-process',
           new Error('VCP memory process exited; pending operation diagnostics retained.'), diagnostic),
       });
-      const worker = new BotDshBrain({ getHost: async (id, signal, nativeLaneId) => {
+      const { selectBotWorkerInstance } = await import('./companion-bot/worker-host-selection');
+      const worker = new BotDshBrain({ acquireLease: host => host.instance && launcher
+        ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
+      getHost: async (id, signal, nativeLaneId) => {
         if (!launcher) throw new Error('DSH 执行器尚未就绪；伙伴主脑仍可正常对话。');
-        const selected = await launcher.resolveBotInstance();
-        const bound = nativeLaneId && botService?.store.getMetadata(botNativeHostBindingKey(nativeLaneId));
-        if (bound && bound !== selected.id) throw Object.assign(new Error('旧执行尚待核实，已保留原记录；不会另启动伙伴专用实例。'), { code: 'BOT_HOST_MIGRATION_BLOCKED' });
-        const host = await launcher.botHost(id ?? selected.id, signal);
+        const selected = await selectBotWorkerInstance(launcher, botService?.store, nativeLaneId, id);
+        const ownerId = nativeLaneId?.startsWith('worker-') ? botService?.store.getTask(nativeLaneId.slice(7))?.companionId
+          : nativeLaneId ? (botService?.store.getLane(nativeLaneId) ?? botService?.store.getLane(nativeLaneId.replace(/-epoch-[1-9]\d*$/u, '')))?.companionId : undefined;
+        if (ownerId && botService?.store.getCompanion(ownerId)?.enabled === false && !botService.isCompanionStopping(ownerId)) throw new Error('伙伴已关闭，不能重新启动其执行环境。');
+        const host = await launcher.botHost(selected.id, signal);
         if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), host.instance.id);
         return host;
       } });
@@ -5099,6 +5103,25 @@ async function startApplication(): Promise<void> {
       });
       const capacity = currentBotModel().limits.window;
       botService = new BotService({ root, brain, brainRuntime: 'worldlinebox', prewarmMemory: true, memory, media,
+        capabilityState: companionId => launcher?.companionCapabilityState(companionId)
+          ?? { configured: false, mode: 'shared', revision: 'unavailable' },
+        capabilities: async (companionId, query, signal) => {
+          if (!launcher) throw new Error('DSH 启动器尚未就绪。');
+          const companion = botService?.store.getCompanion(companionId);
+          if (!companion || companion.enabled === false) throw new Error('伙伴不存在或已关闭。');
+          const instance = await launcher.resolveCompanionInstance(companion.id, companion.name);
+          if (botService?.store.getCompanion(companionId)?.enabled === false) throw new Error('伙伴已关闭。');
+          signal.throwIfAborted(); const release = launcher.acquireCompanionLease(instance.id, 'session');
+          try { return await launcher.taskCapabilities(instance.id, { companionCapabilities: true }, query); } finally { release(); }
+        },
+        companionRuntime: async (companionId, name, operation, signal) => {
+          if (!launcher) { if (operation === 'start') throw new Error('DSH 启动器尚未就绪；聊天仍可使用。'); return; }
+          if (operation === 'start') await launcher.startCompanionEnvironment(companionId, name, signal);
+          else await launcher.stopCompanionEnvironment(companionId);
+        },
+        restoreCompanionEnvironments: async (companions, signal) => {
+          await launcher?.restoreCompanionEnvironments(companions, signal, id => !!botService?.store.getCompanion(id) && botService.store.getCompanion(id)?.enabled !== false);
+        },
         transcribeAttachments: async (conversationId, attachments, requestId) => {
           if (!attachments.some(attachment => attachment.mimeType.startsWith('audio/') && !attachment.transcript && !attachment.analysisBlocked)) return attachments;
           return ensureLocalSpeech().run(requestId, async signal => {

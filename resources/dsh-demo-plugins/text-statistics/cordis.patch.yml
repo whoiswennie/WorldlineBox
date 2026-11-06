@@ -1,0 +1,3 @@
+- insert:
+    - id: worldlinebox-demo-text-statistics
+      name: '@worldlinebox-demo/text-statistics'
