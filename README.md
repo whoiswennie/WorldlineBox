@@ -142,7 +142,7 @@ WorldlineBox 资产插件与 DSH 原生插件属于不同协议，分别在各�
 
 | 脚本 | 作用 |
 | --- | --- |
-| `01-Setup-Environment.bat` | 准备项目固定 Node.js、锁定依赖、Electron、原生数据库模块、媒体组件和 Inno Setup，并校验便携工具与构建输入。 |
+| `01-Setup-Environment.bat` | 准备固定 Node.js、锁定依赖、Electron、原生数据库、独立伙伴记忆模块、SDK、语音及向量模型运行组件、媒体工具和 Inno Setup，并校验构建输入。 |
 | `02-Start-Development.bat` | 检查已准备环境并启动开发模式，正常启动会编译当前源码；不自动安装依赖或重编译原生模块。 |
 | `03-Build-Installer.bat` | 依次执行类型检查、应用打包及产物校验、Inno Setup 安装器构建。 |
 

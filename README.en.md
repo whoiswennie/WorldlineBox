@@ -70,7 +70,7 @@ We study PCL's instance/isolation mechanisms and DSH's native profile and bundle
 
 Double-click these files in the project root:
 
-- `01-Setup-Environment.bat`: prepare pinned Node.js, npm dependencies, Electron, native database modules, verified media tools and Inno Setup.
+- `01-Setup-Environment.bat`: prepare pinned Node.js, npm dependencies, Electron, native database modules, the isolated companion memory runtime, companion SDK, speech and embedding model runtimes, verified media tools and Inno Setup.
 - `02-Start-Development.bat`: check the existing environment and run development using the current user's `%APPDATA%\WorldlineBox` profile, shared with the installed app.
 - `03-Build-Installer.bat`: type-check, package the app and create `out/make/inno/WorldlineBoxSetup.exe`.
 

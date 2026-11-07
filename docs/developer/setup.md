@@ -34,7 +34,11 @@
 
 ## 首次构建
 
-Windows 推荐使用根目录的 `01-Setup-Environment.bat`。脚本先用 `npm ci --ignore-scripts` 安装锁定依赖，再显式执行 `koffi`、`node-pty` 的安装钩子，最后只为 Electron 构建 `better-sqlite3`。这样不会先为系统 Node 编译一个随后被替换的数据库模块，也避免其头文件选择 ClangCL 后出现 `MSB8020` 或 LLVM 库工具的参数错误。
+Windows 推荐使用根目录的 `01-Setup-Environment.bat`。先安装 Git for Windows（包含 Git LFS），从本项目官方仓库克隆源码，再依次运行根目录三个 BAT。首次准备会下载锁定依赖、模型和工具，需要联网及足够磁盘空间；无需从其他项目目录复制 `.tools`、`node_modules` 或打包产物。国内网络需要代理时，可执行 `01-Setup-Environment.bat -Proxy http://127.0.0.1:7897`。
+
+`01` 先用 `npm ci --ignore-scripts` 安装锁定依赖，再显式执行 `koffi`、`node-pty` 的安装钩子，并只为 Electron 构建 `better-sqlite3`。这样不会先为系统 Node 编译一个随后被替换的数据库模块，也避免其头文件选择 ClangCL 后出现 `MSB8020` 或 LLVM 库工具的参数错误。之后还会构建伙伴 SDK、安装并验证使用 Node 24 ABI 的独立 VCP Memory、还原缺失的 Live2D LFS 文件、按锁定哈希准备向量模型及 CPU/Vulkan 运行组件、语音识别模型，最后准备安装器编译器。任意阶段失败都不会留下成功的环境收据；修复网络或工具链后重新运行 `01`。
+
+`02` 检查环境后启动真实开发版，`03` 执行类型检查、应用打包、资源校验和安装器编译。正常开发启动和安装版共享当前用户的应用数据；验收时可使用 `node scripts/test-dev-bat.mjs`，它会实际执行 `02` 并使用隔离测试数据，避免影响日常存档。环境准备完成后，不需要先打包一次才能启动开发版。
 
 Electron 下载遇到连接重置等网络错误时会重试；GitHub 不可达时自动尝试 npmmirror 备用源，并始终按锁定 Electron npm 包内的官方 SHA-256 校验。有备用源时，curl 持续低速也会结束当前尝试并换源，避免看似连通却等待数小时。已有完整且校验一致的 ZIP 会复用，下载失败不会将半截文件当作安装包。也可以通过 `ELECTRON_MIRROR` / `ELECTRON_CUSTOM_DIR` 指定下载源；`02` 在 `01` 成功完成后启动，不负责补装依赖。
 

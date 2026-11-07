@@ -222,30 +222,45 @@ function Prepare-PortableTools {
     if ($LASTEXITCODE -ne 0) { throw 'Bundled tool verification failed.' }
 }
 
+function Prepare-CompanionRuntime {
+    # npm ci intentionally skips lifecycle scripts. Prepare project-owned
+    # outputs explicitly, before a successful setup receipt permits Dev.
+    foreach ($script in @('build-companion-call-sdk.mjs', 'stage-bot-memory.mjs', 'verify-bot-memory.mjs', 'prepare-source-lfs.mjs')) {
+        & $nodeExe (Join-Path $projectRoot "scripts\$script")
+        if ($LASTEXITCODE -ne 0) { throw "Companion runtime preparation failed: $script. Setup is incomplete; fix the error above and run 01-Setup-Environment.bat again." }
+    }
+    & $nodeExe (Join-Path $projectRoot 'scripts\stage-bundled-embedding.mjs') --acquire --cache-dir (Join-Path $toolsRoot 'embedding-downloads')
+    if ($LASTEXITCODE -ne 0) { throw 'Bundled embedding preparation failed. Check the network/proxy and run 01-Setup-Environment.bat again.' }
+    & $nodeExe (Join-Path $projectRoot 'scripts\stage-local-speech.mjs')
+    if ($LASTEXITCODE -ne 0) { throw 'Local speech preparation failed. Check the network/proxy and run 01-Setup-Environment.bat again.' }
+}
+
 function Setup-Environment {
     # A failed setup must never leave a previous success receipt behind.
     if (Test-Path -LiteralPath $setupState) { Remove-Item -LiteralPath $setupState -Force }
-    Write-Host '[Setup 1/6] Checking native build tools...'
+    Write-Host '[Setup 1/7] Checking native build tools...'
     Prepare-NativeBuildTools
-    Write-Host '[Setup 2/6] Installing locked npm dependencies (this may take several minutes)...'
+    Write-Host '[Setup 2/7] Installing locked npm dependencies (this may take several minutes)...'
     Install-Dependencies
-    Write-Host '[Setup 3/6] Preparing Electron and rebuilding only better-sqlite3...'
+    Write-Host '[Setup 3/7] Preparing Electron and rebuilding only better-sqlite3...'
     Prepare-Electron -RequireArchive
     Run-Npm @('run', 'rebuild:native')
     & $nodeExe (Join-Path $projectRoot 'scripts\ensure-native.mjs') --check-only
     if ($LASTEXITCODE -ne 0) { throw 'Native runtime verification failed.' }
-    Write-Host '[Setup 4/6] Preparing verified media components...'
+    Write-Host '[Setup 4/7] Preparing verified media components...'
     $mediaArchive = Join-Path $toolsRoot 'worldlinebox-media-win32-x64.zip'
     if (Test-Path -LiteralPath $mediaArchive) {
         Run-Npm @('run', 'media:ensure', '--', '--archive', $mediaArchive)
     } else { Run-Npm @('run', 'media:ensure') }
-    Write-Host '[Setup 5/6] Verifying bundled tools and generating declarations...'
+    Write-Host '[Setup 5/7] Verifying bundled tools and generating declarations...'
     Prepare-PortableTools
     & $nodeExe (Join-Path $projectRoot 'scripts\generate-automation-declarations.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'Automation API generation failed.' }
     & $nodeExe (Join-Path $projectRoot 'scripts\verify-ufbx-wasm.mjs')
     if ($LASTEXITCODE -ne 0) { throw 'FBX component verification failed.' }
-    Write-Host '[Setup 6/6] Preparing the installer compiler...'
+    Write-Host '[Setup 6/7] Preparing companion SDK, isolated memory, models and source assets...'
+    Prepare-CompanionRuntime
+    Write-Host '[Setup 7/7] Preparing the installer compiler...'
     Prepare-Inno
     $lockHash = File-Sha256 (Join-Path $projectRoot 'package-lock.json')
     @{ nodeVersion = $nodeVersion; lockHash = $lockHash } | ConvertTo-Json | Set-Content -LiteralPath $setupState -Encoding UTF8
