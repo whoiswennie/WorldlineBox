@@ -128,7 +128,7 @@ WorldlineBox 已有对应机制：`src/main/companion-bot/app-brain.ts` 对完�
 | 单 Router、多 Workers | 独立金额核算与审计并行，等待两者成功及当前结果，再派集成 Worker；真实文件交接与净额复核 207 | `multifile-real/worldlinebox-bot-real-multifile-mIq4SB` |
 | 群聊、多伙伴 | 大肥鱼与 GPT 各自派 Worker；真实并行；用户对话更正其中一方口径，原任务原 Session 续作；最终两报告合并为 312 | `multi-companion-real/worldlinebox-bot-real-multi-companion-vOSuUo` |
 | 私聊发起、多伙伴正式协作 | 三份原件以新 scoped ID 转至伙伴私聊，西区报告以相同 SHA 返回原用户聊天；最终 Worker 只接收 east/west 两报告绝对路径，核验 207 + 185 = 392 | `multi-companion-real/worldlinebox-bot-real-multi-companion-Kw7tAp` |
-| 反问、对话控制与中断恢复 | 原生 ask_user → Router 按已知授权 answer；暂停计时冻结、只补充不恢复、明确恢复；硬中断本测试 Host 后沿同 Task/Session/Event 恢复；真实 final.json 交付；用户停止后迟到门文件不产生结果或重派 | `resilience-real/worldlinebox-bot-real-resilience-h0h2O2` |
+| 反问、对话控制与中断恢复 | 真实 Router 完成后注入上层回执丢失，同事件从账本恢复且零新增模型请求、任务或工具效果；原生 ask_user → Router 按已知授权 answer；暂停计时冻结、只补充不恢复、明确恢复；硬中断本测试 Host 后沿同 Task/Session/Event 恢复；真实 final.json 交付；用户停止后迟到门文件不产生结果或重派 | `resilience-real/worldlinebox-bot-real-resilience-E5xZyq` |
 
 目录均在 `artifacts/superagent-bot-development/`，保存实际 Router journal、Worker prompt、状态采样、结果及清理证明。多伙伴两个场景分别采样 105 和 87 条真实状态；最终私聊集成 prompt 保持有界，仅有完整任务要求和两份成果文件，无私聊 canary 或无关文件。所有样例原件字节保持不变。
 
@@ -148,3 +148,5 @@ Runner 只清理自己标记的隔离目录和进程，不操作用户真实任�
 边界：真实业务测试关闭长期记忆，仅证明模型、Router、DSH、任务及媒体链路；NoMemory 在任何 I/O 前拒绝写入且能证明未写入，不冒充 VCP 成功。多个角色使用同一隔离官方 Host 中的独立 Session，不据此声称任意第三方插件全局配置已隔离。此验收运行目录缺少 pwsh/ripgrep 可执行环境，Worker 如实披露并使用原生文件工具核验，因此不声称此轮已覆盖终端长进程取消。
 
 聊天 UI 另由 `companion-collaboration-ui.test.ts` 在真实隔离 Electron + Main IPC 验证：私聊、群聊、两位任务所有者、实时进度、暂停计时、停止、任务跟进归属、追加消息及完整重启后任务记录保留，1024/1440 窗口几何检查通过。此 UI 用例使用显式标记的状态夹具，与上述真实模型业务验收分开；截图在 `artifacts/companion-collaboration-ui/`。
+
+增强恢复用例明确区分故障边界：Router 故障是在真实模型已完成且 durable journal、唯一 dsh_task 工具效果均提交后，丢失一次向 BotService 返回的完成回执，不是杀掉 Router 进程。Main 将同事件从 inbox attempt 1 重领为 2；二次返回保留相同 taskId、callId、账本/效果/正文哈希，重放没有新的 provider 请求。随后仍执行真实 DSH Host 硬中断、暂停恢复与停止防晚到全部检查。

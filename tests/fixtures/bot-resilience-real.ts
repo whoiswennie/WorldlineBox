@@ -1,5 +1,6 @@
-/** Opt-in production Router/native Worker acceptance. The only injected
- * fault is termination of this fixture's own DSH Host process tree. */
+/** Opt-in production Router/native Worker acceptance. Faults are loss of one
+ * completed Router result above its real durable journal and termination of
+ * this fixture's own DSH Host process tree; business results stay real. */
 import { app, safeStorage } from 'electron';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
@@ -11,7 +12,7 @@ import { BotService } from '../../src/main/companion-bot/service';
 import type { BotTaskSql } from '../../src/main/companion-bot/store';
 import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
-import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
+import { BotDshBrain, BotDshDeliveryUnknownError } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { resolveStoredLlmConfig } from '../../src/shared/llm';
@@ -28,7 +29,15 @@ const exists = (file: string) => access(file).then(() => true, () => false);
 const progress = (stage: string, data: object = {}) => process.send?.({ kind: 'resilience-progress', stage, ...data });
 const taskPhase = (task: BotTask) => (task.extra.progress as { phase?: string } | undefined)?.phase;
 class NoMemory extends BotMemoryService {
-  override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> { return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'memory-disabled-for-resilience', metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 }; }
+  private readonly prepared = new Map<string, BotMemoryPrepared>();
+  override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
+    const prepared: BotMemoryPrepared = { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'memory-disabled-for-resilience', metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 };
+    this.prepared.set(input.requestId, prepared); return prepared;
+  }
+  override async resumePrepared(input: Parameters<BotMemoryService['resumePrepared']>[0]): Promise<BotMemoryPrepared> {
+    const prepared = this.prepared.get(input.requestId); if (!prepared) throw Error('No memory-boundary preparation exists for this exact request.'); return prepared;
+  }
+  override async rememberReceipt() { return { found: false }; }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
   override async finishTurn() { return { recorded: true }; }
   override async appendHistory() { return { archived: true }; }
@@ -37,10 +46,14 @@ class NoMemory extends BotMemoryService {
 void app.whenReady().then(async () => {
   let service: BotService | undefined, native: Awaited<ReturnType<typeof createBotNativeHost>> | undefined, secret = '', stage = 'configuration', conversationId = '';
   const report: Record<string, unknown> = { kind: 'resilience-result', passed: false, actualModel: false, actualNativeWorker: false, memoryDisabled: true,
-    design: ['actual user conversation pause', 'supplement while paused', 'same task resume', 'owned DSH process interruption and same session recovery', 'actual user conversation stop', 'frozen timer and no late result'] };
+    design: ['post-commit actual Router result-loss injection and durable same-event replay', 'actual user conversation pause', 'supplement while paused', 'same task resume', 'owned DSH process interruption and same session recovery', 'actual user conversation stop', 'frozen timer and no late result'] };
   const safe = (error: unknown) => (error instanceof Error ? error.message : String(error)).replaceAll(secret || '\0', '<redacted>').replace(/Bearer\s+\S+/giu, 'Bearer <redacted>').slice(0, 1600);
   const errors: string[] = [], transitions: Array<{ at: number; taskId: string; status: string; phase?: string }> = [];
   const dispatches: Array<{ taskId: string; eventId: string; sessionId: string; cwd: string; at: number; promptHash: string; result?: string; error?: string }> = [];
+  let initialRouterEventId = '', routerProviderRequests = 0;
+  const routerLoss = { kind: 'actual-model-post-commit-upper-result-loss', routerProcessKilled: false, injections: 0, recoveredReturns: 0,
+    entries: [] as Array<{ eventId: string; inboxAttempts: number; providerRequestsDuringRun: number; taskId: string; committedTaskCalls: number; callId: string; ledgerHash: string; effectHash: string; textHash: string }> };
+  report.routerDeliveryLoss = routerLoss;
   try {
     const catalog = JSON.parse(await readFile(path.join(source, 'ai-profiles.json'), 'utf8'));
     const profile = catalog.profiles.find((value: { id: string }) => value.id === catalog.activeProfileId);
@@ -54,10 +67,36 @@ void app.whenReady().then(async () => {
     const records = path.join(inputs, 'records.json'), gate = path.join(inputs, 'release.txt'); await writeFile(records, JSON.stringify({ values: [2, 3, 5] }));
     const media = new BotMediaService({ root: path.join(botRoot, 'media'), builtinRoot: path.resolve('resources/bot-stickers') });
     const worker = new BotDshBrain({ getHost: async (_id, signal) => ({ client: await native!.instances.ensureHost(native!.instance.id, signal) }) });
-    const brain = new BotBrainRouter({ worker, app: new BotAppBrain({ root: path.join(botRoot, 'router'), fetchFn: async (...args) => { report.actualModel = true; return fetch(...args); }, reconcileTool: (call, signal) => service!.reconcileToolReceipt(call, signal) }) });
+    const brain = new BotBrainRouter({ worker, app: new BotAppBrain({ root: path.join(botRoot, 'router'), fetchFn: async (...args) => { report.actualModel = true; routerProviderRequests++; return fetch(...args); }, reconcileTool: (call, signal) => service!.reconcileToolReceipt(call, signal) }) });
     const run = brain.run.bind(brain);
     brain.run = async input => {
-      if (input.role !== 'worker') return run(input);
+      if (input.role !== 'worker') {
+        const requestsBefore = routerProviderRequests, result = await run(input);
+        if (input.eventId === initialRouterEventId) {
+          // The actual App engine and authenticated task callback have already
+          // completed. Inspect committed receipts before losing the *upper*
+          // result; never replace the provider output or simulate task work.
+          const Sqlite = Database as new (filename: string, options: { readonly: boolean }) => BotTaskSql & { close(): void };
+          const db = new Sqlite(path.join(botRoot, 'router/app-brain.sqlite'), { readonly: true });
+          let ledger: { turn: { state: string } | undefined; calls: Array<{ call_id: string; name: string; state: string; result_json: string }> };
+          try { ledger = { turn: db.prepare('SELECT state FROM app_turns WHERE event_id=?').get(input.eventId) as { state: string } | undefined,
+            calls: db.prepare('SELECT call_id,name,state,result_json FROM app_calls WHERE event_id=? AND name=\'dsh_task\' ORDER BY step,position').all(input.eventId) as typeof ledger.calls }; }
+          finally { db.close(); }
+          const tasks = service!.store.listTasks().filter(task => task.sourceEventId === input.eventId), call = ledger.calls[0];
+          if (result.status !== 'succeeded' || ledger.turn?.state !== 'succeeded' || tasks.length !== 1 || ledger.calls.length !== 1 || call?.state !== 'committed' || !call.result_json.includes(tasks[0]!.id)) throw Error('Cannot inject result loss without one real committed Router task and terminal journal receipt.');
+          const effect = service!.store.getMetadata(`effect:${input.eventId}:${call.call_id}`);
+          if (!effect?.includes(tasks[0]!.id)) throw Error('Actual dsh_task effect receipt was not durable before the injection.');
+          routerLoss.entries.push({ eventId: input.eventId, inboxAttempts: service!.store.getEvent(input.eventId)!.attempts, providerRequestsDuringRun: routerProviderRequests - requestsBefore,
+            taskId: tasks[0]!.id, committedTaskCalls: ledger.calls.length, callId: call.call_id, ledgerHash: createHash('sha256').update(JSON.stringify(ledger)).digest('hex'),
+            effectHash: createHash('sha256').update(effect).digest('hex'), textHash: createHash('sha256').update(result.text).digest('hex') });
+          if (routerLoss.injections === 0) {
+            routerLoss.injections++; progress('router-upper-result-loss-injected', { eventId: input.eventId, committedTaskCalls: 1, taskId: tasks[0]!.id });
+            throw new BotDshDeliveryUnknownError(new Error('Acceptance lost one completed Router result above the durable App journal.'), 'stream');
+          }
+          routerLoss.recoveredReturns++; progress('router-durable-result-recovered', { eventId: input.eventId, inboxAttempts: service!.store.getEvent(input.eventId)!.attempts, providerRequestsDuringReplay: routerProviderRequests - requestsBefore });
+        }
+        return result;
+      }
       const row: typeof dispatches[number] = { taskId: input.laneId.slice(7), eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), cwd: input.cwd, at: Date.now(), promptHash: createHash('sha256').update(input.prompt).digest('hex') }; dispatches.push(row);
       await writeFile(path.join(output, `worker-prompt-${dispatches.length}.txt`), input.prompt); progress('native-dispatch', { taskId: row.taskId, attempt: dispatches.length });
       try { const result = await run(input); report.actualNativeWorker = true; row.result = result.status; return result; }
@@ -85,8 +124,13 @@ void app.whenReady().then(async () => {
       return { replyId: id, eventId: event };
     };
     const initial = await chat(`请通过 DSH 建立一个批次核对任务，题目“分批核对与恢复验收”。严格只建一个dsh_task，不创建dsh_plan，不拆成多个Worker；以下两段是同一个Worker任务内部的步骤，共享工作目录。本次还要验证真实结构化反问：Worker在读取样例前必须实际调用一次原生ask_user，询问“最终报告使用哪种语言？”，选项“中文”和“英文”，并收到回答才继续。这是必要验收步骤不能省略；我已经明确授权使用中文，因此主脑收到这个Worker问题后，主动读取原问题并以中文原选项回答，不再反问我，不能由主脑替Worker伪造提问。原始样例文件绝对路径：${records}。全程不联网，只读原件，只在这个任务工作目录写结果。阶段一读取 values 并计算 count/sum，把真实结果写 phase-1.json。阶段二必须等待门文件 ${gate} 出现后，才继续完成 final.json（含 count、sum、label），并通过原聊天交付文件。label 初始为“初始”，后续我会补充更正。为了让我验证暂停和断线恢复，阶段一后使用一个最长180秒的 Python 等待进程，每秒检查门文件；可将终端等待分成≤10秒片段，但门未出现不可结束任务或编造完成。中断后沿用此任务和会话，从已有检查点继续，不重复派发新任务。不记录长期记忆。`);
+    initialRouterEventId = initial.eventId;
     stage = 'phase-one'; progress(stage);
     await waitFor('native dispatch', () => dispatches[0], Boolean);
+    await waitFor('same-event durable Router replay after lost upper result', () => routerLoss.recoveredReturns, count => count === 1);
+    const conserved = ['eventId', 'taskId', 'callId', 'ledgerHash', 'effectHash', 'textHash'] as const;
+    if (routerLoss.injections !== 1 || routerLoss.entries.length !== 2 || routerLoss.entries[1]!.inboxAttempts < 2 || routerLoss.entries[1]!.providerRequestsDuringRun !== 0
+      || conserved.some(key => routerLoss.entries[0]![key] !== routerLoss.entries[1]![key])) throw Error('Router replay did not reuse its real completed journal/effect/result exactly once without a new provider call.');
     const first = dispatches[0]!, taskId = first.taskId;
     await waitFor('worker-created phase-one checkpoint', () => exists(path.join(first.cwd, 'phase-1.json')), Boolean, 180000);
     const checkpointBytes = await readFile(path.join(first.cwd, 'phase-1.json')), checkpoint = JSON.parse(checkpointBytes.toString('utf8'));
@@ -118,6 +162,7 @@ void app.whenReady().then(async () => {
     if (final.count !== 3 || final.sum !== 10 || final.label !== '用户补充-橙色') throw Error('Recovered Worker failed the actual result or supplemental label.');
     const work = dispatches.filter(row => row.taskId === taskId);
     if (new Set(work.map(row => row.sessionId)).size !== 1 || new Set(work.map(row => row.eventId)).size !== 1 || service.store.listTasks().length !== 1) throw Error('Recovery duplicated the original task/session/event.');
+    if (service.store.listTasks().filter(task => task.sourceEventId === initial.eventId).length !== 1 || routerLoss.entries.some(entry => entry.taskId !== taskId || entry.committedTaskCalls !== 1)) throw Error('Initial Router result-loss recovery created another task or dsh_task effect.');
     const questions = service.store.taskTransaction(sql => sql.prepare('SELECT question_id,state,questions_json,answers_json FROM bot_task_questions WHERE task_id=?').all(taskId)) as Array<{ question_id: string; state: string; questions_json: string; answers_json: string | null }>;
     if (!questions.length || !questions.some(question => ['answered', 'closed'].includes(question.state) && question.answers_json?.includes('中文'))) throw Error('No actual native structured question and Router-provided Chinese answer were recorded.');
     const publications = service.store.publicationsForTask(taskId);
@@ -148,7 +193,7 @@ void app.whenReady().then(async () => {
       const Sqlite = Database as new (filename: string, options: { readonly: boolean }) => BotTaskSql & { close(): void };
       const db = new Sqlite(path.join(root, 'bot/router/app-brain.sqlite'), { readonly: true });
       try { await writeFile(path.join(output, 'router-journal.json'), JSON.stringify({ tasks: service.store.listTasks(), messages: conversationId ? service.store.recentMessages(conversationId, { limit: 50 }) : [],
-        turns: db.prepare('SELECT event_id,state,text,error FROM app_turns').all(), calls: db.prepare('SELECT event_id,call_id,name,args_json,state,result_json FROM app_calls').all(), dispatches, transitions }, null, 2).replaceAll(secret || '\0', '<redacted>')); } finally { db.close(); }
+        turns: db.prepare('SELECT event_id,state,text,error FROM app_turns').all(), calls: db.prepare('SELECT event_id,call_id,name,args_json,state,result_json FROM app_calls').all(), dispatches, transitions, routerLoss }, null, 2).replaceAll(secret || '\0', '<redacted>')); } finally { db.close(); }
     } catch (error) { report.diagnosticError = safe(error); }
     try { await service?.shutdown(); await native?.close(); } catch (error) { report.passed = false; report.cleanupError = safe(error); }
     await writeFile(path.join(output, 'evidence.json'), JSON.stringify(report, null, 2) + '\n'); process.send?.(report); app.exit(report.passed ? 0 : 1);
