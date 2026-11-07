@@ -113,7 +113,7 @@ async function run() {
   const report = path.join(reportsRoot, `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID()}`);
   await mkdir(report); await ordinary(report, true);
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'worldlinebox-dev-bat-'));
-  const userData = path.join(temporaryRoot, 'user-data'); const root = path.join(userData, 'dsh-launcher');
+  const userData = path.join(temporaryRoot, 'user-data'); const root = path.join(userData, 'dsh');
   const cdpPort = await findFreeTcpPort(32_000); const vitePort = await findFreeTcpPort(cdpPort + 1);
   const attach = loadWindowsJobHelper(); let child, job, browser, page, verifiedOwnedApp = false;
   let stdout = '', stderr = '', result, failure, ownedTreeStopped = false;
