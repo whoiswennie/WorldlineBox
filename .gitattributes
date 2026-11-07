@@ -23,3 +23,7 @@ tests/fixtures/media/*.wav -text
 tests/fixtures/media/*.mp3 -text
 # Retained third-party TypeScript distributions preserve the compiler's export formatting.
 vendor/soullink-emotion/*/dist/** -whitespace
+# TypeScript and the declaration generator emit LF. Keep fresh Windows builds
+# from reporting every generated distribution file as a local modification.
+vendor/soullink-emotion/*/dist/** text eol=lf
+docs/manual/scripts/automation-api.d.ts text eol=lf
