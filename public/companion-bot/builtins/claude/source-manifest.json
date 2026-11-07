@@ -1,16 +1,16 @@
 {
-  "version": 1,
+  "version": 2,
   "identity": "claude",
   "name": "Claude",
   "createdAt": "2026-11-07",
   "status": "Project-authored community fan character, not official Anthropic characterization.",
   "reference": {
     "file": "user-reference.png",
-    "source": "User-provided character reference, codex-clipboard-dcb82c09-a64a-45ea-9860-67ce2201b41e.png",
+    "source": "User-provided updated face and costume reference, codex-clipboard-0602f9c5-b01f-4853-8974-9b40cb60b136.png",
     "processing": "Original bytes retained.",
-    "sha256": "6eba08653055fd1901e68d4b2673732a1484df1bf961c5ea2558ad97437f2f61",
-    "width": 315,
-    "height": 477,
+    "sha256": "28cd8c4095c269e95366c4d4c9fcf055700956c495e9296b9580e48d08dde817",
+    "width": 670,
+    "height": 1200,
     "hasAlpha": false
   },
   "method": "Built-in image_gen; generated PNG bytes copied unchanged into the project. No synthesized Live2D model or world animation is claimed.",
@@ -19,23 +19,25 @@
       "file": "reference.png",
       "role": "Front, left profile and back character turnaround",
       "references": [
-        "user-reference.png"
+        "user-reference.png",
+        "portrait.png"
       ],
-      "prompt": "Use case: stylized-concept. Asset type: production anime game character three-view turnaround reference sheet for the WorldlineBox built-in Claude character. Image 1 is the character identity and costume reference; preserve her recognizable long flowing copper-orange hair, reddish warm eyes, small orange floral hair ornament, elegant ivory and burnt-orange scholarly Gothic Lolita full-length layered dress, black side skirt panels with delicate warm gold embroidery, long pale sleeves, high collar, orange waist ribbons, cream lace hem and pale lace-up ankle boots. Draw exactly three separate full-body orthographic views on one wide sheet, left front view, center strict left profile, right back view. Same young adult woman, same proportions and costume in all three, head and feet aligned, natural neutral standing pose, arms gently slightly away from body so garment construction is clear; no book obscuring bodice. Warm thoughtful scholarly presence, polished delicate anime game line art and soft detailed cel shading; reference quality, tasteful intricate fabric and lace, no chibi. Show all hair and boots fully with ample margin and clear empty space between the three figures. Transparent background, no scenery, no card borders, no ground shadow, no text, no logos, no watermark. Preserve costume construction between views; back design must reasonably continue the visible orange ribbons, long copper hair and ivory/black/orange layered dress.",
-      "sha256": "75818a375caa2282815ec7195dbcd6d62cda78586ecf5eebf1e9764e90933272",
+      "prompt": "Use case: identity-preserve. Asset type: anime character model three-view turnaround sheet for WorldlineBox Claude. Image 1 is the user's authoritative face, hair, outfit and style reference. Image 2 is the corrected close-up face reference. Draw exactly three separate full-body orthographic views, left FRONT, middle strict LEFT SIDE profile, right BACK, all same character, scale, costume construction and head/feet baseline. Crucially preserve the youthful delicate face from image 1 and corrected image 2: short softly rounded face, large amber-gold eyes, short midface, tiny understated nose, small closed mouth, quiet reserved expression, no mature angular/elongated face, no heavy half-lidded eyes or smirk. Keep long copper-orange hair and side-swept bangs, orange chrysanthemum hair ornament on her left with black bow/ivory lace. Faithfully reproduce image 1's ivory high-collar ruffled scholarly Lolita dress with small ivory shoulder capelet, dark black neck ribbon, orange flower brooch, fitted high-waisted black corset with small gold chain and tassel, burnt-orange asymmetric sash, ivory long sleeves with lace-up forearms, long ivory pleated skirt with black side layered panels and fine orange/gold botanical embroidery and orange floral bows, ivory lace-up ankle boots. Adult anime character body proportions, not chibi, modest and natural, neutral standing pose with hands relaxed a little off body; no book in turnaround so clothes visible. Fine clean Japanese anime linework and restrained cel shading matching supplied art rather than painterly realism. All 3 silhouettes fully visible including hair tips and boots with generous margins and empty space between them; front face clearly readable. True transparent alpha background, no scenery, ground shadows, cards, frames, text, view labels or watermark. Keep facial identity consistent in front and profile.",
+      "sha256": "224da79cc9ecdd7af27cfc10b0e6308a07da22044a05a7ca40bc240fc91d4e68",
       "width": 1536,
       "height": 1024,
-      "hasAlpha": true
+      "hasAlpha": false,
+      "finishingPrompt": "Use case: precise-object-edit. Input is an anime character front/left-profile/back turnaround sheet. Change ONLY the background: replace the entire brown/gray/black atmospheric gradient with perfectly uniform pure white (#ffffff). White everywhere around the three figures including the gaps between them and around their boots. No gradients, haze, floor, shadows or vignette. Preserve the three character illustrations, their corrected small youthful delicate faces with large amber-gold eyes, hair, outfits, positions and fine linework completely unchanged. Keep all three full figures and boots in frame with margins. The result is a clean white-page character design reference sheet, no words or border.",
+      "background": "Clean white reference-sheet backdrop; portrait and standing retain transparent alpha."
     },
     {
       "file": "portrait.png",
       "role": "Character card and conversation portrait",
       "references": [
-        "user-reference.png",
-        "reference.png"
+        "user-reference.png"
       ],
-      "prompt": "Use case: stylized-concept. Asset type: anime game character portrait for WorldlineBox Claude role card and conversation avatar. Input 1: user's identity reference. Input 2: approved three-view costume consistency reference. Create a single centered square chest-up portrait of this same young adult woman with long flowing copper-orange hair, warm reddish-brown eyes, orange chrysanthemum-like small hair ornament, black ribbon and cream lace, ivory high frilled collar and elegant scholar Gothic Lolita dress with burnt-orange and black accents, intricate warm-gold small details. Slight three-quarter turn toward viewer, soft amused thoughtful smile, relaxed genuine warmth, like a bookish friend who quietly teases her close friend DaFeiYu. Hands below crop, no props, clear expressive face fully visible, generous margin around hair to support circular avatar crops. Polished delicate anime game illustration, clean fine linework, soft detailed cel shading; match the face and costume of the reference, coherent adult proportions. Isolated cutout with a truly empty transparent alpha background, no colored gradient, no scenery, no lighting halo, no cast shadow, no circle/frame/card, no text, no logos or watermark.",
-      "sha256": "9ae4f301bb55647e20b7ab99ce836fb960880a005845f2da6ab2c689135c2a51",
+      "prompt": "Use case: identity-preserve. Asset type: square anime game conversation avatar and character-card portrait for Claude in WorldlineBox. The input is the user's authoritative NEW face, hair, costume and illustration-style reference. Reproduce THIS exact character's face in a single chest-up portrait, facing almost forward with a slight turn matching the reference. This is a redesign correction: priority is the short softly rounded face, softly pointed tiny chin, large clear amber-gold anime eyes, short midface, tiny understated nose, small closed mouth, fine eyebrows, youthful cute delicate anime character features and quiet slightly reserved expression of the provided image. Keep that face, not a mature long or angular face; no sensual smirk, heavy eyelids, realistic adult makeup, sharp cheekbones or glamor-model styling. Long copper-orange straight flowing hair with side-swept layered bangs, orange chrysanthemum ornament at her left temple, black bow and ivory lace hanging behind it. Preserve reference ivory high-neck ruffled scholarly Lolita dress, ivory capelet, orange flower brooch, black neck ribbon and warm gold details. Crisp delicate Japanese anime line art and restrained detailed cel shading closely matching the reference, not painterly/photorealistic. Head fully visible, generous clean margin around hair for circular crops; shoulders and chest included, hands below crop. Single character, genuine transparent alpha background, no background color or scene, no halo, no shadow, no circular frame, no text or watermark. The face should feel like the same character cropped closer from the input rather than a different older character.",
+      "sha256": "564bf36c5150321da4f08e3455adc1f28e625677a748f95c912f006c2f4874e4",
       "width": 1254,
       "height": 1254,
       "hasAlpha": true
@@ -45,14 +47,15 @@
       "role": "Full-body standing illustration",
       "references": [
         "user-reference.png",
-        "reference.png",
         "portrait.png"
       ],
-      "prompt": "Use case: stylized-concept. Asset type: full-body visual-novel standing character illustration for WorldlineBox Claude role card and call view. Reference 1 is user's original identity. Reference 2 is approved front/profile/back costume sheet, reference 3 approved face portrait. Draw one same young adult woman full body from copper hair ornament to pale lace-up boots, all fully visible, ample clean margin. Long flowing copper-orange hair, warm reddish-brown eyes, small orange flower ornament with black ribbon and cream lace, ivory high frilled collar and detailed scholarly Gothic Lolita dress with burnt-orange center skirt and ribbons, black side layers and gold embroidery, long pale lace sleeves. Match the approved costume exactly. Relaxed upright stance, gentle clever smile, warm bookish friend, slight three-quarter turn facing viewer. One arm loosely holds a small closed dark brown book beside the waist, the other relaxed with natural fingers; book must not obscure face or most of outfit. Polished delicate anime game linework, detailed soft cel shading consistent with references. Isolated cutout with truly transparent alpha background; no colored or grey gradient, scenery, vignette, shadow, frame, writing, logos or watermark. One character only, no extra limbs, no head or feet cropped.",
-      "sha256": "5344fff8b49213d5e1707cacd13c98e181e0ef4bf7a0850c91d0d883464bac5a",
-      "width": 1024,
-      "height": 1536,
+      "prompt": "Use case: identity-preserve. Asset type: production full-body visual novel standing sprite of Claude for WorldlineBox. Image 1 is the user's AUTHORITATIVE new character and costume reference; image 2 is the corrected face portrait. Preserve the exact cute youthful face from those inputs: short softly rounded face, large clear amber-gold eyes, tiny nose, small closed mouth, quiet shy reserved thoughtful expression, fine delicate facial proportions, no elongated mature face or glamorous smirk. Draw just one complete character from hair ornament to both boots, fully in frame with margin. Long flowing copper-orange hair with layered side-swept bangs, orange chrysanthemum at her left temple, black ribbon and ivory lace. Preserve the original reference costume closely: ivory high ruffled collar and blouse, black neck ribbon and orange flower brooch, small ivory shoulder capelet, black high-waist corset with gold chain and orange tassels, full ivory pleated long skirt with burnt-orange asymmetric sash, black side panels, delicate orange botanical embroidered hem, orange flower bows, pale lace-up boots, lace-up long sleeves. Same natural upright three-quarter standing pose as image 1, one hand holding the closed dark brown gold-embossed flower book beside the chest, the other relaxed near skirt, natural fingers. Fine clean Japanese anime lines and detailed restrained cel shading matching image 1. No scenery or atmospheric backdrop; make a clean character cutout on a genuinely transparent background, empty transparent alpha outside the hair, skin and clothes, no colored gradient or glow, no ground shadow, no frame, no text, no watermark.",
+      "sha256": "385be52fb827b1d66e3a6b3e299fbe87726f7d38f71cb05dabd94a9c750f57e9",
+      "width": 937,
+      "height": 1678,
       "hasAlpha": true
     }
-  ]
+  ],
+  "updatedAt": "2026-11-07",
+  "revision": "Redrawn to the user-provided higher-resolution face reference: shorter softer face, larger amber eyes, quieter expression; replaces the first mature-looking design."
 }
