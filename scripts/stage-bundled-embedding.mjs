@@ -73,21 +73,16 @@ export async function downloadPinned(url, destination, entry, fetchFn = globalTh
         .split(/\r?\n/u).find(file => existsSync(file));
       if (installed) powershell = installed;
     } catch { /* Windows PowerShell is available without installing another build dependency. */ }
-    const psLiteral = text => `'${String(text).replaceAll("'", "''")}'`;
     let next = 0;
     const transfers = await Promise.allSettled(Array.from({ length: Math.min(4, count) }, async () => {
       while (next < count) {
         const index = next++, start = index * chunkSize, end = Math.min(entry.bytes, start + chunkSize) - 1;
         if (existsSync(pieces[index]) && lstatSync(pieces[index]).size === end - start + 1) continue;
-        const script = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; `
-          + `if ($PSVersionTable.PSVersion.Major -lt 6) { [Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12 }; try { `
-          + `$response=Invoke-WebRequest -UseBasicParsing -Uri ${psLiteral(url)} -Headers @{Range=${psLiteral(`bytes=${start}-${end}`)}} `
-          + `-OutFile ${psLiteral(pieces[index])} -PassThru -TimeoutSec 60; `
-          + `if ([int]$response.StatusCode -ne 206 -or $response.Headers['Content-Range'] -ne ${psLiteral(`bytes ${start}-${end}/${entry.bytes}`)}) { throw 'Invalid pinned download range response.' } `
-          + `} catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`;
         for (let attempt = 0; attempt < 3; attempt++) {
           try {
-            await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+            await promisify(execFile)(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+              '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'scripts', 'download-pinned-range.ps1'),
+              '-Url', url, '-Destination', pieces[index], '-Start', String(start), '-End', String(end), '-Total', String(entry.bytes)],
               { windowsHide: true, maxBuffer: 128 * 1024, timeout: 75_000 });
             break;
           } catch (error) {
