@@ -70,9 +70,12 @@ describe('AI natural-language search planner', () => {
     const [url, init] = fetchFn.mock.calls[0]!;
     expect(String(url)).not.toContain('gemini-secret');
     expect(init?.headers).toMatchObject({ 'x-goog-api-key': 'gemini-secret' });
-    expect(JSON.parse(String(init?.body))).toMatchObject({
-      generationConfig: { responseMimeType: 'application/json' },
-    });
+    const body = JSON.parse(String(init?.body)) as {
+      generationConfig?: Record<string, unknown>;
+    };
+    expect(body.generationConfig).toMatchObject({ responseMimeType: 'application/json' });
+    expect(body.generationConfig).not.toHaveProperty('maxOutputTokens');
+    expect(body.generationConfig).not.toHaveProperty('thinkingConfig');
   });
 
   it('posts to OpenAI Responses when apiFormat is openai_responses', async () => {
@@ -115,7 +118,11 @@ describe('AI natural-language search planner', () => {
     );
     expect(init?.headers).toMatchObject({ Authorization: 'Bearer secret' });
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      parameters: { result_format: 'message', response_format: { type: 'json_object' } },
+      parameters: {
+        result_format: 'message',
+        response_format: { type: 'json_object' },
+        enable_thinking: false,
+      },
     });
   });
 
@@ -130,6 +137,7 @@ describe('AI natural-language search planner', () => {
     expect(plan.keywords).toEqual(['science fiction', 'city']);
     const request = JSON.parse(String(fetchFn.mock.calls[0]![1]?.body)) as Record<string, unknown>;
     expect(request.tool_choice).toEqual({ type: 'tool', name: 'worldlinebox_prepare_search' });
+    expect(request.thinking).toBeUndefined();
   });
 
   it('rejects model attempts to add SQL, paths, operators, or malformed typed filters', async () => {

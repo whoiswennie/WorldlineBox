@@ -61,8 +61,11 @@ it('shows sources, defaults to system sound, disables audio for GIF and offers e
   expect(sound[1]!.checked).toBe(true); expect(sound[2]!.checked).toBe(false);
   await act(() => sound[0]!.click());
   expect(host.querySelectorAll('.capture-region-fields input')).toHaveLength(4);
-  const format = [...host.querySelectorAll<HTMLSelectElement>('select')].find(item => item.value === 'mp4')!;
-  await act(() => { format.value = 'gif'; format.dispatchEvent(new Event('change', { bubbles: true })); });
+  const format = host.querySelector<HTMLButtonElement>('.capture-recording-options [role="combobox"][data-value="mp4"]')!;
+  await act(() => format.click());
+  const formats = document.getElementById(format.getAttribute('aria-controls')!)!;
+  await act(() => formats.querySelector<HTMLButtonElement>('[role="option"][data-value="gif"]')!.click());
+  expect(format.getAttribute('data-value')).toBe('gif'); expect(format.getAttribute('aria-expanded')).toBe('false');
   expect(sound[1]!.disabled).toBe(true); expect(sound[1]!.checked).toBe(false); expect(sound[2]!.disabled).toBe(true);
   expect(host.textContent).toContain('最长录制 60 秒');
 });

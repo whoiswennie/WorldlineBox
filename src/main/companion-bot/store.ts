@@ -354,6 +354,11 @@ export class BotStore {
     return [...new Set([event.id, event.sourceMessageRecordId, ...this.messageSources(event.sourceMessageRecordId), ...taskSources, ...mediaSources, ...peerSources])];
   }
   private grantSources(grantId: string): string[] { return this.db.prepare('SELECT source_id FROM bot_media_grant_sources WHERE grant_id=?').all(grantId).map(raw => String(asRow(raw).source_id)); }
+  /** Host-only lineage projection. Looking up a grant does not create one. */
+  attachmentGrantSourceIds(grantIds: string[]): string[] {
+    if (!Array.isArray(grantIds) || grantIds.length > 1024 || grantIds.some(id => typeof id !== 'string' || !id || id.length > 200 || id.includes('\0'))) throw new Error('附件授权来源标识无效。');
+    return [...new Set(grantIds.flatMap(id => this.grantSources(id)))];
+  }
   private grantValid(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, grant: BotAttachmentGrant): boolean {
     return !!this.db.prepare(`SELECT 1 FROM bot_media_grants g WHERE g.id=? AND g.media_id=? AND g.conversation_id=?
       AND NOT EXISTS(SELECT 1 FROM bot_media_grant_sources s JOIN bot_withdrawn_sources w ON w.source_id=s.source_id AND w.domain_key=? WHERE s.grant_id=g.id)`)
@@ -670,18 +675,23 @@ export class BotStore {
   /** Communication always belongs to the pair's own channel. A request for a
    * user-facing answer grants the recipient one separate publication, never
    * membership of (or an incoming message in) its user-private channel. */
-  contactPeer(source: BotEvent, targetId: string, callId: string, content: string, destination: 'user' | 'peer' = 'peer') {
+  contactPeer(source: BotEvent, targetId: string, callId: string, content: string, destination: 'user' | 'peer' = 'peer', transfer?: { attachments: BotMediaRef[]; sourceIds: string[] }) {
     if (!['user', 'peer'].includes(destination)) throw new Error('转达目的地必须为 user 或 peer。');
     if (source.source !== 'user' || source.senderId !== 'user') throw new Error('联系其他聊天中的伙伴需要当前用户明确请求。');
     if (targetId === source.companionId || this.isRetiredDevelopmentDefault(targetId)) throw new Error('请选择另一位可用伙伴。');
     const sender = this.getCompanion(source.companionId), target = this.getCompanion(targetId);
     if (!sender || !target) throw new Error('伙伴不存在。');
-    if (this.withdrawnIn(source.companionId, source.securityDomainId, this.eventSourceIds(source.id)).size) throw new Error('转达来源已撤回。');
+    const attachments = transfer?.attachments ?? [], additionalSources = transfer?.sourceIds ?? [];
+    if (!Array.isArray(attachments) || !Array.isArray(additionalSources) || additionalSources.length > 4096 || additionalSources.some(id => typeof id !== 'string' || !id || id.length > 200 || id.includes('\0'))) throw new Error('转达附件或授权来源无效。');
+    const transferSources = [...new Set([source.id, source.sourceMessageRecordId, ...additionalSources])].sort();
+    const transferFingerprint = hash([JSON.stringify(attachments), JSON.stringify(transferSources)]);
+    if (this.withdrawnIn(source.companionId, source.securityDomainId, [...this.eventSourceIds(source.id), ...additionalSources]).size) throw new Error('转达来源已撤回。');
     return this.db.transaction(() => {
       const receiptKey = `peer-contact-receipt:${source.id}:${callId}`, priorReceipt = this.getMetadata(receiptKey);
       if (priorReceipt) {
-        const receipt = JSON.parse(priorReceipt) as { recipientId: string; conversationId: string; messageId: string; fingerprint?: string };
+        const receipt = JSON.parse(priorReceipt) as { recipientId: string; conversationId: string; messageId: string; fingerprint?: string; transferFingerprint?: string };
         if (receipt.recipientId !== targetId || receipt.fingerprint && receipt.fingerprint !== hash([targetId, destination, content])) throw new Error('同一转达标识对应不同伙伴、目的地或内容。');
+        if (receipt.transferFingerprint ? receipt.transferFingerprint !== transferFingerprint : attachments.length > 0 || additionalSources.length > 0) throw new Error('同一转达标识对应不同附件或授权来源。');
         return { accepted: true as const, conversationId: receipt.conversationId, message: this.getMessage(receipt.messageId)!, events: [] as BotEvent[] };
       }
       const sourceRoom = this.getConversation(source.conversationId);
@@ -689,13 +699,13 @@ export class BotStore {
       const room = this.openPeer(sender.id, target.id);
       const result = this.tryEnqueueAutomatic({ conversationId: room.id, source: 'companion', senderId: sender.id, recipientIds: [targetId],
         content: text(content, '转达内容', 8000), sourceMessageId: `peer-contact:${source.id}:${callId}`, correlationId: source.correlationId, causationId: source.id,
-        payload: { hop: 1, userRequestedContact: true, originalSenderName: source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer' }, sourceIds: [source.id, source.sourceMessageRecordId] });
+        payload: { hop: 1, userRequestedContact: true, originalSenderName: source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer' }, attachments, sourceIds: transferSources });
       if (result.accepted && destination === 'user') for (const event of result.events) this.setMetadata(`peer-user-reply-grant:${event.id}`,
         JSON.stringify({ sourceEventId: source.id, relayMessageId: result.message.id, peerConversationId: room.id, recipientId: target.id,
           requesterId: sender.id, correlationId: source.correlationId, sourceAclRevision: source.aclRevision }));
-      if (result.accepted) for (const sourceId of this.eventSourceIds(source.id)) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
+      if (result.accepted) for (const sourceId of new Set([...this.eventSourceIds(source.id), ...additionalSources])) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
         .run(source.companionId, source.securityDomainId, sourceId, room.id, result.message.id);
-      if (result.accepted) this.setMetadata(receiptKey, JSON.stringify({ recipientId: targetId, conversationId: room.id, messageId: result.message.id, destination, fingerprint: hash([targetId, destination, content]) }));
+      if (result.accepted) this.setMetadata(receiptKey, JSON.stringify({ recipientId: targetId, conversationId: room.id, messageId: result.message.id, destination, fingerprint: hash([targetId, destination, content]), transferFingerprint }));
       return { ...result, conversationId: room.id };
     }).immediate();
   }
@@ -1465,12 +1475,33 @@ export class BotStore {
     const task = this.getTask(taskId); if (!task) throw new Error('媒体产物任务不存在。');
     return this.publishMedia(task.sourceEventId, `task-${hash([taskId, callId])}`, input, task);
   }
+  private delegationProxyCanPublish(task: BotTask, event: BotEvent): boolean {
+    if (task.extra.delegationProxy !== true || task.extra.humanStopped || task.extra.removedAt || task.extra.pauseRequested
+      || event.source !== 'user' || event.senderId !== 'user' || event.senderType !== 'user' || event.status === 'cancelled') return false;
+    // Ordinary Worker stores predate the delegation module and need no table
+    // or metadata lookup. The flag alone is never a publication capability.
+    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_delegations'").get()) return false;
+    const raw = this.db.prepare(`SELECT record_json,fingerprint FROM bot_delegations WHERE proxy_task_id=? AND requester_id=? AND source_conversation_id=? AND source_event_id=?`)
+      .get(task.id, event.companionId, event.conversationId, event.id);
+    if (!raw) return false;
+    const row = asRow(raw), serialized = String(row.record_json);
+    if (row.fingerprint !== createHash('sha256').update(JSON.stringify(serialized)).digest('hex')) return false;
+    const ticket = JSON.parse(serialized) as Record<string, unknown>;
+    if (typeof ticket.peerConversationId !== 'string' || typeof ticket.recipientId !== 'string' || typeof ticket.contactEventId !== 'string') return false;
+    const peer = this.getConversation(ticket.peerConversationId), contact = this.getEvent(ticket.contactEventId);
+    if (!peer || peer.kind !== 'peer' || !contact || contact.aclRevision !== peer.revision || contact.companionId !== ticket.recipientId
+      || contact.conversationId !== peer.id || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([event.companionId, ticket.recipientId].sort())) return false;
+    return ticket.state === 'active' && ticket.proxyTaskId === task.id && ticket.requesterId === event.companionId && ticket.sourceConversationId === event.conversationId
+      && ticket.sourceEventId === event.id && ticket.sourceAclRevision === event.aclRevision && ticket.correlationId === event.correlationId && ticket.goal === task.goal
+      && (task.extra.delegationId === undefined || task.extra.delegationId === ticket.id);
+  }
   private publishMedia(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; relativePath?: string; outputTaskId?: string; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }, task?: BotTask): BotMessage {
     const fingerprint = hash([input.content ?? '', JSON.stringify(input.attachments), input.relativePath ?? '', ...(!task && input.outputTaskId ? [input.outputTaskId] : [])]);
     return this.db.transaction(() => {
       const event = this.getEvent(eventId), lane = event && this.getLane(event.laneId), conversation = event && this.getConversation(event.conversationId);
       const activeTask = task && this.getTask(task.id);
-      const authorizedTask = activeTask && activeTask.status === 'running' && activeTask.extra.nativeAttempted === true && !activeTask.extra.cancelRequested
+      const delegationPublication = activeTask && event && this.delegationProxyCanPublish(activeTask, event);
+      const authorizedTask = activeTask && event && activeTask.status === 'running' && (activeTask.extra.nativeAttempted === true || delegationPublication) && !activeTask.extra.cancelRequested
         && activeTask.companionId === event?.companionId && activeTask.conversationId === event?.conversationId && !this.taskSourcesWithdrawn(activeTask.id);
       if (!event || !lane || !conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)
         || this.withdrawnIn(event.companionId, event.securityDomainId, [event.id]).has(event.id)
@@ -1484,6 +1515,15 @@ export class BotStore {
       const { message } = this.enqueue({ conversationId: event.conversationId, senderId: event.companionId, source: 'companion', sourceInstanceId: 'bot-publication-v1',
         sourceMessageId: `${eventId}:${callId}`, content: input.content ?? '', attachments: input.attachments, attachmentGrants: input.attachmentGrants,
         sourceIds: [...new Set([...this.eventSourceIds(event.id), ...(task ? this.taskSourceIds(task.id) : []), ...(input.sourceIds ?? [])])], recipientIds: [], correlationId: event.correlationId, causationId: event.id });
+      if (delegationPublication && activeTask) {
+        const row = this.db.prepare('SELECT record_json FROM bot_delegations WHERE proxy_task_id=?').get(activeTask.id);
+        const ticket = JSON.parse(String(asRow(row).record_json)) as { recipientId: string; peerConversationId: string; contactEventId: string };
+        const peer = this.getConversation(ticket.peerConversationId)!;
+        // Returning a file is another explicit cross-domain delivery. Its
+        // original B-side grant must be able to withdraw the derived A copy.
+        for (const sourceId of new Set([ticket.contactEventId, ...(input.sourceIds ?? [])])) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
+          .run(ticket.recipientId, peer.securityDomainId, sourceId, message.conversationId, message.id);
+      }
       this.db.prepare('INSERT INTO bot_publications(event_id,call_id,message_id,fingerprint,task_id,relative_path) VALUES(?,?,?,?,?,?)').run(eventId, callId, message.id, fingerprint, outputTaskId ?? null, input.relativePath ?? null);
       this.enqueueMemoryJob({ key: `history-publication:${eventId}:${callId}`, kind: 'projection', payload: { scope: { companionId: event.companionId, conversationId: event.conversationId, securityDomainId: event.securityDomainId } } });
       this.db.prepare('INSERT OR IGNORE INTO bot_outbox(id,event_id,conversation_id,message_id,created_at) VALUES(?,?,?,?,?)').run(message.id, event.id, event.conversationId, message.id, message.createdAt);
@@ -1517,16 +1557,18 @@ export class BotStore {
     return row ? this.message(row) : undefined;
   }
   modelAttachments(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[] } = {}): BotMediaRef[] { return this.modelAttachmentGrants(scope, options).map(entry => entry.ref); }
-  modelAttachmentGrants(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[]; throughSourceSequence?: number; all?: boolean } = {}): Array<{ ref: BotMediaRef; grantId: string }> {
+  modelAttachmentGrants(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[]; throughSourceSequence?: number; all?: boolean; ownPublicationsFromEventId?:string } = {}): Array<{ ref: BotMediaRef; grantId: string }> {
     const conversation = this.getConversation(scope.conversationId);
     if (!conversation?.memberIds.includes(scope.companionId) || conversation.securityDomainId !== scope.securityDomainId) throw new Error('附件查询没有当前主脑受众权限。');
+    const publishingEvent=options.ownPublicationsFromEventId?this.getEvent(options.ownPublicationsFromEventId):undefined;
+    if(options.ownPublicationsFromEventId&&(!publishingEvent||publishingEvent.companionId!==scope.companionId||publishingEvent.conversationId!==scope.conversationId||publishingEvent.securityDomainId!==scope.securityDomainId))throw new Error('当前轮次的文件发布身份不匹配。');
     const key = hash([scope.companionId, scope.securityDomainId]), query = (options.query ?? '').slice(0, 200).replace(/[\\%_]/g, char => `\\${char}`);
     const ids = options.ids ? [...new Set(options.ids)] : undefined;
     if (ids && (!ids.length || ids.length > 16)) return [];
     return this.db.prepare(`SELECT a.value AS ref_json,mg.grant_id,MAX(m.sequence) AS latest FROM bot_messages m,json_each(m.attachments_json) a
       JOIN bot_message_media_grants mg ON mg.message_id=m.id AND mg.media_id=json_extract(a.value,'$.id')
       WHERE m.conversation_id=? AND m.status='sent' AND m.attachments_json<>'[]'
-      AND m.sequence<=?
+      AND (m.sequence<=? OR EXISTS(SELECT 1 FROM bot_publications own WHERE own.message_id=m.id AND own.event_id=? AND m.sender_id=?))
       ${ids ? `AND json_extract(a.value,'$.id') IN(${ids.map(() => '?').join(',')})` : ''}
       AND (?='' OR json_extract(a.value,'$.name') LIKE ? ESCAPE '\\')
       AND NOT EXISTS(SELECT 1 FROM bot_withdrawn_sources w WHERE w.domain_key=? AND w.source_id=m.id)
@@ -1535,7 +1577,7 @@ export class BotStore {
         WHERE i.companion_id=? AND (i.source_record_id=m.id OR i.reply_message_id=m.id))
       AND NOT EXISTS(SELECT 1 FROM bot_media_grant_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.grant_id=mg.grant_id)
       AND NOT EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.message_id=m.id)
-      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
+      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, publishingEvent?.id??'',scope.companionId, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
       .map(raw => ({ ref: JSON.parse(String(asRow(raw).ref_json)) as BotMediaRef, grantId: String(asRow(raw).grant_id) }));
   }
   getMessage(id: string): BotMessage | undefined { const raw = this.db.prepare('SELECT * FROM bot_messages WHERE id=?').get(id); return raw ? this.message(raw) : undefined; }
@@ -1713,7 +1755,8 @@ export class BotStore {
       ROW_NUMBER() OVER(PARTITION BY companion_id ORDER BY CASE WHEN json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 THEN 0 ELSE 1 END,created_at,id) AS owner_rank
       FROM bot_tasks WHERE (status IN ('queued','running','unknown')
         OR (status IN ('waiting','paused') AND (json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 OR status='waiting' AND EXISTS(SELECT 1 FROM bot_task_questions q WHERE q.task_id=bot_tasks.id AND q.state='answered'))))
-      AND COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)<>1
+        AND COALESCE(json_extract(extra_json,'$.delegationProxy'),0)<>1
+        AND COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)<>1
       AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||bot_tasks.companion_id AND disabled.value='0')
       AND (COALESCE(json_extract(extra_json,'$.pauseRecoveryPaused'),0)<>1 OR json_extract(extra_json,'$.cancelRequested')=1)
       AND (COALESCE(json_extract(extra_json,'$.retryAt'),0)<=?

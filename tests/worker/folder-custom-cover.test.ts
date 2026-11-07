@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { assetParentFolderCoverTarget } from "../../src/shared/folder-cover-target";
-import { LibraryService } from "../../src/worker/library-service";
+import { LibraryService, MIGRATIONS } from "../../src/worker/library-service";
 
 const require = createRequire(import.meta.url);
 const TestDatabase = require("better-sqlite3") as new (filename: string) => {
@@ -58,15 +58,21 @@ describe("folder custom covers", () => {
     service.closeAll();
     const database = new TestDatabase(path.join(library.libraryPath, ".worldlinebox", "library.db"));
     try {
+      // Reconstruct an actual v57 schema: later history rows and their DDL
+      // cannot remain attached to a database claiming user_version=57.
+      const later = MIGRATIONS.filter(migration => migration.version > 58);
+      for (const kind of ['TRIGGER', 'INDEX', 'TABLE']) for (const migration of [...later].reverse()) {
+        for (const match of migration.sql.matchAll(new RegExp(`CREATE ${kind}\\s+(\\w+)`, 'gu'))) database.exec(`DROP ${kind} IF EXISTS ${match[1]}`);
+      }
       database.exec("ALTER TABLE folder_custom_covers DROP COLUMN cover_asset_id");
-      database.prepare("DELETE FROM schema_migrations WHERE version = ?").run(58);
+      database.prepare("DELETE FROM schema_migrations WHERE version >= ?").run(58);
       database.exec("PRAGMA user_version = 57");
     } finally {
       database.close();
     }
     unlinkSync(source);
 
-    service.openLibrary(library.libraryPath);
+    expect(service.openLibrary(library.libraryPath).libraryId).toBe(library.libraryId);
     const after = service.resolveFolderCustomCover({ libraryId: library.libraryId, folderId: folder.folderId });
     expect(after).toEqual(before);
     expect(existsSync(after!.absolutePath)).toBe(true);

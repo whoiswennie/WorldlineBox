@@ -3,6 +3,11 @@ import {
   buildAiAnalysisSystemPrompt,
 } from '../../shared/ai-analysis-settings';
 import { resolveAnthropicMessagesUrl } from '../../shared/ai-endpoints';
+import {
+  applyAiRequestPolicy,
+  collapseProviderMessage,
+  fetchAiWithPolicyRetry,
+} from '../../shared/ai-request-policy';
 import { buildAiAnalysisUserTextLines, parseAiAnalysisResult, parseAiAnalysisResultFromModelText, resolveAiAnalysisSettings } from './protocol';
 import { isUnsupportedVisionResponse } from '../../shared/model-vision-capability';
 import type { AiAnalysisRequest, AiAnalysisResult } from './protocol';
@@ -111,7 +116,7 @@ export class AnthropicVendorAdapter implements VendorAdapter {
     const system = this.#buildSystemPrompt(request);
     const messages = this.#buildMessages(request);
 
-    const body: Record<string, unknown> = {
+    const body = applyAiRequestPolicy({
       model: this.model,
       max_tokens: 4096,
       temperature: 0.2,
@@ -122,23 +127,20 @@ export class AnthropicVendorAdapter implements VendorAdapter {
         type: 'tool' as const,
         name: 'worldlinebox_classify_asset',
       },
-    };
+    }, this.#policyInput('analyze'));
 
     let response: Response;
     try {
-      response = await this._fetch(
+      ({ response } = await fetchAiWithPolicyRetry(
+        this._fetch,
         resolveAnthropicMessagesUrl(this.baseUrl),
         {
           method: 'POST',
-          headers: {
-            'x-api-key': this.apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify(body),
+          headers: this.#headers(),
           signal,
         },
-      );
+        body,
+      ));
     } catch (error: unknown) {
       throw this.#mapFetchError(error);
     }
@@ -166,29 +168,26 @@ export class AnthropicVendorAdapter implements VendorAdapter {
     // classification tool_choice, which is fine for a reachability check.
     let response: Response;
     try {
-      response = await this._fetch(
+      ({ response } = await fetchAiWithPolicyRetry(
+        this._fetch,
         resolveAnthropicMessagesUrl(this.baseUrl),
         {
           method: 'POST',
-          headers: {
-            'x-api-key': this.apiKey,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: this.model,
-            max_tokens: 16,
-            temperature: 0,
-            messages: [
-              {
-                role: 'user',
-                content: 'Reply with the single word OK.',
-              },
-            ],
-          }),
+          headers: this.#headers(),
           signal,
         },
-      );
+        applyAiRequestPolicy({
+          model: this.model,
+          max_tokens: 16,
+          temperature: 0,
+          messages: [
+            {
+              role: 'user',
+              content: 'Reply with the single word OK.',
+            },
+          ],
+        }, this.#policyInput('probe')),
+      ));
     } catch (error: unknown) {
       throw this.#mapFetchError(error);
     }
@@ -205,6 +204,23 @@ export class AnthropicVendorAdapter implements VendorAdapter {
         { cause: error },
       );
     }
+  }
+
+  #headers(): Record<string, string> {
+    return {
+      'x-api-key': this.apiKey,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    };
+  }
+
+  #policyInput(purpose: 'probe' | 'analyze') {
+    return {
+      apiFormat: 'anthropic' as const,
+      baseUrl: this.baseUrl,
+      model: this.model,
+      purpose,
+    };
   }
 
   // ------------------------------------------------------------------
@@ -294,9 +310,14 @@ export class AnthropicVendorAdapter implements VendorAdapter {
 
     const kind = httpStatusToErrorKind(response.status, bodyText);
     const message = `AI service returned HTTP ${response.status}`;
+    const providerMessage = collapseProviderMessage(bodyText);
 
     return new VendorAdapterError(kind, message, {
-      details: { httpStatus: response.status, modalityRejected: [400, 415, 422].includes(response.status) && isUnsupportedVisionResponse(bodyText) },
+      details: {
+        modalityRejected: [400, 415, 422].includes(response.status) && isUnsupportedVisionResponse(bodyText),
+        httpStatus: response.status,
+        ...(providerMessage ? { providerMessage } : {}),
+      },
     });
   }
 

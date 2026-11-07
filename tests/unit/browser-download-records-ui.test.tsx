@@ -34,6 +34,13 @@ async function search(value: string): Promise<void> {
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 }
+async function status(value: BrowserDownload['status']): Promise<void> {
+  const filter = host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="下载状态"]')!;
+  await act(() => filter.click());
+  const options = document.getElementById(filter.getAttribute('aria-controls')!)!;
+  await act(() => options.querySelector<HTMLButtonElement>(`[role="option"][data-value="${value}"]`)!.click());
+  expect(filter.getAttribute('data-value')).toBe(value); expect(filter.getAttribute('aria-expanded')).toBe('false');
+}
 const names = () => [...host.querySelectorAll('.browser-downloads strong')].map(item => item.textContent);
 
 it('paginates all records beyond the old 100-row cap in explicit 20-row pages', async () => {
@@ -60,8 +67,7 @@ it('searches filename, URL, error text, and localized status without changing sa
 it('combines status filtering with search and resets the page for either choice', async () => {
   const values = records(45); values[44]!.status = 'paused'; await mount(values);
   await act(() => button('下一页').click()); expect(names()[0]).toBe('file-20.zip');
-  const filter = host.querySelector<HTMLSelectElement>('select')!;
-  await act(() => { filter.value = 'paused'; filter.dispatchEvent(new Event('change', { bubbles: true })); });
+  await status('paused');
   expect(names()).toEqual(['file-44.zip']); expect(button('上一页').disabled).toBe(true);
   await search('file-0'); expect(names()).toHaveLength(0); expect(host.textContent).toContain('没有符合条件的下载记录');
   expect(button('下一页').disabled).toBe(true);
@@ -145,8 +151,7 @@ it('resets selected records when changing search or status and displays readable
   await act(() => host.querySelector<HTMLInputElement>('input[aria-label="选择本页"]')!.click());
   await search('file-0'); expect(button('移除所选').disabled).toBe(true);
   await act(() => host.querySelector<HTMLInputElement>('input[aria-label="选择本页"]')!.click());
-  const filter = host.querySelector<HTMLSelectElement>('select')!;
-  await act(() => { filter.value = 'completed'; filter.dispatchEvent(new Event('change', { bubbles: true })); });
+  await status('completed');
   expect(button('移除所选').disabled).toBe(true); expect(run).not.toHaveBeenCalled();
 });
 

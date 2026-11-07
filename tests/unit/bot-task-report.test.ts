@@ -63,10 +63,11 @@ class Memory extends BotMemoryService {
 class Brain extends BotDshBrain {
   workers: BotDshRun[] = [];
   worker: (input: BotDshRun) => Promise<string> = async () => '原生执行器已完成三项事实的文字解释。';
+  router?: (input: BotDshRun) => Promise<string>;
   constructor() { super({ getHost: async () => { throw Error('No native Host in report fixture'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
     if (input.role === 'worker') this.workers.push(input);
-    return { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', text: input.role === 'worker' ? await this.worker(input) : input.laneId.startsWith('memory-encoder') ? '{"notes":[]}' : '已收到真实任务状态。' };
+    return { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', text: input.role === 'worker' ? await this.worker(input) : input.laneId.startsWith('memory-encoder') ? '{"notes":[]}' : this.router ? await this.router(input) : '已收到真实任务状态。' };
   }
   override async archive() {}
   override async upgradeWorkerAccess(input: Parameters<BotDshBrain['upgradeWorkerAccess']>[0]) { return { workerAccess: 'full' as const, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId) }; }
@@ -214,6 +215,16 @@ it.each(['succeeded', 'failed'] as const)('resumes %s work only on explicit huma
   const before = f.service.store.getTask(f.task.id)!;
   const mandateBefore = f.service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_task_mandates WHERE task_id=?').get(before.id)) as { id: string };
   expect((await f.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: f.task.id })).task?.followupAvailable).toBe(true);
+  let routedGuidance = 0;
+  f.brain.router = async input => {
+    const body = JSON.parse(input.prompt) as { trigger?: { content?: string; taskFollowup?: { taskId: string } } };
+    if (body.trigger?.taskFollowup?.taskId === f.task.id) {
+      const response = await fetch(input.callback.url, { method: 'POST', headers: { authorization: 'Bearer ' + input.callback.token, 'content-type': 'application/json' },
+        body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'selected-human-guidance', name: 'dsh_task_control', args: { operation: 'send', taskId: f.task.id, text: body.trigger.content } }) });
+      expect(response.ok).toBe(true); expect(await response.json()).toMatchObject({ ok: true }); routedGuidance++;
+    }
+    return '已将用户的新条件交给原任务。';
+  };
   const accepted = await f.service.handle({ type: 'message.send', conversationId: f.room.id, requestId: 'historical-reference', replyToTaskId: f.task.id, content: '请核对原任务的另一个已知条件。' });
   expect(accepted.ok).toBe(true);
   await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded' && reports === 2).catch(error => {
@@ -221,7 +232,7 @@ it.each(['succeeded', 'failed'] as const)('resumes %s work only on explicit huma
     throw new Error(String(error) + JSON.stringify({ status: actual.status, error: actual.error, progress: actual.extra.progress, reports, runs: f.brain.workers.length, report: actual.extra.workerReport, baseline: actual.extra.reportBaseline }));
   });
   expect(f.brain.workers[2]).toMatchObject({ laneId: f.brain.workers[0]!.laneId, eventId: f.brain.workers[0]!.eventId });
-  expect(f.brain.workers[2]!.taskContinuation?.id).toMatch(/^followup:event-/);
+  expect(routedGuidance).toBe(1); expect(f.brain.workers[2]!.taskContinuation).toMatchObject({ id: expect.stringMatching(/:selected-human-guidance$/u), text: '请核对原任务的另一个已知条件。' });
   expect(f.service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_task_mandates WHERE task_id=?').get(before.id))).toEqual(mandateBefore);
   const notices = f.service.store.taskTransaction(sql => sql.prepare("SELECT source_message_id FROM bot_inbox WHERE source='task' AND kind='task_done' AND json_extract(payload_json,'$.taskId')=?").all(f.task.id)) as Array<{ source_message_id: string }>;
   expect(notices).toHaveLength(3); expect(new Set(notices.map(notice => notice.source_message_id)).size).toBe(3);

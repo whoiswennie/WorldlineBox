@@ -26,12 +26,12 @@ describe("find similar", () => {
     expect(canFindSimilarForAsset({
       mediaType: "video",
       relativeFilePath: "clip.mov",
-    })).toBe(false);
+    })).toBe(true);
     expect(embeddingSourceForModalities({
       mediaType: "video",
       relativeFilePath: "clip.mp4",
       currentRevisionId: "rev-video",
-    }, ["video", "image"])).toEqual({ kind: "video", revision: "rev-video" });
+    }, ["video", "image"])).toEqual({ kind: "video", revision: "rev-video\nvideo:v1:1fps:16s:16:audio16k:uniform:mean" });
     expect(embeddingSourceForModalities({
       mediaType: "video",
       relativeFilePath: "clip.mp4",
@@ -44,8 +44,8 @@ describe("find similar", () => {
       relativeFilePath: "clip.mp4",
       currentRevisionId: "rev-video",
       thumbnailStatus: null,
-    }, LOCAL_SEMANTIC_ENCODE_MODALITIES)).toBeNull();
-    expect(LOCAL_SEMANTIC_ENCODE_MODALITIES).toEqual(["image", "audio", "text"]);
+    }, LOCAL_SEMANTIC_ENCODE_MODALITIES)).toEqual({ kind: "video", revision: "rev-video\nvideo:v1:1fps:16s:16:audio16k:uniform:mean" });
+    expect(LOCAL_SEMANTIC_ENCODE_MODALITIES).toEqual(["image", "video", "audio", "text"]);
     expect(canFindSimilarForAsset({
       mediaType: "video",
       relativeFilePath: "clip.mov",

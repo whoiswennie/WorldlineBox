@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkerCommand, WorkerRequest } from '../../src/shared/protocol/requests';
 import type { WorkerResult } from '../../src/shared/protocol/responses';
 import { embeddingTextRevision } from '../../src/shared/embedding/profile';
+import { parseSearchExpressionDetailed } from '../../src/shared/search-expression';
 import { performanceLaneForCommand } from '../../src/shared/performance-contract';
 import { LibraryService } from '../../src/worker/library-service';
 import { closeSemanticIndexWorkerLibrary, executeSemanticIndexWorkerCommand, reconcileSemanticPermanentDeletes, reserveSemanticDeleteCleanup, semanticPermanentDeleteCandidates, withSemanticDeleteCleanupStatus } from '../../src/worker/handlers/semantic-index';
@@ -375,6 +376,19 @@ describe('semantic SQLite Worker handler', () => {
     expect(await call({ type: 'semantic.index.search', libraryId: library.libraryId, sessionGeneration,
       queryId: randomUUID(), profileKey, vector: [1, 0], filters: [], scope: null, showIgnored: false }))
       .toMatchObject({ ok: true, type: 'semantic.index.ranked', assetIds: [assetId] });
+
+    const character = service.createTag({ libraryId: library.libraryId, name: '角色' });
+    service.assignTags({ libraryId: library.libraryId, assetIds: [assetId], tagIds: [character.tagId] });
+    const parsedTags = parseSearchExpressionDetailed('(角色 | 生物) -草稿', 'tags');
+    if (!parsedTags.ok) throw new Error('Invalid tag fixture.');
+    const filteredSearch = () => call({ type: 'semantic.index.search', libraryId: library.libraryId,
+      sessionGeneration, queryId: randomUUID(), profileKey, vector: [1, 0],
+      filters: [{ field: 'tag_expression', exclude: false, expression: parsedTags.expression, includeAi: false }],
+      scope: null, showIgnored: false });
+    expect(await filteredSearch()).toMatchObject({ ok: true, type: 'semantic.index.ranked', assetIds: [assetId] });
+    const draft = service.createTag({ libraryId: library.libraryId, name: '草稿' });
+    service.assignTags({ libraryId: library.libraryId, assetIds: [assetId], tagIds: [draft.tagId] });
+    expect(await filteredSearch()).toMatchObject({ ok: true, type: 'semantic.index.ranked', assetIds: [] });
 
     const store = new SemanticIndexStore({ libraryPath: library.libraryPath,
       libraryId: library.libraryId, storageKind: 'local' });

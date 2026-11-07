@@ -68,7 +68,9 @@ import { useAssetCardHoverPreview } from "./use-asset-card-hover-preview";
 import { SyncCardStatusBadge } from "./SyncCardStatusBadge";
 import { useSyncCardStatuses } from "./use-sync-card-status";
 import { resolveSearchSnippetCaption } from "./search-snippet-caption";
-import { parseSearchExpression, splitSearchHighlights } from "./search-expression";
+import { parseDiscoverySearchExpression, parseSearchExpressionDetailed, searchExpressionReasonKey, splitSearchHighlights } from "./search-expression";
+import type { parseSearchExpression } from "./search-expression";
+import { escapeTagExpressionName } from "./tag-expression-editor";
 import { ConvertLinkedDialog } from "./ConvertLinkedDialog";
 import { LinkedRulesDialog } from "./LinkedRulesDialog";
 import { TagManagementWorkspace } from "./TagManagementWorkspace";
@@ -86,6 +88,7 @@ import {
   readSearchHistory,
   readVisibleSearchHistoryCount,
   rememberSearchQuery,
+  searchHistoryNavigationDirection,
 } from "./search-history";
 import { useWindowsBrowseShortcutBridge } from "./use-windows-browse-shortcut-bridge";
 import { useCollectionCommandShortcuts } from "./use-collection-command-shortcuts";
@@ -225,6 +228,7 @@ import type {
 } from "./workspace-render-snapshot-cache";
 import {
   createDefaultWorkspaceTabBrowseState,
+  resolveWorkspaceTagExpression,
   workspaceTabBrowseStateHasDiscoveryInput,
   type WorkspaceTabBrowseState,
   type WorkspaceTabSession,
@@ -384,6 +388,7 @@ import {
 } from "./canvas-asset-layout";
 import { useSelectionKeyboard } from "./use-selection-keyboard";
 import { useBrowseCommandKeyboard } from "./use-browse-command-keyboard";
+import { useWorkspaceTabShortcuts } from "./use-workspace-tab-shortcuts";
 import { resolveBrowsePasteDestination } from "./browse-paste-target";
 import { useWorkspaceMouseNavigation } from "./use-workspace-mouse-navigation";
 import {
@@ -777,6 +782,9 @@ type QueryFilterSnapshot = {
   formatFilter: string;
   excludeFormatFilter: boolean;
   tagFilter: string;
+  tagFilterExpression?: string;
+  tagFilterMode?: "selection" | "expression";
+  tagFilterLastValidExpression?: string;
   excludeTagFilter: boolean;
   excludedTagFilter: string;
   includeAiTagFilter: boolean;
@@ -1411,6 +1419,8 @@ export function AssetManager({
     string | null
   >(null);
   const [searchValue, setSearchValue] = useState("");
+  const lastValidSearchQueryRef = useRef<{ scope: string; query: ReturnType<typeof parseSearchExpression> } | null>(null);
+  const lastValidFolderSearchQueryRef = useRef<{ scope: string; query: ReturnType<typeof parseSearchExpression> } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [storedSearchHistory, setStoredSearchHistory] = useState<{
     libraryId: string;
@@ -1439,6 +1449,9 @@ export function AssetManager({
   const [colorFilterPrefs, setColorFilterPrefs] = useState(loadColorFilterPreferences);
   const [excludeColorFilter, setExcludeColorFilter] = useState(false);
   const [tagFilter, setTagFilter] = useState("");
+  const [tagFilterExpression, setTagFilterExpression] = useState("");
+  const [tagFilterMode, setTagFilterMode] = useState<"selection" | "expression">("expression");
+  const [tagFilterLastValidExpression, setTagFilterLastValidExpression] = useState("");
   const [excludeTagFilter, setExcludeTagFilter] = useState(false);
   const [excludedTagFilter, setExcludedTagFilter] = useState("");
   const [includeAiTagFilter, setIncludeAiTagFilter] = useState(true);
@@ -1504,61 +1517,6 @@ export function AssetManager({
   const [searchSnippets, setSearchSnippets] = useState<Map<string, string>>(
     new Map(),
   );
-  // WorldlineBox-f74e48: while a text term is present, surface matching folders
-  // (name or relative path) as a "Folders" section above the asset grid.
-  const searchFolderResults = useMemo(() => {
-    if (searchValue.trim() === "") return [];
-    return resolveSearchFolderResults({
-      query: parseSearchExpression(searchValue),
-      folders,
-      linkedFolders,
-    });
-  }, [searchValue, folders, linkedFolders]);
-  // WorldlineBox-f74e48: fetch the real FolderBrowseEntry (cover previews + counts)
-  // for search-matched folders so the reused asset-browser folder cards show
-  // the same previews as normal browsing. Enrichment is keyed by the matched
-  // ref set so a slow older response never overwrites a newer search.
-  const searchFolderMatchKey = searchFolderResults.length
-    ? searchFolderResults
-        .map((result) => `${result.locationKind}:${result.folderId}`)
-        .join("|")
-    : null;
-  const [searchFolderRealKey, setSearchFolderRealKey] = useState<string | null>(
-    null,
-  );
-  const [searchFolderRealEntries, setSearchFolderRealEntries] = useState<
-    FolderBrowseEntry[]
-  >([]);
-  const searchFolderEntriesKeyRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!api || !library || searchFolderMatchKey === null) return;
-    searchFolderEntriesKeyRef.current = searchFolderMatchKey;
-    let cancelled = false;
-    void api
-      .listFolderEntriesByRefs({
-        libraryId: library.libraryId,
-        refs: searchFolderResults.map((result) => ({
-          locationKind: result.locationKind,
-          folderId: result.folderId,
-        })),
-      })
-      .then((result) => {
-        if (
-          !cancelled &&
-          result.ok &&
-          searchFolderEntriesKeyRef.current === searchFolderMatchKey
-        ) {
-          setSearchFolderRealKey(searchFolderMatchKey);
-          setSearchFolderRealEntries(result.value);
-        }
-      })
-      .catch(() => {
-        // Enrichment is best-effort: fall back to the lightweight entries.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [searchFolderMatchKey, searchFolderResults, library, api]);
   // WorldlineBox-b8a853: one-time hint for the include-subfolders icon. The hint
   // key is per (library, folder scope); the actual flash decision needs the
   // browse canvas mode (folders-only = child-folder cards but zero direct
@@ -2071,6 +2029,69 @@ export function AssetManager({
       );
     },
   });
+  // WorldlineBox-f74e48: while a text term is present, surface matching folders
+  // (name or relative path) as a "Folders" section above the asset grid.
+  const searchFolderResults = useMemo(() => {
+    if (searchValue.trim() === "") return [];
+    const scopeKey = `${library?.libraryId ?? "no-library"}:${workspaceTabsState.activeTabId}`;
+    const parsed = parseSearchExpressionDetailed(searchValue);
+    const query = parsed.ok
+      ? { clauses: [], expression: parsed.expression }
+      : lastValidFolderSearchQueryRef.current?.scope === scopeKey
+        ? lastValidFolderSearchQueryRef.current.query
+        : { clauses: [] };
+    if (parsed.ok) lastValidFolderSearchQueryRef.current = { scope: scopeKey, query };
+    return resolveSearchFolderResults({
+      query,
+      folders,
+      linkedFolders,
+    });
+  }, [searchValue, folders, linkedFolders, library?.libraryId, workspaceTabsState.activeTabId]);
+  // WorldlineBox-f74e48: fetch the real FolderBrowseEntry (cover previews + counts)
+  // for search-matched folders so the reused asset-browser folder cards show
+  // the same previews as normal browsing. Enrichment is keyed by the matched
+  // ref set so a slow older response never overwrites a newer search.
+  const searchFolderMatchKey = searchFolderResults.length
+    ? searchFolderResults
+        .map((result) => `${result.locationKind}:${result.folderId}`)
+        .join("|")
+    : null;
+  const [searchFolderRealKey, setSearchFolderRealKey] = useState<string | null>(
+    null,
+  );
+  const [searchFolderRealEntries, setSearchFolderRealEntries] = useState<
+    FolderBrowseEntry[]
+  >([]);
+  const searchFolderEntriesKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!api || !library || searchFolderMatchKey === null) return;
+    searchFolderEntriesKeyRef.current = searchFolderMatchKey;
+    let cancelled = false;
+    void api
+      .listFolderEntriesByRefs({
+        libraryId: library.libraryId,
+        refs: searchFolderResults.map((result) => ({
+          locationKind: result.locationKind,
+          folderId: result.folderId,
+        })),
+      })
+      .then((result) => {
+        if (
+          !cancelled &&
+          result.ok &&
+          searchFolderEntriesKeyRef.current === searchFolderMatchKey
+        ) {
+          setSearchFolderRealKey(searchFolderMatchKey);
+          setSearchFolderRealEntries(result.value);
+        }
+      })
+      .catch(() => {
+        // Enrichment is best-effort: fall back to the lightweight entries.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [searchFolderMatchKey, searchFolderResults, library, api]);
   const beginBrowsePageClearingSimilar = useCallback(
     (...args: Parameters<typeof beginBrowsePage>) => {
       const definition = args[0];
@@ -2417,6 +2438,7 @@ export function AssetManager({
   // restoration causes a one-frame flash and can make Chromium paint at the
   // top of the canvas during a rapid open/close.
   const [previewRestoring, setPreviewRestoring] = useState(false);
+  const [previewCanvasReady, setPreviewCanvasReady] = useState(false);
   const previewModalRef = useRef<AssetPreviewModalHandle>(null);
   // REQ-CANVAS-019: read synchronously inside the canvas ResizeObserver
   // callback (which is created once and does not close over fresh state)
@@ -3496,6 +3518,8 @@ export function AssetManager({
       formatFilter,
       excludeFormatFilter,
       tagFilter,
+      tagFilterExpression,
+      tagFilterMode,
       excludeTagFilter,
       excludedTagFilter,
       includeAiTagFilter,
@@ -3532,6 +3556,8 @@ export function AssetManager({
     formatFilter,
     excludeFormatFilter,
     tagFilter,
+    tagFilterExpression,
+    tagFilterMode,
     excludeTagFilter,
     excludedTagFilter,
     includeAiTagFilter,
@@ -4395,6 +4421,7 @@ export function AssetManager({
     previewRestoringRef.current = false;
     pendingViewportRestoreRef.current = null;
     setPreviewRestoring(false);
+    setPreviewCanvasReady(false);
     cancelPreviewViewRestoreRef.current?.();
     cancelPreviewViewRestoreRef.current = null;
     clearPreviewScrollHold();
@@ -4424,6 +4451,7 @@ export function AssetManager({
         card?.getBoundingClientRect() ?? null,
         canvas.scrollLeft,
         canvas.scrollTop,
+        Math.max(0, canvas.scrollHeight - canvas.clientHeight),
       );
       logBrowseScrollWrite("openAssetPreview.capture", canvas, {
         snapshotTop: Math.round(canvas.scrollTop),
@@ -4551,8 +4579,14 @@ export function AssetManager({
     const closeGeneration = ++previewCloseGenerationRef.current;
     closingPreviewRef.current = closingAsset.assetId;
     previewRestoringRef.current = restoreBrowsePosition;
-    setPreviewRestoring(restoreBrowsePosition);
-    setPreviewAsset(null);
+    // Commit the viewer teardown before measuring the browse extent. Measuring
+    // the still-open viewer restores against stale geometry; its next commit
+    // can then clamp a deep scroll back to zero.
+    flushSync(() => {
+      setPreviewRestoring(restoreBrowsePosition);
+      setPreviewCanvasReady(false);
+      setPreviewAsset(null);
+    });
     cancelWorkspaceViewportRestoreRef.current?.();
     cancelWorkspaceViewportRestoreRef.current = null;
     pendingViewportRestoreRef.current = null;
@@ -4638,12 +4672,18 @@ export function AssetManager({
           canvas,
           snapshot: scrollSnapshot,
           isCurrent: () => closeGeneration === previewCloseGenerationRef.current,
+          onPositionReady: () => {
+            if (closeGeneration === previewCloseGenerationRef.current) {
+              setPreviewCanvasReady(true);
+            }
+          },
           onComplete: () => {
             if (closeGeneration !== previewCloseGenerationRef.current) return;
             cancelPreviewViewRestoreRef.current = null;
             armPreviewScrollHold(scrollSnapshot.scrollTop);
             previewRestoringRef.current = false;
             setPreviewRestoring(false);
+            setPreviewCanvasReady(false);
             previewRestoreFrameRef.current = window.requestAnimationFrame(() =>
               settleRestoredFocus(12),
             );
@@ -4652,6 +4692,7 @@ export function AssetManager({
       } else {
         previewRestoringRef.current = false;
         setPreviewRestoring(false);
+        setPreviewCanvasReady(false);
         previewRestoreFrameRef.current = window.requestAnimationFrame(() =>
           settleRestoredFocus(12),
         );
@@ -4660,6 +4701,7 @@ export function AssetManager({
     if (!restoreBrowsePosition) {
       clearPreviewScrollHold();
       setPreviewRestoring(false);
+      setPreviewCanvasReady(false);
     }
     try {
       if (api && library) {
@@ -5669,6 +5711,9 @@ export function AssetManager({
         excludeColorFilter,
         colorSimilarity,
         tagFilter,
+        tagFilterExpression,
+        tagFilterMode,
+        tagFilterLastValidExpression,
         excludeTagFilter,
         excludedTagFilter,
         includeAiTagFilter,
@@ -5880,7 +5925,15 @@ export function AssetManager({
     setColorFilter(state.filters.colorFilter);
     setColorSimilarity(state.filters.colorSimilarity ?? DEFAULT_COLOR_SIMILARITY);
     setExcludeColorFilter(state.filters.excludeColorFilter);
+    const restoredTagExpression = resolveWorkspaceTagExpression(state.filters);
     setTagFilter(state.filters.tagFilter);
+    setTagFilterExpression(restoredTagExpression);
+    setTagFilterMode("expression");
+    setTagFilterLastValidExpression(
+      state.filters.tagFilterLastValidExpression?.trim()
+        ? state.filters.tagFilterLastValidExpression
+        : restoredTagExpression,
+    );
     setExcludeTagFilter(state.filters.excludeTagFilter);
     setExcludedTagFilter(state.filters.excludedTagFilter ?? "");
     setIncludeAiTagFilter(state.filters.includeAiTagFilter);
@@ -6602,6 +6655,9 @@ export function AssetManager({
     setColorFilter("");
     setExcludeColorFilter(false);
     setTagFilter("");
+    setTagFilterExpression("");
+    setTagFilterLastValidExpression("");
+    setTagFilterMode("expression");
     setExcludeTagFilter(false);
     setExcludedTagFilter("");
     setIncludeAiTagFilter(true);
@@ -6627,6 +6683,9 @@ export function AssetManager({
     setColorFilter("");
     setExcludeColorFilter(false);
     setTagFilter("");
+    setTagFilterExpression("");
+    setTagFilterLastValidExpression("");
+    setTagFilterMode("expression");
     setExcludeTagFilter(false);
     setExcludedTagFilter("");
     setIncludeAiTagFilter(true);
@@ -7055,9 +7114,13 @@ export function AssetManager({
     await closeAssetPreview(false);
     if (!request.isCurrent() || !isCurrentLibraryView(viewSession)) return;
     const joined = tagNames.join(", ");
+    const tagExpression = match === "any" && tagNames.length > 1
+      ? `(${tagNames.map(escapeTagExpressionName).join(" | ")})`
+      : tagNames.map(escapeTagExpressionName).join(" ");
     try {
       const definition = currentQueryDefinition({
         tagFilter: joined,
+        tagFilterExpression: tagExpression,
         tagFilterMatch: match,
         excludeTagFilter: false,
         excludedTagFilter: "",
@@ -7087,6 +7150,9 @@ export function AssetManager({
       setAssetScope("all");
       clearAssetSelection();
       setTagFilter(joined);
+      setTagFilterExpression(tagExpression);
+      setTagFilterLastValidExpression(tagExpression);
+      setTagFilterMode("expression");
       setExcludeTagFilter(false);
       setExcludedTagFilter("");
       setTagFilterMatch(match);
@@ -7143,6 +7209,7 @@ export function AssetManager({
         ? queryDefinitionForWorkspaceBrowseState(request.browseState)
         : currentQueryDefinition({
           tagFilter: tag.name,
+          tagFilterExpression: escapeTagExpressionName(tag.name),
           excludeTagFilter: false,
           excludedTagFilter: "",
         });
@@ -7176,6 +7243,9 @@ export function AssetManager({
       clearAssetSelection();
       if (!request.browseState) {
         setTagFilter(tag.name);
+        setTagFilterExpression(escapeTagExpressionName(tag.name));
+        setTagFilterLastValidExpression(escapeTagExpressionName(tag.name));
+        setTagFilterMode("expression");
         setExcludeTagFilter(false);
         setExcludedTagFilter("");
         setTagFilterMatch("any");
@@ -7947,6 +8017,7 @@ export function AssetManager({
   function currentQueryDefinition(
     overrides: {
       tagFilter?: string;
+      tagFilterExpression?: string;
       tagFilterMatch?: "any" | "all";
       excludeTagFilter?: boolean;
       excludedTagFilter?: string;
@@ -7963,6 +8034,9 @@ export function AssetManager({
       formatFilter,
       excludeFormatFilter,
       tagFilter,
+      tagFilterExpression,
+      tagFilterMode,
+      tagFilterLastValidExpression,
       excludeTagFilter,
       excludedTagFilter,
       includeAiTagFilter,
@@ -8011,7 +8085,28 @@ export function AssetManager({
         values: formatValues,
         exclude: filtersState.excludeFormatFilter,
       });
-    filters.push(...buildTagFilterClauses(
+    const tagSelectionOverridden = overrides.tagFilter !== undefined
+      || overrides.excludedTagFilter !== undefined || overrides.excludeTagFilter !== undefined;
+    if (overrides.tagFilterExpression !== undefined || (filtersState.tagFilterMode === "expression" && !tagSelectionOverridden)) {
+      const tagExpression = overrides.tagFilterExpression ?? filtersState.tagFilterExpression ?? "";
+      const parsedTags = parseSearchExpressionDetailed(tagExpression, "tags");
+      if (!parsedTags.ok && filtersState.tagFilterLastValidExpression) {
+        const lastValidTags = parseSearchExpressionDetailed(filtersState.tagFilterLastValidExpression, "tags");
+        if (lastValidTags.ok && lastValidTags.expression.root) filters.push({
+          field: "tag_expression", exclude: false as const,
+          expression: lastValidTags.expression,
+          expressionSource: filtersState.tagFilterLastValidExpression,
+          includeAi: filtersState.includeAiTagFilter,
+        });
+      }
+      if (parsedTags.ok && parsedTags.expression.root) filters.push({
+        field: "tag_expression",
+        exclude: false as const,
+        expression: parsedTags.expression,
+        expressionSource: tagExpression,
+        includeAi: filtersState.includeAiTagFilter,
+      });
+    } else filters.push(...buildTagFilterClauses(
       resolveTagFilterSets({
         tagFilter: overrides.tagFilter ?? filtersState.tagFilter,
         excludeTagFilter: overrides.excludeTagFilter ?? filtersState.excludeTagFilter,
@@ -8091,16 +8186,24 @@ export function AssetManager({
       if (range)
         filters.push({ field, ranges: [range], exclude: input.exclude });
     }
+    const requestedSearch = overrides.searchValue === undefined
+      ? searchValue
+      : overrides.searchValue ?? "";
+    const searchParse = parseDiscoverySearchExpression(requestedSearch, semanticSearchActive);
+    const searchScopeKey = `${library?.libraryId ?? "no-library"}:${workspaceTabsState.activeTabId}`;
+    if (searchParse.ok && overrides.searchValue === undefined) {
+      lastValidSearchQueryRef.current = { scope: searchScopeKey, query: { clauses: [], expression: searchParse.expression, expressionSource: requestedSearch } };
+    }
     return {
       ...((overrides.searchValue === undefined
         ? searchValue
         : overrides.searchValue ?? "").trim()
         ? {
-            search: parseSearchExpression(
-              overrides.searchValue === undefined
-                ? searchValue
-                : overrides.searchValue ?? "",
-            ),
+            search: searchParse.ok
+              ? { clauses: [], expression: searchParse.expression, expressionSource: requestedSearch }
+              : lastValidSearchQueryRef.current?.scope === searchScopeKey
+                ? lastValidSearchQueryRef.current.query
+                : { clauses: [] },
           }
         : {}),
       ...(filters.length > 0 ? { filters } : {}),
@@ -8125,6 +8228,9 @@ export function AssetManager({
         formatFilter: state.filters.formatFilter,
         excludeFormatFilter: state.filters.excludeFormatFilter,
         tagFilter: state.filters.tagFilter,
+        tagFilterExpression: state.filters.tagFilterExpression,
+        tagFilterMode: state.filters.tagFilterMode,
+        tagFilterLastValidExpression: state.filters.tagFilterLastValidExpression,
         excludeTagFilter: state.filters.excludeTagFilter,
         excludedTagFilter: state.filters.excludedTagFilter ?? "",
         includeAiTagFilter: state.filters.includeAiTagFilter,
@@ -9583,6 +9689,11 @@ export function AssetManager({
   ) {
     event?.preventDefault();
     if (workerRecoveryStateRef.current !== 'ready') return;
+    if (
+      (searchValue.trim() && !parseDiscoverySearchExpression(searchValue, semanticSearchActive).ok) ||
+      (tagFilterMode === "expression" && tagFilterExpression.trim()
+        && !parseSearchExpressionDetailed(tagFilterExpression, "tags").ok)
+    ) return;
     if (event) {
       searchHistoryDismissedUntilInputRef.current = true;
       setSearchHistoryOpen(false);
@@ -9641,12 +9752,20 @@ export function AssetManager({
   }
 
   useEffect(() => {
+    const searchIsInvalid = Boolean(searchValue.trim()) && !parseDiscoverySearchExpression(searchValue, semanticSearchActive).ok;
+    const tagExpressionIsInvalid = tagFilterMode === "expression"
+      && Boolean(tagFilterExpression.trim())
+      && !parseSearchExpressionDetailed(tagFilterExpression, "tags").ok;
+    // Keep the current cards in place while the user is typing an incomplete
+    // expression. Do not send the last valid AST as a new Worker request.
+    if (searchIsInvalid || tagExpressionIsInvalid) return;
     const hasDiscoveryInput = Boolean(
       searchValue.trim() ||
       colorFilter.trim() ||
       formatFilter.trim() ||
-      tagFilter.trim() ||
-      excludedTagFilter.trim() ||
+      (tagFilterMode === "selection" && tagFilter.trim()) ||
+      (tagFilterMode === "expression" && tagFilterExpression.trim()) ||
+      (tagFilterMode === "selection" && excludedTagFilter.trim()) ||
       ratingFilter.trim() ||
       favoriteFilter !== "any" ||
       sourceUrlFilter !== "any" ||
@@ -9708,12 +9827,16 @@ export function AssetManager({
     showTagManagement,
     showPluginSidebarView,
     searchValue,
+    semanticSearchActive,
     colorFilter,
     excludeColorFilter,
     colorSimilarity,
     formatFilter,
     excludeFormatFilter,
     tagFilter,
+    tagFilterExpression,
+    tagFilterMode,
+    tagFilterLastValidExpression,
     excludeTagFilter,
     excludedTagFilter,
     includeAiTagFilter,
@@ -12362,6 +12485,20 @@ export function AssetManager({
     else void closeAssetPreview();
   }
 
+  useWorkspaceTabShortcuts({
+    enabled: Boolean(library),
+    platform: SHORTCUT_PLATFORM,
+    busy,
+    tabCount: workspaceTabsState.tabs.length,
+    previewOpen: Boolean(previewAsset),
+    onNewTab: () => {
+      void addWorkspaceTab();
+    },
+    onCloseTab: () => {
+      void closeWorkspaceTab(workspaceTabsState.activeTabId);
+    },
+  });
+
   useBrowseCommandKeyboard({
     enabled: isModuleActive && Boolean(library) && !showTagManagement && !showPluginSidebarView,
     platform: SHORTCUT_PLATFORM,
@@ -13014,11 +13151,19 @@ export function AssetManager({
       aiAutoConnectAttemptedRef.current = false;
     }
 
+    const previousActiveProfileId = aiActiveProfileId;
     const refreshed = await (getGlobalLlmApi()?.getConfig() ?? api.getAiConfig());
     if (refreshed.ok) {
       setAiProfiles(refreshed.value.profiles);
       updateAiActiveProfileId(refreshed.value.activeProfileId);
       setAiHasKey(refreshed.value.hasKey);
+      if (
+        refreshed.value.activeProfileId === savedProfile.value.id
+        && previousActiveProfileId !== savedProfile.value.id
+      ) {
+        setAiConnectionState("idle");
+        aiAutoConnectAttemptedRef.current = false;
+      }
       const saved = refreshed.value.profiles.find((profile) => profile.id === savedProfile.value.id);
       if (saved) setAiDraftHasKey(saved.hasCredential);
     }
@@ -14441,23 +14586,20 @@ export function AssetManager({
                   setSearchHistoryOpen(true);
                 }}
                 onKeyDown={(event) => {
+                  if (isImeKeyboardEvent(event)) return;
                   const matches = filterSearchHistory(searchHistory, searchValue);
                   const visibleCount = Math.min(
                     matches.length,
                     readVisibleSearchHistoryCount() ?? matches.length,
                   );
                   if (!searchHistoryOpen || visibleCount === 0) return;
-                  if (
-                    event.key === "ArrowDown" ||
-                    event.key === "ArrowUp" ||
-                    event.key === "ArrowRight" ||
-                    event.key === "ArrowLeft"
-                  ) {
+                  if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+                    setSearchHistoryActiveIndex(-1);
+                    return;
+                  }
+                  const direction = searchHistoryNavigationDirection(event.key);
+                  if (direction) {
                     event.preventDefault();
-                    const direction =
-                      event.key === "ArrowDown" || event.key === "ArrowRight"
-                        ? "next"
-                        : "previous";
                     setSearchHistoryActiveIndex((current) =>
                       moveSearchHistoryIndex(current, visibleCount, direction),
                     );
@@ -14560,6 +14702,14 @@ export function AssetManager({
                   <Icon name="close" size={12} />
                 </button>
               )}
+              {!semanticSearchActive && searchValue.trim() !== "" && (() => {
+                const result = parseSearchExpressionDetailed(searchValue);
+                return result.ok ? null : (
+                  <span className="search-expression-error" role="alert">
+                    {t("toolbar.searchExpressionError", { position: result.diagnostic.start + 1, reason: t(`toolbar.searchExpressionReasons.${searchExpressionReasonKey(result.diagnostic.code)}`) })}
+                  </span>
+                );
+              })()}
             </div>
           </form>
         </div>
@@ -15077,7 +15227,18 @@ export function AssetManager({
               // Explicit filter-bar edits leave the tag-management AND mode.
               setTagFilterMatch("any");
               setTagFilter(value);
+              setTagFilterExpression("");
             }}
+            tagFilterExpression={tagFilterExpression}
+            tagFilterLastValidExpression={tagFilterLastValidExpression}
+            tagFilterMode={tagFilterMode}
+            setTagFilterExpression={(value) => {
+              setTagFilterExpression(value);
+              if (parseSearchExpressionDetailed(value, "tags").ok) setTagFilterLastValidExpression(value);
+            }}
+            setTagFilterMode={setTagFilterMode}
+            tagFilterMatch={tagFilterMatch}
+            setTagFilterMatch={setTagFilterMatch}
             setExcludedTagFilter={setExcludedTagFilter}
             setWidthRange={setWidthRange}
             shuffleActive={shuffleSeed !== null}
@@ -15093,6 +15254,9 @@ export function AssetManager({
               formatFilter,
               excludeFormatFilter,
               tagFilter,
+              tagFilterExpression,
+              tagFilterMode,
+              tagFilterLastValidExpression,
               excludeTagFilter,
               excludedTagFilter,
               includeAiTagFilter,
@@ -15187,7 +15351,7 @@ export function AssetManager({
         )}
         <div
           aria-busy={workspaceNavigationPending || workerRecoveryState === 'recovering'}
-          className={`workspace-canvas-host${previewAsset || previewRestoring ? " is-viewing" : ""}${previewRestoring ? " is-restoring" : ""}${workspaceNavigationPending ? " is-navigating" : ""}`}
+          className={`workspace-canvas-host${previewAsset || previewRestoring ? " is-viewing" : ""}${previewRestoring ? " is-restoring" : ""}${previewRestoring && previewCanvasReady ? " is-restore-visible" : ""}${workspaceNavigationPending ? " is-navigating" : ""}`}
         >
           {renderedToastStack.length > 0 || workerRecoveryState !== 'ready'
             ? <WorkspaceNoticeStack active={isModuleActive || globalSettingsOverlayOpen}>
@@ -15901,6 +16065,7 @@ export function AssetManager({
                                     }}
                                     onKeyDown={(event) => {
                                       event.stopPropagation();
+                                      if (isImeKeyboardEvent(event)) return;
                                       if (event.key === "Enter") {
                                         event.preventDefault();
                                         void submitAssetRename();

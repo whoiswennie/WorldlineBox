@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 
 import type { SmartCollectionSummary } from "../shared/asset-types";
+import { hasMeaningfulSmartCollectionCondition } from "../shared/smart-collection-query";
 import type { WorldlineBoxLibraryApi } from "../shared/library-api";
 import type { RendererLibrarySummary } from "../shared/protocol/responses";
 import { lookupMessage, useLocale, useT } from "./i18n";
@@ -30,7 +31,7 @@ export interface UseInlineSmartCollectionEditParams {
   library: RendererLibrarySummary | null;
   /** Snapshot of discovery state when the name is committed. */
   getQueryDefinition: () => {
-    search?: { clauses?: readonly unknown[] } | null;
+    search?: { clauses?: readonly unknown[]; groups?: ReadonlyArray<readonly unknown[]>; expression?: { root?: unknown | null } } | null;
     filters?: readonly unknown[] | null;
     sort?: unknown;
   };
@@ -89,10 +90,8 @@ export function useInlineSmartCollectionEdit({
     if (!api || !library) return;
 
     const definition = getQueryDefinition();
-    const hasSearch = (definition.search?.clauses?.length ?? 0) > 0;
-    const hasFilters = (definition.filters?.length ?? 0) > 0;
     const queryDefinitionJson =
-      hasSearch || hasFilters
+      hasMeaningfulSmartCollectionCondition(definition)
         ? JSON.stringify(definition)
         : EMPTY_SMART_COLLECTION_QUERY_JSON;
 

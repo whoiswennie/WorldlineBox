@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { hasMeaningfulSmartCollectionCondition } from "../../src/shared/smart-collection-query";
 
 describe("hasMeaningfulSmartCollectionCondition (CU-M5)", () => {
+  it("preserves expression-only and legacy grouped searches when creating a collection", () => {
+    expect(hasMeaningfulSmartCollectionCondition({ search: {
+      clauses: [], expression: { root: { kind: "TERM", field: "filename", value: "hero" } },
+    } })).toBe(true);
+    expect(hasMeaningfulSmartCollectionCondition({ search: {
+      clauses: [], groups: [[{ field: "filename", values: ["hero"] }]],
+    } })).toBe(true);
+    expect(hasMeaningfulSmartCollectionCondition({ search: { clauses: [], expression: { root: null } } })).toBe(false);
+  });
   it("rejects empty definitions", () => {
     expect(hasMeaningfulSmartCollectionCondition({})).toBe(false);
     expect(

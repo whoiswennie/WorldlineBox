@@ -7,6 +7,8 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runtime';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotTaskRuntime, type BotTaskControlInput } from '../../src/main/companion-bot/task-runtime';
+import { BotWorkflowRuntime } from '../../src/main/companion-bot/workflow-runtime';
+import { BotDelegationRuntime } from '../../src/main/companion-bot/delegation-runtime';
 import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
 import type { BotEvent, BotTask } from '../../src/main/companion-bot/types';
 
@@ -30,7 +32,9 @@ async function fixture() {
   // SQLite journal, with scheduling/delivery excluded from this recovery unit.
   // No constructor starts a background lane, Host, memory encoder or provider.
   const service = Object.create(BotService.prototype) as BotService;
-  Object.assign(service, { store, taskRuntime: runtime, companionRuntime: new BotCompanionRuntime(store), toolRuns,
+  const workflows = new BotWorkflowRuntime(store);
+  Object.assign(service, { store, workflows, delegations: new BotDelegationRuntime(store), taskRuntime: runtime, companionRuntime: new BotCompanionRuntime(store, { taskAuthority: task => workflows.taskAuthority(task) }), toolRuns,
+    launchTask: vi.fn(),
     taskRuns: new Map(), taskAccessUpgrades: new Map(), scheduler: { wake: vi.fn(), cancel: vi.fn() },
     toolServer: { releaseWorker: vi.fn() },
     changed: vi.fn(), maintainSafely: vi.fn(), taskProgress: vi.fn(), flushTaskControls: vi.fn(async () => undefined),
@@ -65,6 +69,22 @@ it('allows the live owning Router to stop and clear its task from a task event w
   expect(await router.execute('cancel')).toMatchObject({ taskId: 'task-1', status: 'cancelled', confirmed: true });
   expect(await router.execute('remove')).toMatchObject({ cleared: 1 });
   expect(f.store.getTask('task-1')!.extra.removedAt).toBeTruthy();
+});
+
+it('reconciles a persisted collaboration plan and stage submission without resubmitting either after a lost outer receipt', async () => {
+  const f = await fixture(), controller = f.service as unknown as Controller;
+  const call = (callId: string, name: string, args: Record<string, unknown>): BotToolCall => ({ callId, name, args, laneId: f.event.laneId, eventId: f.event.id });
+  const planCall = call('create-plan', 'dsh_plan', { operation: 'create', title: '受管协作', stages: [{ key: 'analyze', title: '分析', dependsOn: [] }] });
+  const created = await controller.executeTool(f.event, planCall, new AbortController().signal) as { plans: Array<{ id: string }> };
+  const planId = created.plans[0]!.id;
+  expect(await f.service.reconcileToolReceipt(planCall)).toMatchObject({ state: 'committed', result: { plans: [{ id: planId }] } });
+  const taskCall = call('submit-stage', 'dsh_task', { goal: '只读核对当前明确资料。', title: '分析资料', planId, stageKey: 'analyze', attachmentIds: [] });
+  const task = await controller.executeTool(f.event, taskCall, new AbortController().signal) as { taskId: string };
+  const proof = await f.service.reconcileToolReceipt(taskCall);
+  expect(proof).toMatchObject({ state: 'committed', result: { taskId: task.taskId, status: 'queued' } });
+  expect(f.store.listTasks()).toHaveLength(1);
+  expect(await f.service.reconcileToolReceipt(call('never-submitted', 'dsh_task', taskCall.args))).toEqual({ state: 'absent' });
+  await expect(f.service.reconcileToolReceipt({ ...taskCall, args: { ...taskCall.args, goal: '改做其他任务' } })).rejects.toThrow('回执参数');
 });
 
 it('lets the owning Router pause/resume its own work but never override a user pause or stopped task', async () => {

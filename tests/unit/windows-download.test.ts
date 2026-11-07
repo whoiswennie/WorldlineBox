@@ -15,18 +15,24 @@ const sha = (value: Buffer | string) => createHash('sha256').update(value).diges
 describe.skipIf(process.platform !== 'win32')('Windows verified download recovery', () => {
   let root: string, origin: string, server: Server, payload: Buffer;
   let requests: string[];
+  let ranges: Array<string | undefined>;
   beforeEach(async () => {
     root = mkdtempSync(path.join(os.tmpdir(), 'worldlinebox-download-'));
     const zip = new AdmZip();
     zip.addFile('electron.exe', Buffer.from('isolated distribution fixture'));
     zip.addFile('version', Buffer.from('1.0.0'));
-    payload = zip.toBuffer(); requests = [];
+    payload = zip.toBuffer(); requests = []; ranges = [];
     server = createServer((request, response) => {
-      const url = request.url!; requests.push(url);
-      if (url === '/reset' || url === '/retry' && requests.filter(value => value === url).length === 1) {
+      const url = request.url!; requests.push(url); ranges.push(request.headers.range);
+      if (url === '/reset' || ['/retry', '/resumable'].includes(url) && requests.filter(value => value === url).length === 1) {
         response.writeHead(200, { 'Content-Length': payload.length + 100 });
-        response.write('partial');
+        response.write(payload.subarray(0, 7));
         setTimeout(() => response.destroy(), 10);
+      } else if (url === '/resumable' && request.headers.range) {
+        const offset = Number(/^bytes=(\d+)-$/u.exec(request.headers.range)?.[1]);
+        if (!Number.isSafeInteger(offset) || offset >= payload.length) { response.writeHead(416); response.end(); return; }
+        response.writeHead(206, { 'Content-Range': `bytes ${offset}-${payload.length - 1}/${payload.length}`, 'Content-Length': payload.length - offset });
+        response.end(payload.subarray(offset));
       } else response.end(url === '/corrupt' ? 'untrusted archive' : payload);
     });
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -60,28 +66,39 @@ describe.skipIf(process.platform !== 'win32')('Windows verified download recover
     });
   };
 
-  it('retries interrupted response bodies instead of accepting partial downloads', async () => {
+  it('restarts an interrupted body when the server cannot honor a resumed Range request', async () => {
     await run(`Download-File -Url ${quote(origin + '/retry')} -Destination (Join-Path $projectRoot 'payload.zip') -ExpectedSha256 '${sha(payload)}'`);
-    expect(requests).toEqual(['/retry', '/retry']);
+    // curl retains the first seven bytes, rejects the fixture's full 200 reply
+    // to its Range request, then starts fresh. Invoke-WebRequest restarts fresh.
+    expect(requests).toEqual(ranges.some(Boolean) ? ['/retry', '/retry', '/retry'] : ['/retry', '/retry']);
+    if (ranges.some(Boolean)) expect(ranges).toEqual([undefined, 'bytes=7-', undefined]);
+    expect(readFileSync(path.join(root, 'payload.zip'))).toEqual(payload);
+    expect(readdirSync(root).filter(name => name.includes('.download-'))).toEqual([]);
+  });
+
+  it('resumes supported partial transfers while verifying the complete final archive', async () => {
+    await run(`Download-File -Url ${quote(origin + '/resumable')} -Destination (Join-Path $projectRoot 'payload.zip') -ExpectedSha256 '${sha(payload)}'`);
+    expect(requests).toEqual(['/resumable', '/resumable']);
     expect(readFileSync(path.join(root, 'payload.zip'))).toEqual(payload);
     expect(readdirSync(root).filter(name => name.includes('.download-'))).toEqual([]);
   });
 
   it('uses the fallback after repeated connection failures', async () => {
     await run(`Download-File -Url ${quote(origin + '/reset')} -FallbackUrls @(${quote(origin + '/good')}) -Destination (Join-Path $projectRoot 'payload.zip') -ExpectedSha256 '${sha(payload)}'`);
-    expect(requests).toEqual(['/reset', '/reset', '/good']);
+    expect(requests).toEqual(['/reset', '/reset', '/reset', '/reset', '/good']);
     expect(readFileSync(path.join(root, 'payload.zip'))).toEqual(payload);
   });
 
   it('rejects corrupt mirror bytes and still verifies the fallback', async () => {
     await run(`Download-File -Url ${quote(origin + '/corrupt')} -FallbackUrls @(${quote(origin + '/good')}) -Destination (Join-Path $projectRoot 'payload.zip') -ExpectedSha256 '${sha(payload)}'`);
-    expect(requests).toEqual(['/corrupt', '/corrupt', '/good']);
+    expect(requests).toEqual(['/corrupt', '/corrupt', '/corrupt', '/corrupt', '/good']);
     expect(sha(readFileSync(path.join(root, 'payload.zip')))).toBe(sha(payload));
   });
 
   it('preserves an existing archive when all attempts fail integrity checks', async () => {
     writeFileSync(path.join(root, 'payload.zip'), 'previous verified download');
     await expect(run(`Download-File -Url ${quote(origin + '/corrupt')} -Destination (Join-Path $projectRoot 'payload.zip') -ExpectedSha256 '${sha(payload)}'`)).rejects.toThrow('all sources');
+    expect(requests).toEqual(['/corrupt', '/corrupt', '/corrupt', '/corrupt']);
     expect(readFileSync(path.join(root, 'payload.zip'), 'utf8')).toBe('previous verified download');
     expect(readdirSync(root).filter(name => name.includes('.download-'))).toEqual([]);
   });

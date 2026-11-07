@@ -28,7 +28,7 @@ export interface BotAgentView {
  * independent identities. The journal stores routing facts; it never copies
  * another audience's transcript, model summary or VCP evidence into a turn. */
 export class BotCompanionRuntime {
-  constructor(private readonly store: BotStore) {
+  constructor(private readonly store: BotStore, private readonly options: { taskAuthority?(task: BotTask): BotEvent | undefined; authorityGuard?(event: BotEvent): boolean } = {}) {
     store.taskTransaction(sql => {
       for (const statement of [
         `CREATE TABLE IF NOT EXISTS bot_brains(companion_id TEXT PRIMARY KEY,sequence INTEGER NOT NULL DEFAULT 0,updated_at TEXT NOT NULL)`,
@@ -78,6 +78,7 @@ export class BotCompanionRuntime {
   }
   private authority(event: BotEvent): BotEvent | undefined {
     const current = this.assertEvent(event), room = this.store.getConversation(current.conversationId)!;
+    if (this.options.authorityGuard?.(current) === false) return;
     if (current.source === 'user' && current.senderType === 'user' && current.senderId === 'user' && room.memberIds.includes('user')) return current;
     // A causal link records context, not authority. Only the host's committed
     // peer collaboration delivery transfers an original user's work request.
@@ -94,10 +95,12 @@ export class BotCompanionRuntime {
     if (!saved) return;
     const receipt = JSON.parse(saved) as Row;
     if (receipt.destination !== 'peer' || receipt.recipientId !== current.companionId || receipt.conversationId !== room.id
-      || receipt.messageId !== current.sourceMessageRecordId || receipt.fingerprint !== digest([current.companionId, 'peer', current.content])
+      || receipt.messageId !== current.sourceMessageRecordId || receipt.fingerprint !== digest([current.companionId, 'peer', this.store.getMessage(current.sourceMessageRecordId)?.content ?? current.content])
       || JSON.stringify([...room.memberIds].sort()) !== JSON.stringify([parent.companionId, current.companionId].sort())) return;
     return parent;
   }
+  /** Read-only host verification; a causal link by itself is never a grant. */
+  workAuthority(event: BotEvent): BotEvent | undefined { return this.authority(event); }
   /** New automatic work starts in observation mode until a real human source
    * grants its scope. Chat participation and resource budgets are not grants. */
   authorize(event: BotEvent, operationId: string): { allowed: true; authorizingEventId: string; basis: 'explicit' | 'inherited' } | { allowed: false; observed: true; reason: string } {
@@ -123,7 +126,9 @@ export class BotCompanionRuntime {
         || existing.conversationId !== task.conversationId || digest(existing.attachmentIds ?? []) !== digest(attachments(task))) throw new Error('任务不能变更已有授权范围。');
       return existing;
     }
-    const authorization = this.authorize(source, `accept:${task.id}`);
+    const workflowAuthority = this.options.taskAuthority?.(task);
+    const authorization = workflowAuthority ? { allowed: true as const, authorizingEventId: workflowAuthority.id, basis: 'inherited' as const }
+      : this.authorize(source, `accept:${task.id}`);
     if (!authorization.allowed) throw new Error(authorization.reason);
     const mandate: BotMandate = { id: 'mandate-' + digest([task.id, source.id]).slice(0, 40), taskId: task.id,
       companionId: task.companionId, sourceEventId: source.id,
@@ -163,7 +168,7 @@ export class BotCompanionRuntime {
         || source.companionId !== mandate.companionId || source.conversationId !== mandate.conversationId || source.securityDomainId !== mandate.securityDomainId
         || digest(attachments(task)) !== digest(mandate.attachmentIds ?? []) || digest(attachments(actual)) !== digest(mandate.attachmentIds ?? [])) throw new Error('授权来源或任务范围已变化。');
       this.assertEvent(source); this.assertEvent(authorizer);
-      if (this.authority(source)?.id !== authorizer.id) throw new Error('原始工作授权已经失效。');
+      if ((this.options.taskAuthority?.(actual) ?? this.authority(source))?.id !== authorizer.id) throw new Error('原始工作授权已经失效。');
       if (actual.extra.removedAt || actual.extra.humanStopped) throw new Error('任务记录已经移除或被用户停止。');
       if (task.extra.cancelRequested || task.status === 'cancelled' || actual.extra.cancelRequested || actual.status === 'cancelled') { this.withdraw(task.id); throw new Error('用户已停止任务。'); }
     } catch (error) {

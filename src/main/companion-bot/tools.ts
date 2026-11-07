@@ -26,7 +26,13 @@ export const BOT_TOOLS: BotDshTool[] = [
   { name: 'memory_organize', description: '将2至16篇已完整读取的相关日记整理为一篇，保留事实差异、更正时间和不确定性，不丢掉不同作者或未决事项。每源须当前checksum；仅本域。新日记可召回后归档旧篇，partial/pending须如实说明，不重复新建同目标整理。', parameters: object({ sources: { type: 'array', minItems: 2, maxItems: 16, items: object({ id: string('本域日记ID', 200), expectedChecksum: string('读取时checksum', 32) }, ['id', 'expectedChecksum']) }, content: string('完整整理结果', 24000), tags: { type: 'array', maxItems: 12, items: string('标签', 64) } }, ['sources', 'content']) },
   { name: 'memory_forget', description: '按列出的稳定ID撤回这条记忆及其来源衍生内容的使用，阻止重新捕获。不会物理擦除旧原始聊天日志。仅在用户明确要求忘记时调用。', parameters: object({ id: string('memory_list给出的记忆ID', 200) }, ['id']) },
   { name: 'memory_maintenance', description: '生成待审的整理或梦境候选，或查看当前伙伴和受众的维护进展。用户希望整理/做梦时用plan；日常周期由宿主调度。提交不代表已改写日记，模型不能批准自己的候选。梦境叙事和未批准提案不是用户事实。', parameters: object({ operation: { type: 'string', enum: ['plan', 'status'] }, kind: { type: 'string', enum: ['organize', 'dream'] }, jobId: { type: 'string', maxLength: 160 } }, ['operation']) },
-  { name: 'dsh_task', description: '委派真实电脑任务：列桌面/指定目录、查看文件、运行脚本、研究、编码和文件处理均可，不限于复杂多步工作。伙伴任务复用共享DSH实例，使用独立full-access会话和工作目录；完整原生工具能力不是新增授权，必须保留本次原目标及只读、路径、不得删除等用户限制。主脑没有直接read_file也应使用此执行器，不要未调用就声称不能访问电脑。返回任务编号仅表示已提交，完成后宿主回报。附件会复制到任务工作区。', parameters: object({ goal: string('原始目标、授权范围、明确约束和可核验交付要求'), title: string('简短任务名称', 120), attachmentIds: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['goal', 'title']) },
+  { name: 'dsh_plan', description: '登记有依赖的多Worker协作阶段，最多8阶段，依赖不得循环；不执行任务。create仅限当前用户委派。status按planId读取，省略则分页列本人本会话计划。cancel停止整个计划并停止其任务，后续通知不能重启。每阶段只能绑定一个真实任务，失败或中断沿原任务处理。', parameters: object({
+    operation: { type: 'string', enum: ['create', 'status', 'cancel'] }, planId: string('宿主返回的计划编号', 200), title: string('用户总目标的简短名称', 120), offset: { type: 'integer', minimum: 0 },
+    stages: { type: 'array', minItems: 1, maxItems: 8, items: object({ key: { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,64}$' }, title: string('阶段职责，不补写实现方案', 120), dependsOn: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 64 } } }, ['key', 'title', 'dependsOn']) },
+  }, ['operation']) },
+  { name: 'dsh_task', description: '委派真实电脑任务。goal是完整独立任务要求，只含本次目标、必要上下文、用户约束和交付；不复制聊天，不猜测未读文件中的规则或公式。历史附件须显式选择ID，省略仅附当前消息文件，[]无附件。宿主追加原件副本绝对路径。协作任务须传宿主planId和stageKey；依赖成功且Router读到当前结果后才能派发，阶段不能重复绑定。', parameters: object({ goal: string('完整独立任务要求；不添加用户未指定的技术方案、公式和额外交付物'), title: string('简短任务名称', 120),
+    planId: string('dsh_plan返回的计划编号；仅协作任务传', 200), stageKey: string('已登记阶段标识；与planId同时传', 64),
+    attachmentIds: { type: 'array', description: '明确选择必要附件；省略仅带当前触发消息附件，空数组无附件。', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['goal', 'title']) },
   { name: 'dsh_task_control', description: 'Router管理自己的获准任务：list列出；status查看；send追加原目标内指导；answer绑定questionId和原选项回答Worker；cancel立即停止；pause暂停冻结计时；resume_paused恢复原任务。用户暂停须明确继续，已停止不得重启。cancel_queued清排队；cancel_all停止本聊天自己的全部任务；remove一次停止并移除单项；clear_finished清除已结束记录，保留文件附件。一次回执即生效，无需反复核实。输出检查点用continue；未知外部效果不可重放。缺用户事实或新授权才询问。', parameters: object({ taskId: string('单任务操作需要任务编号；list与批量操作不传', 200), operation: { type: 'string', enum: ['status', 'send', 'cancel', 'answer', 'continue', 'pause', 'resume_paused', 'remove', 'list', 'cancel_queued', 'cancel_all', 'clear_finished'] },
     page: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 30 }, filter: { type: 'string', enum: ['all', 'active', 'done', 'issues'] }, query: { type: 'string', maxLength: 200 },
     text: string('遵守原目标与用户约束的补充指导或事实；不能替代问题回答'), questionId: string('status返回的原始稳定问题编号；已授权细节可由主脑判断回答，缺少用户偏好或新授权才询问用户', 160), answers: { type: 'array', minItems: 1, items: object({ id: string('问题项编号', 160),
@@ -34,6 +40,8 @@ export const BOT_TOOLS: BotDshTool[] = [
   { name: 'world', description: '观察真实世界状态，按可达路径移动、经出入口旅行或与家具交互。动作只控制自己，不能进入其他伙伴私人小屋；移动已接受不表示到达。', parameters: object({ operation: { type: 'string', enum: ['observe', 'move', 'travel', 'interact'] },
     sceneId: { type: 'string' }, x: { type: 'integer', minimum: 0, maximum: 127 }, y: { type: 'integer', minimum: 0, maximum: 127 }, objectId: { type: 'string' },
     action: { type: 'string', enum: ['sit', 'sleep', 'rest', 'work', 'eat', 'read', 'stand'] }, expectedRevision: { type: 'integer', minimum: 1 } }, ['operation']) },
+  { name: 'companion_delegate', description: '当前用户明确要求多伙伴合作时，将完整独立子任务和选中附件正式委派给另一位伙伴。宿主创建原聊天可见代理任务，隔离复制文件并传递来源授权；接收方用自己的Router和Worker执行，成果回到原聊天。goal只含该子任务必要目标、上下文与原约束。协作计划可绑定planId/stageKey。普通聊天联系仍用companion_contact。', parameters: object({ companionId:string('真实目标伙伴ID',160),title:string('子任务名称',120),goal:string('完整独立子任务及必要约束，不复制无关聊天',8000), attachmentIds:{type:'array',maxItems:16,items:{type:'string',maxLength:160}},planId:string('原聊天计划ID',200),stageKey:string('计划阶段标识',64) },['companionId','title','goal']) },
+  { name: 'companion_delegation', description: '伙伴协作：status查看当前聊天委派及真实任务进度；接收方用result将真实Worker成果和选中附件交回原委派聊天，省略ID使用trigger.delegation.id。必须等自己实际Worker和计划完成，不用普通聊天冒充交付。result省略attachmentIds会转交本委派Worker已真实发布的成果文件；有选择时只用真实回执ID，不能猜编号。原委派方可send补充指导或cancel停止全部关联任务，不能控制其他伙伴无关任务。', parameters: object({operation:{type:'string',enum:['status','result','send','cancel']},delegationId:string('宿主返回的委派ID，接收方可省略',200),message:string('必要指导或核验后的成果摘要',16000),attachmentIds:{type:'array',maxItems:16,items:{type:'string',maxLength:160}},offset:{type:'integer',minimum:0} },['operation']) },
   { name: 'companion_contact', description: '按当前用户明确请求联系真实伙伴，消息始终进入仅双方伙伴参加的独立私聊。“让GPT跟我说下午好”用destination=user，目标获得一次以本人身份向用户回复的宿主授权；你不能在目标与用户的私聊里发言。“你和GPT私下讨论”用peer。发送即自然产生伙伴私聊消息，无需用户另选双方。message仅本次最小必要请求，不复制无关私聊、历史或秘密，不代替目标编台词。', parameters: object({ companionId: string('伙伴目录中的目标ID', 160), destination: { type: 'string', enum: ['user', 'peer'] }, message: string('本次明确转达的最小必要请求，排除无关私聊资料', 4000) }, ['companionId', 'destination', 'message']) },
   { name: 'companion_reply_user', description: '当前伙伴私聊带有peerContact.responseDestination=user-direct时，用自己的话向用户发出获准的一条真实消息。宿主绑定接收人、原始请求和你自己的用户私聊；不能指定其他会话或替其他伙伴发言。普通伙伴讨论没有此授权。成功即已送达用户，不在伙伴私聊里重复整段用户回复，也不假称只是转达。', parameters: object({ message: string('你本人对用户的自然回复，仅含本次请求必要内容', 24000) }, ['message']) },
   { name: 'message_peer', description: '显式向当前群或伙伴交流里另一位已有伙伴发送文字、真实表情或当前聊天已分享文件。私聊中用户想联系其他伙伴时用companion_contact，不要声称无法联系。可以只发attachmentIds；继承活动预算与衍生轮次，不向自己反射，不要反复互相回应。', parameters: object({ companionId: string('当前会话中的目标伙伴ID', 200), content: { type: 'string', maxLength: 8000 }, attachmentIds: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['companionId']) },
@@ -43,6 +51,8 @@ export const BOT_TOOLS: BotDshTool[] = [
 // above remain the application catalog; scope/authorization rules live in the
 // stable system contract and host checks, rather than repeated in every tool.
 const routerDescriptions: Record<string, string> = {
+  companion_delegate: '将当前用户要求的独立子任务和选中attachmentIds正式交给另一伙伴；原聊天持久显示代理进度并接收成果。协作计划可带planId/stageKey，目标和约束要完整且不含无关聊天。',
+  companion_delegation: 'status查询真实委派进度；接收方实际Worker/计划完成后result传回摘要和attachmentIds至原聊天；原委派方send补充、cancel停止。省略ID取trigger.delegation。',
   agent_capabilities: '查询本人当前DSH能力：summary概览，catalog关键词/分类分页，tool读参数，skill分段读说明；变更revision后重查。目录不授予新权限。',
   agent_state: '读取自己持续主脑的事件序列及当前受众获准的任务协调状态；元数据不授予新权限。',
   dsh_task_result_read: '按taskId分页读本会话本人任务的完整结果。摘要为预览时沿nextOffset继续；只读，不重新执行。',
@@ -64,7 +74,8 @@ const routerDescriptions: Record<string, string> = {
   memory_organize: '以当前checksum整理2至16篇已读日记，保留事实差异和来源；partial/pending如实说明，不重复提交。',
   memory_forget: '仅在用户明确要求时按稳定ID撤回记忆及来源衍生使用；不会物理删除原聊天日志。',
   memory_maintenance: 'plan生成待审整理/梦境候选，status查进展；不能自行批准，日常周期由宿主安排。',
-  dsh_task: '委派真实电脑工作，含目录、文件、研究、代码和脚本。传原始目标、授权和约束；返回编号仅表示提交，等待真实报告。',
+  dsh_task: '派发独立Worker任务。goal仅转达本次用户要求、必要历史事实与原约束，不增写技术方案、计算公式或额外交付物。无关聊天/文件直接省略。attachmentIds选必要附件，省略仅带当前消息附件，[]无附件；宿主追加副本绝对路径，goal不重复路径。并行无依赖任务；依赖任务等前置真实完成并读到结果才派发。',
+  dsh_plan: '多Worker依赖协作先create登记最多8个阶段（key/title/dependsOn），再dsh_task传planId+stageKey逐阶段派发。status读计划，省略planId分页列本人本会话计划；cancel按用户请求整体停止。依赖须成功并先status/read读结果，阶段禁止重复绑定。',
   dsh_task_control: '管理本人任务：list/status查询，send指导，answer绑定原questionId，cancel停止，pause/resume_paused暂停继续，remove一次停止并移除，continue续输出检查点；unknown先核实。批量清理需用户请求。',
   world: '观察、移动、旅行或家具交互，只控制自己；移动接受不等于到达，不能进入别人的私人小屋。',
   companion_contact: '用户明确请求时联系真实伙伴，始终投递双方独立私聊。destination=peer讨论，user请求对方本人向用户回复；仅转达必要内容。',

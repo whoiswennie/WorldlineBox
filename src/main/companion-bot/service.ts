@@ -14,7 +14,9 @@ import { BotScheduler } from './scheduler';
 import { BotStore } from './store';
 import { botLocalTimestamp, buildBotContext } from './context';
 import { taskContextPolicy } from './task-context-policy';
-import { botHandoffFile, botTaskFileEvidence, buildBotTaskPrompt, type BotHandoffMessage } from './task-handoff';
+import { BotWorkflowRuntime, botWorkflowStages } from './workflow-runtime';
+import { BotDelegationRuntime, type BotDelegationTicket } from './delegation-runtime';
+import { botHandoffFile, botTaskFileEvidence, buildBotTaskPrompt } from './task-handoff';
 import { BotToolServer, type BotToolCall } from './tool-server';
 import { BOT_ROUTER_TOOLS as BOT_TOOLS } from './tools';
 import { BOT_MEMORY_CAPTURE_POLICY, captureBotMemory } from './memory-capture';
@@ -70,6 +72,8 @@ const errorText = (error: unknown) => error instanceof Error ? error.message : S
 const MAX_WORKER_RUNS = 64;
 const workerSystem = `你是世界线盒子伙伴委派的DSH执行器。完成当前明确目标，验证实际产物。本任务会话可使用DSH完整原生工具和本机文件访问能力；这不是额外任务授权。严格遵守下面原始目标、用户明确限制和已提供事实，不擅自扩大范围；只读、不得删除、指定路径等约束始终有效。产物优先写入自己的任务工作区。遇到可依据原始目标和已知事实判断的执行细节，交由委派主脑回答；缺少用户偏好或新的操作授权时提出真实问题。不读取其他会话或伙伴记忆目录。不发送未经请求的外部消息。依据真实执行结果报告，未完成要说明。
 业务状态可通过worker_report结构化回传：progress表示阶段进展，waiting表示等待后续事件，blocked表示阻碍，failed表示确实失败，dropped表示无需继续，ready表示当前目标已完成。ready须说明实际verification依据，文字答复也可核验，不强制创建文件。需要回答时提出真实问题，不用一段最终正文假装工具仍在运行。正常结束且没有未决问题或外部操作时，宿主按原生执行结果结束任务，缺少报告不会制造等待状态。完成报告之后不要再修改产物；有新工作或跟进时沿原任务继续，并重新核验。子Agent不能代替根执行器提交业务完成报告。`;
+const workerTools = [{ name: 'worker_chat_send_file', description: '将自己任务工作区中的实际产物文件发送到原委派聊天。只用任务内真实相对路径，成功回执表示已发送，不要重复发送；不代表整个任务完成。',
+      parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1, maxLength: 32768 }, caption: { type: 'string', maxLength: 24000 } }, required: ['path'], additionalProperties: false } }];
 const nonempty = z.string().trim().min(1).max(24000);
 const maxCausalHop = 6;
 const causalHop = (event: BotEvent): number => event.source === 'user' || event.payload.hop === undefined ? 0
@@ -85,6 +89,8 @@ interface ExecutorControl { kind: 'pause' | 'cancel'; requestedAt: string; state
 export class BotService {
   readonly store: BotStore;
   readonly companionRuntime: BotCompanionRuntime;
+  private readonly workflows: BotWorkflowRuntime;
+  private readonly delegations: BotDelegationRuntime;
   private readonly world: BotWorld;
   private readonly scheduler: BotScheduler;
   private readonly toolServer: BotToolServer;
@@ -98,6 +104,8 @@ export class BotService {
   private readonly taskPreparations = new Map<string, Promise<void>>();
   private lastTaskCompanion?: string;
   private readonly taskControlRuns = new Map<string, Promise<void>>();
+  private delegationCursor = 0;
+  private readonly delegationCleanup = new Set<string>();
   private readonly executorControlRuns = new Map<string, Promise<void>>();
   private readonly taskAccessUpgrades = new Map<string, Promise<void>>();
   private readonly companionControls = new Map<string, Promise<void>>();
@@ -128,7 +136,9 @@ export class BotService {
   private developmentCleanupRetryAt = 0;
   constructor(private readonly options: BotServiceOptions) {
     this.store = new BotStore(path.join(options.root, 'bot.sqlite'), { activityBudget: options.activityBudget });
-    this.companionRuntime = new BotCompanionRuntime(this.store);
+    this.delegations = new BotDelegationRuntime(this.store);
+    this.workflows = new BotWorkflowRuntime(this.store, { authority: event => this.companionRuntime.workAuthority(event) });
+    this.companionRuntime = new BotCompanionRuntime(this.store, { taskAuthority: task => this.workflows.taskAuthority(task), authorityGuard: event => this.delegations.allowsWork(event) });
     this.store.setTaskBudgetAuthority(taskId => {
       const task = this.store.getTask(taskId); if (!task) return false;
       try { return this.companionRuntime.validateTask(task).state === 'active'; } catch { return false; }
@@ -497,7 +507,7 @@ export class BotService {
       if (receipt.fingerprint !== fingerprint) throw new Error('主脑工具回执参数不匹配。');
       return { state: 'committed', result: receipt.result };
     }
-    if (!['memory_write', 'memory_update', 'memory_organize', 'memory_maintenance', 'companion_contact', 'companion_reply_user', 'dsh_task_control'].includes(call.name)) return { state: 'unknown' };
+    if (!['memory_write', 'memory_update', 'memory_organize', 'memory_maintenance', 'companion_contact', 'companion_reply_user', 'companion_delegate', 'companion_delegation', 'dsh_task_control', 'dsh_plan', 'dsh_task'].includes(call.name)) return { state: 'unknown' };
     const event = this.store.getEvent(call.eventId), lane = event && this.store.getLane(event.laneId);
     const originalEpoch = event && this.store.getEventNativeEpoch(event.id);
     const originalLane = event && originalEpoch !== undefined ? originalEpoch === 1 ? event.laneId : `${event.laneId}-epoch-${originalEpoch}` : undefined;
@@ -507,6 +517,52 @@ export class BotService {
       || this.store.withdrawnIn(event.companionId, event.securityDomainId, [event.id, event.sourceMessageRecordId]).size) return { state: 'unknown' };
     const conversation = this.store.getConversation(event.conversationId);
     if (!conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)) return { state: 'unknown' };
+    if(call.name==='companion_delegate'){
+      const proxy=this.store.getTask(`task-${digest(`${event.id}:${call.callId}`).slice(0,48)}`);
+      // File copies alone have no message grant and cannot execute. The proxy,
+      // peer delivery, mandate and ticket commit in one SQLite transaction.
+      if(!proxy)return {state:'absent'};
+      if(proxy.extra.dispatchFingerprint!==digest(JSON.stringify(call.args))||typeof proxy.extra.externalDelegationId!=='string')return {state:'unknown'};
+      const ticket=this.delegations.scoped(event,proxy.extra.externalDelegationId);
+      const result={delegationId:ticket.id,taskId:proxy.id,recipientId:ticket.recipientId,status:proxy.status};
+      this.store.setMetadata(key,JSON.stringify({fingerprint,result}));return {state:'committed',result};
+    }
+    if(call.name==='companion_delegation'){
+      if(call.args.operation==='status')return {state:'absent'};
+      const id=typeof call.args.delegationId==='string'?call.args.delegationId:this.delegations.forEvent(event)?.id;
+      if(!id)return {state:'absent'};
+      this.delegations.scoped(event,id);
+      const command=this.store.getMetadata(`delegation-tool:${event.id}:${call.callId}`);
+      if(command){const receipt=JSON.parse(command);if(receipt.fingerprint!==digest(JSON.stringify(call.args)))return {state:'unknown'};
+        this.store.setMetadata(key,JSON.stringify({fingerprint,result:receipt.result}));return {state:'committed',result:receipt.result};}
+      if(call.args.operation==='result'){
+        const proof=this.delegations.resultReceipt(id,digest(`${event.id}:${call.callId}`));
+        if(!proof)return {state:'absent'}; // Publication, receipt and finish are one atomic transaction.
+        return {state:'unknown'}; // A result without its original argument binding cannot prove this call.
+      }
+      const saved=this.store.getMetadata(`delegation-control:${id}:${digest(`${event.id}:${call.callId}`)}`);
+      if(!saved)return {state:'absent'};
+      const receipt=JSON.parse(saved);if(receipt.fingerprint!==digest(JSON.stringify([call.args.operation,call.args.message??''])))return {state:'unknown'};
+      this.store.setMetadata(key,JSON.stringify({fingerprint,result:receipt.result}));return {state:'committed',result:receipt.result};
+    }
+    if (call.name === 'dsh_plan') {
+      if (call.args.operation === 'status') return { state: 'absent' };
+      const proof = this.workflows.receipt(event, call.callId, call.args); if (proof.state === 'absent') return proof;
+      // The durable cancellation intent closes the graph immediately. Resume
+      // only its idempotent fan-out if a crash lost the outer tool receipt.
+      if (call.args.operation === 'cancel') for (const taskId of this.workflows.cancel(event, proof.planId, call.callId)) {
+        const task = this.store.getTask(taskId); if (task) await this.controlTask(task, 'cancel', undefined, `${event.id}:${call.callId}:${taskId}`, { caller: 'brain', source: event.source, sourceEventId: event.id });
+      }
+      const result = this.workflows.status(event, proof.planId); this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return { state: 'committed', result };
+    }
+    if (call.name === 'dsh_task') {
+      const task = this.store.getTask(`task-${digest(`${event.id}:${call.callId}`).slice(0, 48)}`);
+      if (!task) return { state: 'absent' };
+      if (task.sourceEventId !== event.id || task.companionId !== event.companionId || task.conversationId !== event.conversationId
+        || task.extra.dispatchFingerprint !== digest(JSON.stringify(call.args))) return { state: 'unknown' };
+      const result = { taskId: task.id, mandateId: this.companionRuntime.mandate(task.id)?.id, status: task.status, meaning: '原任务提交已经持久保存；读取真实状态，不重复派发。' };
+      this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return { state: 'committed', result };
+    }
     if (call.name === 'memory_write') {
       if (this.toolRuns.has(key)) return { state: 'unknown' };
       const input = { content: nonempty.parse(call.args.content), sourceEventId: `${event.id}:${call.callId}`,
@@ -857,7 +913,10 @@ export class BotService {
       const questionId = typeof event.payload.attention === 'string' && event.payload.attention.startsWith('question:') ? event.payload.attention.slice(9) : undefined;
       const question = questionId ? this.taskRuntime.attention(event.payload.taskId, questionId) : undefined;
       const outdatedQuestion = questionId && (question?.id !== questionId || question.state !== 'queued');
-      if (stopped || finishedProgress || outdatedQuestion) {
+      const delegatedQuestion=typeof event.payload.delegationTaskId==='string'&&typeof event.payload.delegationQuestionId==='string'
+        ?this.taskRuntime.attention(event.payload.delegationTaskId,event.payload.delegationQuestionId):undefined;
+      const outdatedDelegatedQuestion=typeof event.payload.delegationQuestionId==='string'&&(delegatedQuestion?.id!==event.payload.delegationQuestionId||delegatedQuestion.state!=='queued');
+      if (stopped || finishedProgress || outdatedQuestion || outdatedDelegatedQuestion) {
         this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: 'done', content: '' });
         this.changed(event.conversationId); return;
       }
@@ -881,17 +940,9 @@ export class BotService {
       this.companionRuntime.admit(event);
       const followed = this.companionRuntime.boundFollowup(event);
       const followedAttention = followed ? this.taskRuntime.attention(followed.id) : undefined;
-      if (followed && followedAttention?.state !== 'queued') {
-        await this.controlTask(followed, 'send', event.content, `followup:${event.id}`, { caller: 'user', source: 'user', sourceEventId: event.id });
-        signal.throwIfAborted(); this.companionRuntime.deliveredFollowup(event, followed.id);
-        const sourceMessages = this.memoryMessages(event).filter(message => message.id === event.sourceMessageRecordId);
-        this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: 'done', content: '', memoryJobs: [
-          { key: `history:${event.id}`, kind: 'projection', payload: { scope: scopeFor(event), messages: sourceMessages } },
-          { key: `capture:v${BOT_MEMORY_CAPTURE_POLICY}:${event.id}`, kind: 'capture', payload: { scope: scopeFor(event), sourceEventId: event.id,
-            policyVersion: BOT_MEMORY_CAPTURE_POLICY, messages: sourceMessages, answer: '' } },
-        ] });
-        return;
-      }
+      // A task selection narrows scope; it does not mean resume or steer.
+      // Route the actual user intent through the Router, including pause/stop
+      // and supplementation that must leave an existing pause intact.
       if (this.options.brainRuntime === 'worldlinebox') {
         const key = botNativeHostBindingKey(this.nativeLaneId(event.laneId)), owner = this.store.getMetadata(key);
         if (owner && owner !== 'worldlinebox') throw Object.assign(new Error('旧DSH主脑仍有未核实执行，不能将它重放到应用内主脑。'), { code: 'BOT_HOST_MIGRATION_BLOCKED' });
@@ -945,7 +996,7 @@ export class BotService {
         const taskFollowup = followed ? { taskId: followed.id, ...(followedAttention?.state === 'queued' ? { questionId: followedAttention.id } : {}) } : undefined;
         const files = await this.verifiedAttachmentFiles(event, undefined, contextThrough, signal);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        const context = buildBotContext({ companion, event, taskFollowup, files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
+        const context = buildBotContext({ companion, event, taskFollowup, delegation: this.delegations.forEvent(event), files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
           referenceLongTriggers: this.options.brainRuntime === 'worldlinebox',
           fitsEnvelope: this.options.brainRuntime === 'worldlinebox' ? (system, user) => {
             const prompt = handoffView ? JSON.stringify({ ...JSON.parse(user), nativeHandoff: handoffView }) : user;
@@ -1013,7 +1064,7 @@ export class BotService {
       if (final) {
         this.ready = true; this.detail = undefined;
         if (status === 'done') {
-          try { if (this.store.observeGroupReply(event.id).length) this.scheduler.wake(); }
+          try { this.remindDelegationReturn(event); if (this.store.observeGroupReply(event.id).length) this.scheduler.wake(); }
           catch (error) { this.options.report?.(error); }
         }
       }
@@ -1137,7 +1188,7 @@ export class BotService {
   }
   private authorizedAttachmentGrants(event: BotEvent, requested: string[]): BotAttachmentGrant[] {
     const ids = [...new Set(requested)];
-    const selected = ids.flatMap((_, index) => index % 16 ? [] : this.store.modelAttachmentGrants(event, { ids: ids.slice(index, index + 16), throughSourceSequence: this.attachmentThrough(event) }));
+    const selected = ids.flatMap((_, index) => index % 16 ? [] : this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, ids: ids.slice(index, index + 16), throughSourceSequence: this.attachmentThrough(event) }));
     if (selected.length !== ids.length) throw new Error('附件尚未在当前聊天分享，或其来源已经撤回。');
     return selected.map(entry => ({ mediaId: entry.ref.id, grantId: entry.grantId }));
   }
@@ -1147,8 +1198,8 @@ export class BotService {
   }
   private async verifiedAttachmentFiles(event: BotEvent, ids?: string[], throughSourceSequence = this.attachmentThrough(event), signal?: AbortSignal) {
     signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted();
-    const grants = ids ? ids.flatMap((_, index) => index % 16 ? [] : this.store.modelAttachmentGrants(event, { ids: ids.slice(index, index + 16), throughSourceSequence }))
-      : this.store.modelAttachmentGrants(event, { throughSourceSequence, all: true });
+    const grants = ids ? ids.flatMap((_, index) => index % 16 ? [] : this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, ids: ids.slice(index, index + 16), throughSourceSequence }))
+      : this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, throughSourceSequence, all: true });
     const result = [];
     for (const { ref } of grants) {
       signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted();
@@ -1208,9 +1259,11 @@ export class BotService {
     const scope = scopeFor(event), args = call.args;
     if (['memory_write', 'memory_update', 'memory_organize', 'memory_forget', 'memory_maintenance'].includes(call.name)
       && args.conversationId !== undefined && args.conversationId !== event.conversationId) throw new Error('记忆写入和整理仅限当前受众，跨会话查询不授予修改权限。');
-    if (['memory_write', 'memory_update', 'memory_organize', 'memory_forget', 'message_peer', 'companion_contact', 'companion_reply_user', 'dsh_task', 'chat_send_sticker', 'chat_send_file'].includes(call.name)
+    if (['memory_write', 'memory_update', 'memory_organize', 'memory_forget', 'message_peer', 'companion_contact', 'companion_reply_user', 'companion_delegate', 'dsh_task', 'chat_send_sticker', 'chat_send_file'].includes(call.name)
       || call.name === 'world' && args.operation !== 'observe'
       || call.name === 'dsh_task_control' && !['status', 'list'].includes(String(args.operation))
+      || call.name === 'dsh_plan' && args.operation !== 'status'
+      || call.name === 'companion_delegation' && args.operation !== 'status'
       || call.name === 'memory_maintenance' && args.operation === 'plan') this.store.reserveAutomaticAction(event.id, call.callId, call.name);
     switch (call.name) {
       case 'agent_capabilities': {
@@ -1269,7 +1322,7 @@ export class BotService {
       }
       case 'chat_list_files': {
         const query = typeof args.query === 'string' ? args.query.trim().slice(0, 200).toLocaleLowerCase() : '';
-        const refs = this.store.modelAttachmentGrants(event, { query, throughSourceSequence: this.attachmentThrough(event), all: true }).map(entry => entry.ref).filter(ref => ref.kind === 'file');
+        const refs = this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, query, throughSourceSequence: this.attachmentThrough(event), all: true }).map(entry => entry.ref).filter(ref => ref.kind === 'file');
         const offset = z.number().int().min(0).default(0).parse(args.offset), limit = z.number().int().min(1).max(80).default(40).parse(args.limit);
         const files = await this.verifiedAttachmentFiles(event, refs.slice(offset, offset + limit).map(ref => ref.id), undefined, signal);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
@@ -1347,6 +1400,8 @@ export class BotService {
         const result = this.world.execute(scope, botWorldCommandSchema.parse(args), effectId);
         this.deliverWorldEvents(); return result;
       }
+      case 'companion_delegate': return this.delegateTask(event, call, signal);
+      case 'companion_delegation': return this.delegationTool(event, call, signal);
       case 'companion_contact': {
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         if (causalHop(event) >= maxCausalHop) return causalLimit();
@@ -1365,6 +1420,13 @@ export class BotService {
       }
       case 'message_peer': {
         const target = nonempty.parse(args.companionId), content = z.string().trim().max(8000).parse(args.content ?? ''), cause = derivedCause(event);
+        const delegation=this.delegations.forEvent(event);
+        if(delegation?.state==='active'&&target===delegation.requesterId){
+          const tasks=this.delegations.tasks(delegation.id);
+          if(tasks.length&&tasks.every(task=>['succeeded','failed'].includes(task.status)))return {sent:false,delegationId:delegation.id,
+            requiredNextAction:'companion_delegation.result',reason:'这是正式任务委派；实际Worker已返回，请先核验后使用result把真实产物交回原用户聊天。普通伙伴消息不会完成委派。',
+            outputs:tasks.flatMap(task=>this.store.publicationsForTask(task.id))};
+        }
         if (causalHop(event) >= maxCausalHop) return causalLimit();
         const ids = z.array(z.string().min(1).max(160)).max(16).parse(args.attachmentIds ?? []);
         if (!content && !ids.length) throw new Error('伙伴消息需要文字或真实附件。');
@@ -1376,28 +1438,44 @@ export class BotService {
         if (!result.accepted) return { sent: false, reason: result.reason };
         this.scheduler.wake(); this.changed(event.conversationId); return { sent: true, eventIds: result.events.map(item => item.id) };
       }
+      case 'dsh_plan': {
+        const operation = z.enum(['create', 'status', 'cancel']).parse(args.operation);
+        if (operation === 'status') return this.workflows.status(event, z.string().min(1).max(200).optional().parse(args.planId), z.number().int().min(0).max(1000000).default(0).parse(args.offset));
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        if (operation === 'create') return this.workflows.create(event, call.callId, z.string().trim().min(1).max(120).parse(args.title), botWorkflowStages.parse(args.stages));
+        const taskIds = this.workflows.cancel(event, nonempty.parse(args.planId), call.callId);
+        for (const taskId of taskIds) { const task = this.store.getTask(taskId); if (task) await this.controlTask(task, 'cancel', undefined, `${event.id}:${call.callId}:${taskId}`, { caller: 'brain', source: event.source, sourceEventId: event.id }); }
+        return this.workflows.status(event, String(args.planId));
+      }
       case 'dsh_task': {
         if (this.companionRuntime.boundFollowup(event)) return { allowed: false, reason: '当前消息已绑定原任务跟进，不能另建任务。' };
         if (causalHop(event) >= maxCausalHop) return causalLimit();
         const id = `task-${digest(`${event.id}:${call.callId}`).slice(0, 48)}`;
-        const authorization = this.companionRuntime.authorize(event, call.callId);
-        if (!authorization.allowed) return authorization;
+        const workflow = args.planId === undefined && args.stageKey === undefined ? undefined
+          : z.strictObject({ planId: z.string().min(1).max(200), stageKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u) }).parse({ planId: args.planId, stageKey: args.stageKey });
+        if (workflow) { this.workflows.receivedNotice(event); this.workflows.ready(event, workflow.planId, workflow.stageKey); }
+        else { const authorization = this.companionRuntime.authorize(event, call.callId); if (!authorization.allowed) return authorization; }
         const through = this.attachmentThrough(event);
-        const requested = args.attachmentIds === undefined ? this.store.modelAttachmentGrants(event, { throughSourceSequence: through, all: true }).map(entry => entry.ref.id)
+        // A chat's file catalog is for router discovery, not an implicit task
+        // payload. Historical attachments require an explicit selection.
+        const requested = args.attachmentIds === undefined ? (this.store.getMessage(event.sourceMessageRecordId)?.attachments ?? []).filter(ref => ref.kind !== 'sticker').map(ref => ref.id)
           : z.array(z.string().min(1).max(160)).max(16).parse(args.attachmentIds);
+        if(workflow)this.workflows.requireDependencyArtifacts(event,workflow.planId,workflow.stageKey,requested);
         const attachmentGrants = requested.length ? this.authorizedAttachmentGrants(event, requested) : [];
         const attachmentRefs: BotMediaRef[] = [];
         for (let index = 0; index < requested.length; index += 64) attachmentRefs.push(...await this.requireMedia().resolveForConversation(event.conversationId, requested.slice(index, index + 64)));
         const attachmentIds = attachmentRefs.map(ref => ref.id);
-        const history = this.store.recentPublishedMessages(event.conversationId, { throughSourceSequence: through, limit: 80, maxChars: 24000 }).filter(message => message.id !== event.sourceMessageRecordId);
-        const withdrawn = this.store.withdrawnIn(event.companionId, event.securityDomainId, history.map(message => message.id));
-        const handoffMessages: BotHandoffMessage[] = history.filter(message => !withdrawn.has(message.id)).map(message => ({ id: message.id, senderName: message.senderName,
-          occurredAt: botLocalTimestamp(message.createdAt), content: message.content }));
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        const task = this.store.createTask({ id, conversationId: event.conversationId, companionId: event.companionId,
-          sourceEventId: event.id, goal: nonempty.parse(args.goal), attachmentGrants, extra: { title: typeof args.title === 'string' ? args.title : 'DSH任务', securityDomainId: event.securityDomainId,
-            attachmentIds, handoffMessages, handoffSourceIds: handoffMessages.map(message => message.id), handoffThroughSequence: through, workspaceLayout: 'companion-v1', workerAccess: 'full' } });
-        const mandate = this.companionRuntime.bindTask(task);
+        const { task, mandate } = this.store.taskTransaction(() => {
+          const task = this.store.createTask({ id, conversationId: event.conversationId, companionId: event.companionId,
+            sourceEventId: event.id, goal: nonempty.parse(args.goal), attachmentGrants, extra: { title: typeof args.title === 'string' ? args.title : 'DSH任务', securityDomainId: event.securityDomainId,
+              dispatchFingerprint: digest(JSON.stringify(call.args)),
+              ...(this.delegations.forEvent(event) ? { delegationId: this.delegations.forEvent(event)!.id } : {}),
+              ...(workflow ? { workflowId: workflow.planId, workflowStage: workflow.stageKey } : {}),
+              attachmentIds, handoffThroughSequence: through, workspaceLayout: 'companion-v1', workerAccess: 'full' } });
+          if (workflow) this.workflows.bind(event, task, workflow.planId, workflow.stageKey);
+          return { task, mandate: this.companionRuntime.bindTask(task) };
+        });
         this.launchTask(task); this.changed(event.conversationId); return { taskId: task.id, mandateId: mandate.id, status: task.status, meaning: '任务已持久保存并交由DSH执行，完成后回报；尚未完成。' };
       }
       case 'dsh_task_result_read': {
@@ -1406,6 +1484,7 @@ export class BotService {
         const offset = z.number().int().min(0).max(10000000).default(0).parse(args.offset);
         const limit = z.number().int().min(1).max(12000).default(6000).parse(args.limit);
         const result = Array.from(task.summary ?? '');
+        if (offset < result.length || this.store.publicationsForTask(task.id).length) this.workflows.observedResult(event, task);
         return { taskId: task.id, status: task.status, text: result.slice(offset, offset + limit).join(''), totalChars: result.length,
           ...(offset + limit < result.length ? { nextOffset: offset + limit } : {}), outputs: this.store.publicationsForTask(task.id) };
       }
@@ -1444,11 +1523,13 @@ export class BotService {
         if (task.conversationId !== event.conversationId && !['status', 'send', 'cancel'].includes(operation))
           throw new Error('跨会话协调仅支持查看、追加原范围指导和停止；问题回答与其他控制请回到任务原会话。');
         if (task.conversationId !== event.conversationId && operation !== 'status' && event.source !== 'user') throw new Error('跨会话任务控制需要当前用户明确请求。');
-        if (event.source === 'task' && ['answer', 'send'].includes(operation) && event.payload.taskId !== task.id)
+        if (event.source === 'task' && ['answer', 'send'].includes(operation) && event.payload.taskId !== task.id
+          && (operation !== 'send' || !this.workflows.canCoordinate(event, task)))
           throw new Error('执行器回执只能指导或回答其绑定的当前任务。');
         const result = await this.controlTask(task, operation, typeof args.text === 'string' ? args.text : undefined, `${event.id}:${call.callId}`,
           { caller: 'brain', source: event.source, sourceEventId: event.id, questionId: typeof args.questionId === 'string' ? args.questionId : undefined,
             answers: args.answers === undefined ? undefined : z.array(botTaskAnswerSchema).min(1).parse(args.answers) });
+        if (operation === 'status') this.workflows.observedResult(event, this.store.getTask(task.id)!);
         if (selectedTask && ['answer', 'send'].includes(operation) && result && typeof result === 'object' && 'accepted' in result && result.accepted === true)
           this.companionRuntime.deliveredFollowup(event, task.id);
         return result;
@@ -1456,7 +1537,187 @@ export class BotService {
       default: throw new Error('未知主脑工具。');
     }
   }
+  /** Cross-companion work is a durable, narrow subscription to a real user
+   * request. A proxy is visible in that user's room; execution stays with B. */
+  private async delegateTask(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> {
+    this.assertCurrentEvent(event); signal.throwIfAborted();
+    if (event.source !== 'user' || this.companionRuntime.boundFollowup(event)) throw new Error('跨伙伴委派需要当前用户请求，任务跟进不能另建委派。');
+    const args = z.strictObject({ companionId: z.string().min(1).max(160), title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(8000),
+      attachmentIds: z.array(z.string().min(1).max(160)).max(16).optional(), planId: z.string().min(1).max(200).optional(), stageKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u).optional() }).parse(call.args);
+    if (Boolean(args.planId) !== Boolean(args.stageKey)) throw new Error('委派阶段需要同时指定计划和阶段。');
+    if (args.planId) this.workflows.ready(event, args.planId, args.stageKey!);
+    const target = this.store.getCompanion(args.companionId);
+    if (!target || target.enabled === false || target.id === event.companionId) throw new Error('请选择另一位已启用的真实伙伴。');
+    const ids = args.attachmentIds ?? (this.store.getMessage(event.sourceMessageRecordId)?.attachments ?? []).filter(ref => ref.kind !== 'sticker').map(ref => ref.id);
+    const grants = ids.length ? this.authorizedAttachmentGrants(event, ids) : [];
+    const peer = this.store.openPeer(event.companionId, target.id);
+    const refs = ids.length ? await this.requireMedia().transferToConversation({ sourceConversationId: event.conversationId, targetConversationId: peer.id, attachmentIds: ids, signal }) : [];
+    signal.throwIfAborted(); this.assertCurrentEvent(event);
+    if (ids.length) this.authorizedAttachmentGrants(event, ids); // Revalidate after physical I/O.
+    const receipt = this.store.taskTransaction(() => {
+      const proxy = this.store.createTask({ id: `task-${digest(`${event.id}:${call.callId}`).slice(0,48)}`, conversationId: event.conversationId,
+        companionId: event.companionId, sourceEventId: event.id, goal: args.goal, attachmentGrants: grants, extra: { title: args.title,
+          delegationProxy: true, dispatchFingerprint: digest(JSON.stringify(call.args)), attachmentIds: ids, securityDomainId: event.securityDomainId,
+          ...(args.planId ? { workflowId: args.planId, workflowStage: args.stageKey } : {}), progress: { phase: 'queued', detail: `交给${target.name}处理。` } } });
+      if (args.planId) this.workflows.bind(event, proxy, args.planId, args.stageKey!);
+      this.companionRuntime.bindTask(proxy);
+      const contact = this.store.contactPeer(event, target.id, call.callId, args.goal, 'peer', { attachments: refs,
+        sourceIds: this.store.attachmentGrantSourceIds(grants.map(grant => grant.grantId)) });
+      if (!contact.accepted) throw new Error(contact.reason ?? '伙伴当前无法接收委派。');
+      const contactEvent = contact.events[0] ?? this.store.taskTransaction(sql => {
+        const row = sql.prepare('SELECT id FROM bot_inbox WHERE source_record_id=? AND companion_id=? LIMIT 1').get(contact.message.id,target.id) as {id:string}|undefined;
+        return row ? this.store.getEvent(row.id) : undefined;
+      });
+      if (!contactEvent) throw new Error('委派没有真实投递事件。');
+      const ticket = this.delegations.create(event,call.callId,{ recipientId: target.id,peerConversationId:peer.id,contactEventId:contactEvent.id,
+        proxyTaskId:proxy.id,goal:args.goal,title:args.title });
+      this.store.updateTask(proxy.id,{extra:{...proxy.extra,externalDelegationId:ticket.id}});
+      return {delegationId:ticket.id,taskId:proxy.id,recipientId:target.id,status:'queued',meaning:'真实委派已投递；进度与成果将回到本聊天，不表示已经完成。'};
+    });
+    this.scheduler.wake(); this.changed(peer.id); this.changed(event.conversationId); return receipt;
+  }
+  private async delegationTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> {
+    const args = z.strictObject({ operation:z.enum(['status','result','send','cancel']),delegationId:z.string().min(1).max(200).optional(),
+      message:z.string().trim().min(1).max(16000).optional(),attachmentIds:z.array(z.string().min(1).max(160)).max(16).optional(),offset:z.number().int().min(0).optional() }).parse(call.args);
+    if (args.operation==='status') return this.delegations.status(event,args.delegationId,{offset:args.offset});
+    const bound = this.delegations.forEvent(event), selected = args.delegationId ?? bound?.id;
+    if (!selected) throw new Error('当前没有明确的伙伴委派。');
+    const ticket = this.delegations.scoped(event,selected), proxy=this.store.getTask(ticket.proxyTaskId)!;
+    const commandKey=`delegation-tool:${event.id}:${call.callId}`,fingerprint=digest(JSON.stringify(call.args)),saved=this.store.getMetadata(commandKey);
+    if(saved){const receipt=JSON.parse(saved);if(receipt.fingerprint!==fingerprint)throw new Error('同一委派工具调用对应不同参数。');return receipt.result;}
+    if (args.operation==='cancel') {
+      if(event.companionId!==ticket.requesterId||event.conversationId!==ticket.sourceConversationId) throw new Error('只能由原始委派方停止委派。');
+      return this.controlTask(proxy,'cancel',undefined,`${event.id}:${call.callId}`,{caller:'brain',source:event.source,sourceEventId:event.id});
+    }
+    this.assertCurrentEvent(event); signal.throwIfAborted();
+    if (args.operation==='send') {
+      if(event.companionId!==ticket.requesterId||event.conversationId!==ticket.sourceConversationId||!args.message) throw new Error('补充指导需要原聊天中的委派方及明确文字。');
+      if(args.attachmentIds?.length)throw new Error('委派跟进当前仅追加文字；不能忽略新文件或扩大原任务的附件授权，请明确发起带新附件的后续委派。');
+      return this.controlTask(proxy,'send',args.message,`${event.id}:${call.callId}`,{caller:'brain',source:event.source,sourceEventId:event.id});
+    }
+    this.delegations.assertActive(ticket);
+    if (bound?.id!==ticket.id||event.companionId!==ticket.recipientId||event.conversationId!==ticket.peerConversationId) throw new Error('只能由实际接收委派的伙伴交回成果。');
+    const tasks=this.delegations.tasks(ticket.id);
+    if(!tasks.length||tasks.some(task=>!['succeeded','failed'].includes(task.status)||task.extra.humanStopped||task.extra.removedAt)) throw new Error('应先完成本委派实际Worker，未完成、暂停或停止的任务不能当作交付。');
+    const plans=this.workflows.status(event).plans;
+    if(plans?.some(plan=>plan.state==='active' && plan.stages.some(stage=>tasks.some(task=>task.id===stage.taskId)))) throw new Error('本委派还有未完成的计划阶段。');
+    const outputs=[...new Set(tasks.flatMap(task=>this.store.publicationsForTask(task.id).flatMap(output=>output.attachmentIds)))];
+    const ids=args.attachmentIds??outputs.slice(-16);
+    if(ids.some(id=>!outputs.includes(id)))throw new Error('交回文件必须是本委派Worker真实发布的成果，不能转交其他任务或聊天文件。');
+    const grants=ids.length?this.authorizedAttachmentGrants(event,ids):[];
+    const refs=ids.length?await this.requireMedia().transferToConversation({sourceConversationId:ticket.peerConversationId,targetConversationId:ticket.sourceConversationId,attachmentIds:ids,signal}):[];
+    signal.throwIfAborted();this.assertCurrentEvent(event);this.delegations.assertActive(ticket);
+    if(ids.length)this.authorizedAttachmentGrants(event,ids);
+    const content=args.message??tasks.map(task=>task.summary??'').join('\n').slice(0,16000);
+    const result=this.store.taskTransaction(()=>{
+      const current=this.store.getTask(proxy.id)!;
+      this.store.updateTask(proxy.id,{status:'running',extra:{...current.extra,progress:{phase:'delegation-delivery',detail:'接收已完成的伙伴成果。'}}});
+      const publication=refs.length?this.store.publishForTask(proxy.id,`delegation-${digest(`${event.id}:${call.callId}`)}`,{content,attachments:refs,
+        sourceIds:[...this.store.eventSourceIds(event.id),...this.store.attachmentGrantSourceIds(grants.map(grant=>grant.grantId))]}):undefined;
+      const receipt=this.delegations.recordResult(ticket.id,digest(`${event.id}:${call.callId}`),{content,attachmentIds:refs.map(ref=>ref.id),...(publication?{messageId:publication.id}:{})});
+      this.finishTask(this.store.getTask(proxy.id)!,tasks.some(task=>task.status==='failed')?'failed':'succeeded',content);
+      this.delegations.finish(ticket.id,'completed');const result={sent:true,taskId:proxy.id,...receipt};
+      this.store.setMetadata(commandKey,JSON.stringify({fingerprint,result}));return result;
+    });
+    this.scheduler.wake();this.changed(ticket.sourceConversationId);this.changed(ticket.peerConversationId);return result;
+  }
+  private async controlDelegation(ticket:BotDelegationTicket,operation:string,text:string|undefined,messageId:string,input:Omit<BotTaskControlInput,'requestId'|'text'>):Promise<unknown>{
+    const proxy=this.store.getTask(ticket.proxyTaskId)!;
+    if(operation==='status')return input.caller==='brain'?this.taskRuntime.routerStatus(proxy):this.taskRuntime.card(proxy);
+    const event=input.sourceEventId?this.store.getEvent(input.sourceEventId):undefined;
+    if(input.caller!=='user'&&(!event||event.companionId!==ticket.requesterId||event.conversationId!==ticket.sourceConversationId))throw new Error('委派控制不属于当前聊天。');
+    const key=`delegation-control:${ticket.id}:${digest(messageId)}`,fingerprint=digest(JSON.stringify([operation,text??'']));
+    const previous=this.store.getMetadata(key);if(previous){if(JSON.parse(previous).fingerprint!==fingerprint)throw new Error('同一委派控制对应不同操作。');return JSON.parse(previous).result;}
+    if(operation==='send'){
+      if(ticket.state!=='active'||this.store.taskSourcesWithdrawn(proxy.id))throw new Error('委派已关闭或来源已撤回。');
+      if(proxy.status==='paused'){
+        const content=z.string().trim().min(1).max(8000).parse(text);
+        const pending=Array.isArray(proxy.extra.delegationPendingControls)?proxy.extra.delegationPendingControls as Array<{id:string;text:string}>:[];
+        if(pending.length>=32)throw new Error('待交付指导已满，请先恢复或清理原任务。');
+        const result={accepted:true,taskId:proxy.id,status:'paused',meaning:'补充已保存；委派保持暂停，明确恢复后再交给协作伙伴。'};
+        this.store.taskTransaction(()=>{this.store.updateTask(proxy.id,{extra:{...proxy.extra,delegationPendingControls:[...pending,{id:messageId,text:content}]}});
+          this.store.setMetadata(key,JSON.stringify({fingerprint,result}));});this.changed(proxy.conversationId);return result;
+      }
+      this.delegations.assertActive(ticket);
+      const content=z.string().trim().min(1).max(8000).parse(text),source=this.store.getEvent(ticket.sourceEventId)!;
+      const receipt=this.store.taskTransaction(()=>{
+        const contact=this.store.contactPeer(source,ticket.recipientId,`update-${digest(messageId)}`,`对原委派补充指导（沿原任务处理，不另建）：\n${content}`,'peer');
+        if(!contact.accepted)throw new Error(contact.reason??'补充指导未送达。');
+        const entry=contact.events[0]??this.store.taskTransaction(sql=>{const row=sql.prepare('SELECT id FROM bot_inbox WHERE source_record_id=? AND companion_id=? LIMIT 1').get(contact.message.id,ticket.recipientId) as {id:string}|undefined;return row?this.store.getEvent(row.id):undefined;});
+        if(!entry)throw new Error('补充指导缺少真实事件。');this.delegations.bindEvent(ticket.id,entry.id);
+        return {accepted:true,taskId:proxy.id,meaning:'补充指导已投递给协作伙伴，沿原委派处理。'};
+      });
+      this.store.setMetadata(key,JSON.stringify({fingerprint,result:receipt}));this.scheduler.wake();this.changed(ticket.peerConversationId);return receipt;
+    }
+    const cancel=operation==='cancel'||operation==='remove';
+    if(!cancel&&!['pause','resume_paused'].includes(operation))throw new Error('伙伴委派支持查看、补充、暂停、恢复、停止和移除；实际问题由接收方主脑处理。');
+    const childIds=this.delegations.tasks(ticket.id).map(task=>task.id);
+    if(cancel){if(ticket.state==='active')this.delegations.finish(ticket.id,'cancelled');this.companionRuntime.withdraw(proxy.id);
+      this.store.updateTask(proxy.id,{extra:{...proxy.extra,humanStopped:true,cancelRequested:true,humanStoppedAt:new Date().toISOString()}});
+      this.finishTask(this.store.getTask(proxy.id)!,'cancelled',proxy.summary??'');this.suppressStoppedTaskNotices(proxy.id,event?.id);
+    }else{
+      if(ticket.state!=='active')throw new Error('已结束委派不能自动重开。');
+      if(operation==='resume_paused'&&proxy.status!=='paused')throw new Error('只有暂停的委派可以恢复。');
+      this.store.updateTask(proxy.id,{status:operation==='pause'?'paused':'running',extra:{...proxy.extra,pauseOrigin:operation==='pause'?'user':undefined,
+        userPaused:operation==='pause',pauseRequested:false,pausedAt:operation==='pause'?new Date().toISOString():undefined,progress:{phase:operation==='pause'?'paused':'running',detail:operation==='pause'?'用户已暂停协作。':'沿原协作任务继续。'}}});
+    }
+    for(const childId of childIds){const child=this.store.getTask(childId);if(!child||['succeeded','failed','cancelled'].includes(child.status))continue;
+      if(operation==='resume_paused'&&child.status!=='paused')continue;
+      await this.controlTask(child,cancel?'cancel':operation as 'pause'|'resume_paused',undefined,`${messageId}:${child.id}`,{caller:'user'});
+    }
+    if(operation==='resume_paused'){
+      const pending=Array.isArray(proxy.extra.delegationPendingControls)?proxy.extra.delegationPendingControls as Array<{id:string;text:string}>:[];
+      for(const entry of pending)await this.controlDelegation(this.delegations.get(ticket.id)!,'send',entry.text,`deliver:${entry.id}`,{caller:'user'});
+      const latest=this.store.getTask(proxy.id)!;this.store.updateTask(proxy.id,{extra:{...latest.extra,delegationPendingControls:[]}});
+    }
+    if(operation==='remove')await clearBotTaskHistory(this.store,{conversationId:proxy.conversationId,taskId:proxy.id,requestId:messageId});
+    const result={accepted:true,taskId:proxy.id,status:this.store.getTask(proxy.id)?.status,meaning:cancel?'已停止此委派及其相关任务。':operation==='pause'?'已暂停，计时冻结。':'已沿原任务恢复。'};
+    this.store.setMetadata(key,JSON.stringify({fingerprint,result}));this.changed(proxy.conversationId);this.changed(ticket.peerConversationId);this.maintainSafely();return result;
+  }
+  /** One bounded event-driven reminder after an actual Router turn. This is
+   * delivery recovery, never a new task, synthetic result, timer or self-chat. */
+  private remindDelegationReturn(event:BotEvent):void{
+    const ticket=this.delegations.forEvent(event);if(!ticket||ticket.state!=='active')return;
+    this.delegations.assertActive(ticket);
+    const tasks=this.delegations.tasks(ticket.id);if(!tasks.length||tasks.some(task=>!['succeeded','failed'].includes(task.status)||task.extra.removedAt||task.extra.humanStopped))return;
+    const planIds=[...new Set(tasks.map(task=>task.extra.workflowId).filter((id):id is string=>typeof id==='string'))];
+    if(planIds.some(id=>this.workflows.status(event,id).plans.some(plan=>!['completed','blocked'].includes(plan.state))))return;
+    const key=`delegation-return-reminders:${ticket.id}`,count=Number(this.store.getMetadata(key)??0);
+    if(!Number.isSafeInteger(count)||count>=2)return;
+    const task=tasks.at(-1)!,source=this.store.getEvent(task.sourceEventId)!;
+    this.store.taskTransaction(()=>{
+      this.store.enqueueTaskNotice({conversationId:ticket.peerConversationId,senderId:'task-service',senderName:'协作交付',source:'task',
+        sourceMessageId:`delegation-return-reminder:${ticket.id}:${count+1}`,recipientIds:[ticket.recipientId],kind:'task_done',
+        content:'正式伙伴委派的实际Worker已返回，原用户聊天尚未收到交付。请核验这些真实结果后调用companion_delegation.result；省略attachmentIds会交回本委派Worker已发布的成果文件。普通正文或message_peer不完成交付，不另派任务，不将其他聊天带入。',
+        correlationId:ticket.correlationId,causationId:source.id,payload:{taskId:task.id,attemptId:task.attemptId,hop:Math.min(5,causalHop(event)+1)}});
+      this.store.setMetadata(key,String(count+1));
+    });this.scheduler.wake();this.changed(ticket.peerConversationId);
+  }
+  private refreshDelegations():void{
+    const rows=this.store.taskTransaction(sql=>sql.prepare("SELECT id,rowid AS seq FROM bot_delegations WHERE rowid>? AND json_extract(record_json,'$.state')<>'completed' ORDER BY rowid LIMIT 32").all(this.delegationCursor)) as Array<{id:string;seq:number}>;
+    this.delegationCursor=rows.at(-1)?.seq??0;
+    for(const row of rows){const ticket=this.delegations.get(row.id)!,proxy=this.store.getTask(ticket.proxyTaskId);if(!proxy)continue;
+      const needsCleanup=ticket.state==='cancelled'&&this.delegations.tasks(ticket.id).some(task=>!['succeeded','failed','cancelled'].includes(task.status));
+      let invalid=false;if(ticket.state==='active'&&proxy.status!=='paused')try{this.delegations.assertActive(ticket);}catch{invalid=true;}
+      if(needsCleanup||invalid){if(this.delegationCleanup.size<4&&!this.delegationCleanup.has(ticket.id)){
+        this.delegationCleanup.add(ticket.id);void this.controlDelegation(ticket,'cancel',undefined,`host-close:${ticket.id}`,{caller:'user'})
+          .catch(error=>this.options.report?.(error)).finally(()=>this.delegationCleanup.delete(ticket.id));}continue;}
+      if(ticket.state!=='active'||proxy.status==='paused'||proxy.extra.cancelRequested)continue;
+      const tasks=this.delegations.tasks(ticket.id),active=tasks.find(task=>task.status==='running')??tasks.find(task=>task.status==='waiting')??tasks.find(task=>task.status==='paused');
+      const question=active&&this.taskRuntime.attention(active.id),questionText=question?.state==='queued'?question.questions.map(item=>item.question).join('\n').slice(0,4000):undefined;
+      const progress={phase:active?.status==='paused'?'paused':active?.status==='waiting'?'waiting':active?'running':'queued',
+        detail:`${this.store.getCompanion(ticket.recipientId)?.name??'协作伙伴'} · ${tasks.filter(task=>task.status==='succeeded').length}/${tasks.length} 个执行任务已完成${questionText?'，需要补充信息：'+questionText:tasks.length&&!active?'，等待伙伴交回成果。':'。'}`};
+      if(JSON.stringify(proxy.extra.progress)===JSON.stringify(progress))continue;
+      this.store.updateTask(proxy.id,{status:active?.status==='paused'?'paused':active?.status==='waiting'?'waiting':tasks.length?'running':'queued',...(questionText?{summary:questionText}:proxy.extra.delegationQuestionId?{summary:''}:{}),extra:{...proxy.extra,progress,
+        delegationQuestionId:questionText?question!.id:undefined,
+        ...(active?.status==='paused'?{pauseOrigin:active.extra.pauseOrigin??'router'}:{})}});this.changed(proxy.conversationId);
+      if(questionText){const source=this.store.getEvent(ticket.sourceEventId)!;this.store.enqueueTaskNotice({conversationId:proxy.conversationId,senderId:'task-service',senderName:'协作进展',source:'task',
+        sourceMessageId:`delegation-question:${ticket.id}:${question!.id}`,recipientIds:[proxy.companionId],kind:'task_progress',content:`协作伙伴需要原任务的补充信息：\n${questionText}\n已有事实可通过companion_delegation.send交给对方主脑；缺少用户偏好或授权再询问用户。`,
+        correlationId:ticket.correlationId,causationId:source.id,payload:{taskId:proxy.id,delegationId:ticket.id,delegationTaskId:active!.id,delegationQuestionId:question!.id,hop:1}});this.scheduler.wake();}
+    }
+  }
   private launchTask(task: BotTask): void {
+    if (task.extra.delegationProxy === true) return; // Its real Workers belong to the receiving companion.
     const resources = new Set([...this.taskRuns.keys(), ...this.taskPreparations.keys()]).size;
     if (this.closed || this.taskRuns.has(task.id) || this.taskPreparations.has(task.id) || resources >= MAX_WORKER_RUNS || task.extra.cancelRecoveryPaused === true
       || task.extra.pauseRecoveryPaused === true && !task.extra.cancelRequested || !['queued', 'running', 'waiting', 'paused', 'unknown'].includes(task.status)
@@ -1535,7 +1796,7 @@ export class BotService {
         const proof = await abortable(this.options.brain.cancelDurable({ role: 'worker', workerAccess: 'full', laneId: `worker-${task.id}`, eventId: `work-${task.id}`,
           cwd: this.taskWorkdir({ ...task, extra: { ...task.extra, workspaceLayout: control.workspaceLayout ?? task.extra.workspaceLayout } }, source.securityDomainId), system: workerSystem,
           model: { apiFormat: 'openai_chat', model: 'cancel-only', baseUrl: 'http://127.0.0.1:1', apiKey: 'cancel-only' }, tools: [],
-          callback: await this.toolServer.forWorker(`worker-${task.id}`, `work-${task.id}`), signal }, control.kind === 'pause'), signal);
+          callback: await this.toolServer.forWorker(`worker-${task.id}`, `work-${task.id}`), workerTools, signal }, control.kind === 'pause'), signal);
         if (this.closed) return;
         const current = this.store.getTask(taskId), latest = current?.extra.executorControl as ExecutorControl | undefined;
         if (!current || latest?.requestedAt !== control.requestedAt || latest.kind !== control.kind) return;
@@ -1644,8 +1905,7 @@ export class BotService {
       system: workerSystem,
       model: workerModel, tools: [], callback: await this.toolServer.forWorker(`worker-${task.id}`, `work-${task.id}`), signal };
     signal.throwIfAborted();
-    const workerTools = [{ name: 'worker_chat_send_file', description: '将自己任务工作区中的实际产物文件发送到原委派聊天。只用任务内真实相对路径，成功回执表示已发送，不要重复发送；不代表整个任务完成。',
-      parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1, maxLength: 32768 }, caption: { type: 'string', maxLength: 24000 } }, required: ['path'], additionalProperties: false } }];
+
     if (current.status === 'waiting' && !this.taskRuntime.hasReadyAnswer(task.id)) return;
     const pending = this.taskRuntime.pendingEffects(task.id);
     if (pending.length) {
@@ -1667,7 +1927,7 @@ export class BotService {
     }
     signal.throwIfAborted();
     current = this.store.getTask(task.id); if (!current || current.status === 'paused' || ['succeeded', 'failed', 'cancelled'].includes(current.status) || current.extra.cancelRequested || current.extra.pauseRequested) return;
-    if (current.extra.nativeAttempted !== true && !current.extra.workerPrompt) {
+    if (current.extra.nativeAttempted !== true && (!current.extra.workerPrompt || current.extra.workerPromptVersion !== 2)) {
       const attachmentIds = Array.isArray(current.extra.attachmentIds) ? current.extra.attachmentIds as string[] : [];
       const inventory = await this.verifiedAttachmentFiles(source, attachmentIds, Number(current.extra.handoffThroughSequence ?? source.sourceMessageSequence), signal);
       const files = [];
@@ -1678,27 +1938,24 @@ export class BotService {
       if (current.extra.cancelRequested || this.store.taskSourcesWithdrawn(task.id)) throw new Error('任务输入来源已撤回或任务已停止。');
       const inputFiles = files.map(file => ({ ...botHandoffFile(file), relativePath: file.relativePath }));
       const handedFiles = [...inputFiles, ...inventory.filter(file => file.analysisBlocked)];
-      // Forward the actual source instead of replacing it with a router-written
-      // plan. Large originals are read from the task's own verified input file.
+      // Mirror the task card, not the router's conversational context. Source
+      // event IDs and the full chat remain in the host store for provenance.
       const sourceDirectory = path.join(cwd, '.worldlinebox'); await mkdir(sourceDirectory, { recursive: true });
       signal.throwIfAborted();
-      const sourcePath = path.join(sourceDirectory, 'request-and-context.json');
+      const sourcePath = path.join(sourceDirectory, 'task-input.json');
       const { assertBotMediaPhysicalPath } = await import('./media-service'); await assertBotMediaPhysicalPath(sourceDirectory);
       signal.throwIfAborted();
-      const originalContent = this.store.getMessage(source.sourceMessageRecordId)?.content ?? source.content;
-      const context = Array.isArray(current.extra.handoffMessages) ? current.extra.handoffMessages as BotHandoffMessage[] : [];
-      const original = JSON.stringify({ originalRequest: { senderName: source.senderName, occurredAt: botLocalTimestamp(source.occurredAt), content: originalContent },
-        context: context.map(({ senderName, occurredAt, content }) => ({ senderName, occurredAt, content })), files: botTaskFileEvidence(handedFiles) });
+      const original = JSON.stringify({ requirements: task.goal, files: botTaskFileEvidence(handedFiles) });
       try { await writeFile(sourcePath, original, { encoding: 'utf8', flag: 'wx' }); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
         await assertBotMediaPhysicalPath(sourcePath);
         if (!(await lstat(sourcePath)).isFile() || await readFile(sourcePath, 'utf8') !== original) throw new Error('任务原始请求副本与耐久来源不一致。', { cause: error });
       }
-      const sourceRequest = { path: sourcePath, relativePath: '.worldlinebox/request-and-context.json', sha256: digest(original), eventId: source.id };
+      const sourceRequest = { path: sourcePath, relativePath: '.worldlinebox/task-input.json', sha256: digest(original), eventId: source.id };
       signal.throwIfAborted();
       current = this.store.updateTask(task.id, { extra: { ...current.extra, inputFiles, sourceRequest,
-        workerPrompt: buildBotTaskPrompt({ original: { content: originalContent }, goal: task.goal, context, files: handedFiles, sourcePath }) } });
+        workerPromptVersion: 2, workerPrompt: buildBotTaskPrompt({ goal: task.goal, files: handedFiles, sourcePath }) } });
     }
     signal.throwIfAborted();
     this.store.updateTask(task.id, { status: 'running', error: '', extra: { ...current.extra, nativeAttempted: true, turnOutcome: undefined } });
@@ -1831,7 +2088,7 @@ export class BotService {
       { conversationId: task.conversationId, senderId: 'task-service', senderName: '任务回执', source: 'task',
       sourceMessageId: `task-result:${task.id}:${task.attemptId}${typeof task.extra.taskContinuationId === 'string' ? ':' + digest(task.extra.taskContinuationId).slice(0, 24) : ''}`, recipientIds: [task.companionId], kind: 'task_done',
       content: `任务 ${task.id} 状态：${status}\n${text.slice(0, 16000)}${text.length > 16000 ? '\n[执行结果尚有后文，完整原文已保存在任务中；用dsh_task_result_read分页读取，不把摘录当作全部交付。]' : ''}${error ? `\n失败原因：${error.slice(0, 2000)}` : ''}${this.store.publicationsForTask(task.id).length ? '\n已实际发送的媒体回执：' + JSON.stringify(this.store.publicationsForTask(task.id)) : ''}`, correlationId: source.correlationId, causationId: source.id,
-      payload: { taskId: task.id, attemptId: task.attemptId, hop: derivedCause(source).hop } });
+      payload: { taskId: task.id, attemptId: task.attemptId, ...(typeof task.extra.workflowId === 'string' ? { planId: task.extra.workflowId } : {}), hop: derivedCause(source).hop } });
     this.scheduler.wake();
   }
   private suppressStoppedTaskNotices(taskId: string, controllingEventId?: string): void {
@@ -1854,6 +2111,10 @@ export class BotService {
       }
     }
     if (operation === 'cancel' && !userControl && !routerControl) throw new Error('主脑只能管理当前聊天中自己的有效任务。');
+    if (task.extra.delegationProxy === true && typeof task.extra.externalDelegationId === 'string') {
+      const ticket=this.delegations.get(task.extra.externalDelegationId);if(!ticket)throw new Error('委派缺少持久记录。');
+      return this.controlDelegation(ticket,operation,text,messageId,input);
+    }
     if (!['cancel', 'remove'].includes(operation) && this.store.taskSourcesWithdrawn(task.id)) throw new Error('任务输入的授权来源已撤回，不能继续使用其摘要或文件。');
     if (operation === 'remove') {
       if (!userControl && !routerControl) throw new Error('主脑只能清理当前聊天中自己的任务记录。');
@@ -1889,7 +2150,12 @@ export class BotService {
         if (!userControl && (current.extra.pauseOrigin !== 'router' || current.extra.userPaused === true || current.extra.humanStopped === true)) throw new Error('用户暂停的任务只能由用户明确恢复。');
         this.store.taskTransaction(() => {
           const control = current.extra.executorControl as ExecutorControl | undefined;
+          const pending=Array.isArray(current.extra.pendingControls)?current.extra.pendingControls as Array<{id:string;text:string}>:[];
+          const resumed={id:`resume-${digest(messageId)}`,text:'宿主最新控制事件：用户已在此前补充信息之后明确要求继续原任务。保留此前补充的业务事实；其中“保持暂停、等待明确继续”等旧控制条件已经被本次恢复替代。只继续原授权范围内尚未完成的工作，不重复已执行操作；重新核验真实成果后报告。'};
+          const combined=[...pending.map(entry=>entry.text),resumed.text].join('\n\n');
+          const pendingControls=current.extra.nativeAttempted!==true&&!pending.length?[]:combined.length<=16000?[{id:resumed.id,text:combined}]:[...pending,resumed];
           this.store.updateTask(task.id, { status: 'queued', extra: { ...current.extra, userPaused: false, pauseRequested: false, pauseRecoveryPaused: false, pauseRecoveryAttempts: 0, retryAt: 0,
+            pendingControls,
             pauseRequestedAt: undefined, pausedAt: undefined, retryAttempts: 0, executorInterruption: undefined,
             hostResumeRequested: userControl,
             ...(control && control.state !== 'acknowledged' ? { executorControl: { ...control, state: 'pending', attempts: 0, retryAt: 0 } } : {}),
@@ -1952,16 +2218,21 @@ export class BotService {
       }
       const reopening = ['succeeded', 'failed'].includes(current.status);
       if ((!['queued', 'running', 'waiting', 'paused'].includes(current.status) && !reopening) || current.extra.cancelRequested || current.extra.humanStopped) throw new Error('任务已停止或待核实，无法追加指导。');
-      if (reopening && input.caller !== 'user' && input.source !== 'user') throw new Error('已结束任务需要用户明确跟进，自动事件不能重新唤醒。');
+      const coordinationEvent = input.sourceEventId ? this.store.getEvent(input.sourceEventId) : undefined;
+      const workflowRework = reopening && !userControl && coordinationEvent && this.workflows.canCoordinate(coordinationEvent, current);
+      if (reopening && !userControl && !workflowRework) throw new Error('已结束任务需要用户明确跟进，自动事件不能重新唤醒。');
       if (controls.length >= 32) throw new Error('任务待投递指导已满，请等待执行器接收。');
       if (reopening) {
         this.companionRuntime.validateTask(current);
-        this.store.reopenTask(task.id, { id: messageId, text: content });
-        this.store.setMetadata(key, JSON.stringify({ fingerprint, state: 'continuation' }));
+        this.store.taskTransaction(() => {
+          if (workflowRework) this.workflows.rework(coordinationEvent, current, messageId);
+          this.store.reopenTask(task.id, { id: messageId, text: content });
+          this.store.setMetadata(key, JSON.stringify({ fingerprint, state: 'continuation' }));
+        });
         this.maintainSafely(); this.changed(task.conversationId);
-        return { taskId: task.id, accepted: true, meaning: '用户的后续指导已保存，沿原任务、原授权和会话继续；不会重发原始执行。' };
+        return { taskId: task.id, accepted: true, meaning: '后续指导已保存，沿原任务、原授权和会话继续；不会重发原始执行。' };
       }
-      if ((current.status === 'waiting' || current.status === 'paused' && current.extra.pauseOrigin === 'router' && current.extra.userPaused !== true) && current.extra.turnOutcome) {
+      if (current.status === 'waiting' && current.extra.turnOutcome) {
         // The previous native segment has a terminal receipt. Reopen it with
         // a new guidance receipt, never by replaying the original work input.
         this.store.updateTask(task.id, { status: 'queued', extra: { ...current.extra,
@@ -2014,6 +2285,7 @@ export class BotService {
       meaning: result.status === 'cancelled' ? '已停止。' : '任务此前已经结束，保留真实执行结果。' };
   }
   private async controlQueue(conversationId: string, operation: 'cancel_queued' | 'cancel_all' | 'clear_finished', requestId: string, companionId?: string, controllingEventId?: string): Promise<unknown> {
+    if (operation === 'cancel_all') this.workflows.cancelScope(conversationId, companionId);
     if (!this.store.getConversation(conversationId)) throw new Error('聊天不存在。');
     if (operation === 'clear_finished') { const result = await clearBotTaskHistory(this.store, { conversationId, requestId, companionId }); this.changed(conversationId); return result; }
     const key = `task-queue-control:${conversationId}:${requestId}`, fingerprint = digest(JSON.stringify({ operation, companionId }));
@@ -2093,6 +2365,7 @@ export class BotService {
   }
   private async maintain(): Promise<void> {
     if (this.closed) return;
+    this.refreshDelegations();
     this.reconcileFinishedTasks();
     this.publishQueueBatches();
     const cleanup = this.store.taskTransaction(sql => sql.prepare(`SELECT id FROM bot_tasks WHERE json_extract(extra_json,'$.executorControl.state')='pending'

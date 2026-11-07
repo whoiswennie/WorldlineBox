@@ -64,9 +64,9 @@ async function copyTaskInput(source:string,destination:string,signal?:AbortSigna
   if(!complete&&identity)try{const current=await lstat(destination);if(current.dev===identity.dev&&current.ino===identity.ino&&!current.isSymbolicLink())await rm(destination,{force:true});}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')fail(error);}
   if(failed)throw failure;
 }
-async function atomicManifest(value:string,manifest:Manifest){
+async function atomicManifest(value:string,manifest:Manifest,signal?:AbortSignal){
   const temporary=value+'.'+randomUUID()+'.tmp';
-  try{await writeFile(temporary,JSON.stringify(manifest,null,2)+'\n',{flag:'wx',mode:0o600});await rename(temporary,value);}finally{await rm(temporary,{force:true});}
+  try{signal?.throwIfAborted();await writeFile(temporary,JSON.stringify(manifest,null,2)+'\n',{flag:'wx',mode:0o600});signal?.throwIfAborted();await rename(temporary,value);}finally{await rm(temporary,{force:true});}
 }
 export async function inspectBotSticker(value:string):Promise<{mimeType:string;animated:boolean;width?:number;height?:number}> {
   if((await stat(value)).size>BOT_MEDIA_PREVIEW_LIMITS.image)throw new Error('表情图片不能超过 200MB，更大的文件请作为普通附件导入并使用系统软件打开。');
@@ -223,6 +223,64 @@ export class BotMediaService {
           const preview=declaredMime.startsWith('image/')?await this.attachmentImagePreview(home,object.object,object.size).catch(()=>({})):{};
           item={...object,mimeType:declaredMime,...preview,id,name:fileName(source),originalName:fileName(source),url:'',kind:'file'};manifest.media.push(item);}result.push(item);}
       await atomicManifest(path.join(home,'manifest.json'),manifest);return result.map(item=>this.reference(item,conversationId));
+    });
+  }
+  /** Host-only object transfer, not a conversation or model-access grant.
+   * The caller must bind the selected source message/grants to its delivery.
+   * Snapshot the source before taking the destination lock so simultaneous
+   * A -> B and B -> A transfers cannot wait on each other's queue. */
+  public async transferToConversation({sourceConversationId,targetConversationId,attachmentIds,signal}:{sourceConversationId:string;targetConversationId:string;attachmentIds:string[];signal?:AbortSignal}):Promise<BotMediaRef[]>{
+    signal?.throwIfAborted();this.scope(sourceConversationId);this.scope(targetConversationId);
+    if(!Array.isArray(attachmentIds)||!attachmentIds.length||attachmentIds.length>64||attachmentIds.some(id=>!safeId(id)))throw new Error('一次请选择 1 至 64 个有效附件 ID。');
+    const selected=await this.serial(sourceConversationId,async(manifest,home)=>{
+      const items:StoredMedia[]=[];
+      for(const id of new Set(attachmentIds)){
+        signal?.throwIfAborted();const item=manifest.media.find(item=>item.id===id);if(!item)throw new Error('附件不属于源会话。');
+        if(item.storage==='external'||item.analysisBlocked||botMediaPreviewPolicy({name:item.originalName||item.name,mimeType:item.mimeType,size:item.size}).previewEligibility==='external-only')throw new Error('大媒体或外部附件不可自动跨会话转存，请由用户重新提供文件。');
+        await this.verifyObject(home,item,true,signal);
+        if(item.previewObject)await this.verifyObject(home,{object:item.previewObject,sha256:item.previewSha256,size:item.previewSize} as StoredMedia,true,signal);
+        items.push(structuredClone(item));
+      }
+      return{items,home};
+    },signal);
+    signal?.throwIfAborted();if(sourceConversationId===targetConversationId)return selected.items.map(item=>this.reference(item,sourceConversationId));
+    // Cancellation is checked through the manifest's atomic rename. Once that
+    // commit succeeds, publish the same committed snapshot to the in-memory
+    // index even if a late cancellation races with the completed operation.
+    return this.serial(targetConversationId,async(manifest,home)=>{
+      signal?.throwIfAborted();const created:Array<{file:string;dev:number;ino:number}>=[];
+      const copy=async(source:StoredMedia,object:string)=>{
+        const original=await this.verifyObject(selected.home,source,true,signal),target=path.join(home,object);
+        const entry={object,sha256:source.sha256,size:source.size} as StoredMedia;
+        try{await lstat(target);await this.verifyObject(home,entry,true,signal);}
+        catch(error){
+          if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+          signal?.throwIfAborted();await copyTaskInput(original,target,signal);
+          const identity=await lstat(target);created.push({file:target,dev:identity.dev,ino:identity.ino});
+          await this.verifyObject(home,entry,true,signal);
+        }
+        signal?.throwIfAborted();await this.verifyObject(selected.home,source,true,signal);
+      };
+      try{
+        const result:StoredMedia[]=[];
+        for(const source of selected.items){
+          signal?.throwIfAborted();const id='t_'+hash(JSON.stringify([sourceConversationId,source.id])),object='objects/'+source.sha256;
+          const existing=manifest.media.find(item=>item.id===id);
+          if(existing&&(existing.sha256!==source.sha256||existing.size!==source.size||existing.name!==source.name||existing.mimeType!==source.mimeType||existing.kind!==source.kind))throw new Error('目标会话的同名附件引用与源附件不一致。');
+          await copy(source,object);
+          if(source.previewObject)await copy({object:source.previewObject,sha256:source.previewSha256,size:source.previewSize} as StoredMedia,source.previewObject);
+          const item:StoredMedia={...source,id,object,storage:'managed',url:''};
+          if(existing)manifest.media[manifest.media.indexOf(existing)]=item;else manifest.media.push(item);
+          result.push(item);
+        }
+        signal?.throwIfAborted();await atomicManifest(path.join(home,'manifest.json'),manifest,signal);
+        return result.map(item=>this.reference(item,targetConversationId));
+      }catch(error){
+        // Only remove files created by this attempt, never an existing shared
+        // object or a path swapped to another inode while the copy was running.
+        for(const entry of created.reverse())try{const current=await lstat(entry.file);if(!current.isSymbolicLink()&&current.dev===entry.dev&&current.ino===entry.ino)await rm(entry.file,{force:true});}catch(cleanup){if((cleanup as NodeJS.ErrnoException).code!=='ENOENT')throw new AggregateError([error,cleanup],'跨会话附件转存清理失败。',{cause:cleanup});}
+        throw error;
+      }
     });
   }
   /** Bytes originate in Main's native clipboard, never a renderer path or URL. */

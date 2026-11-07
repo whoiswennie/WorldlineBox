@@ -318,7 +318,32 @@ describe('WorldlineBox MCP tools/call → Gateway', () => {
     expect(worker.commands).toHaveLength(0);
   });
 
-  it('normalizes toolbar-style asset.search query strings for MCP like Desktop Console', async () => {
+  it.each([
+    {
+      query: 'name:sunny',
+      root: { kind: 'TERM', field: 'filename', match: 'contains', value: 'sunny', quoted: false },
+    },
+    {
+      query: '(tag=角色 | tag=生物) name:"英雄概念" -tag=草稿',
+      root: {
+        kind: 'AND',
+        children: [
+          {
+            kind: 'OR',
+            children: [
+              { kind: 'TERM', field: 'tags', match: 'exact_tag', value: '角色', quoted: false },
+              { kind: 'TERM', field: 'tags', match: 'exact_tag', value: '生物', quoted: false },
+            ],
+          },
+          { kind: 'TERM', field: 'filename', match: 'contains', value: '英雄概念', quoted: true },
+          {
+            kind: 'NOT',
+            child: { kind: 'TERM', field: 'tags', match: 'exact_tag', value: '草稿', quoted: false },
+          },
+        ],
+      },
+    },
+  ])('normalizes toolbar-style asset.search query "$query" for MCP like Desktop Console', async ({ query, root }) => {
     const worker = new RecordingWorker({
       ok: true,
       type: 'asset.search.result',
@@ -338,7 +363,7 @@ describe('WorldlineBox MCP tools/call → Gateway', () => {
     });
     const result = await callWorldlineBoxMcpTool({
       toolName: 'worldlinebox_asset_search',
-      arguments: { libraryId: 'library-1', query: 'name:sunny', limit: 50 },
+      arguments: { libraryId: 'library-1', query, limit: 50 },
       context: mcpContext(readExposure),
       exposure: readExposure,
       gateway,
@@ -349,7 +374,8 @@ describe('WorldlineBox MCP tools/call → Gateway', () => {
         type: 'asset.search',
         libraryId: 'library-1',
         query: {
-          clauses: [{ field: 'filename', values: ['sunny'], exclude: false }],
+          clauses: [],
+          expression: { version: 1, root },
         },
         limit: 50,
       }),

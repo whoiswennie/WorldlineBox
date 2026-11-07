@@ -33,6 +33,8 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const terminal = (state: string) => ['succeeded', 'failed', 'cancelled'].includes(state);
 const safeRead = (call: BotToolCall) => ['agent_capabilities', 'agent_state', 'agent_memory_scopes', 'memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
+  || call.name === 'dsh_plan' && call.args.operation === 'status'
+  || call.name === 'companion_delegation' && call.args.operation === 'status'
   || call.name === 'memory_maintenance' && call.args.operation === 'status'
   || call.name === 'dsh_task_result_read' || call.name === 'dsh_task_control' && ['status', 'list'].includes(String(call.args.operation)) || call.name === 'world' && call.args.operation === 'observe';
 const capacity = () => Object.assign(new Error('当前主脑输入超过有界上下文容量，请缩小本次输入或工具查询。'), { code: 'BOT_CONTEXT_CAPACITY' });
@@ -233,8 +235,11 @@ export class BotAppBrain {
     if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/bot/tool' || url.username || url.password || url.search || url.hash) throw new Error('主脑工具回调不是受信任的本机入口。');
     const response = await this.fetchFn(url, { method: 'POST', redirect: 'error', signal,
       headers: { 'content-type': 'application/json', authorization: `Bearer ${input.callback.token}` }, body: JSON.stringify(call) });
-    if (!response.ok) { void response.body?.cancel().catch(() => undefined); throw new Error(`工具回调未确认成功（HTTP ${response.status}）。`); }
     const text = await response.text(); if (text.length > 1024 * 1024) throw new Error('工具回执超过持久化容量。');
+    if (!response.ok) {
+      let detail = ''; try { const value = row(JSON.parse(text)); if (typeof value.error === 'string') detail = value.error.slice(0, 1200).replaceAll(input.model.apiKey, '<redacted>').replace(/Bearer\s+\S+/giu, 'Bearer <redacted>'); } catch { /* Preserve an unstructured transport error without echoing it. */ }
+      throw new Error(`工具回调未确认成功（HTTP ${response.status}）。${detail}`);
+    }
     const value = row(JSON.parse(text)); if (value.ok !== true) throw new Error(typeof value.error === 'string' ? value.error : '工具回执没有确认成功。');
     return value.result;
   }

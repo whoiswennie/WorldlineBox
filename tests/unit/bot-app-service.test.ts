@@ -258,24 +258,71 @@ it('dispatches only an explicit dsh_task to the worker and consumes its actual t
   expect(receipts.some(row => JSON.stringify(JSON.parse(row.value)).includes(task.id))).toBe(true);
   expect(f.host).not.toHaveBeenCalled(); expect(f.failures).toEqual([]);
 }, 20000);
-it('delivers a host-bound chat followup to the existing worker without rerouting it through the main model', async () => {
-  const f = await fixture({ workerWaitFirst: true }); await f.send('委派一个测试任务。', 'followup-original');
+it('routes a host-bound chat followup through Router before explicitly guiding the existing worker', async () => {
+  let selectedId = '', guidanceStep = 0;
+  const guidance = '保留原目标，请核验并提交完成报告。';
+  const f = await fixture({ workerWaitFirst: true, chatReply: body => {
+    if (!selectedId || !body.messages.some(message => text(message.content).includes(guidance))) return undefined;
+    if (guidanceStep++ === 0) return { name: 'dsh_task_control', args: { operation: 'send', taskId: selectedId, text: guidance } };
+    if (guidanceStep === 2) return { name: 'dsh_task_control', args: { operation: 'resume_paused', taskId: selectedId } };
+    return '已将指导交付给你选中的原任务，并按你的完成要求继续执行。';
+  } }); await f.send('委派一个测试任务。', 'followup-original');
   const work = await until(async () => { const work = f.service.store.listTasks(f.conversationId)[0]; return work?.status === 'paused' && work.extra.turnOutcome ? work : undefined; });
+  selectedId = work.id;
   const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: 'bound-guidance',
     content: '保留原目标，请核验并提交完成报告。', replyToTaskId: work.id });
   const first = sent.messageId!;
   expect((await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: 'bound-guidance',
     content: '保留原目标，请核验并提交完成报告。', replyToTaskId: work.id })).messageId).toBe(first);
   await until(async () => f.service.store.getTask(work.id)?.status === 'succeeded' ? true : undefined);
-  expect(f.service.store.listTasks(f.conversationId)).toHaveLength(1); expect(f.workerRuns).toHaveLength(2);
-  expect(f.workerRuns[1]).toMatchObject({ laneId: f.workerRuns[0]!.laneId, eventId: f.workerRuns[0]!.eventId,
-    taskContinuation: { text: '保留原目标，请核验并提交完成报告。' } });
+  expect(f.service.store.listTasks(f.conversationId)).toHaveLength(1);
+  expect(f.workerRuns.length).toBeGreaterThanOrEqual(2); expect(f.workerRuns.length).toBeLessThanOrEqual(3);
+  // Native attachment/resume and the explicit pending guidance can occupy
+  // separate durable segments; neither may create a different task/event.
+  for (const run of f.workerRuns.slice(1)) expect(run).toMatchObject({ laneId: f.workerRuns[0]!.laneId, eventId: f.workerRuns[0]!.eventId });
+  const delivered = f.workerRuns.filter(run => run.taskContinuation?.text.includes(guidance)); expect(delivered).toHaveLength(1);
+  expect(delivered[0]!.taskContinuation!.text.indexOf('宿主最新控制事件')).toBeGreaterThan(delivered[0]!.taskContinuation!.text.indexOf(guidance));
   const source = f.service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_inbox WHERE source_record_id=?').get(first)) as { id: string };
-  expect(f.observedTriggers.some(trigger => trigger.eventId === source.id)).toBe(false);
+  expect(f.observedTriggers.some(trigger => trigger.eventId === source.id)).toBe(true);
   expect(f.service.store.taskTransaction(sql => sql.prepare('SELECT state FROM bot_task_followups WHERE task_id=? AND event_id=?').get(work.id, source.id))).toMatchObject({ state: 'delivered' });
   const receipt = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.messages.find(message => message.id === first)?.taskFollowup;
   expect(receipt).toMatchObject({ taskId: work.id, state: 'delivered', title: '应用主脑委派验收' });
   expect(f.failures).toEqual([]);
+}, 20000);
+
+it('lets Router interpret selected-task pause and supplement without automatically steering or resuming its worker', async () => {
+  let selectedId = '';
+  const pauseText = '暂停我选中的这个任务，保留进度，先不要继续。';
+  const supplementText = '仅补充：最终标题改为橙色。继续保持暂停，别恢复。';
+  const resumeText = '现在明确继续原任务，保留橙色标题这个补充，不要另建任务。';
+  const f = await fixture({ workerWaitFirst: true, chatReply: body => {
+    if (!selectedId) return undefined;
+    const envelope = body.messages.filter(message => message.role === 'user').map(message => {
+      try { return JSON.parse(text(message.content)) as { trigger?: { content?: string; taskFollowup?: { taskId: string } } }; } catch { return undefined; }
+    }).findLast(value => value?.trigger?.taskFollowup?.taskId === selectedId);
+    if (!envelope) return undefined;
+    if (body.messages.at(-1)?.role === 'tool') return '已按你的意思更新原任务。';
+    return { name: 'dsh_task_control', args: envelope.trigger?.content === pauseText ? { operation: 'pause', taskId: selectedId }
+      : envelope.trigger?.content === resumeText ? { operation: 'resume_paused', taskId: selectedId }
+        : { operation: 'send', taskId: selectedId, text: supplementText } };
+  } });
+  await f.send('委派一个测试任务。', 'bound-control-original');
+  const work = await until(async () => { const task = f.service.store.listTasks(f.conversationId)[0]; return task?.status === 'paused' && task.extra.turnOutcome ? task : undefined; }); selectedId = work.id;
+  for (const [requestId, content] of [['bound-pause', pauseText], ['bound-paused-supplement', supplementText]]) {
+    const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: requestId!, content: content!, replyToTaskId: work.id });
+    expect(sent.ok).toBe(true);
+    const source = f.service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_inbox WHERE source_record_id=?').get(sent.messageId!)) as { id: string };
+    await until(async () => f.service.store.getEvent(source.id)?.status === 'done' ? true : undefined);
+    expect(f.observedTriggers.some(trigger => trigger.eventId === source.id)).toBe(true);
+    expect(f.service.store.getTask(work.id)).toMatchObject({ status: 'paused', extra: { userPaused: true } });
+    expect(f.workerRuns).toHaveLength(1);
+  }
+  const resumed = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, requestId: 'bound-explicit-resume', content: resumeText, replyToTaskId: work.id });
+  expect(resumed.ok).toBe(true); await until(async () => f.service.store.getTask(work.id)?.status === 'succeeded' ? true : undefined);
+  const delivered = f.workerRuns.find(run => run.taskContinuation?.text.includes(supplementText))!.taskContinuation!.text;
+  expect(delivered).toContain('宿主最新控制事件'); expect(delivered.indexOf('宿主最新控制事件')).toBeGreaterThan(delivered.indexOf(supplementText));
+  expect(delivered).toContain('旧控制条件已经被本次恢复替代');
+  expect(f.service.store.listTasks(f.conversationId)).toHaveLength(1); expect(f.failures).toEqual([]);
 }, 20000);
 
 it('keeps App chat independent while the DSH Host starts, fails and later becomes ready', async () => {

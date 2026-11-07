@@ -103,9 +103,11 @@ it('persists companion stop, blocks new turns, starts only the selected companio
 it('closing a companion pauses its actual tasks before stopping native, freezes time and resumes only on explicit task control', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-capabilities-'));
   let workerRuns = 0, nativeStopped = false;
+  const resumedSegments: BotDshRun[] = [];
   const brain = new Brain(async input => {
     if (input.role === 'worker') {
       workerRuns++;
+      resumedSegments.push(input);
       if (workerRuns === 1) await new Promise<void>((resolve, reject) => {
         if (input.signal?.aborted) reject(input.signal.reason);
         else input.signal?.addEventListener('abort', () => reject(input.signal?.reason), { once: true });
@@ -138,7 +140,10 @@ it('closing a companion pauses its actual tasks before stopping native, freezes 
   expect(workerRuns).toBe(1); expect(service.store.getTask(id)?.status).toBe('paused');
   await service.handle({ type: 'task.control', conversationId: room.id, taskId: id, requestId: 'resume-original', operation: 'resume_paused' });
   await waitFor(() => service.store.getTask(id)?.status === 'succeeded');
-  expect(workerRuns).toBe(2); expect(service.store.listTasks(room.id)).toHaveLength(1);
+  expect(workerRuns).toBeGreaterThanOrEqual(2); expect(workerRuns).toBeLessThanOrEqual(3);
+  for (const segment of resumedSegments) expect(segment).toMatchObject({ laneId: resumedSegments[0]!.laneId, eventId: resumedSegments[0]!.eventId });
+  expect(resumedSegments.filter(segment => segment.taskContinuation?.text.includes('宿主最新控制事件'))).toHaveLength(1);
+  expect(service.store.listTasks(room.id)).toHaveLength(1);
 });
 
 it('a stop interrupts a cold startup waiter immediately and cannot be undone by its late completion', async () => {

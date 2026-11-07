@@ -32,8 +32,13 @@ describe("a94 window background wiring", () => {
 });
 
 describe("a94 backdrop timing", () => {
-  it("doubles fade-out, hold and fade-in", () => {
+  it("retains the preview hold with a short color-only fade and respects reduced motion", () => {
     expect(APPEARANCE_ADJUST_SETTLE_MS).toBe(1200);
-    expect(css).toMatch(/\.dialog-backdrop\.app-settings-backdrop \{\s*transition:\s*background-color 1200ms/);
+    const backdrop = css.match(/\.dialog-backdrop\.app-settings-backdrop\s*\{([^}]*)\}/u)?.[1];
+    const transition = backdrop?.match(/transition:\s*([^;]+);/u)?.[1];
+    expect(transition).toMatch(/^background-color\s+\d+ms\s+ease$/u);
+    const fadeMs = Number(transition?.match(/(\d+)ms/u)?.[1]);
+    expect(fadeMs).toBeGreaterThan(0); expect(fadeMs).toBeLessThanOrEqual(200); expect(fadeMs).toBeLessThan(APPEARANCE_ADJUST_SETTLE_MS);
+    expect(css).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.dialog-backdrop\.app-settings-backdrop\s*\{\s*transition:\s*none;/u);
   });
 });

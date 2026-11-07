@@ -54,12 +54,19 @@ it('switches smart/global immediately, retains unrelated drafts and displays ind
   await mount(subject.api);
   const draftAddress = container!.querySelector<HTMLInputElement>('input[placeholder="http://127.0.0.1:7897"]')!;
   await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(draftAddress, 'http://127.0.0.1:9999'); draftAddress.dispatchEvent(new Event('input', { bubbles: true })); });
-  const select = [...container!.querySelectorAll<HTMLSelectElement>('select')].find(value => value.options[0]?.value === 'smart')!;
-  await act(() => { select.value = 'smart'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  const modeLabel = [...container!.querySelectorAll<HTMLLabelElement>('label')].find(label => label.textContent === '立即切换代理模式')!;
+  const select = document.getElementById(modeLabel.htmlFor) as HTMLButtonElement;
+  const chooseMode = async (value: 'smart' | 'global') => {
+    expect(select.getAttribute('role')).toBe('combobox'); await act(() => select.click());
+    const menu = document.getElementById(select.getAttribute('aria-controls')!)!;
+    await act(() => menu.querySelector<HTMLButtonElement>(`[role="option"][data-value="${value}"]`)!.click());
+    expect(select.getAttribute('data-value')).toBe(value); expect(select.getAttribute('aria-expanded')).toBe('false');
+  };
+  await chooseMode('smart');
   expect(subject.request).toHaveBeenCalledWith({ type: 'network.patch', patch: { proxyMode: 'custom', proxyRouting: 'smart' } });
   expect(draftAddress.value).toBe('http://127.0.0.1:9999');
   expect(container!.querySelector('[data-network-active]')!.textContent).toContain('智能代理');
-  await act(() => { select.value = 'global'; select.dispatchEvent(new Event('change', { bubbles: true })); });
+  await chooseMode('global');
   expect(subject.request).toHaveBeenCalledWith({ type: 'network.patch', patch: { proxyMode: 'custom', proxyRouting: 'global' } });
   expect(container!.querySelector('[data-pixiv-check="page"]')!.getAttribute('data-check-ok')).toBe('true');
   expect(container!.querySelector('[data-pixiv-check="image"]')!.textContent).toContain('CDN timed out');

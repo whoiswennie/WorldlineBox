@@ -217,13 +217,22 @@ describe('Desktop Console automation IPC', () => {
       libraryId,
       query: {
         clauses: [],
-        groups: [
-          [
-            { field: 'filename', values: ['Ser'], exclude: false },
-            { field: 'tags', values: ['y2k'], exclude: false },
-          ],
-          [{ field: 'author', values: ['Jane'], exclude: false }],
-        ],
+        expression: {
+          version: 1,
+          root: {
+            kind: 'OR',
+            children: [
+              {
+                kind: 'AND',
+                children: [
+                  { kind: 'TERM', field: 'filename', match: 'contains', value: 'Ser', quoted: false },
+                  { kind: 'TERM', field: 'tags', match: 'contains', value: 'y2k', quoted: false },
+                ],
+              },
+              { kind: 'TERM', field: 'author', match: 'contains', value: 'Jane', quoted: false },
+            ],
+          },
+        },
       },
       scopeMode: false,
       limit: 100,

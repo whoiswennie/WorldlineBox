@@ -52,7 +52,7 @@ WorldlineBox 面向用户的约定如下：
 
 这些措施使任务可以跨轮次、跨重启延续，但每次模型调用仍有上下文上限；压缩摘要也不能替代可核验原始记录。交接摘要应带来源、覆盖游标、省略标志和全文读取方式，不把摘要未提到的事情当作从未发生。
 
-WorldlineBox 已有对应机制：`src/main/companion-bot/app-brain.ts` 对完成历史轮次压缩并保留近期消息；`context.ts` 限制当前输入；`dsh-brain.ts:81-82` 保持 DSH 对原生历史及压缩的所有权。附件业务交接使用 `task-handoff.ts:13-32` 的核验绝对路径、原始要求、相关聊天和目标；附件字节或 base64 不应被重复塞进提示词。元数据有宿主管理用途，但应留在宿主记录，不成为无关的任务正文。
+WorldlineBox 已有对应机制：`src/main/companion-bot/app-brain.ts` 对完成历史轮次压缩并保留近期消息；`context.ts` 限制当前输入；`dsh-brain.ts` 保持 DSH 对原生历史及压缩的所有权。2026-11-07 起，`task-handoff.ts` 仅派发任务卡中的完整要求和所选附件绝对路径；Router 筛选必要上下文后写入要求，宿主不自动转发聊天或整个历史附件目录。附件字节或 base64 不应被重复塞进提示词。元数据留在宿主记录，不成为无关的任务正文。
 
 ## 插件配置隔离与会话工具选择的区别
 
@@ -99,3 +99,52 @@ WorldlineBox 已有对应机制：`src/main/companion-bot/app-brain.ts` 对完�
 7. 会话工具隔离、插件配置隔离、OS 访问范围分别验证，不互相冒充。
 
 原型研究与本项目实现依据分别如上；用户账号、第三方插件和真实 DSH 版本的验收结论应附对应运行证据，不能仅凭 Host fixture 推断。
+
+
+## 多 Worker 与多伙伴协作的耐久交接
+
+本轮增加 `workflow-runtime.ts` 与 `delegation-runtime.ts`。它们保存任务事实、依赖、来源及交付回执，不替 Router 做业务判断，也不把普通聊天升级为执行授权。
+
+- `dsh_plan` 最多八个阶段，拒绝循环和未知依赖。阶段只能绑定一个真实任务；直接前置必须成功、来源仍有效，且 Router 已读到当前结果才能派发下一阶段。真实 `task_done` 本身包含该任务的当前结果时，也可构成已读事实，不强迫冗余查询。
+- 前置任务产出文件时，`requireDependencyArtifacts` 要求为每个这样的前置阶段选择至少一份真实成果。文件先发布到当前聊天，后级 Worker 接收其核验副本的绝对路径；不得用抄写 JSON 代替原件，也不让后级搜索其他任务目录。纯文字依赖不强制制造文件。
+- 同计划尚待集成的前置任务最多自动返工两次。计划关闭、来源撤回、用户停止、前置失败或暂停均不能触发后续派发；无新事件不轮询自聊。
+- `companion_delegate` 将用户明确授权的独立子任务交给真实伙伴。宿主在原聊天创建可见的代理任务，在双方专属私聊复制显式选中的附件，创建可核实的窄委派凭据。代理任务不启动本地 Worker，不伪造原生执行；真正的 Workers 由接收伙伴的 Router 派发。
+- `companion_delegation.result` 只能交回本委派 Workers 已实际发布的成果；省略附件列表时选这些实际产物，不能回传同一伙伴私聊中其他任务的文件。文件跨房间拥有新 ID，字节和 SHA 保持一致，来源撤回可以传播到返回文件。发布、结果回执、代理终态和委派关闭同一事务提交，重试核对原参数指纹。
+- 接收方完成全部真实任务却仅发普通聊天时，宿主不会把聊天当交付。错误的 `message_peer` 返回正确交付入口；仍漏交付时，最多产生两条绑定原任务的宿主提醒。提醒不另开任务、不编造成果、不启动无限对话。
+- 当前轮自己刚发布的附件可立即继续使用：水位例外只包含该事件、该角色、该聊天的真实 publication，仍核验撤回血缘。其他后到消息和文件不因此进入冻结快照。
+- 原聊天整体停止仅撤销其委派及关联子任务，不停止接收伙伴无关的私聊、群聊或同 peer 房间的独立任务。暂停冻结计时；仅补充信息保留暂停，恢复之后按序交付业务补充和最新恢复事实，避免旧的“等我继续”覆盖新的恢复请求。
+
+`message.send(replyToTaskId)` 现在只绑定任务范围，文字意图仍交给真实 Router 解释；不能绕过 Router 将“暂停”“停止”或“只补充、不恢复”直接送成自动执行。原生暂停/恢复复用初次 Worker 工具目录，避免官方 DSH 以工具选择变更拒绝挂载。断线和恢复保持同一任务、原生 Session、事件与工作目录；未知外部副作用继续要求真实回执，不改成盲重试。
+
+委派追加指导当前支持文字；带新附件的跟进会明确拒绝并要求新授权的后续委派，不静默丢弃文件、不偷偷扩大原任务附件范围。
+
+## 五类真实复杂场景验收
+
+以下业务用例均使用配置中的官方 `api.deepseek.com`、OpenAI Chat Completions 协议 `deepseek-flash`，执行器为官方 DSH `0.2.2-rc.1`。Router 与 Worker 均为真实模型调用，没有脚本代写目标、计算报告或完成回执。
+
+| 场景 | 验收重点 | 本地证据目录末段 |
+| --- | --- | --- |
+| 私聊、多文件分析 | CSV、政策、区域映射、退款更正四文件；跨消息约束完整交接；只读、禁联网、隐私字段不输出；净额 207 | `multifile-real/worldlinebox-bot-real-multifile-I68Y7P` |
+| 单 Router、多 Workers | 独立金额核算与审计并行，等待两者成功及当前结果，再派集成 Worker；真实文件交接与净额复核 207 | `multifile-real/worldlinebox-bot-real-multifile-mIq4SB` |
+| 群聊、多伙伴 | 大肥鱼与 GPT 各自派 Worker；真实并行；用户对话更正其中一方口径，原任务原 Session 续作；最终两报告合并为 312 | `multi-companion-real/worldlinebox-bot-real-multi-companion-vOSuUo` |
+| 私聊发起、多伙伴正式协作 | 三份原件以新 scoped ID 转至伙伴私聊，西区报告以相同 SHA 返回原用户聊天；最终 Worker 只接收 east/west 两报告绝对路径，核验 207 + 185 = 392 | `multi-companion-real/worldlinebox-bot-real-multi-companion-Kw7tAp` |
+| 反问、对话控制与中断恢复 | 原生 ask_user → Router 按已知授权 answer；暂停计时冻结、只补充不恢复、明确恢复；硬中断本测试 Host 后沿同 Task/Session/Event 恢复；真实 final.json 交付；用户停止后迟到门文件不产生结果或重派 | `resilience-real/worldlinebox-bot-real-resilience-h0h2O2` |
+
+目录均在 `artifacts/superagent-bot-development/`，保存实际 Router journal、Worker prompt、状态采样、结果及清理证明。多伙伴两个场景分别采样 105 和 87 条真实状态；最终私聊集成 prompt 保持有界，仅有完整任务要求和两份成果文件，无私聊 canary 或无关文件。所有样例原件字节保持不变。
+
+复现入口（需本机配置真实模型、官方运行程序并承担真实 API 用量）：
+
+```powershell
+$env:WORLDLINEBOX_BOT_DSH_PROGRAM = '已安装官方 DSH 程序的完整目录'
+node scripts/verify-bot-multifile.mjs --real
+node scripts/verify-bot-multifile.mjs --real --collaborative
+node scripts/verify-bot-multi-companion.mjs --real
+node scripts/verify-bot-multi-companion.mjs --real --peer
+node scripts/verify-bot-resilience-real.mjs --real
+```
+
+Runner 只清理自己标记的隔离目录和进程，不操作用户真实任务。真实模型有非确定性；失败运行也保留证据。本轮曾捕获并修复旧历史污染、任务跟进绕过 Router、原生暂停工具目录不一致、恢复指令时序、错误附件编号卡为未知效果、当前轮新发布文件不可见及普通聊天漏交付。另保留模型错误领取区域、尝试不必要记忆写入等失败记录，不能把一次成功视为模型永远正确。
+
+边界：真实业务测试关闭长期记忆，仅证明模型、Router、DSH、任务及媒体链路；NoMemory 在任何 I/O 前拒绝写入且能证明未写入，不冒充 VCP 成功。多个角色使用同一隔离官方 Host 中的独立 Session，不据此声称任意第三方插件全局配置已隔离。此验收运行目录缺少 pwsh/ripgrep 可执行环境，Worker 如实披露并使用原生文件工具核验，因此不声称此轮已覆盖终端长进程取消。
+
+聊天 UI 另由 `companion-collaboration-ui.test.ts` 在真实隔离 Electron + Main IPC 验证：私聊、群聊、两位任务所有者、实时进度、暂停计时、停止、任务跟进归属、追加消息及完整重启后任务记录保留，1024/1440 窗口几何检查通过。此 UI 用例使用显式标记的状态夹具，与上述真实模型业务验收分开；截图在 `artifacts/companion-collaboration-ui/`。

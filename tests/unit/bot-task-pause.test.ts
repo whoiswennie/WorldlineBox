@@ -107,6 +107,20 @@ it('pauses immediately while native suspension is collected separately, then sto
   await until(() => f.brain.controls.at(-1)!.suspend === false); expect(f.brain.controls.at(-1)!.suspend).toBe(false); expect(f.brain.calls.filter(value => value.role === 'worker')).toHaveLength(0);
 });
 
+it('reattaches pause cleanup and the resumed worker with exactly the original companion tool catalog', async () => {
+  const f = await fixture(), task = f.task({ nativeAttempted: true, workerPrompt: 'ORIGINAL_NATIVE_REQUEST' }); f.configure();
+  await f.control(task.id, 'pause', 'catalog-preserving-pause');
+  await until(() => f.brain.controls.length === 1 && (f.service.store.getTask(task.id)!.extra.executorControl as { state: string }).state === 'acknowledged');
+  const suspended = f.brain.controls[0]!.input;
+  await f.control(task.id, 'resume_paused', 'catalog-preserving-resume');
+  await until(() => f.service.store.getTask(task.id)?.status === 'succeeded');
+  const execution = f.brain.calls.find(input => input.role === 'worker')!;
+  expect(execution).toBeDefined(); expect(suspended.workerTools?.map(tool => tool.name)).toContain('worker_chat_send_file');
+  expect(suspended.workerTools).toEqual(execution.workerTools); expect(suspended.tools).toEqual(execution.tools);
+  expect(suspended).toMatchObject({ laneId: execution.laneId, eventId: execution.eventId });
+  expect(f.service.store.listTasks()).toHaveLength(1);
+});
+
 it('keeps the local pause stable while bounded native cleanup fails and retries only cleanup on explicit resume', async () => {
   const f = await fixture(), task = f.task({ nativeAttempted: true, workerPrompt: 'FROZEN_REQUEST' });
   f.brain.stopping = async () => ({ accepted: true });

@@ -4,6 +4,7 @@ import { lazy, StrictMode, Suspense } from 'react';
 import { RendererReady, StartupBoundary } from './StartupScreen';
 import { createRoot, type Root } from 'react-dom/client';
 
+import { installImeCompositionGuard } from './ime-safe-dismiss';
 import { ElevationProvider } from './ElevationProvider';
 import { FontSizeProvider } from './FontSizeProvider';
 import { InspectorCardFeelProvider } from './InspectorCardFeelProvider';
@@ -35,6 +36,7 @@ import './ui/ui.css';
 import './ui/islands-surfaces.css';
 
 applyRendererPlatform(document.documentElement, navigator.userAgent);
+installImeCompositionGuard();
 // Apply elev level before first paint so level 0 never flashes shell shadows.
 applyShadowPreferences(loadShadowPreferences());
 // Apply menu acrylic before first paint so the shared context-menu surface does

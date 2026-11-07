@@ -292,7 +292,78 @@ it('records router-delivered task files and reuses only the same current artifac
   expect(card.outputs).toHaveLength(3);
 });
 
-it('hands all previously shared media to a later task by verified absolute paths with original context and no scheduler envelope', async () => {
+it.each(['direct', 'group'] as const)('sends only the task card requirements despite 80 irrelevant messages in a %s chat', async kind => {
+  const goal = '查询上海未来72小时降雨，明确最近一次下雨的日期与时段，注明实际数据来源；不修改文件。';
+  let worker: BotDshRun | undefined, taskId = '';
+  const brain = new Brain(async input => {
+    if (input.role === 'worker') { worker = input; return '本地协议验收完成，不查询真实天气'; }
+    if (JSON.parse(input.prompt).trigger.source === 'user') {
+      const receipt = await callback(input, 'dsh_task', 'weather-only', { title: '上海降雨查询', goal });
+      expect(receipt.status).toBe(200); taskId = String(receipt.result!.taskId);
+    }
+    return '已收到';
+  });
+  const f = await fixture(brain);
+  const room = kind === 'direct' ? f.conversationId : f.service.store.createGroup({ title: '干净交接验收', memberIds: [DEFAULT_BOT_COMPANION_ID], participationMode: 'all' }).id;
+  const unrelatedIds: string[] = [];
+  for (let index = 0; index < 80; index++) unrelatedIds.push(f.service.store.enqueue({ conversationId: room, senderId: 'user', recipientIds: [],
+    sourceMessageId: `unrelated-${index}`, content: `IRRELEVANT_CHAT_${index}：昨天的晚饭、口型动画和旧作品集任务。${'无关闲聊。'.repeat(80)}` }).message.id);
+  const trigger = '最近上海什么时候下雨呢？另外这是不属于天气任务的当前闲聊：UNRELATED_CURRENT_TRIGGER。';
+  await f.service.handle({ type: 'message.send', conversationId: room, content: trigger, requestId: `weather-${kind}` });
+  await waitFor(() => !!worker && !!taskId && f.service.store.getTask(taskId)?.status === 'succeeded');
+  expect(worker!.prompt).toBe(goal);
+  const task = f.service.store.getTask(taskId)!;
+  expect(task.goal).toBe(worker!.prompt); expect(task.extra).not.toHaveProperty('handoffMessages'); expect(task.extra).not.toHaveProperty('handoffSourceIds');
+  const copy = JSON.parse(await readFile(path.join(worker!.cwd, '.worldlinebox', 'task-input.json'), 'utf8'));
+  expect(copy).toEqual({ requirements: goal, files: [] });
+  const card = await f.service.handle({ type: 'task.get', conversationId: room, taskId }); expect(card.task!.goal).toBe(worker!.prompt);
+  expect(f.service.store.getMessage(f.service.store.getEvent(task.sourceEventId)!.sourceMessageRecordId)?.content).toBe(trigger);
+  expect(f.service.store.taskSourceIds(taskId).some(id => unrelatedIds.includes(id))).toBe(false);
+  f.service.store.withdrawSources(task.companionId, f.service.store.getConversation(room)!.securityDomainId, unrelatedIds);
+  expect(f.service.store.taskSourcesWithdrawn(taskId)).toBe(false);
+});
+
+it.each(['current-only', 'none', 'historical-only'] as const)('does not attach the whole chat catalog when selecting %s files', async selection => {
+  let taskId = '', worker: BotDshRun | undefined, oldId = '';
+  const brain = new Brain(async input => {
+    if (input.role === 'worker') { worker = input; return '已核验所选文件'; }
+    if (JSON.parse(input.prompt).trigger.source === 'user') {
+      const result = await callback(input, 'dsh_task', 'select-file', { title: '选择资料', goal: '只核验当前明确选择的资料，不处理其他文件。',
+        ...(selection === 'none' ? { attachmentIds: [] } : selection === 'historical-only' ? { attachmentIds: [oldId] } : {}) });
+      expect(result.status).toBe(200); taskId = String(result.result!.taskId);
+    }
+    return '已收到';
+  });
+  const f = await fixture(brain), old = await userFile(f, 'old-selected.txt'), unrelated = await userFile(f, 'unrelated.bin'), current = await userFile(f, 'current-selected.txt'); oldId = old.id;
+  f.service.store.enqueue({ conversationId: f.conversationId, senderId: 'user', recipientIds: [], sourceMessageId: 'earlier-files',
+    content: '上次发送的资料及无关文件', attachments: [old, unrelated] });
+  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验选定的资料', attachmentIds: [current.id], requestId: 'selected-files' });
+  await waitFor(() => !!worker && !!taskId && f.service.store.getTask(taskId)?.status === 'succeeded');
+  const input = JSON.parse(await readFile(path.join(worker!.cwd, '.worldlinebox', 'task-input.json'), 'utf8'));
+  expect(input.files.map((file: { name: string }) => file.name)).toEqual(selection === 'none' ? [] : [selection === 'historical-only' ? old.name : current.name]);
+  expect(f.service.store.getTask(taskId)!.extra.attachmentIds).toEqual(selection === 'none' ? [] : [selection === 'historical-only' ? old.id : current.id]);
+  for (const file of input.files) { expect(path.isAbsolute(file.path)).toBe(true); expect(hash(await readFile(file.path))).toBe(file.sha256); }
+  expect(worker!.prompt).not.toContain(unrelated.name); expect(worker!.prompt).not.toContain('上次发送的资料及无关文件');
+});
+
+it('rebuilds a never-admitted legacy queued prompt from the task card after restart', async () => {
+  const f = await fixture(), goal = '只读查询明确指定的目标，保留本次全部限制。';
+  const source = f.service.store.enqueue({ conversationId: f.conversationId, senderId: 'user', recipientIds: [DEFAULT_BOT_COMPANION_ID],
+    sourceMessageId: 'queued-legacy-source', content: 'HOST_SOURCE_ONLY unrelated current chit-chat' }).events[0]!;
+  const claim = f.service.store.claim({ workerId: 'seed-legacy-source' })!;
+  expect(claim.event.id).toBe(source.id); f.service.store.settle({ eventId: source.id, leaseToken: claim.leaseToken, status: 'done', content: '' });
+  const task = f.service.store.createTask({ conversationId: f.conversationId, companionId: DEFAULT_BOT_COMPANION_ID, sourceEventId: source.id, goal,
+    extra: { workerAccess: 'full', attachmentIds: [], workerPrompt: 'LEGACY_IRRELEVANT_HISTORY ' + goal, nativeAttempted: false, retryAt: Date.now() + 60000 } });
+  f.service.companionRuntime.bindTask(task);
+  await f.service.shutdown();
+  const next = new Brain(), reopened = f.reopen(next); reopened.store.updateTask(task.id, { extra: { ...task.extra, retryAt: 0 } });
+  await reopened.handle({ type: 'state' });
+  await waitFor(() => reopened.store.getTask(task.id)?.status === 'succeeded');
+  expect(next.calls.filter(input => input.role === 'worker').map(input => input.prompt)).toEqual([goal]);
+  expect(reopened.store.getTask(task.id)!.extra.workerPromptVersion).toBe(2);
+});
+
+it('hands explicitly selected historical media to a later task by verified absolute paths without copying chat history', async () => {
   let taskId = '', worker: BotDshRun | undefined;
   const brain = new Brain(async input => {
     if (input.role === 'worker') { worker = input; return '已核验原件'; }
@@ -301,7 +372,7 @@ it('hands all previously shared media to a later task by verified absolute paths
       const files = body.files as Array<{ id: string; path: string; sha256: string }>;
       expect(files).toHaveLength(4);
       for (const file of files) { expect(path.isAbsolute(file.path)).toBe(true); expect(hash(await readFile(file.path))).toBe(file.sha256); }
-      taskId = String((await callback(input, 'dsh_task', 'historical-media', { title: '核验四份资料', goal: '根据此前图片、录音、视频和文档核验，保持只读限制' })).result!.taskId);
+      taskId = String((await callback(input, 'dsh_task', 'historical-media', { title: '核验四份资料', goal: '根据四份图片、录音、视频和文档原件核验，保持只读限制', attachmentIds: files.map(file => file.id) })).result!.taskId);
     }
     return '已收到';
   });
@@ -318,7 +389,8 @@ it('hands all previously shared media to a later task by verified absolute paths
     expect(path.isAbsolute(file.path)).toBe(true); expect(path.relative(actual.cwd, file.path).startsWith('attachments' + path.sep)).toBe(true);
     expect(hash(await readFile(file.path))).toBe(file.sha256);
   }
-  expect(actual.prompt).toContain('按刚才资料开始，只读不要修改'); expect(actual.prompt).toContain('这是我的四份原始资料，按原件核对');
+  expect(actual.prompt).toContain('根据四份图片、录音、视频和文档原件核验，保持只读限制');
+  expect(actual.prompt).not.toContain('按刚才资料开始，只读不要修改'); expect(actual.prompt).not.toContain('这是我的四份原始资料，按原件核对');
   for (const secret of [draft.id, actual.eventId, '"taskId"', 'correlationId', 'causationId', 'grantId', 'relativePath', 'data:']) expect(actual.prompt).not.toContain(secret);
   const source = f.service.store.getEvent(brain.calls[0]!.eventId)!;
   expect(f.service.store.taskSourceIds(taskId)).toContain(sent.messageId);
