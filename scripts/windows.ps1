@@ -30,15 +30,25 @@ function Download-File([string]$Url, [string]$Destination, [string[]]$FallbackUr
     $lastFailure = 'No download source was available.'
     try {
         foreach ($source in (@($Url) + $FallbackUrls | Select-Object -Unique)) {
-            for ($attempt = 1; $attempt -le 2; $attempt++) {
+            # A partial response can be resumed only from the same source.
+            if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending -Force }
+            for ($attempt = 1; $attempt -le 4; $attempt++) {
+                $retainPartial = $false
                 try {
-                    Write-Host "Downloading $source (attempt $attempt/2)"
+                    Write-Host "Downloading $source (attempt $attempt/4)"
                     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
                         # curl --retry alone does not retry connection reset (56).
                         # Retry every failed attempt here, including on older Windows curl.
                         $minimumSpeed = if ($FallbackUrls.Count -gt 0) { 131072 } else { 1024 }
-                        & curl.exe --fail --location --connect-timeout 15 --max-time 600 --speed-limit $minimumSpeed --speed-time 20 --output $pending $source
-                        if ($LASTEXITCODE -ne 0) { throw "curl exited with code $LASTEXITCODE" }
+                        $resumeOptions = @()
+                        if ((Test-Path -LiteralPath $pending) -and (Get-Item -LiteralPath $pending).Length -gt 0) { $resumeOptions = @('--continue-at', '-') }
+                        & curl.exe --fail --location --connect-timeout 15 --max-time 600 --speed-limit $minimumSpeed --speed-time 20 @resumeOptions --output $pending $source
+                        if ($LASTEXITCODE -ne 0) {
+                            # Keep bytes only for interrupted transfers. A rejected
+                            # Range request or HTTP error must restart from zero.
+                            $retainPartial = $LASTEXITCODE -in @(5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92)
+                            throw "curl exited with code $LASTEXITCODE"
+                        }
                     } else {
                         $downloadOptions = @{ UseBasicParsing = $true; Uri = $source; OutFile = $pending; TimeoutSec = 600 }
                         if ($Proxy) { $downloadOptions.Proxy = $Proxy }
@@ -49,9 +59,9 @@ function Download-File([string]$Url, [string]$Destination, [string[]]$FallbackUr
                     return
                 } catch {
                     $lastFailure = $_.Exception.Message
-                    if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending -Force }
+                    if (-not $retainPartial -and (Test-Path -LiteralPath $pending)) { Remove-Item -LiteralPath $pending -Force }
                     Write-Warning "Download attempt failed: $lastFailure"
-                    if ($attempt -lt 2) { Start-Sleep -Seconds 1 }
+                    if ($attempt -lt 4) { Start-Sleep -Seconds 1 }
                 }
             }
             Write-Warning 'Trying the next available download source.'
