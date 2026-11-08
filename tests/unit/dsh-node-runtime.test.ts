@@ -179,7 +179,7 @@ describe('official Node DSH runtime adapter', () => {
     await ops.run('node-replay-payload','changedpayload',undefined,op=>service.installNode(release(sourceRecord.version),op,undefined,expectedLock).then(()=>undefined));await ops.settle();
     expect(ops.list()[0]?.error).toContain('SDK and binary payload');expect(service.list()).toHaveLength(2);
     const first=service.list()[0]!; await writeFile(service.plan(first.id).cli,'changed');
-    await expect(service.verify(first.id)).rejects.toThrow('changed');
+    await expect(service.verify(first.id)).rejects.toMatchObject({code:'integrity',diagnostic:{kind:'files-changed',differences:{changed:1}}});
     await service.verify(service.list()[1]!.id);
     await expect(service.delete(first.id,true)).rejects.toThrow('引用');
   },45_000);

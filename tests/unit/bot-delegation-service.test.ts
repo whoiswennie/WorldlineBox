@@ -18,15 +18,17 @@ afterEach(async()=>{for(const close of closes.splice(0).reverse())await close();
 interface Controller {
   executeTool(event:BotEvent,call:BotToolCall,signal:AbortSignal):Promise<unknown>;
   controlQueue(conversationId:string,operation:'cancel_all',requestId:string,companionId?:string,controllingEventId?:string):Promise<unknown>;
-  controlTask(task:BotTask,operation:'pause'|'resume_paused',text:string|undefined,requestId:string,input:{caller:'user'}):Promise<unknown>;
+  controlTask(task:BotTask,operation:'pause'|'resume_paused',text:string|undefined,requestId:string,input:{caller:'user'|'brain';source?:BotEvent['source'];sourceEventId?:string}):Promise<unknown>;
   finishTask(task:BotTask,status:'succeeded'|'failed'|'cancelled',text?:string):void;
   refreshDelegations():void;
   remindDelegationReturn(event:BotEvent):void;
+  afterPublishedReply(event:BotEvent):void;
+  pauseForExecutor(task:BotTask,reason:string,detail:string,error?:string):void;
   launchTask(task:BotTask):void;
   taskWorkdir(task:BotTask,securityDomainId:string):string;
 }
-async function fixture(){
-  const root=await mkdtemp(path.join(tmpdir(),'wlb-delegation-service-')),store=new BotStore(path.join(root,'bot.sqlite'),{activityBudget:{maxActions:100,maxTasks:100,maxDerivedEvents:100}});
+async function fixture(activityBudget:{maxPendingInbox?:number}={}){
+  const root=await mkdtemp(path.join(tmpdir(),'wlb-delegation-service-')),store=new BotStore(path.join(root,'bot.sqlite'),{activityBudget:{maxActions:100,maxTasks:100,maxDerivedEvents:100,...activityBudget,...(activityBudget.maxPendingInbox!==undefined?{reservedInteractiveInbox:0}:{})}});
   closes.push(async()=>{store.close();if(path.dirname(root)!==path.resolve(tmpdir())||!path.basename(root).startsWith('wlb-delegation-service-'))throw Error('Invalid owned delegation integration directory');await rm(root,{recursive:true,force:true,maxRetries:10,retryDelay:50});});
   for(const id of ['alice','bob','carol'])store.createCompanion({id,name:id,persona:'独立角色的真实事件与授权测试。'});
   const room=store.openDirect('alice'),media=new BotMediaService({root:path.join(root,'media'),builtinRoot:path.resolve('resources/bot-stickers')}),delegations=new BotDelegationRuntime(store);
@@ -321,6 +323,108 @@ it('freezes the proxy and only its recipient Workers on a user pause, then resum
   expect(f.store.getTask(worker.taskId)?.status).toBe('paused');expect(f.store.getTask(delegated.receipt.taskId)?.status).toBe('paused');expect(f.delegations.allowsWork(delegated.peer)).toBe(false);
   await f.controller.controlTask(f.store.getTask(delegated.receipt.taskId)!,'resume_paused',undefined,'user-resume',{caller:'user'});
   expect(f.store.getTask(worker.taskId)?.status).toBe('queued');expect(f.store.getTask(delegated.receipt.taskId)?.status).toBe('running');expect(f.delegations.allowsWork(delegated.peer)).toBe(true);expect(f.store.listTasks()).toHaveLength(2);
+});
+
+async function interruptedDelegation(activityBudget:{maxPendingInbox?:number}={}){
+  const f=await fixture(activityBudget),root=await f.source('请让 Bob 只读查询天气并交回。'),delegated=await f.delegate(root.event,[]);
+  f.store.settle({eventId:root.event.id,leaseToken:root.claim.leaseToken,status:'done',content:'已正式委派。'});
+  const claim=f.claim(delegated.peer),worker=await f.execute(delegated.peer,'dsh_task',{goal:'只读查询天气。',attachmentIds:[]},'interrupted-worker') as {taskId:string};
+  f.store.settle({eventId:delegated.peer.id,leaseToken:claim.leaseToken,status:'done',content:'我去查。'});
+  return{...f,profileRoot:f.root,root,delegated,worker};
+}
+function pauseNotices(store:BotStore,proxyId:string){return store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_inbox WHERE source='task' AND json_extract(payload_json,'$.taskId')=? AND json_extract(payload_json,'$.delegationIncidentId') IS NOT NULL ORDER BY sequence").all(proxyId)) as Array<{id:string}>;}
+
+it('persists one environment-pause notification for the original Router and does not fake a terminal result',async()=>{
+  const f=await interruptedDelegation();
+  f.controller.pauseForExecutor(f.store.getTask(f.worker.taskId)!,'integrity','执行环境完整性检查失败。','DshTaskPreparationError: runtime seal mismatch');
+  for(let pass=0;pass<4;pass++)f.controller.refreshDelegations();
+  expect(f.store.getTask(f.worker.taskId)).toMatchObject({status:'paused',extra:{pauseOrigin:'router',userPaused:false,executorPaused:true}});
+  expect(f.store.getTask(f.delegated.receipt.taskId)).toMatchObject({status:'paused',extra:{delegationMirroredPause:true,userPaused:false}});
+  const notices=pauseNotices(f.store,f.delegated.receipt.taskId);expect(notices).toHaveLength(1);
+  const notice=f.store.getEvent(notices[0]!.id)!;
+  expect(notice).toMatchObject({source:'task',kind:'task_progress',conversationId:f.room.id,companionId:'alice',causationId:f.root.event.id,
+    payload:{taskId:f.delegated.receipt.taskId,delegationId:f.delegated.ticket.id,delegationTaskId:f.worker.taskId,delegationState:'paused'}});
+  expect(notice.content).toContain('完整性检查失败');expect(notice.content).toMatch(/不要.*要求重复授权/u);
+  expect(f.delegations.get(f.delegated.ticket.id)?.state).toBe('active');
+  expect(()=>f.controller.remindDelegationReturn(f.store.taskTransaction(sql=>{const row=sql.prepare("SELECT id FROM bot_inbox WHERE source='task' AND json_extract(payload_json,'$.taskId')=? ORDER BY sequence DESC LIMIT 1").get(f.worker.taskId) as {id:string};return f.store.getEvent(row.id)!;}))).not.toThrow();
+  const reconnected=new BotStore(path.join(f.profileRoot,'bot.sqlite'));
+  try{
+    const restarted=Object.create(BotService.prototype) as Controller;
+    Object.assign(restarted,{store:reconnected,delegations:new BotDelegationRuntime(reconnected),taskRuntime:new BotTaskRuntime(reconnected),delegationCursor:0,delegationCleanup:new Set(),changed:vi.fn(),scheduler:{wake:vi.fn()},options:{report:vi.fn()}});
+    restarted.refreshDelegations();restarted.refreshDelegations();
+    expect(pauseNotices(reconnected,f.delegated.receipt.taskId)).toHaveLength(1);
+  }finally{reconnected.close();}
+});
+
+it('retains an original-router pause event through Inbox backpressure and admits it once capacity returns',async()=>{
+  const f=await interruptedDelegation({maxPendingInbox:2}),other=f.store.openDirect('carol');
+  const filler=f.store.enqueue({conversationId:other.id,senderId:'user',content:'独立排队消息',sourceMessageId:'pause-notice-capacity',recipientIds:['carol']}).events[0]!;
+  f.controller.pauseForExecutor(f.store.getTask(f.worker.taskId)!,'startup','执行器启动失败，原任务已保留。');
+  for(let pass=0;pass<4;pass++)f.controller.refreshDelegations();
+  expect(pauseNotices(f.store,f.delegated.receipt.taskId)).toHaveLength(0);
+  expect(f.store.taskTransaction(sql=>sql.prepare('SELECT count(*) AS n FROM bot_deferred_task_notices').get())).toMatchObject({n:1});
+  const first=f.store.claim({workerId:'drain-pause-notices',leaseMs:300000})!;expect(first.event.id).toBe(filler.id);
+  f.store.settle({eventId:first.event.id,leaseToken:first.leaseToken,status:'done',content:'已处理独立消息。'});
+  const delivered=[];
+  for(let pass=0;pass<2;pass++){
+    const claim=f.store.claim({workerId:'drain-pause-notices',leaseMs:300000})!;delivered.push(claim.event);
+    f.store.settle({eventId:claim.event.id,leaseToken:claim.leaseToken,status:'done',content:'已知环境暂停。'});
+  }
+  expect(delivered.find(event=>event.companionId==='alice')).toMatchObject({payload:{taskId:f.delegated.receipt.taskId,delegationState:'paused'}});
+  f.controller.refreshDelegations();f.controller.refreshDelegations();
+  expect(pauseNotices(f.store,f.delegated.receipt.taskId)).toHaveLength(1);
+  expect(f.store.taskTransaction(sql=>sql.prepare('SELECT count(*) AS n FROM bot_deferred_task_notices').get())).toMatchObject({n:0});
+});
+
+it('mirrors an independently resumed child without restarting the task and preserves an explicit user pause',async()=>{
+  const f=await interruptedDelegation();
+  f.controller.pauseForExecutor(f.store.getTask(f.worker.taskId)!,'startup','启动失败，修复后继续。');f.controller.refreshDelegations();
+  const executorNotice=f.store.claim({workerId:'executor-paused-notice',leaseMs:300000,excludeLaneIds:[f.root.event.laneId]})!;
+  expect(executorNotice.event.companionId).toBe('bob');f.store.bindEventNativeEpoch(executorNotice.event.id,1);
+  await expect(f.controller.controlTask(f.store.getTask(f.worker.taskId)!,'resume_paused',undefined,'automatic-executor-notice-must-not-resume',{caller:'brain',source:'task',sourceEventId:executorNotice.event.id})).rejects.toThrow('后台回执不会自动重试');
+  f.store.settle({eventId:executorNotice.event.id,leaseToken:executorNotice.leaseToken,status:'done',content:'等待修复后明确继续。'});
+  await f.controller.controlTask(f.store.getTask(f.worker.taskId)!,'resume_paused',undefined,'resume-child-only',{caller:'user'});
+  f.controller.refreshDelegations();f.controller.refreshDelegations();
+  expect(f.store.getTask(f.delegated.receipt.taskId)).toMatchObject({status:'queued',extra:{delegationMirroredPause:false,userPaused:false}});
+  f.store.updateTask(f.worker.taskId,{status:'running'});f.controller.refreshDelegations();f.controller.refreshDelegations();
+  expect(f.store.getTask(f.delegated.receipt.taskId)?.status).toBe('running');expect(f.delegations.allowsWork(f.delegated.peer)).toBe(true);
+  expect(f.store.listTasks()).toHaveLength(2);expect(f.launch).toHaveBeenCalledTimes(1);
+  await f.controller.controlTask(f.store.getTask(f.delegated.receipt.taskId)!,'pause',undefined,'hold-original-delegation',{caller:'user'});
+  f.store.updateTask(f.worker.taskId,{status:'running',extra:{...f.store.getTask(f.worker.taskId)!.extra,userPaused:false}});
+  for(let pass=0;pass<4;pass++)f.controller.refreshDelegations();
+  expect(f.store.getTask(f.delegated.receipt.taskId)).toMatchObject({status:'paused',extra:{delegationUserPaused:true,userPaused:true}});
+  const incident=f.store.claim({workerId:'paused-router-notice',leaseMs:300000,excludeLaneIds:[f.delegated.peer.laneId]})!;
+  expect(incident.event.companionId).toBe('alice');f.store.bindEventNativeEpoch(incident.event.id,1);
+  await expect(f.controller.controlTask(f.store.getTask(f.delegated.receipt.taskId)!,'resume_paused',undefined,'automatic-notice-must-not-resume',{caller:'brain',source:'task',sourceEventId:incident.event.id})).rejects.toThrow('明确继续');
+});
+
+it('observes a real published peer reply even when the independent delivery-reminder hook throws',async()=>{
+  const f=await interruptedDelegation();
+  const reminder=vi.spyOn(f.controller,'remindDelegationReturn').mockImplementation(()=>{throw Error('Injected delivery reminder fault');});
+  const observe=vi.spyOn(f.store,'observeGroupReply');
+  f.controller.afterPublishedReply(f.store.getEvent(f.delegated.peer.id)!);
+  expect(reminder).toHaveBeenCalledTimes(1);expect(observe).toHaveBeenCalledWith(f.delegated.peer.id);
+  const observerEvents=f.store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_inbox WHERE source='group' AND sender_id='bob' AND companion_id='alice'").all()) as Array<{id:string}>;
+  expect(observerEvents).toHaveLength(1);expect(f.store.getEvent(observerEvents[0]!.id)?.content).toContain('我去查');
+});
+
+it('projects legacy environment-paused records without rewriting an ambiguous old user hold',async()=>{
+  const f=await interruptedDelegation();
+  f.controller.pauseForExecutor(f.store.getTask(f.worker.taskId)!,'integrity','旧运行记录：环境文件检查失败。');
+  const child=f.store.getTask(f.worker.taskId)!;
+  f.store.updateTask(child.id,{extra:{...child.extra,pauseOrigin:'user',userPaused:true,executorPaused:undefined}});
+  const proxy=f.store.getTask(f.delegated.receipt.taskId)!;
+  f.store.updateTask(proxy.id,{status:'paused',extra:{...proxy.extra,pauseOrigin:'user',userPaused:undefined,delegationMirroredPause:undefined,executorPaused:undefined}});
+  for(let pass=0;pass<4;pass++)f.controller.refreshDelegations();
+  expect(f.store.getTask(child.id)?.extra).toMatchObject({pauseOrigin:'user',userPaused:true,executorInterruption:{reason:'integrity'}});
+  expect(f.store.getTask(child.id)?.extra.executorPaused).toBeUndefined();
+  expect(f.store.getTask(proxy.id)).toMatchObject({status:'paused',extra:{executorPaused:true,delegationMirroredPause:true,userPaused:false}});
+  expect(pauseNotices(f.store,proxy.id)).toHaveLength(1);
+  const mirrored=f.store.getTask(proxy.id)!;
+  f.store.updateTask(proxy.id,{extra:{...mirrored.extra,userPaused:true,delegationMirroredPause:undefined,delegationUserPaused:undefined}});
+  f.store.updateTask(child.id,{status:'running'});
+  for(let pass=0;pass<4;pass++)f.controller.refreshDelegations();
+  expect(f.store.getTask(proxy.id)).toMatchObject({status:'paused',extra:{userPaused:true}});
 });
 
 async function publishWestInCurrentResultTurn(f:Awaited<ReturnType<typeof completedRoundTrip>>){

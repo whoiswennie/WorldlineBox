@@ -142,7 +142,7 @@ it('retains unconfigured work as resumable without inventing a native admission 
   const f = await fixture(brain, { resumeTaskRuntime: async () => { starts++; } }), task = f.task();
   await nudge(f.service, f.conversationId, 'missing-runtime');
   await waitFor(() => f.service.store.getTask(task.id)?.status === 'paused');
-  expect(currentExtra(f.service, task)).toMatchObject({ nativeAttempted: false, userPaused: true, executorInterruption: { reason: 'configuration' } });
+  expect(currentExtra(f.service, task)).toMatchObject({ nativeAttempted: false, userPaused: false, pauseOrigin: 'router', executorPaused: true, executorInterruption: { reason: 'configuration' } });
   expect(currentExtra(f.service, task).executorControl).toBeUndefined();
   await nudge(f.service, f.conversationId, 'still-chatting');
   expect(brain.calls.filter(call => call.role === 'worker')).toHaveLength(1); expect(brain.stops).toEqual([]);

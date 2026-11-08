@@ -59,7 +59,7 @@ export interface BotContextInput {
   /** Publication watermark captured when a serialized group speaker starts. */
   historyThroughSequence?: number;
 }
-export type BotContextTask = Pick<BotTask, 'id' | 'goal' | 'conversationId' | 'companionId' | 'summary' | 'summaryIsPreview'> & { status: string; attention?: BotTaskAttention; outputs?: BotTaskOutput[]; progress?: { phase: string; detail?: string }; cancelRequested?: boolean; pauseRequested?: boolean; pauseOrigin?: 'user' | 'router'; continuationAvailable?: boolean };
+export type BotContextTask = Pick<BotTask, 'id' | 'goal' | 'conversationId' | 'companionId' | 'summary' | 'summaryIsPreview'> & { status: string; attention?: BotTaskAttention; outputs?: BotTaskOutput[]; progress?: { phase: string; detail?: string }; cancelRequested?: boolean; pauseRequested?: boolean; pauseOrigin?: 'user' | 'router'; pauseCause?:'executor'|'executor-history'; continuationAvailable?: boolean };
 export function botClock(now = new Date()) {
   const timeZone = 'Asia/Shanghai', utcOffset = '+08:00';
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(now);
@@ -105,10 +105,11 @@ export function buildBotContext(input: BotContextInput): { system: string; user:
       return { id: task.id, goal: task.goal.slice(0, 2000), status: stopping ? 'cancelled' : pausing ? 'paused' : task.status,
         summary: stopping
           ? '任务已停止，后续执行和自动接续授权已撤回。保留已有产物，不重启、不重发；后台连接清理不需要用户核实。'
-          : pausing ? task.pauseOrigin === 'router' ? 'Router已暂停，计时已冻结；可在原授权范围内恢复原任务，不能另建同目标任务。'
+          : pausing ? task.pauseCause ? '执行环境出现过故障，任务当前保持暂停，计时已冻结、进展已保留。等待修复环境及用户或伙伴明确继续；不自动重试、不另建任务，不要求重复授权。'
+            : task.pauseOrigin === 'router' ? 'Router已暂停，计时已冻结；可在原授权范围内恢复原任务，不能另建同目标任务。'
             : '用户已暂停，计时已冻结；仅在用户明确继续后沿原任务和会话恢复，不能另建同目标任务。' : task.summary?.slice(0, 2000),
         summaryIsPreview: !stopping && !pausing && (task.summaryIsPreview === true || (task.summary?.length ?? 0) > 2000),
-        progress: stopping || pausing ? { phase: stopping ? 'cancelled' : 'paused' } : task.progress,
+        progress: stopping || pausing ? { phase: stopping ? 'cancelled' : 'paused',...(pausing&&task.pauseCause&&task.progress?.detail?{detail:task.progress.detail.slice(0,1000)}:{}) } : task.progress,
         cancelRequested: task.cancelRequested, pauseRequested: task.pauseRequested, pauseOrigin: task.pauseOrigin, continuationAvailable: !stopping && !pausing && task.continuationAvailable,
         outputs: task.outputs?.slice(-16),
         attention: questions.length ? { questionId: attention!.id, questions } : undefined };

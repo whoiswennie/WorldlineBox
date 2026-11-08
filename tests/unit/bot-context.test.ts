@@ -21,6 +21,13 @@ it('gives the Router direct task controls while retaining priority of a human pa
   expect(router.system).toContain('Worker只执行和报告');
   expect(router.system).toContain('不为停止或清理反复查询确认');
 });
+it.each(['executor','executor-history'] as const)('describes %s pauses without inventing a user pause or granting automatic retries',pauseCause=>{
+  const task={id:'environment-task',conversationId:'c1',companionId:'alice',goal:'只读查询天气。',status:'paused',pauseOrigin:'user' as const,pauseCause,progress:{phase:'paused',detail:'运行文件检查失败，需修复环境。'}};
+  const context=JSON.parse(buildBotContext({companion,event:{...event,source:'task',payload:{taskId:task.id}},messages:[],tasks:[task]}).user).tasks[0];
+  expect(context.summary).toContain('执行环境');expect(context.summary).toContain('不自动重试');expect(context.summary).toContain('不要求重复授权');
+  expect(context.summary).not.toContain('用户已暂停');expect(context.summary).not.toContain('可在原授权范围内恢复');
+  expect(context.progress.detail).toContain('运行文件检查失败');
+});
 it('provides a host-formatted Shanghai clock across the UTC date boundary instead of asking the model to convert it', () => {
   expect(botClock(new Date('2026-11-05T00:34:37.000Z'))).toEqual({ now: '2026-11-05T00:34:37.000Z', timeZone: 'Asia/Shanghai', utcOffset: '+08:00', localDateTime: '2026-11-05T08:34:37+08:00', timeOfDay: '早上' });
   expect(botClock(new Date('2026-11-04T16:01:02.000Z')).localDateTime).toBe('2026-11-05T00:01:02+08:00');

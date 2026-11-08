@@ -5,6 +5,7 @@ import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runtime';
 import { BotDelegationRuntime } from '../../src/main/companion-bot/delegation-runtime';
+import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
 import { BotService } from '../../src/main/companion-bot/service';
 import { buildBotContext } from '../../src/main/companion-bot/context';
 import { BOT_TOOLS } from '../../src/main/companion-bot/tools';
@@ -12,7 +13,7 @@ import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID } from '../../src/shar
 import { resolveStoredLlmConfig } from '../../src/shared/llm';
 import type { BotDshModel, BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
-import type { BotEvent } from '../../src/main/companion-bot/types';
+import type { BotEvent, BotTask } from '../../src/main/companion-bot/types';
 
 const root = process.env.WORLDLINEBOX_BOT_REAL_ROOT!, source = process.env.WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT!, output = process.env.WORLDLINEBOX_BOT_PEER_WORK_OUTPUT!;
 if (!root || !source || !output || process.env.WORLDLINEBOX_BOT_PEER_WORK_REAL !== '1') throw Error('Explicit isolated peer-work acceptance inputs required.');
@@ -36,6 +37,7 @@ void app.whenReady().then(async () => {
   let store: BotStore | undefined, brain: BotAppBrain | undefined;
   const wireReads: Promise<void>[] = [];
   let current: Row | undefined;
+  let pausedProxyId: string | undefined, pauseDelegations: BotDelegationRuntime | undefined, pauseEvent: BotEvent | undefined;
   try {
     const profiles = JSON.parse(await readFile(path.join(source, 'ai-profiles.json'), 'utf8'));
     const profile = profiles.profiles.find((value: { id: string }) => value.id === profiles.activeProfileId);
@@ -63,6 +65,12 @@ void app.whenReady().then(async () => {
       },
       callTool: async call => {
         (current!.calls as Row[]).push({ name: call.name, args: call.args });
+        if(['requester-receives-environment-pause','peer-acknowledges-environment-pause'].includes(String(current!.name))){
+          if(call.name==='dsh_task_control'&&call.args.operation==='status'&&call.args.taskId===pausedProxyId)return new BotTaskRuntime(store!).card(store!.getTask(pausedProxyId!)!,true);
+          if(call.name==='companion_delegation'&&call.args.operation==='status')return pauseDelegations!.status(pauseEvent!,String(call.args.delegationId??'' )||undefined);
+          if(call.name.startsWith('memory_'))return{available:false,reason:'本次状态回执验收不连接记忆。'};
+          return{allowed:false,reason:'执行环境仍处于测试注入的暂停，不能重派或称完成；如实回复暂停状态。'};
+        }
         if (call.name === 'companion_delegate') return { delegationId: 'delegation-fixture', taskId: 'task-proxy-fixture', recipientId: DEFAULT_BOT_COMPANION_ID,
           status: 'queued', meaning: '本验收的模拟委派回执：任务已记录，尚未执行；实际运行不在本模型路由测试范围。' };
         if (call.name === 'dsh_task') return { taskId: 'task-worker-fixture', mandateId: 'mandate-fixture', delegationId: 'delegation-fixture',
@@ -160,6 +168,49 @@ void app.whenReady().then(async () => {
       if (!authority) throw Error('HOST_STILL_REJECTS_PEER_PARTICIPANT_WORK');
       await run('peer-participant-executes', request, context(request), calls => calls.some(call => call.name === 'dsh_task')
         && !calls.some(call => call.name === 'companion_reply_user'));
+    }
+    if(['requester-receives-environment-pause','peer-acknowledges-environment-pause'].includes(selectedScenario)){
+      const proxy=store.createTask({id:'task-environment-proxy',companionId:'claude',conversationId:direct.id,sourceEventId:sourceEvent.id,goal:contact.content,extra:{delegationProxy:true}});
+      const delegations=new BotDelegationRuntime(store),ticket=delegations.create(sourceEvent,'environment-fixture',{recipientId:DEFAULT_BOT_COMPANION_ID,
+        peerConversationId:peerRoom.id,contactEventId:contact.id,proxyTaskId:proxy.id,goal:proxy.goal,title:'查询天气'});
+      store.updateTask(proxy.id,{extra:{...proxy.extra,externalDelegationId:ticket.id}});
+      const environmentTask=store.createTask({id:'task-environment-worker',conversationId:peerRoom.id,companionId:DEFAULT_BOT_COMPANION_ID,sourceEventId:contact.id,
+        goal:'仅只读查询天气。',extra:{delegationId:ticket.id}});
+      const controller=Object.create(BotService.prototype) as BotService;
+      Object.assign(controller,{store,delegations,taskRuntime:new BotTaskRuntime(store),scheduler:{wake(){}},changed(){},options:{},delegationCursor:0,delegationCleanup:new Set()});
+      const actual=controller as unknown as{pauseForExecutor(task:BotTask,reason:string,detail:string,error:string):void;refreshDelegations():void;afterPublishedReply(event:BotEvent):void};
+      actual.pauseForExecutor(environmentTask,'integrity','测试注入的执行环境暂不可用，原任务和进展保留。','本验收故意注入准备失败，不代表真实运行文件损坏。');
+      actual.refreshDelegations();
+      const row=store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_inbox WHERE source_message_id LIKE ? AND companion_id='claude'").get(`delegation-paused:${ticket.id}:%`)) as {id:string}|undefined;
+      if(!row)throw Error('PRODUCTION_DELEGATION_PAUSE_NOTICE_DID_NOT_EMIT');
+      const notice=store.getEvent(row.id)!,card=new BotTaskRuntime(store).card(store.getTask(proxy.id)!);
+      pausedProxyId=proxy.id;pauseDelegations=delegations;pauseEvent=notice;
+      report.productionPauseNotice={actualMethods:['BotService.pauseForExecutor','BotService.refreshDelegations'],eventId:notice.id,content:notice.content,proxyStatus:card.status};
+      const acceptable=(calls:BotToolCall[])=>!calls.some(call=>['dsh_task','companion_delegate','companion_contact','companion_reply_user'].includes(call.name)
+        ||call.name==='dsh_task_control'&&call.args.operation!=='status');
+      if(selectedScenario==='requester-receives-environment-pause')await run('requester-receives-environment-pause',notice,context(notice,{tasks:[card]}),acceptable);
+      else{
+        const target=store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_inbox WHERE companion_id=? AND source_message_id LIKE 'task-executor-paused:%' ORDER BY sequence DESC LIMIT 1").get(DEFAULT_BOT_COMPANION_ID)) as {id:string}|undefined;
+        if(!target)throw Error('EXECUTOR_PAUSE_EVENT_MISSING');
+        let claimed:ReturnType<BotStore['claim']>|undefined;
+        for(let attempt=0;attempt<8;attempt++){
+          const next=store.claim({workerId:'pause-observer-acceptance',leaseMs:300000,excludeLaneIds:[sourceEvent.laneId]});
+          if(!next)break;
+          if(next.event.id===target.id){claimed=next;break;}
+          store.settle({eventId:next.event.id,leaseToken:next.leaseToken,status:'done',content:''});
+        }
+        if(!claimed)throw Error('EXECUTOR_PAUSE_EVENT_COULD_NOT_BE_CLAIMED');
+        store.settle({eventId:claimed.event.id,leaseToken:claimed.leaseToken,status:'done',content:'Claude，环境暂时连不上，任务保持暂停。这是验收故意注入的环境故障，未实际查询天气，也没有认定文件损坏。'});
+        actual.afterPublishedReply(store.getEvent(claimed.event.id)!);
+        const row=store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_inbox WHERE companion_id='claude' AND source='group' AND causation_id=? ORDER BY sequence DESC LIMIT 1").get(claimed!.event.id)) as {id:string}|undefined;
+        if(!row)throw Error('PUBLISHED_FAILURE_DID_NOT_REACH_CLAUDE_PEER_VIEW');
+        const observed=store.getEvent(row.id)!;
+        report.productionFailureObservation={actualMethod:'BotService.afterPublishedReply',source:observed.source,content:observed.content,recipient:observed.companionId};
+        await run('peer-acknowledges-environment-pause',observed,context(observed,{participantWorkAuthorized:false,tasks:[]}),acceptable);
+      }
+      const answer=String((current?.result as {text?:string}|undefined)?.text??'');
+      if(!answer.trim()||!/暂停|环境|连不上|连接|暂时|故障|执行/.test(answer))throw Error('REQUESTER_DID_NOT_EXPLAIN_ENVIRONMENT_PAUSE');
+      report.pauseAcknowledgement=answer;
     }
     report.passed = scenarios.length === (selectedScenario === 'all' ? 5 : 1) && scenarios.every(scenario => scenario.passed === true);
   } catch (error) { errors.push({ name: error instanceof Error ? error.name : 'Error', message: clean(error instanceof Error ? error.message : String(error)) }); }

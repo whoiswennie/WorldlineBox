@@ -90,7 +90,7 @@ it('hashes every copied target after EXDEV, caches target identities and detects
   const restarted = new RuntimeService({ rootPath: f.manager, onChanged() {} }); services.push(restarted); await restarted.init();
   const file = path.join(restarted.directory(runtime.id), 'bin/node.exe'), before = await lstat(file);
   await writeFile(file, 'fixture executablE'); await utimes(file, before.atime, before.mtime);
-  await expect(restarted.verify(runtime.id)).rejects.toThrow('changed');
+  await expect(restarted.verify(runtime.id)).rejects.toThrow('运行文件发生变化或缺失');
   expect(await readFile(path.join(f.input, 'bin/node.exe'), 'utf8')).toBe('fixture executable');
 });
 

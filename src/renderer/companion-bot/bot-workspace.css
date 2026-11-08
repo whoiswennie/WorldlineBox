@@ -221,7 +221,7 @@
 .bot-workspace .bot-executor-notice .bot-executor-launcher { display:grid;place-items:center;width:26px;padding:5px; }.bot-executor-launcher .bot-icon { width:13px;height:13px; }
 .bot-executor-notice[data-state=failed] .bot-executor-status-icon { color:var(--ui-status-warning-content); }
 .bot-executor-notice[data-state=pending] .bot-executor-status-icon { animation:bot-executor-pulse 1.4s ease-in-out infinite; }
-.bot-executor-diagnostic { max-width:min(560px,100%);margin:4px 2px 5px;padding-top:7px;border-top:1px solid var(--ui-border-subtle);color:var(--ui-content-secondary);line-height:1.7;overflow-wrap:anywhere; }
+.bot-executor-diagnostic { max-width:min(560px,100%);max-height:min(180px,28vh);overflow-y:auto;margin:4px 2px 5px;padding-top:7px;border-top:1px solid var(--ui-border-subtle);color:var(--ui-content-secondary);line-height:1.7;overflow-wrap:anywhere; }
 @keyframes bot-executor-pulse { 50% { opacity:.4; } }
 @media (prefers-reduced-motion:reduce) { .bot-executor-notice[data-state=pending] .bot-executor-status-icon { animation:none; } }
 @media(max-width:720px) { .bot-executor-notice { margin-inline:10px;max-width:calc(100% - 20px); }.bot-executor-status-row { gap:5px; } }

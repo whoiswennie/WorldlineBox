@@ -1,18 +1,48 @@
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { lstat, mkdir, readdir, rename } from './disk';
 import path from 'node:path';
 import { dshRuntimeSchema, type DshRuntime } from '../../shared/dsh-launcher';
-import { assertOwnedDirectory, contained, copyTree, inventoryTree, readJson, removeManaged, type TreeInventory, type TreeHashCacheEntry, type TreeInventoryProgress, atomicJson } from './files';
+import { assertOwnedDirectory, contained, copyTree, inventoryTree, readJson, redact, removeManaged, type TreeInventory, type TreeHashCacheEntry, type TreeInventoryProgress, atomicJson } from './files';
 import type { OperationContext } from './operations';
 import type { HttpsDownloadFetch } from './https-download';
-import { atomicRuntimeJson, publishSealedArtifact, retryFileOperation } from './runtime-commit';
+import { atomicRuntimeJson, isFileBusyError, publishSealedArtifact, retryFileOperation } from './runtime-commit';
 import { canonicalRuntimeEntryPaths } from './runtime-paths';
 import type { DshNodePackRuntimeLock } from '../../shared/dsh-pack-runtime';
 import { prepareNodeRuntimeLockInstall,validatePortableNodeRuntimeLock } from './node-runtime-lock';
 import { nodeRuntimePayloadShaFromInventory } from './node-runtime-payload';
 import { prepareOfficialNodeRuntime, validateNodeRuntimeInventory, validateOfficialNodeProgram, validateOfficialNodeRelease, type NodeInstallNetwork, type NodeInstallTools, type NodeRuntimeReceipt, type NodeRuntimeInstallPreparation, type OfficialNodeRelease } from './node-runtime-service';
 import { RuntimeIntegrity } from './runtime-integrity';
-import { DshTaskPreparationError } from './task-preparation';
+import { DshTaskPreparationError, type DshTaskPreparationDiagnostic } from './task-preparation';
+
+function runtimeDifferences(sealed: TreeInventory, current: TreeInventory): NonNullable<DshTaskPreparationDiagnostic['differences']> {
+  const before = new Map(sealed.files.map(file => [file.path, file])), after = new Map(current.files.map(file => [file.path, file]));
+  const result: NonNullable<DshTaskPreparationDiagnostic['differences']> = { added: 0, missing: 0, changed: 0, paths: [] };
+  const record = (kind: 'added' | 'missing' | 'changed', relative: string) => {
+    result[kind]++;
+    if (result.paths.length < 8) result.paths.push({ kind, path: relative.replace(/\p{Cc}/gu, ' ').slice(0, 180) });
+  };
+  for (const file of sealed.files) {
+    const other = after.get(file.path);
+    if (!other) record('missing', file.path);
+    else if (other.size !== file.size || other.sha256 !== file.sha256) record('changed', file.path);
+  }
+  for (const file of current.files) if (!before.has(file.path)) record('added', file.path);
+  return result;
+}
+
+function isRuntimeSeal(value: unknown): value is TreeInventory {
+  if (!value || typeof value !== 'object') return false;
+  const seal = value as TreeInventory;
+  return typeof seal.contentSha256 === 'string' && /^[a-f0-9]{64}$/u.test(seal.contentSha256)
+    && Array.isArray(seal.files) && seal.files.length <= 150000 && seal.files.every(file => file && typeof file.path === 'string'
+      && file.path.length > 0 && file.path.length <= 2000 && typeof file.sha256 === 'string' && /^[a-f0-9]{64}$/u.test(file.sha256)
+      && Number.isSafeInteger(file.size) && file.size >= 0);
+}
+
+function isUnstableRuntime(error: unknown): boolean {
+  return error instanceof Error && /持续发生变化|File changed during integrity verification|目录在恢复监控时发生变化/u.test(error.message);
+}
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[];
@@ -83,30 +113,80 @@ export class RuntimeService implements RuntimeServiceLike {
     return receipt;
   }
   async verify(id: string, signal?: AbortSignal, force = false, observe?: (progress: TreeInventoryProgress) => void): Promise<void> {
-    const record = this.get(id);
+    const record = this.get(id), program = this.directory(id);
     try {
-      await this.integrity.verify(path.dirname(this.directory(id)), async () => {
-        const sealed = await readJson<TreeInventory>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
+      let fullScan = force;
+      const check = async () => {
+        let sealed: TreeInventory;
+        try {
+          const value = await readJson<unknown>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
+          if (!isRuntimeSeal(value)) throw new Error('Runtime seal is missing or malformed.');
+          sealed = value;
+        } catch (cause) {
+          if (typeof (cause as NodeJS.ErrnoException | undefined)?.code === 'string') throw cause;
+          throw new DshTaskPreparationError('integrity', '运行版本的校验清单无法读取或格式损坏，请修复该运行版本；实例数据未修改。',
+            { cause, diagnostic: { kind: 'manifest', runtimeId: id } });
+        }
         const cache = new Map<string, TreeHashCacheEntry>();
         const indexPath = path.join(this.options.rootPath, 'integrity', `${id}.json`);
-        const indexDirectory = path.dirname(indexPath); await mkdir(indexDirectory, { recursive: true }); await assertOwnedDirectory(this.options.rootPath, indexDirectory);
-        const stored = await lstat(indexPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
-        if (!force && stored?.isFile() && !stored.isSymbolicLink() && stored.size < 48 * 1024 * 1024) {
-          const index = await readJson<{ digest: string; entries: Array<[string, TreeHashCacheEntry]> }>(indexPath).catch(() => undefined);
-          if (index?.digest === record.contentSha256 && Array.isArray(index.entries) && index.entries.length <= 150000) {
-            const expected = new Map(sealed?.files.map(file => [file.path, file.sha256]));
-            for (const entry of index.entries) if (Array.isArray(entry) && entry.length === 2 && expected.get(entry[0]) === entry[1]?.sha256 && typeof entry[1]?.fingerprint === 'string' && entry[1].fingerprint.length < 300) cache.set(entry[0], entry[1]);
+        const indexDirectory = path.dirname(indexPath); let cacheWritable = false;
+        // Hash caching is advisory. Its permissions, corrupt JSON or an unsafe
+        // location must never turn a successful full check into "files changed".
+        try {
+          await mkdir(indexDirectory, { recursive: true }); await assertOwnedDirectory(this.options.rootPath, indexDirectory);
+          const stored = await lstat(indexPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+          cacheWritable = !stored || stored.isFile() && !stored.isSymbolicLink();
+          if (!fullScan && cacheWritable && stored && stored.size < 48 * 1024 * 1024) {
+            const index = await readJson<{ digest: string; entries: Array<[string, TreeHashCacheEntry]> }>(indexPath);
+            if (index?.digest === record.contentSha256 && Array.isArray(index.entries) && index.entries.length <= 150000) {
+              const expected = new Map(sealed.files.map(file => [file.path, file.sha256]));
+              for (const entry of index.entries) if (Array.isArray(entry) && entry.length === 2 && expected.get(entry[0]) === entry[1]?.sha256 && typeof entry[1]?.fingerprint === 'string' && entry[1].fingerprint.length < 300) cache.set(entry[0], entry[1]);
+            }
           }
+        } catch { cache.clear(); }
+        const current = await inventoryTree(program, AbortSignal.timeout(300000), undefined, cache, observe);
+        if (current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) {
+          const differences = runtimeDifferences(sealed, current), labels = { added: '新增', missing: '缺失', changed: '内容变化' };
+          if (!differences.added && !differences.missing && !differences.changed)
+            throw new DshTaskPreparationError('integrity', '运行文件与清单逐项一致，但校验清单摘要和登记版本不一致，请修复该版本的校验记录；尚未判定程序文件损坏，实例数据未修改。',
+              { cause: new Error('Runtime inventory metadata does not match the registered digest.'), diagnostic: { kind: 'manifest', runtimeId: id, differences } });
+          const detail = differences.paths.map(item => `${labels[item.kind]}：${item.path}`).join('；');
+          throw new DshTaskPreparationError('integrity', `运行文件发生变化或缺失（新增 ${differences.added}、缺失 ${differences.missing}、内容变化 ${differences.changed}）。${detail ? detail + '。' : '校验清单与登记版本不一致。'}请修复当前运行版本；伙伴插件、配置和会话数据未修改。`,
+            { cause: new Error('Runtime seal mismatch.'), diagnostic: { kind: 'files-changed', runtimeId: id, differences } });
         }
-        const current = await inventoryTree(this.directory(id), AbortSignal.timeout(300000), undefined, cache, observe);
-        if (!sealed || current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) throw new Error('Runtime seal mismatch.');
-        await atomicJson(indexPath, { digest: record.contentSha256, entries: current.files.map(file => [file.path, cache.get(file.path)]) });
-      }, signal, force);
+        if (cacheWritable) try {
+          await assertOwnedDirectory(this.options.rootPath, indexDirectory);
+          const destination = await lstat(indexPath).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
+          if (!destination || destination.isFile() && !destination.isSymbolicLink())
+            await atomicJson(indexPath, { digest: record.contentSha256, entries: current.files.map(file => [file.path, cache.get(file.path)]) });
+        } catch { /* A verified runtime remains valid if optional cache persistence fails. */ }
+      };
+      for (let attempt = 0; attempt < 2; attempt++) try {
+        await this.integrity.verify(path.dirname(program), check, signal, fullScan);
+        break;
+      } catch (error) {
+        if (attempt || signal?.aborted || error instanceof DshTaskPreparationError
+          || !(isUnstableRuntime(error) || process.platform === 'win32' && isFileBusyError(error))) throw error;
+        // Antivirus/sharing handles and monitor bursts can be transient. Retry
+        // once, then require fresh bytes; never retry a real seal mismatch.
+        await delay(100, undefined, { signal });
+        fullScan = true;
+      }
     } catch (error) {
       if (signal?.aborted) throw error;
-      if (error instanceof Error && error.name === 'TimeoutError') throw new DshTaskPreparationError('integrity', '运行文件完整性检查超时，请稍后重试；存档未修改。');
-      const message = 'DSH runtime files changed or are missing. Import a clean Web runtime; existing instance data is preserved.';
-      throw new DshTaskPreparationError('integrity', message);
+      if (error instanceof DshTaskPreparationError) throw error;
+      const wrap = (kind: DshTaskPreparationDiagnostic['kind'], message: string) => new DshTaskPreparationError('integrity', message,
+        { cause: error, diagnostic: { kind, runtimeId: id } });
+      if (error instanceof Error && error.name === 'TimeoutError') throw wrap('timeout', '运行文件完整性检查超时，请稍后重试；尚未判定文件损坏，实例数据未修改。');
+      if (isUnstableRuntime(error))
+        throw wrap('unstable', '校验期间运行目录持续变化，暂时无法确认完整性，请稍后重试；无需据此重装，实例数据未修改。');
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code === 'ENOENT' && [program, path.dirname(program)].includes(String((error as NodeJS.ErrnoException).path)))
+        throw wrap('files-changed', 'DSH 运行目录缺失，请修复当前运行版本；伙伴插件、配置和会话数据未修改。');
+      if (typeof code === 'string' && /^(?:EACCES|EPERM|EIO|EBUSY|EMFILE|ENFILE|ENOENT|ENOTDIR)$/u.test(code))
+        throw wrap('storage', `暂时无法读取 DSH 运行文件（${code}），请检查文件访问权限或占用后重试；尚未判定文件损坏，实例数据未修改。`);
+      const reason = redact(error instanceof Error ? error.message : String(error)).replace(/\p{Cc}/gu, ' ').slice(0, 240);
+      throw wrap('verification', `DSH 运行版本校验未完成：${reason}。请根据此原因重试；尚未判定文件损坏，实例数据未修改。`);
     }
   }
   close(): void { this.integrity.close(); }

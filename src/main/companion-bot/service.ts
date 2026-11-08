@@ -72,6 +72,8 @@ export interface BotServiceOptions {
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const executorPauseCause = (task:BotTask):'executor'|'executor-history'|undefined => task.status!=='paused'?undefined
+  :task.extra.executorPaused===true?'executor':task.extra.executorPaused!==false&&task.extra.executorInterruption&&typeof task.extra.executorInterruption==='object'?'executor-history':undefined;
 const MAX_WORKER_RUNS = 64;
 const workerSystem = `你是世界线盒子伙伴委派的DSH执行器。完成当前明确目标，验证实际产物。本任务会话可使用DSH完整原生工具和本机文件访问能力；这不是额外任务授权。严格遵守下面原始目标、用户明确限制和已提供事实，不擅自扩大范围；只读、不得删除、指定路径等约束始终有效。产物优先写入自己的任务工作区。遇到可依据原始目标和已知事实判断的执行细节，交由委派主脑回答；缺少用户偏好或新的操作授权时提出真实问题。不读取其他会话或伙伴记忆目录。不发送未经请求的外部消息。依据真实执行结果报告，未完成要说明。
 业务状态可通过worker_report结构化回传：progress表示阶段进展，waiting表示等待后续事件，blocked表示阻碍，failed表示确实失败，dropped表示无需继续，ready表示当前目标已完成。ready须说明实际verification依据，文字答复也可核验，不强制创建文件。需要回答时提出真实问题，不用一段最终正文假装工具仍在运行。正常结束且没有未决问题或外部操作时，宿主按原生执行结果结束任务，缺少报告不会制造等待状态。完成报告之后不要再修改产物；有新工作或跟进时沿原任务继续，并重新核验。子Agent不能代替根执行器提交业务完成报告。`;
@@ -1024,7 +1026,7 @@ export class BotService {
             const window = resolveBotModelLimits(model).window, headroom = Math.min(2048, Math.floor(window / 16));
             return fitsAppBrainRequest(appBrainRequest(model, system, [{ role: 'user', content: prompt }], BOT_TOOLS, true), { ...model, contextWindow: window - headroom });
           } : undefined,
-          tasks: tasks.filter(task => task.companionId === event.companionId && !withdrawnTasks.has(task.sourceEventId) && !this.store.taskSourcesWithdrawn(task.id)).slice(0, 12).map(task => this.taskRuntime.card(task)) });
+          tasks: tasks.filter(task => task.companionId === event.companionId && !withdrawnTasks.has(task.sourceEventId) && !this.store.taskSourcesWithdrawn(task.id)).slice(0, 12).map(task => ({...this.taskRuntime.card(task),pauseCause:executorPauseCause(task)})) });
         const body = JSON.parse(context.user) as { history: Array<{ id: string }> };
         dispatch = { nativeLaneId, system: context.system, taskFollowup, historyThroughSequence: contextThrough, deliveredMessageIds: body.history.map(message => message.id), prompt: handoffView
           ? JSON.stringify({ ...body, nativeHandoff: handoffView }) : context.user };
@@ -1083,8 +1085,7 @@ export class BotService {
       if (final) {
         this.ready = true; this.detail = undefined;
         if (status === 'done') {
-          try { this.remindDelegationReturn(event); if (this.store.observeGroupReply(event.id).length) this.scheduler.wake(); }
-          catch (error) { this.options.report?.(error); }
+          this.afterPublishedReply(event);
         }
       }
     } catch (error) {
@@ -1735,7 +1736,7 @@ export class BotService {
       if(ticket.state!=='active')throw new Error('已结束委派不能自动重开。');
       if(operation==='resume_paused'&&proxy.status!=='paused')throw new Error('只有暂停的委派可以恢复。');
       this.store.updateTask(proxy.id,{status:operation==='pause'?'paused':'running',extra:{...proxy.extra,pauseOrigin:operation==='pause'?'user':undefined,
-        userPaused:operation==='pause',pauseRequested:false,pausedAt:operation==='pause'?new Date().toISOString():undefined,progress:{phase:operation==='pause'?'paused':'running',detail:operation==='pause'?'用户已暂停协作。':'沿原协作任务继续。'}}});
+        userPaused:operation==='pause',delegationUserPaused:operation==='pause',delegationMirroredPause:false,pauseRequested:false,pausedAt:operation==='pause'?new Date().toISOString():undefined,progress:{phase:operation==='pause'?'paused':'running',detail:operation==='pause'?'用户已暂停协作。':'沿原协作任务继续。'}}});
     }
     for(const childId of childIds){const child=this.store.getTask(childId);if(!child||['succeeded','failed','cancelled'].includes(child.status))continue;
       if(operation==='resume_paused'&&child.status!=='paused')continue;
@@ -1752,8 +1753,15 @@ export class BotService {
   }
   /** One bounded event-driven reminder after an actual Router turn. This is
    * delivery recovery, never a new task, synthetic result, timer or self-chat. */
+  private afterPublishedReply(event:BotEvent):void{
+    try{this.remindDelegationReturn(event);}catch(error){this.options.report?.(error);}
+    // A delivery-reminder fault must never suppress a real published peer
+    // reply. The observer and the formal task notification are independent.
+    try{if(this.store.observeGroupReply(event.id).length)this.scheduler.wake();}catch(error){this.options.report?.(error);}
+  }
   private remindDelegationReturn(event:BotEvent):void{
     const ticket=this.delegations.forEvent(event);if(!ticket||ticket.state!=='active')return;
+    if(this.store.getTask(ticket.proxyTaskId)?.status==='paused')return;
     this.delegations.assertActive(ticket);
     const tasks=this.delegations.tasks(ticket.id);if(!tasks.length||this.delegations.controlledTasks(ticket.id).some(task=>!['succeeded','failed'].includes(task.status)||task.extra.removedAt||task.extra.humanStopped))return;
     const planIds=[...new Set(tasks.map(task=>task.extra.workflowId).filter((id):id is string=>typeof id==='string'))];
@@ -1769,6 +1777,24 @@ export class BotService {
       this.store.setMetadata(key,String(count+1));
     });this.scheduler.wake();this.changed(ticket.peerConversationId);
   }
+  private notifyDelegationPause(ticket:BotDelegationTicket,task:BotTask):void{
+    const source=this.store.getEvent(ticket.sourceEventId),proxy=this.store.getTask(ticket.proxyTaskId),room=this.store.getConversation(ticket.sourceConversationId);
+    if(!source||!proxy||!room||room.dissolvedAt||room.revision!==ticket.sourceAclRevision||this.store.taskSourcesWithdrawn(proxy.id)||this.store.taskSourcesWithdrawn(task.id))return;
+    const incident=task.extra.executorInterruption as {reason?:string;at?:string}|undefined;
+    const transition=String(task.extra.pausedAt??incident?.at??'legacy-pause');
+    const identity=digest(JSON.stringify([ticket.id,task.id,transition,task.extra.executorInterruptionCount??0,task.extra.pauseOrigin,task.extra.executorPaused===true]));
+    const key=`delegation-pause-notice:${ticket.id}:${task.id}`;if(this.store.getMetadata(key)===identity)return;
+    const detail=task.extra.progress&&typeof task.extra.progress==='object'?String((task.extra.progress as Record<string,unknown>).detail??'').slice(0,1000):'';
+    const recipient=this.store.getCompanion(task.companionId)?.name??'协作伙伴';
+    this.store.taskTransaction(()=>{
+      this.store.enqueueTaskNotice({conversationId:ticket.sourceConversationId,senderId:'task-service',senderName:'协作状态',source:'task',
+        sourceMessageId:`delegation-paused:${ticket.id}:${identity}`,recipientIds:[ticket.requesterId],kind:'task_progress',
+        content:`协作伙伴${recipient}的任务已暂停，尚未交回完成结果。${detail}${task.error?`\n执行环境提示：${task.error.slice(0,1000)}`:''}\n原委派和已有进展均已保留。请向当前用户或委派伙伴如实说明暂停原因；不要称已完成、等待回答或要求重复授权，不在本轮自动重建/重试任务。修复执行环境并明确继续后，沿原任务恢复。`,
+        correlationId:ticket.correlationId,causationId:source.id,payload:{taskId:ticket.proxyTaskId,delegationId:ticket.id,delegationTaskId:task.id,
+          delegationIncidentId:identity,delegationState:'paused',hop:derivedCause(source).hop}});
+      this.store.setMetadata(key,identity);
+    });this.scheduler.wake();this.changed(ticket.sourceConversationId);
+  }
   private refreshDelegations():void{
     const rows=this.store.taskTransaction(sql=>sql.prepare("SELECT id,rowid AS seq FROM bot_delegations WHERE rowid>? AND json_extract(record_json,'$.state')<>'completed' ORDER BY rowid LIMIT 32").all(this.delegationCursor)) as Array<{id:string;seq:number}>;
     this.delegationCursor=rows.at(-1)?.seq??0;
@@ -1778,15 +1804,21 @@ export class BotService {
       if(needsCleanup||invalid){if(this.delegationCleanup.size<4&&!this.delegationCleanup.has(ticket.id)){
         this.delegationCleanup.add(ticket.id);void this.controlDelegation(ticket,'cancel',undefined,`host-close:${ticket.id}`,{caller:'user'})
           .catch(error=>this.options.report?.(error)).finally(()=>this.delegationCleanup.delete(ticket.id));}continue;}
-      if(ticket.state!=='active'||proxy.status==='paused'||proxy.extra.cancelRequested)continue;
-      const tasks=this.delegations.tasks(ticket.id),active=tasks.find(task=>task.status==='running')??tasks.find(task=>task.status==='waiting')??tasks.find(task=>task.status==='paused');
+      const explicitPause=proxy.extra.delegationUserPaused===true||proxy.extra.userPaused===true&&proxy.extra.delegationMirroredPause!==true;
+      if(ticket.state!=='active'||proxy.status==='paused'&&explicitPause||proxy.extra.cancelRequested)continue;
+      const tasks=this.delegations.tasks(ticket.id),active=tasks.find(task=>task.status==='running')??tasks.find(task=>task.status==='waiting')??tasks.find(task=>task.status==='paused')??tasks.find(task=>task.status==='queued');
+      const executorCause=active&&executorPauseCause(active),pausedDetail=active?.status==='paused'&&active.extra.progress&&typeof active.extra.progress==='object'?String((active.extra.progress as Record<string,unknown>).detail??'').slice(0,1000):'';
       const question=active&&this.taskRuntime.attention(active.id),questionText=question?.state==='queued'?question.questions.map(item=>item.question).join('\n').slice(0,4000):undefined;
-      const progress={phase:active?.status==='paused'?'paused':active?.status==='waiting'?'waiting':active?'running':'queued',
-        detail:`${this.store.getCompanion(ticket.recipientId)?.name??'协作伙伴'} · ${tasks.filter(task=>task.status==='succeeded').length}/${tasks.length} 个执行任务已完成${questionText?'，需要补充信息：'+questionText:tasks.length&&!active?'，等待伙伴交回成果。':'。'}`};
-      if(JSON.stringify(proxy.extra.progress)===JSON.stringify(progress))continue;
-      this.store.updateTask(proxy.id,{status:active?.status==='paused'?'paused':active?.status==='waiting'?'waiting':tasks.length?'running':'queued',...(questionText?{summary:questionText}:proxy.extra.delegationQuestionId?{summary:''}:{}),extra:{...proxy.extra,progress,
-        delegationQuestionId:questionText?question!.id:undefined,
-        ...(active?.status==='paused'?{pauseOrigin:active.extra.pauseOrigin??'router'}:{})}});this.changed(proxy.conversationId);
+      const mirroredPause=active?.status==='paused',status=mirroredPause?'paused':active?.status==='waiting'?'waiting':active?.status==='queued'?'queued':tasks.length?'running':'queued';
+      const progress={phase:active?.status==='paused'?'paused':active?.status==='waiting'?'waiting':active?.status==='queued'?'queued':active?'running':'queued',
+        detail:`${this.store.getCompanion(ticket.recipientId)?.name??'协作伙伴'} · ${tasks.filter(task=>task.status==='succeeded').length}/${tasks.length} 个执行任务已完成${questionText?'，需要补充信息：'+questionText:pausedDetail?'，已暂停：'+pausedDetail:tasks.length&&!active?'，等待伙伴交回成果。':'。'}`};
+      if(JSON.stringify(proxy.extra.progress)!==JSON.stringify(progress)||proxy.status!==status||proxy.extra.delegationMirroredPause!==mirroredPause||proxy.extra.executorPaused!==!!executorCause||proxy.extra.userPaused!==false){
+        this.store.updateTask(proxy.id,{status,...(questionText?{summary:questionText}:proxy.extra.delegationQuestionId?{summary:''}:{}),extra:{...proxy.extra,progress,
+          delegationQuestionId:questionText?question!.id:undefined,userPaused:false,delegationMirroredPause:mirroredPause,executorPaused:!!executorCause,
+          ...(active?.status==='paused'?{pauseOrigin:active.extra.pauseOrigin??'router',pausedAt:active.extra.pausedAt??proxy.extra.pausedAt??new Date().toISOString()}
+            :{pauseOrigin:undefined,pausedAt:undefined,pauseRequestedAt:undefined})}});this.changed(proxy.conversationId);
+      }
+      for(const child of this.delegations.controlledTasks(ticket.id))if(child.status==='paused'&&!child.extra.removedAt&&!child.extra.cancelRequested)this.notifyDelegationPause(ticket,child);
       if(questionText){const source=this.store.getEvent(ticket.sourceEventId)!;this.store.enqueueTaskNotice({conversationId:proxy.conversationId,senderId:'task-service',senderName:'协作进展',source:'task',
         sourceMessageId:`delegation-question:${ticket.id}:${question!.id}`,recipientIds:[proxy.companionId],kind:'task_progress',content:`协作伙伴需要原任务的补充信息：\n${questionText}\n已有事实可通过companion_delegation.send交给对方主脑；缺少用户偏好或授权再询问用户。`,
         correlationId:ticket.correlationId,causationId:source.id,payload:{taskId:proxy.id,delegationId:ticket.id,delegationTaskId:active!.id,delegationQuestionId:question!.id,hop:1}});this.scheduler.wake();}
@@ -2145,7 +2177,7 @@ export class BotService {
     const current = this.store.getTask(task.id); if (!current || ['paused', 'succeeded', 'failed', 'cancelled'].includes(current.status)) return;
     const now = new Date().toISOString(), interruptionCount = Number(current.extra.executorInterruptionCount ?? 0) + 1;
     this.store.updateTask(task.id, { status: 'paused', error, extra: { ...current.extra,
-      pauseOrigin: 'user', userPaused: true, pauseRequested: false, pauseRecoveryPaused: false,
+      pauseOrigin: 'router', userPaused: false, executorPaused: true, pauseRequested: false, pauseRecoveryPaused: false,
       pausedAt: now, pauseRequestedAt: now, retryAt: 0, hostResumeRequested: false,
       ...(reason === 'interrupted' && current.extra.nativeAttempted === true ? {
         executorControl: { kind: 'pause', requestedAt: now, state: 'pending', attempts: 0, retryAt: 0, workspaceLayout: current.extra.workspaceLayout },
@@ -2154,7 +2186,7 @@ export class BotService {
     const source = this.store.getEvent(current.sourceEventId);
     if (source) this.store.enqueueTaskNotice({ conversationId: current.conversationId, senderId: 'task-service', senderName: '任务回执', source: 'task',
       sourceMessageId: `task-executor-paused:${current.id}:${interruptionCount}`, recipientIds: [current.companionId], kind: 'task_progress',
-      content: `任务 ${current.id} 已暂停。${detail}${error ? `\n执行环境提示：${error.slice(0, 1000)}` : ''}\n不会自动重新派发；等待用户明确继续。`,
+      content: `任务 ${current.id} 因执行环境问题已暂停。${detail}${error ? `\n执行环境提示：${error.slice(0, 1000)}` : ''}\n不会自动重新派发；修复执行环境并明确继续后沿原任务恢复。请如实传达状态，不要求重复授权，也不在本轮自动重试。`,
       correlationId: source.correlationId, causationId: source.id, payload: { taskId: current.id, hop: derivedCause(source).hop } });
     this.scheduler.wake(); this.changed(task.conversationId);
   }
@@ -2198,6 +2230,8 @@ export class BotService {
     }
     if (operation === 'cancel' && !userControl && !routerControl) throw new Error('主脑只能管理当前聊天中自己的有效任务。');
     if (task.extra.delegationProxy === true && typeof task.extra.externalDelegationId === 'string') {
+      if(operation==='resume_paused'&&!userControl&&task.extra.executorPaused===true)throw new Error('执行环境暂停需先修复环境，再由用户或伙伴明确继续；后台回执不会自动重试。');
+      if(operation==='resume_paused'&&!userControl&&(task.extra.delegationUserPaused===true||task.extra.userPaused===true&&task.extra.delegationMirroredPause!==true))throw new Error('用户暂停的协作只能由用户或伙伴的明确继续请求恢复。');
       const ticket=this.delegations.get(task.extra.externalDelegationId);if(!ticket)throw new Error('委派缺少持久记录。');
       return this.controlDelegation(ticket,operation,text,messageId,input);
     }
@@ -2233,6 +2267,7 @@ export class BotService {
       if (current.extra.cancelRequested) throw new Error('任务正在停止，不能改为暂停或继续。');
       if (operation === 'resume_paused') {
         if (current.status !== 'paused') throw new Error('只有已暂停的任务可以继续。');
+        if(!userControl&&current.extra.executorPaused===true)throw new Error('执行环境暂停需先修复环境，再由用户或伙伴明确继续；后台回执不会自动重试。');
         if (!userControl && (current.extra.pauseOrigin !== 'router' || current.extra.userPaused === true || current.extra.humanStopped === true)) throw new Error('用户暂停的任务只能由用户明确恢复。');
         this.store.taskTransaction(() => {
           const control = current.extra.executorControl as ExecutorControl | undefined;
@@ -2242,7 +2277,7 @@ export class BotService {
           const pendingControls=current.extra.nativeAttempted!==true&&!pending.length?[]:combined.length<=16000?[{id:resumed.id,text:combined}]:[...pending,resumed];
           this.store.updateTask(task.id, { status: 'queued', extra: { ...current.extra, userPaused: false, pauseRequested: false, pauseRecoveryPaused: false, pauseRecoveryAttempts: 0, retryAt: 0,
             pendingControls,
-            pauseRequestedAt: undefined, pausedAt: undefined, retryAttempts: 0, executorInterruption: undefined,
+            pauseRequestedAt: undefined, pausedAt: undefined, retryAttempts: 0, executorInterruption: undefined, executorPaused: false,
             hostResumeRequested: userControl,
             ...(control && control.state !== 'acknowledged' ? { executorControl: { ...control, state: 'pending', attempts: 0, retryAt: 0 } } : {}),
             ...(Number.isSafeInteger(current.extra.outputCheckpoint) ? { continueAfterSeq: current.extra.outputCheckpoint, outputCheckpoint: undefined } : {}),
@@ -2252,7 +2287,7 @@ export class BotService {
       } else {
         if (current.status === 'paused') {
           if (userControl && current.extra.pauseOrigin === 'router') {
-            this.store.updateTask(task.id, { extra: { ...current.extra, pauseOrigin: 'user', userPaused: true } });
+            this.store.updateTask(task.id, { extra: { ...current.extra, pauseOrigin: 'user', userPaused: true, executorPaused: false } });
             this.changed(task.conversationId);
           }
           return { taskId: task.id, status: 'paused', accepted: true, meaning: '任务已经暂停。' };
@@ -2260,6 +2295,7 @@ export class BotService {
         this.store.taskTransaction(() => {
           const now = new Date().toISOString();
           this.store.updateTask(task.id, { extra: { ...current.extra, pauseRequested: true, pauseRequestedAt: now, pauseOrigin: userControl ? 'user' : 'router',
+            executorPaused: false,
             executorControl: { kind: 'pause', requestedAt: now, state: current.extra.nativeAttempted === true ? 'pending' : 'acknowledged', attempts: 0, retryAt: 0, workspaceLayout: current.extra.workspaceLayout },
             pauseRecoveryAttempts: 0, pauseRecoveryPaused: false, retryAt: 0 } });
           this.store.setMetadata(key, JSON.stringify({ acceptedAt: new Date().toISOString() }));

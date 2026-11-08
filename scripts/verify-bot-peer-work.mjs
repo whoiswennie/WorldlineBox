@@ -10,7 +10,7 @@ import { removeAcceptanceRoot } from './bot-acceptance-cleanup-lib.mjs';
 
 if (!process.argv.includes('--real')) throw Error('Pass --real explicitly. This isolated model-routing acceptance permits at most 12 configured-provider POST requests.');
 const scenario = process.argv.find(value => value.startsWith('--scenario='))?.split('=')[1] ?? 'all';
-if (!['all', 'requester-delegates-weather', 'recipient-executes-user-direct', 'recipient-returns-worker-result', 'peer-participant-executes', 'recipient-return-reminder'].includes(scenario)) throw Error('Unknown peer-work scenario.');
+if (!['all', 'requester-delegates-weather', 'recipient-executes-user-direct', 'recipient-returns-worker-result', 'peer-participant-executes', 'recipient-return-reminder', 'requester-receives-environment-pause', 'peer-acknowledges-environment-pause'].includes(scenario)) throw Error('Unknown peer-work scenario.');
 const priorResult = process.argv.find(value => value.startsWith('--prior-result='))?.slice('--prior-result='.length);
 const maximumPosts = Number(process.argv.find(value => value.startsWith('--max-posts='))?.split('=')[1] ?? 12);
 if (!Number.isInteger(maximumPosts) || maximumPosts < 1 || maximumPosts > 12) throw Error('Provider request budget must be within 1..12.');

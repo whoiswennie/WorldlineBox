@@ -55,7 +55,7 @@ describe('fixed DSH runtime inventory', () => {
     await service.verify(runtime.id);
     const sourceSeal = await inventoryTree(a);
     await writeFile(path.join(service.directory(runtime.id), 'bin/node.exe'), 'modified');
-    await expect(service.verify(runtime.id)).rejects.toThrow('changed');
+    await expect(service.verify(runtime.id)).rejects.toThrow('运行文件发生变化或缺失');
     expect((await inventoryTree(a)).contentSha256).toBe(sourceSeal.contentSha256);
     await expect(service.delete(runtime.id, true)).rejects.toThrow('引用');
     const relaunched = new RuntimeService({ rootPath: path.join(root, 'manager'), onChanged: () => undefined });
