@@ -8,10 +8,10 @@ import type { DshInstance, DshLauncherResponse, DshLauncherState, WorldlineBoxDs
 Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true});
 let root:Root|undefined,host:HTMLDivElement;
 afterEach(async()=>{await act(()=>root?.unmount());host?.remove();root=undefined;});
-const instance:DshInstance={id:'default',name:'我的 DSH',runtimeId:'runtime',createdAt:'now',updatedAt:'now',profile:'web',status:'stopped',homePath:'home',agentsPath:'agents',workspacePath:'workspace',browserPartition:'default',isDefault:true};
+const instance:DshInstance={id:'default',name:'我的 DSH',runtimeId:'runtime',createdAt:'now',updatedAt:'now',profile:'web',status:'stopped',homePath:'home',agentsPath:'agents',workspacePath:'workspace',browserPartition:'default',isDefault:false,companionId:'alice'};
 const state=(status:DshInstance['status']='stopped'):DshLauncherState=>({supported:true,rootPath:'fixture',runtimes:[],instances:[{...instance,status}],snapshots:[],packs:[],operations:[]});
 function deferred(){let resolve!:(value:DshLauncherResponse)=>void;return{promise:new Promise<DshLauncherResponse>(done=>{resolve=done;}),resolve:(value:DshLauncherResponse)=>resolve(value)};}
-async function mount(handler:WorldlineBoxDshLauncherApi['request'],companionIds?:string[]){
+async function mount(handler:WorldlineBoxDshLauncherApi['request'],companionIds:string[]=['alice']){
   let change:(value:DshLauncherState)=>void=()=>undefined;
   const request=vi.fn(handler),open=vi.fn(),unsubscribe=vi.fn();
   const api:WorldlineBoxDshLauncherApi={request,onChanged:listener=>{change=listener;return unsubscribe;}};
@@ -23,7 +23,7 @@ async function click(label:string){const button=[...host.querySelectorAll('butto
 it('shows the stopped default instance with a working start button and accepts the returned running state',async()=>{
   const f=await mount(async request=>({ok:true,state:state(request.type==='instance.start'?'running':'stopped')}));
   expect(host.textContent).toContain('DSH 未启动');await click('前往启动器');expect(f.open).toHaveBeenCalledOnce();
-  expect(host.querySelector('.bot-executor-status-label')?.getAttribute('title')).toContain('聊天可照常');
+  expect(host.querySelector('.bot-executor-status-label')?.getAttribute('title')).toContain('已绑定专属实例');
   expect(host.querySelector('small')).toBeNull();
   await click('启动');expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});expect(host.textContent).toBe('');
 });

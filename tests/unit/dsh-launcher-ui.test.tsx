@@ -197,6 +197,23 @@ it('requests an upgrade copy without changing the source runtime', async () => {
   expect(f.state().instances[0]!.runtimeId).toBe('runtime-a');
 });
 
+it('upgrades a bound character in place and explains preservation without creating an unbound copy', async () => {
+  const own = { ...instance('instance-a', '大肥鱼的能力环境'), companionId: 'builtin-dafeiyu', companionName: '大肥鱼', isDefault: false };
+  const f = fixture([], { instances: [own] });
+  await mount(f.api);
+  await click('升级角色实例');
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain('保留插件、技能、配置');
+  expect(dialog.textContent).toContain('自动回退');
+  expect(dialog.querySelector('input')).toBeNull();
+  expect(button('保存', dialog).disabled).toBe(true);
+  await act(() => dialog.querySelector<HTMLButtonElement>('[role="combobox"]')!.click());
+  await act(() => document.querySelector<HTMLButtonElement>('[role="option"][data-value="runtime-b"]')!.click());
+  await click('保存', dialog);
+  expect(f.request).toHaveBeenCalledWith({ type: 'companion.environment.upgrade', companionId: 'builtin-dafeiyu', name: '大肥鱼', runtimeId: 'runtime-b' });
+  expect(f.request.mock.calls.some(([input]) => input.type === 'instance.clone')).toBe(false);
+});
+
 it('requires a concrete credentials notice before exporting a full backup', async () => {
   const f = fixture();
   await mount(f.api);

@@ -32,7 +32,7 @@ export const dshInstanceSchema = z.object({
   lastError: z.string().optional(), lastExitCode: z.number().nullable().optional(),
   parentInstanceId: id.optional(), isDefault: z.boolean(),
   restartRequired: z.boolean().optional(),
-  /** Stable owner of an automatically managed, private native plugin environment. */
+  /** Exclusive owner, set only after an explicit create/bind confirmation. */
   companionId: z.string().min(1).max(160).optional(), companionName: name.optional(), keepAlive: z.boolean().optional(),
 });
 export type DshInstance = z.infer<typeof dshInstanceSchema>;
@@ -146,6 +146,8 @@ export type DshLauncherState = z.infer<typeof dshLauncherStateSchema>;
 export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }),
   z.strictObject({ type: z.literal('companion.environment.state'), companionId: z.string().min(1).max(160), name }),
+  z.strictObject({ type: z.literal('companion.environment.create'), companionId: z.string().min(1).max(160), name, runtimeId: id }),
+  z.strictObject({ type: z.literal('companion.environment.bind'), companionId: z.string().min(1).max(160), name, instanceId: id }),
   z.strictObject({ type: z.literal('companion.environment.ensure'), companionId: z.string().min(1).max(160), name }),
   z.strictObject({ type: z.literal('companion.environment.open'), companionId: z.string().min(1).max(160), name }),
   z.strictObject({ type: z.literal('companion.environment.capabilities'), companionId: z.string().min(1).max(160), name,

@@ -5041,9 +5041,11 @@ async function startApplication(): Promise<void> {
     if (!applicationNetwork) throw new Error('Application network policy is unavailable.');
     const { DshLauncher: LauncherService } = await import('./dsh/launcher');
     dshLauncher = new LauncherService(() => mainWindow, error => logger?.error('dsh.launcher.initialization', error), applicationNetwork, () => botService?.executionCapabilitiesChanged(), progress => {
-      logger?.info('dsh.bot.preparation', 'Shared DSH preparation changed.', { instanceId: progress.instanceId, phase: progress.phase, elapsedMs: progress.elapsedMs });
+      logger?.info('dsh.bot.preparation', 'DSH instance preparation changed.', { instanceId: progress.instanceId, phase: progress.phase, elapsedMs: progress.elapsedMs });
       botService?.runtimePreparationChanged();
-    }, instanceId => botService?.workerInstanceStopped(instanceId));
+    }, instanceId => botService?.workerInstanceStopped(instanceId), companionId => {
+      if (!botService?.store.getCompanion(companionId)) throw new Error('角色不存在或角色资料尚未加载，请返回伙伴界面后重试。');
+    });
     dshLauncher.registerIpc();
   } catch (error) {
     logger.error('dsh.launcher.initialization', error);
@@ -5162,8 +5164,24 @@ async function startApplication(): Promise<void> {
       });
       const capacity = currentBotModel().limits.window;
       botService = new BotService({ root, brain, brainRuntime: 'worldlinebox', prewarmMemory: true, memory, media,
+        ensureCompanionBindings: async ids => {
+          if (!launcher) throw Object.assign(new Error('DSH 启动器尚未就绪，请先为角色绑定独立执行环境。'), { code: 'BOT_COMPANION_INSTANCE_REQUIRED' });
+          for (const id of new Set(ids)) {
+            const companion = botService?.store.getCompanion(id);
+            if (!companion) throw new Error('角色不存在。');
+            const instance = await launcher.resolveCompanionInstance(id, companion.name).catch(cause => {
+              throw Object.assign(new Error(`请先为「${companion.name}」绑定独立 DSH 实例；可选择已有空闲实例，或选择已安装的版本并确认创建。`, { cause }),
+                { code: 'BOT_COMPANION_INSTANCE_REQUIRED', companionId: id });
+            });
+            const state = launcher.companionCapabilityState(id);
+            if (!state.configured || state.mode !== 'private') throw Object.assign(
+              new Error(`请先为「${companion.name}」绑定独立 DSH 实例；可选择已有空闲实例，或选择已安装的版本并确认创建。`),
+              { code: 'BOT_COMPANION_INSTANCE_REQUIRED', companionId: id });
+            if (instance.companionId !== id) throw Object.assign(new Error(`「${companion.name}」的 DSH 实例绑定已失效，请重新绑定。`), { code: 'BOT_COMPANION_INSTANCE_REQUIRED', companionId: id });
+          }
+        },
         capabilityState: companionId => launcher?.companionCapabilityState(companionId)
-          ?? { configured: false, mode: 'shared', revision: 'unavailable' },
+          ?? { configured: false, mode: 'private', revision: 'unavailable' },
         capabilities: async (companionId, query, signal) => {
           if (!launcher) throw new Error('DSH 启动器尚未就绪。');
           const companion = botService?.store.getCompanion(companionId);

@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { InstanceService } from '../../src/main/dsh/instance-service';
@@ -192,6 +192,82 @@ it('creates each companion environment once on demand while sharing immutable ru
   expect(JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8')).filter((value: { companionId?: string }) => value.companionId)).toHaveLength(2);
   expect(f.service.get(base.id).status).toBe('stopped');
 });
+it('creates a private instance only from the selected runtime and rejects duplicate provisioning', async () => {
+  const f = await fixture();
+  const creating = f.service.createCompanion('fish', '大肥鱼', 'runtime-b');
+  await expect(f.service.createCompanion('fish', '大肥鱼', 'runtime-a')).rejects.toThrow('正在保存');
+  const own = await creating;
+  expect(own).toMatchObject({ companionId: 'fish', companionName: '大肥鱼', name: '大肥鱼 的能力环境', runtimeId: 'runtime-b', isDefault: false, status: 'stopped' });
+  await expect(f.service.createCompanion('fish', '大肥鱼', 'runtime-a')).rejects.toThrow('已绑定');
+  await expect(f.service.createCompanion('gpt', 'GPT', 'missing-runtime')).rejects.toThrow('请选择');
+  expect(f.service.list()).toHaveLength(1); expect(f.verify).not.toHaveBeenCalled();
+  const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
+  expect(restored.companion('fish')).toMatchObject({ id: own.id, runtimeId: 'runtime-b', homePath: own.homePath });
+  expect(restored.companion('gpt')).toBeUndefined();
+});
+it('claims an existing unowned default instance exclusively without altering its files, name or native identity', async () => {
+  const f = await fixture(), selected = await f.service.create('用户手动建的实例', 'runtime-a');
+  const other = await f.service.create('尚未分配', 'runtime-b');
+  await writeFile(path.join(selected.homePath, 'native-plugin.json'), 'existing customized plugin settings');
+  const own = await f.service.bindCompanion('fish', '大肥鱼', selected.id);
+  expect(own).toMatchObject({ ...selected, companionId: 'fish', companionName: '大肥鱼', isDefault: false, keepAlive: false, updatedAt: expect.any(String) });
+  expect(f.service.get(other.id).isDefault).toBe(true);
+  expect(await readFile(path.join(own.homePath, 'native-plugin.json'), 'utf8')).toBe('existing customized plugin settings');
+  await expect(f.service.bindCompanion('gpt', 'GPT', selected.id)).rejects.toThrow('其他角色');
+  await expect(f.service.bindCompanion('fish', '大肥鱼', other.id)).rejects.toThrow('已绑定');
+  expect((await f.service.bindCompanion('fish', '大肥鱼', selected.id)).id).toBe(own.id);
+  const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
+  expect(restored.companion('fish')).toMatchObject({ id: selected.id, name: selected.name, browserPartition: selected.browserPartition });
+  expect(restored.companion('gpt')).toBeUndefined(); expect(restored.list()).toHaveLength(2);
+});
+it('serializes competing claims and rejects binding an environment while a worker or Host holds it', async () => {
+  const f = await fixture(), selected = await f.service.create('待分配', 'runtime-a');
+  const release = f.service.acquireCompanionLease(selected.id, 'task');
+  await expect(f.service.bindCompanion('fish', '大肥鱼', selected.id)).rejects.toThrow('Stop this instance'); release();
+  await f.service.ensureHost(selected.id);
+  await expect(f.service.bindCompanion('fish', '大肥鱼', selected.id)).rejects.toThrow('Stop this instance');
+  await f.service.stop(selected.id);
+  const claims = await Promise.allSettled([f.service.bindCompanion('fish', '大肥鱼', selected.id), f.service.bindCompanion('gpt', 'GPT', selected.id)]);
+  expect(claims.map(value => value.status)).toEqual(['fulfilled', 'rejected']);
+  const registry = JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'));
+  expect(registry).toHaveLength(1); expect(registry[0]).toMatchObject({ companionId: 'fish', isDefault: false });
+  expect(f.service.companion('gpt')).toBeUndefined();
+});
+it('publishes neither a new nor an existing role binding before the registry commit finishes', async () => {
+  const f = await fixture(), selected = await f.service.create('未分配', 'runtime-a');
+  let release!: () => void;
+  Reflect.set(f.service, 'writes', new Promise<void>(resolve => { release = resolve; }));
+  const bind = f.service.bindCompanion('fish', '大肥鱼', selected.id);
+  const create = f.service.createCompanion('gpt', 'GPT', 'runtime-b');
+  await new Promise(resolve => setTimeout(resolve, 25));
+  expect(f.service.companion('fish')).toBeUndefined(); expect(f.service.companion('gpt')).toBeUndefined();
+  expect(f.service.get(selected.id).isDefault).toBe(true); expect(f.service.list()).toHaveLength(1);
+  release(); await Promise.all([bind, create]);
+  const registry = JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'));
+  expect(registry.map((value: { companionId: string }) => value.companionId).sort()).toEqual(['fish', 'gpt']);
+});
+it('leaves no ownership or orphan environment when a registry write fails, and can retry after repair', async () => {
+  const f = await fixture(), selected = await f.service.create('未分配', 'runtime-a');
+  const registry = path.join(f.root, 'native-instances.json'), backup = path.join(f.root, 'registry-before.json');
+  await rename(registry, backup); await mkdir(registry);
+  await expect(f.service.bindCompanion('fish', '大肥鱼', selected.id)).rejects.toThrow();
+  await expect(f.service.createCompanion('gpt', 'GPT', 'runtime-b')).rejects.toThrow();
+  expect(f.service.companion('fish')).toBeUndefined(); expect(f.service.companion('gpt')).toBeUndefined();
+  expect(f.service.list()).toHaveLength(1); expect(f.service.get(selected.id).isDefault).toBe(true);
+  expect(await readdir(path.join(f.root, 'instances'))).toEqual([selected.id]);
+  await rm(registry, { recursive: true }); await rename(backup, registry);
+  expect((await f.service.bindCompanion('fish', '大肥鱼', selected.id)).companionId).toBe('fish');
+  expect((await f.service.createCompanion('gpt', 'GPT', 'runtime-b')).companionId).toBe('gpt');
+});
+it('does not persist a new role environment when shutdown interrupts its uncommitted creation', async () => {
+  const f = await fixture();
+  let release!: () => void;
+  Reflect.set(f.service, 'writes', new Promise<void>(resolve => { release = resolve; }));
+  const creating = f.service.createCompanion('fish', '大肥鱼', 'runtime-a');
+  const rejected = expect(creating).rejects.toThrow('closing');
+  const closing = f.service.shutdown(); release(); await Promise.all([closing, rejected]);
+  expect(f.service.list()).toHaveLength(0); expect(await readdir(path.join(f.root, 'instances'))).toHaveLength(0);
+});
 it('recycles only private environments with no leases and a complete native idle proof', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
   const client = await f.service.ensureHost(own.id), release = f.service.acquireCompanionLease(own.id, 'task');
@@ -254,16 +330,20 @@ it('treats the private Host cache size as a soft target and never kills held wor
   for (const release of releases) release();
 });
 it('upgrades the same private environment and preserves plugin configuration, sessions, media and workspace', async () => {
-  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a');
+  const selected = await f.service.create('用户预先配置的环境', 'runtime-a');
+  const own = await f.service.bindCompanion('partner-a', '甲', selected.id);
   await f.service.ensureHost(own.id);
-  const data = ['profiles/web/private-plugin.json', 'sessions/session-1.json', 'attachments/picture.png', 'storages/qq/message.json'];
+  const data = ['profiles/web/private-plugin.json', 'profiles/web/pnpm-lock.yaml', 'sessions/session-1.json', 'attachments/picture.png', 'storages/qq/message.json'];
   for (const relative of data) { const target = path.join(own.homePath, relative); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, relative); }
   await writeFile(path.join(own.agentsPath, 'agent.json'), 'agent-settings'); await writeFile(path.join(own.workspacePath, 'result.txt'), 'work');
+  const skill = path.join(own.agentsPath, 'skills', 'private-research', 'SKILL.md'); await mkdir(path.dirname(skill), { recursive: true }); await writeFile(skill, '# Only this companion\nNative skill configuration.');
   await f.service.upgradeCompanion(own.id, 'runtime-b', upgradeOperation());
   expect(f.service.get(own.id)).toMatchObject({ id: own.id, companionId: 'partner-a', runtimeId: 'runtime-b', homePath: own.homePath, browserPartition: own.browserPartition });
   for (const relative of data) expect(await readFile(path.join(own.homePath, relative), 'utf8')).toBe(relative);
   expect(await readFile(path.join(own.agentsPath, 'agent.json'), 'utf8')).toBe('agent-settings');
   expect(await readFile(path.join(own.workspacePath, 'result.txt'), 'utf8')).toBe('work');
+  expect(await readFile(skill, 'utf8')).toBe('# Only this companion\nNative skill configuration.');
   expect(await (await f.service.ensureHost(own.id)).request('/health')).toMatchObject({ version: '0.2.1', home: own.homePath });
   expect(f.service.snapshots()).toHaveLength(1); expect(f.service.snapshots()[0]!.runtimeId).toBe('runtime-a');
   expect(f.service.get(base.id).runtimeId).toBe('runtime-a');

@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it } from 'vitest';
+import { botUiPrivateLauncher } from '../fixtures/bot-ui-private-launcher';
 import { BotWorkspace } from '../../src/renderer/companion-bot/BotWorkspace';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import type { BotRequest, BotResponse, BotSnapshot } from '../../src/shared/companion-bot';
@@ -20,7 +21,7 @@ function deferred<T>() { let resolve!: (value: T) => void; return { promise: new
 async function mount(mediaHandler: (request: BotMediaRequest) => Promise<BotMediaResponse>, sendHandler: (request: BotRequest) => Promise<BotResponse> = async () => ({ ok: true }), snapshot = base, mediaOptions:Partial<WorldlineBoxBotMediaApi>={}) {
   const requests: BotRequest[] = [], mediaRequests: BotMediaRequest[] = [];
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(async () => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace onOpenSettings={() => undefined}
+  await act(async () => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace launcherApi={botUiPrivateLauncher(['alice', 'bob', 'carol'])} onOpenSettings={() => undefined}
     api={{ onEvent: () => () => undefined, request: async request => { requests.push(request); return request.type === 'state' ? { ok: true, snapshot: { ...snapshot, messages: snapshot.messages.filter(message => message.conversationId === request.conversationId) } } : sendHandler(request); } }}
     mediaApi={{ getDroppedFilePaths: () => [], request: async request => { mediaRequests.push(request); return mediaHandler(request); },...mediaOptions }} /></LocaleProvider>));
   return { requests, mediaRequests };

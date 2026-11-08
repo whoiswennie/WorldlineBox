@@ -35,7 +35,8 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState('1.0.0');
   useDialogFocusTrap(true);
-  const naming = ['create', 'rename', 'clone', 'upgrade', 'snapshot', 'restore', 'import', 'pack-create', 'pack-install'].includes(dialog.kind);
+  const privateUpgrade = dialog.kind === 'upgrade' && !!dialog.instance.companionId;
+  const naming = !privateUpgrade && ['create', 'rename', 'clone', 'upgrade', 'snapshot', 'restore', 'import', 'pack-create', 'pack-install'].includes(dialog.kind);
   const runtimeSelection = dialog.kind === 'create' || dialog.kind === 'upgrade';
   const destructive = dialog.kind.startsWith('delete-') || dialog.kind === 'cleanup-runtimes';
   const title = (() => {
@@ -44,7 +45,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
       case 'create': return t('launcher.create');
       case 'rename': return t('launcher.rename');
       case 'clone': return t('launcher.clone');
-      case 'upgrade': return t('launcher.upgrade');
+      case 'upgrade': return t(privateUpgrade ? 'launcher.upgradeCompanion' : 'launcher.upgrade');
       case 'snapshot': return t('launcher.snapshotCreate');
       case 'restore': return t('launcher.snapshotRestore');
       case 'import': return t('launcher.importBackup');
@@ -62,7 +63,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
       case 'cleanup-runtimes': return t('launcher.runtimeCleanupDescription');
       case 'create': return t('launcher.createDescription');
       case 'clone': return t('launcher.cloneDescription');
-      case 'upgrade': return t('launcher.upgradeDescription');
+      case 'upgrade': return t(privateUpgrade ? 'launcher.upgradeCompanionDescription' : 'launcher.upgradeDescription');
       case 'snapshot': return t('launcher.snapshotNote');
       case 'restore': return t('launcher.restoreDescription');
       case 'import': return t('launcher.importDescription');
@@ -84,7 +85,10 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
       case 'create': request = { type: 'instance.create', name: cleanName, runtimeId }; break;
       case 'rename': request = { type: 'instance.rename', instanceId: dialog.instance.id, name: cleanName }; break;
       case 'clone': request = { type: 'instance.clone', instanceId: dialog.instance.id, name: cleanName }; break;
-      case 'upgrade': request = { type: 'instance.clone', instanceId: dialog.instance.id, name: cleanName, runtimeId }; break;
+      case 'upgrade': request = dialog.instance.companionId
+        ? { type: 'companion.environment.upgrade', companionId: dialog.instance.companionId,
+          name: dialog.instance.companionName ?? dialog.instance.name, runtimeId }
+        : { type: 'instance.clone', instanceId: dialog.instance.id, name: cleanName, runtimeId }; break;
       case 'snapshot': request = { type: 'snapshot.create', instanceId: dialog.instance.id, name: cleanName }; break;
       case 'restore': request = { type: 'snapshot.restore', snapshotId: dialog.snapshot.id, name: cleanName }; break;
       case 'import': request = { type: 'backup.import', name: cleanName }; break;
@@ -101,7 +105,7 @@ export function LauncherDialog({ dialog, runtimes, busy, onClose, onSubmit }: {
     else setError(result.error);
   };
   return createPortal(<div className="launcher-dialog-backdrop">
-    <DialogShell className="launcher-dialog" description={description} dialogId="dsh-launcher-dialog" footer={<><Button disabled={busy} onClick={onClose}>{t('launcher.cancel')}</Button><Button data-dialog-default-action="true" disabled={busy || (naming && !name.trim()) || (runtimeSelection && !runtimeId) || (dialog.kind === 'pack-create' && !version.trim())} loading={busy} onClick={() => void submit()} variant={destructive ? 'danger' : 'primary'}>{t(dialog.kind === 'export' ? 'launcher.exportConfirm' : destructive ? 'launcher.confirm' : 'launcher.save')}</Button></>} onRequestClose={() => { if (!busy) onClose(); }} title={title}>
+    <DialogShell className="launcher-dialog" description={description} dialogId="dsh-launcher-dialog" footer={<><Button disabled={busy} onClick={onClose}>{t('launcher.cancel')}</Button><Button data-dialog-default-action="true" disabled={busy || (naming && !name.trim()) || (runtimeSelection && !runtimeId) || (privateUpgrade && runtimeId === dialog.instance.runtimeId) || (dialog.kind === 'pack-create' && !version.trim())} loading={busy} onClick={() => void submit()} variant={destructive ? 'danger' : 'primary'}>{t(dialog.kind === 'export' ? 'launcher.exportConfirm' : destructive ? 'launcher.confirm' : 'launcher.save')}</Button></>} onRequestClose={() => { if (!busy) onClose(); }} title={title}>
       {naming ? <TextField autoFocus data-dialog-initial-focus="true" label={t(dialog.kind === 'snapshot' ? 'launcher.snapshotName' : dialog.kind === 'pack-create' ? 'launcher.packName' : 'launcher.name')} maxLength={100} onChange={(event) => setName(event.target.value)} placeholder={t('launcher.namePlaceholder')} required value={name} /> : null}
       {dialog.kind === 'pack-create' ? <TextField label={t('launcher.packVersion')} maxLength={100} onChange={(event) => setVersion(event.target.value)} required value={version} /> : null}
       {runtimeSelection ? <Select label={t('launcher.chooseRuntime')} onValueChange={setRuntimeId} options={runtimes.map((runtime) => ({ value: runtime.id, label: `DSH ${runtime.version} · Node ${runtime.nodeVersion} · ${runtime.contentSha256.slice(0, 12)}` }))} required value={runtimeId} /> : null}

@@ -2,6 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
+import { botUiPrivateLauncher } from '../fixtures/bot-ui-private-launcher';
 import { BotWorkspace } from '../../src/renderer/companion-bot/BotWorkspace';
 import { BotChatContext } from '../../src/renderer/companion-bot/BotChatContext';
 import { LocaleProvider } from '../../src/renderer/i18n';
@@ -43,7 +44,7 @@ async function mount(override?: (input: BotRequest) => Promise<BotResponse> | un
     onEvent: listener => { notify = listener; return () => { notify = undefined; }; },
   };
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} onOpenSettings={() => undefined} /></LocaleProvider>));
+  await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace launcherApi={botUiPrivateLauncher(['alice', 'bob', 'carol'])} api={api} onOpenSettings={() => undefined} /></LocaleProvider>));
 }
 async function click(label: string, scope: ParentNode = document) {
   const button = [...scope.querySelectorAll<HTMLButtonElement>('button')].find(item => item.getAttribute('aria-label') === label || item.textContent?.trim() === label);

@@ -40,7 +40,7 @@ it('uses only the default compatible user instance, independent of the recently 
   f.select('missing'); expect((await f.launcher.resolveBotInstance()).id).toBe('default');
   expect(f.create).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled();
 });
-it('opens a companion-owned DSH for native plugin management without allocating or starting one when reading its card', async () => {
+it('requires explicit provisioning before opening a companion DSH and never borrows the default', async () => {
   const f = fixture();
   vi.spyOn(f.launcher, 'state').mockImplementation(() => ({ supported: true }) as ReturnType<DshLauncher['state']>);
   const service = Reflect.get(f.launcher, 'instances');
@@ -49,13 +49,19 @@ it('opens a companion-owned DSH for native plugin management without allocating 
   const ensure = vi.fn(async () => { created = true; return own; });
   const handle = vi.fn(async () => ({ ok: true }));
   Reflect.set(service, 'companion', () => created ? own : undefined);
-  Reflect.set(service, 'ensureCompanion', ensure);
+  Reflect.set(service, 'createCompanion', ensure);
+  Reflect.set(service, 'get', (id: string) => id === own.id ? own : f.records.find(value => value.id === id));
   Reflect.set(service, 'handle', handle);
   const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
-  expect(await route({ type: 'companion.environment.state', companionId: 'fish', name: '大肥鱼' })).toMatchObject({ companionEnvironment: { mode: 'shared', instance: { id: 'default' } } });
+  const unbound = await route({ type: 'companion.environment.state', companionId: 'fish', name: '大肥鱼' });
+  expect(unbound.ok).toBe(true); expect(unbound.companionEnvironment).toBeUndefined();
   expect(ensure).not.toHaveBeenCalled(); expect(handle).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled();
+  await expect(route({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' })).rejects.toMatchObject({ reason: 'configuration' });
+  await expect(route({ type: 'companion.environment.ensure', companionId: 'fish', name: '大肥鱼' })).rejects.toMatchObject({ reason: 'configuration' });
+  expect(ensure).not.toHaveBeenCalled();
+  expect(await route({ type: 'companion.environment.create', companionId: 'fish', name: '大肥鱼', runtimeId: 'compatible' })).toMatchObject({ ok: true, companionEnvironment: { mode: 'private', instance: own } });
   expect(await route({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' })).toMatchObject({ ok: true, companionEnvironment: { mode: 'private', instance: own } });
-  expect(ensure).toHaveBeenCalledExactlyOnceWith('fish', '大肥鱼', f.records[0]);
+  expect(ensure).toHaveBeenCalledExactlyOnceWith('fish', '大肥鱼', 'compatible');
   expect(handle).toHaveBeenCalledExactlyOnceWith({ type: 'instance.open', instanceId: own.id });
   await route({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' });
   expect(ensure).toHaveBeenCalledTimes(1);
@@ -66,16 +72,58 @@ it.each(['0.2.2-rc.1','0.2.2-alpha.3','0.3.0','1.0.0-beta.1','0.2.1-rc.2'])('sel
 });
 it('accepts a legacy Host only through an explicit binding and does not choose it for a new lane', async () => {
   const f = fixture(); f.records.splice(0, 2);
-  await expect(f.launcher.resolveBotInstance()).rejects.toThrow('伙伴会复用默认实例');
+  await expect(f.launcher.resolveBotInstance()).rejects.toThrow('手动创建或绑定');
   expect((await f.launcher.resolveBotInstance('old-bot')).id).toBe('old-bot');
   expect(f.create).not.toHaveBeenCalled();
 });
-it('creates only one ordinary default instance for a truly empty installation', async () => {
+it('requires user-confirmed instance creation even after a runtime has been installed', async () => {
   const f = fixture(true); f.records.splice(0);
-  const selected = await Promise.all([f.launcher.resolveBotInstance(), f.launcher.resolveBotInstance()]);
-  expect(selected.map(value => value.id)).toEqual(['new-default', 'new-default']);
-  expect(f.create).toHaveBeenCalledExactlyOnceWith('我的 DSH', 'compatible');
-  expect(f.records).toHaveLength(1);
+  const selected = await Promise.allSettled([f.launcher.resolveBotInstance(), f.launcher.resolveBotInstance()]);
+  expect(selected.every(value => value.status === 'rejected')).toBe(true);
+  expect(f.create).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled(); expect(f.records).toHaveLength(0);
+});
+it('reports a companion without a binding as unconfigured even while the default Host is ready', async () => {
+  const f = fixture(), service = Reflect.get(f.launcher, 'instances');
+  Reflect.set(service, 'companion', () => undefined);
+  expect(f.launcher.companionCapabilityState('fish')).toMatchObject({ mode: 'private', configured: false, status: 'unconfigured', instanceId: undefined });
+  await expect(f.launcher.resolveCompanionInstance('fish', '大肥鱼')).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'configuration' });
+  expect(f.ensureHost).not.toHaveBeenCalled(); expect(f.create).not.toHaveBeenCalled();
+});
+it('selects an owned CLI without changing the default, and rejects an owned default before touching CLI context', async () => {
+  const f = fixture(), own = f.records[1]!;
+  Reflect.set(own, 'companionId', 'fish');
+  vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+  const instances = Reflect.get(f.launcher, 'instances'), cli = Reflect.get(f.launcher, 'cliTerminal');
+  const prepare = vi.fn(async () => ({ instance: own })), select = vi.fn(async () => undefined), defaults = vi.fn();
+  Reflect.set(instances, 'prepareCli', prepare); Reflect.set(instances, 'handle', defaults); Reflect.set(cli, 'selectContext', select);
+  const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
+  expect(await route({ type: 'cli.select', instanceId: own.id })).toMatchObject({ ok: true });
+  expect(prepare).toHaveBeenCalledExactlyOnceWith(own.id); expect(select).toHaveBeenCalledOnce(); expect(defaults).not.toHaveBeenCalled();
+  await expect(route({ type: 'instance.default', instanceId: own.id })).rejects.toThrow('不能设为默认');
+  expect(prepare).toHaveBeenCalledTimes(1); expect(select).toHaveBeenCalledTimes(1); expect(defaults).not.toHaveBeenCalled();
+});
+it('prevents runtime deletion or cleanup during an explicit role provisioning commit', async () => {
+  const f = fixture(), own = { ...f.records[1]!, companionId: 'fish' };
+  vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+  let complete!: (value: typeof own) => void;
+  Reflect.set(Reflect.get(f.launcher, 'instances'), 'createCompanion', () => new Promise(resolve => { complete = resolve; }));
+  const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
+  const pending = route({ type: 'companion.environment.create', companionId: 'fish', name: '大肥鱼', runtimeId: 'compatible' });
+  await expect(route({ type: 'runtime.delete', runtimeId: 'compatible' })).rejects.toThrow('正在保存角色实例绑定');
+  await expect(route({ type: 'runtime.cleanup' })).rejects.toThrow('正在保存角色实例绑定');
+  complete(own); expect(await pending).toMatchObject({ ok: true });
+});
+it('validates actual role identity before either binding mutation touches the native catalogue', async () => {
+  const f = fixture();
+  vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+  const create = vi.fn(), bind = vi.fn(), validate = vi.fn(() => { throw new Error('角色不存在。'); });
+  Reflect.set(f.launcher, 'validateCompanion', validate);
+  Reflect.set(Reflect.get(f.launcher, 'instances'), 'createCompanion', create);
+  Reflect.set(Reflect.get(f.launcher, 'instances'), 'bindCompanion', bind);
+  const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
+  await expect(route({ type: 'companion.environment.create', companionId: 'missing-role', name: '角色', runtimeId: 'compatible' })).rejects.toThrow('角色不存在');
+  await expect(route({ type: 'companion.environment.bind', companionId: 'missing-role', name: '角色', instanceId: 'default' })).rejects.toThrow('角色不存在');
+  expect(validate).toHaveBeenCalledTimes(2); expect(create).not.toHaveBeenCalled(); expect(bind).not.toHaveBeenCalled();
 });
 it('initializes memory Node without waiting for the same shared Host preparation', async () => {
   const f = fixture();
@@ -124,6 +172,16 @@ it('automatically prewarms only default and does not start profiles merely selec
   f.select('old-bot'); observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
   f.select('selected'); observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
   expect(discover).toHaveBeenCalledExactlyOnceWith('default');
+});
+it('invalidates Router capability facts when another companion binding is created, upgraded or deleted', () => {
+  vi.useFakeTimers();
+  const f = fixture(), changed = vi.fn();
+  Reflect.set(f.launcher, 'onExecutionCapabilitiesChanged', changed);
+  const observe = Reflect.get(f.launcher, 'observeExecutionCapabilities') as () => void;
+  observe.call(f.launcher);
+  Reflect.set(f.records[1]!, 'companionId', 'fish'); observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(1);
+  f.records[1]!.runtimeId = 'other-runtime'; observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(2);
+  f.records.splice(1, 1); observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(3);
 });
 
 it.each(['running', 'stopped', 'failed'])('does not confuse capability-discovery errors with the current Host state (%s)', async status => {

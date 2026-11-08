@@ -22,10 +22,10 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
     }).catch(()=>{if(live&&revision.current===requestedAt)setError(zh?'执行器状态暂时无法读取。':'Executor status is unavailable.');});
     return()=>{live=false;generation.current=current+1;unsubscribe();};
   },[api,zh,refresh]);
-  if(!api)return null;
-  const readiness=state?.executionReadiness, fallback=state?.instances.find(value=>value.isDefault&&!value.companionId);
+  if(!api||!companionIds?.length)return null;
+  const readiness=state?.executionReadiness;
   const owned=new Map(state?.instances.filter(value=>value.companionId).map(value=>[value.companionId,value]));
-  const relevant=companionIds?.flatMap(id=>owned.get(id)??fallback??[])??(fallback?[fallback]:[]);
+  const relevant=companionIds.flatMap(id=>owned.get(id)??[]);
   const instance=relevant.find(value=>value.status!=='running'||readiness?.instanceId===value.id&&readiness.status!=='ready')??relevant[0];
   const failed=instance?.status==='failed'||readiness?.instanceId===instance?.id&&readiness?.status==='failed';
   const warming=readiness?.instanceId===instance?.id&&readiness?.status==='warming';
@@ -42,7 +42,7 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
     :instance?(zh?'DSH 未启动':'DSH is stopped')
     :(zh?'尚未配置 DSH':'DSH is not configured');
   const diagnostic=error||(failed?instance?.lastError:undefined);
-  const hint=zh?'聊天可照常进行。执行任务时会按需启动相应 DSH 实例；已暂停的任务可在任务中心继续。':'Chat is available. Tasks start their DSH instance on demand; paused tasks can be resumed in the task center.';
+  const hint=zh?'已绑定专属实例，执行任务时按需启动；用户主动关闭的实例需要重新启动，已暂停的任务可在任务中心继续。':'A private instance is bound and starts on demand. Manually stopped instances require a restart; paused tasks can be resumed in the task center.';
   const start=async()=>{
     if(!instance||busy||starting||preparing||stopping||unsupported)return;
     const current=generation.current,requestedAt=revision.current;

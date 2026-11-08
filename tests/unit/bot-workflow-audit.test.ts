@@ -30,7 +30,7 @@ function fixture(activityBudget?: Partial<BotActivityBudgetPolicy>) {
     content: '请按原始资料并行核算与审计，拿到真实结果后汇总；允许请 Bob 在双方私聊里协作。' }).events[0]!;
   const claim = store.claim({ workerId: 'audit-claim' })!; expect(claim.event.id).toBe(root.id); store.bindEventNativeEpoch(root.id, 1);
   const service = Object.create(BotService.prototype) as BotService;
-  Object.assign(service, { store, workflows, companionRuntime: runtime });
+  Object.assign(service, { store, options: {}, workflows, companionRuntime: runtime });
   const execute = (event: BotEvent, name: string, args: Record<string, unknown>, callId: string) => (service as unknown as {
     executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown>;
   }).executeTool(event, { laneId: event.laneId, eventId: event.id, name, args, callId }, new AbortController().signal);

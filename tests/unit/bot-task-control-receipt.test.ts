@@ -33,7 +33,7 @@ async function fixture() {
   // No constructor starts a background lane, Host, memory encoder or provider.
   const service = Object.create(BotService.prototype) as BotService;
   const workflows = new BotWorkflowRuntime(store);
-  Object.assign(service, { store, workflows, delegations: new BotDelegationRuntime(store), taskRuntime: runtime, companionRuntime: new BotCompanionRuntime(store, { taskAuthority: task => workflows.taskAuthority(task) }), toolRuns,
+  Object.assign(service, { store, options: {}, workflows, delegations: new BotDelegationRuntime(store), taskRuntime: runtime, companionRuntime: new BotCompanionRuntime(store, { taskAuthority: task => workflows.taskAuthority(task) }), toolRuns,
     launchTask: vi.fn(),
     taskRuns: new Map(), taskAccessUpgrades: new Map(), scheduler: { wake: vi.fn(), cancel: vi.fn() },
     toolServer: { releaseWorker: vi.fn() },

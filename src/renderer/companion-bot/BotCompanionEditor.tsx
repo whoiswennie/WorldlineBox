@@ -23,10 +23,10 @@ export type BotCompanionSettingsSection = 'templates' | 'basics' | 'appearance' 
 export interface BotCompanionEditorDraft { name: string; persona?: string; members: string[]; groupMode: BotParticipationMode; workerConcurrency?: number }
 
 /** Drafts belong to this keyed editor, never to the live 400-message workspace. */
-export function BotCompanionEditor({ kind, companion, companions, locale, api, launcherApi, initialSection = 'templates', suspended = false, onMeet, onRuntimeChanged, onPersonaChanged, onSave, onCancel }: {
+export function BotCompanionEditor({ kind, companion, companions, locale, api, launcherApi, initialSection = 'templates', suspended = false, onMeet, onRuntimeChanged, onOpenLauncher, onPersonaChanged, onSave, onCancel }: {
   kind: 'companion' | 'group' | 'world'; companion?: BotCompanion; companions: readonly BotCompanion[]; locale: keyof typeof words;
   api?: WorldlineBoxBotApi; onPersonaChanged?(): void; onSave(draft: BotCompanionEditorDraft): Promise<BotResponse>; onCancel(): void;
-  launcherApi?: WorldlineBoxDshLauncherApi; initialSection?: BotCompanionSettingsSection; suspended?: boolean; onMeet?(): void; onRuntimeChanged?(): void;
+  launcherApi?: WorldlineBoxDshLauncherApi; initialSection?: BotCompanionSettingsSection; suspended?: boolean; onMeet?(): void; onRuntimeChanged?(): void; onOpenLauncher?(): void;
 }) {
   const t = words[locale], [name, setName] = useState(companion?.name ?? ''), [persona, setPersona] = useState(companion?.persona ?? '');
   const [members, setMembers] = useState<string[]>([]), [groupMode, setGroupMode] = useState<BotParticipationMode>('automatic');
@@ -74,7 +74,7 @@ export function BotCompanionEditor({ kind, companion, companions, locale, api, l
       {error && <p className="bot-error" role="alert">{error}</p>}{saved && <p className="bot-settings-saved" role="status">{locale === 'zh-CN' ? '资料与任务设置已保存。' : 'Profile and task settings saved.'}</p>}
       <footer><small>{locale === 'zh-CN' ? '资料与任务执行设置一起保存。' : 'Profile and task execution settings are saved together.'}</small><button type="button" onClick={onCancel}>{t.close}</button><button type="submit" className="bot-editor-primary" disabled={saving || !name.trim() || !validConcurrency}>{saving ? locale === 'zh-CN' ? '正在保存…' : 'Saving…' : t.save}</button></footer>
     </form>
-    <div className="bot-editor-tabpanel bot-settings-capabilities" hidden={tab !== 'capabilities'}>{capabilitiesVisited && (launcherApi ? <CompanionCapabilities api={launcherApi} botApi={api} companion={companion} onRuntimeChanged={onRuntimeChanged} /> : <section className="bot-settings-scroll"><header className="bot-settings-section-heading"><h3>{locale === 'zh-CN' ? '能力档案' : 'Capabilities'}</h3><p>{locale === 'zh-CN' ? 'DSH 启动器连接后，角色卡会读取这位伙伴当前可用的能力。插件和技能在对应 DSH 工作台中管理。' : 'Connect the DSH launcher to read this companion’s current capabilities. Manage plugins and skills in the corresponding DSH workbench.'}</p></header></section>)}</div>
+    <div className="bot-editor-tabpanel bot-settings-capabilities" hidden={tab !== 'capabilities'}>{capabilitiesVisited && (launcherApi ? <CompanionCapabilities onOpenLauncher={onOpenLauncher} api={launcherApi} botApi={api} companion={companion} onRuntimeChanged={onRuntimeChanged} /> : <section className="bot-settings-scroll"><header className="bot-settings-section-heading"><h3>{locale === 'zh-CN' ? '能力档案' : 'Capabilities'}</h3><p>{locale === 'zh-CN' ? 'DSH 启动器连接后，角色卡会读取这位伙伴当前可用的能力。插件和技能在对应 DSH 工作台中管理。' : 'Connect the DSH launcher to read this companion’s current capabilities. Manage plugins and skills in the corresponding DSH workbench.'}</p></header></section>)}</div>
   </div></div>;
   return <div className="bot-modal-backdrop"><form className="bot-modal bot-companion-editor" onSubmit={event => void submit(event)} role="dialog" aria-modal="true" aria-label={title}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}>

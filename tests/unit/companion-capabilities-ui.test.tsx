@@ -55,9 +55,9 @@ it.each([true, false])('never wakes a stopped or disabled environment while read
   await click('刷新档案'); expect(f.request.mock.calls.map(([input]) => input.type)).toEqual(['state', 'state']);
 });
 
-it('labels a shared binding accurately and does not claim that another companion’s private environment belongs here', async () => {
+it('never borrows a default or another companion’s private environment when this character is unbound', async () => {
   const f = fixture('stopped', false); f.state.instances.push({ ...f.state.instances[0]!, id: 'other', isDefault: false, companionId: 'other', name: '其他角色私有环境' }); await mount(f);
-  expect(container!.textContent).toContain('共享 DSH'); expect(container!.textContent).not.toContain('其他角色私有环境');
+  expect(container!.textContent).toContain('尚未绑定 DSH'); expect(container!.textContent).not.toContain('共享执行器'); expect(container!.textContent).not.toContain('其他角色私有环境');
   expect(f.request.mock.calls.map(([input]) => input.type)).toEqual(['state']);
 });
 
