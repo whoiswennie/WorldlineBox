@@ -56,7 +56,7 @@ it('allows participant-initiated contact while rejecting system notices, withdra
 
 class MemoryBoundary extends BotMemoryService {
   preparations: Array<Parameters<BotMemoryService['prepareTurn']>[0]> = [];
-  withdrawals: Array<{ scope: BotMemoryScope; sourceEventIds: string[]; sourceMessageIds: string[] }> = [];
+  withdrawals: Array<{ scope: BotMemoryScope; sourceEventIds: string[]; sourceMessageIds: string[]; mode?: 'isolated-task-notices' }> = [];
   forgotten?: BotMemoryForget;
   private prepared = new Map<string, BotMemoryPrepared>();
   constructor(root: string) { super({ root, runtime: async () => { throw Error('Unexpected real memory runtime in a control-plane test'); }, embedding: async () => { throw Error('Unexpected embedding provider'); } }); }
@@ -70,7 +70,7 @@ class MemoryBoundary extends BotMemoryService {
   override async finishTurn() { return { recorded: true }; }
   override async appendHistory() { return { appended: [] }; }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
-  override async withdrawSources(scope: BotMemoryScope, sources: { sourceEventIds: string[]; sourceMessageIds: string[] }) {
+  override async withdrawSources(scope: BotMemoryScope, sources: { sourceEventIds: string[]; sourceMessageIds: string[]; mode?: 'isolated-task-notices' }) {
     this.withdrawals.push({ scope, ...sources }); return { withdrawn: true as const, revision: '1', ...sources };
   }
   override async forget() { if (!this.forgotten) throw Error('Missing explicit fixture withdrawal'); return this.forgotten; }
@@ -186,4 +186,38 @@ it('propagates source withdrawal to both room actors, durable outboxes and an al
     await vi.waitFor(() => expect(f.memory.withdrawals.some(item => item.scope.companionId === companionId && item.scope.securityDomainId === room.securityDomainId && item.sourceMessageIds.includes(introduced.id))).toBe(true));
   }
   expect(f.service.store.messagesPage(roomId).items.some(item => item.content === '撤回后不应发布的回应' && item.status === 'sent')).toBe(false);
+});
+it('keeps a peer Worker receipt out of the other Router prompt and memory preparation until the owner shares facts', async () => {
+  const f = await serviceFixture(async () => '');
+  const room = f.service.store.openPeer(f.sourceId, f.targetId);
+  const source = f.service.store.enqueue({ conversationId: room.id, senderId: f.sourceId, source: 'companion',
+    recipientIds: [f.targetId], sourceMessageId: 'ask-weather', content: '查完后告诉我。' }).events[0]!;
+  const task = f.service.store.createTask({ id: 'peer-weather-receipt', companionId: f.targetId, conversationId: room.id,
+    sourceEventId: source.id, goal: '查询天气', attemptId: 'one', extra: {} });
+  f.service.store.updateTask(task.id, { status: 'succeeded', summary: 'PRIVATE_WEATHER_RECEIPT_16.6C' });
+  f.service.store.enqueueTaskNotice({ conversationId: room.id, senderId: 'task-service', source: 'task',
+    recipientIds: [f.targetId], sourceMessageId: 'private-weather-notice', kind: 'task_done',
+    content: 'PRIVATE_WEATHER_RECEIPT_16.6C', correlationId: source.correlationId, causationId: source.id, payload: { taskId: task.id } });
+  const notification = f.service.store.enqueue({ conversationId: room.id, senderId: f.targetId, source: 'companion',
+    recipientIds: [f.sourceId], sourceMessageId: 'weather-finished', content: '查完了，已经告诉用户。' }).events[0]!;
+  for (const event of [source, notification]) f.service.store.setMetadata(`skipCapture:${event.id}`, 'true');
+  (f.service as unknown as { scheduler: { wake(): void } }).scheduler.wake();
+  await vi.waitFor(() => expect(f.service.store.getEvent(notification.id)?.status).toBe('done'));
+  const reader = f.brain.calls.find(input => input.eventId === notification.id)!;
+  expect(reader).toBeDefined(); expect(reader.prompt).not.toContain('PRIVATE_WEATHER_RECEIPT_16.6C');
+  const context = JSON.parse(reader.prompt);
+  expect(context.room.replyAudience.recipients).toEqual([{ id: f.targetId, name: '大肥鱼' }]);
+  const memory = f.memory.preparations.find(input => input.requestId === notification.id)!;
+  expect(JSON.stringify(memory.messages)).not.toContain('PRIVATE_WEATHER_RECEIPT_16.6C');
+  expect(f.memory.withdrawals).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ companionId: f.sourceId }),
+    mode: 'isolated-task-notices', sourceMessageIds: expect.any(Array) })]));
+  // Human transcript/task cards are retained; changing model visibility must not delete history.
+  expect(f.service.store.messagesPage(room.id).items.some(item => item.content === 'PRIVATE_WEATHER_RECEIPT_16.6C')).toBe(true);
+  const shared = f.service.store.enqueue({ conversationId: room.id, senderId: f.targetId, source: 'companion',
+    recipientIds: [f.sourceId], sourceMessageId: 'weather-shared', content: '把结果也告诉你：现在17℃，记得带伞。' }).events[0]!;
+  f.service.store.setMetadata(`skipCapture:${shared.id}`, 'true');
+  (f.service as unknown as { scheduler: { wake(): void } }).scheduler.wake();
+  await vi.waitFor(() => expect(f.service.store.getEvent(shared.id)?.status).toBe('done'));
+  const sharedReader = f.brain.calls.find(input => input.eventId === shared.id)!;
+  expect(sharedReader.prompt).toContain('现在17℃'); expect(sharedReader.prompt).not.toContain('PRIVATE_WEATHER_RECEIPT_16.6C');
 });

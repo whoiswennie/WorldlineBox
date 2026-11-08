@@ -58,6 +58,31 @@ it('preserves true authors and excludes future, other-channel and unfinished mes
   expect(body.history[1].role).toBe('user'); expect(body.history[1].senderId).toBe('bob'); expect(body.history[2].role).toBe('assistant');
   expect(body.trigger.content).toBe('当前问题'); expect(built.system).toContain('沉稳，认真。');
 });
+it.each(['companion', 'task'] as const)('binds peer prose to the other companion even when the trigger is %s', source => {
+  const built = buildBotContext({ companion, event: { ...event, source, senderId: source === 'task' ? 'task-service' : 'bob',
+    senderName: source === 'task' ? '任务回执' : 'Bob', senderType: source === 'task' ? 'service' : 'companion',
+    payload: source === 'companion' ? { userRequestedContact: true, responseDestination: 'user-direct' } : {} }, messages: [],
+    conversation: { id: 'c1', title: 'Alice × Bob', kind: 'peer', memberIds: ['alice', 'bob'], userRole: 'observer' },
+    participants: [companion, { id: 'bob', name: 'Bob' }] });
+  const body = JSON.parse(built.user);
+  expect(body.room.replyAudience).toEqual({ recipients: [{ id: 'bob', name: 'Bob' }], userIsObserver: true,
+    style: 'direct-dialogue', taskReceipts: 'owner-only-until-shared' });
+  expect(built.system).toContain('正在与Bob私聊'); expect(built.system).toContain('用户仅旁观');
+  expect(built.system).toContain('不向旁观用户汇报');
+  // An explicit user delivery tool remains available; it never changes where ordinary prose goes.
+  if (source === 'companion') expect(body.peerContact.responseDestination).toBe('user-direct');
+});
+it('excludes foreign and unbound internal task notices but keeps actual shared speech and the owner notice', () => {
+  const notice = (id: string, owner?: string) => message(id, 1, `${id}_UNPUBLISHED_RECEIPT`, {
+    senderId: 'task-service', senderType: 'service', kind: 'task_done',
+    ...(owner ? { taskNotice: { taskId: `${id}-task`, kind: 'task_done', companionId: owner } } : {}),
+  });
+  const body = JSON.parse(buildBotContext({ companion, event, messages: [notice('other', 'bob'), notice('unknown'), notice('own', 'alice'),
+    message('shared', 2, '我把查到的数据告诉你：17℃。', { senderId: 'bob', senderName: 'Bob', senderType: 'companion' })] }).user);
+  expect(body.history.map((item: { id: string }) => item.id)).toEqual(['own', 'shared']);
+  expect(JSON.stringify(body)).not.toMatch(/other_UNPUBLISHED_RECEIPT|unknown_UNPUBLISHED_RECEIPT/u);
+  expect(body.history[1].content).toContain('17℃');
+});
 it('bounds the history by whole messages without truncating the current request', () => {
   const built = buildBotContext({ companion, event, messages: [message('a', 1, 'a'.repeat(20)), message('b', 2, 'b'.repeat(20)), message('trigger', 5, '当前问题')], maxHistoryChars: 25 });
   expect(JSON.parse(built.user).history).toHaveLength(1); expect(built.omittedMessages).toBe(1); expect(JSON.parse(built.user).trigger.content).toBe(event.content);

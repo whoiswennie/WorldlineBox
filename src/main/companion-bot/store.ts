@@ -33,8 +33,20 @@ type Row = Record<string, string | number | null>;
 const asRow = (raw: unknown): Row => raw as Row;
 const hash = (parts: readonly string[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 const nowIso = () => new Date().toISOString();
+// Task-service messages remain in the UI journal, but are private machine
+// delivery to the task owner, not a publication to every room participant.
+// A normal companion reply/file publication uses its own message and stays
+// readable by the room. Neither matching room membership nor a shared DSH
+// process grants access to another actor's internal Worker receipt.
+const internalTaskMessageSql = `(m.sender_id='task-service' OR m.kind IN ('task_done','task_progress')
+  OR EXISTS(SELECT 1 FROM bot_inbox source WHERE source.source_record_id=m.id AND source.source='task'))`;
+const companionMessageVisibilitySql = `EXISTS(SELECT 1 FROM bot_members member WHERE member.conversation_id=m.conversation_id AND member.member_id=?)
+  AND (NOT ${internalTaskMessageSql} OR EXISTS(SELECT 1 FROM bot_inbox own LEFT JOIN bot_tasks task ON task.id=json_extract(own.payload_json,'$.taskId')
+    WHERE own.source_record_id=m.id AND own.source='task' AND own.companion_id=?
+    AND (json_type(own.payload_json,'$.taskId') IS NULL OR task.companion_id=? AND task.conversation_id=m.conversation_id)))`;
 const memoryBlockedCte = `WITH audience(domain_key,companion_id) AS(VALUES(?,?)),blocked(id) AS(
   SELECT w.source_id FROM bot_withdrawn_sources w,audience a WHERE w.domain_key=a.domain_key
+  UNION SELECT w.source_id FROM bot_private_notice_exclusions w,audience a WHERE w.domain_key=a.domain_key
   UNION SELECT p.message_id FROM bot_publications p JOIN bot_withdrawn_sources w ON w.source_id=p.event_id,audience a WHERE w.domain_key=a.domain_key
   UNION SELECT i.source_record_id FROM bot_inbox i JOIN bot_withdrawn_sources w ON w.source_id=i.id,audience a WHERE w.domain_key=a.domain_key AND i.companion_id=a.companion_id
   UNION SELECT i.reply_message_id FROM bot_inbox i JOIN bot_withdrawn_sources w ON w.source_id=i.id,audience a WHERE w.domain_key=a.domain_key AND i.companion_id=a.companion_id
@@ -129,6 +141,7 @@ export class BotStore {
       CREATE INDEX IF NOT EXISTS bot_memory_jobs_claim ON bot_memory_jobs(status,available_at,sequence);
       CREATE INDEX IF NOT EXISTS bot_memory_jobs_domain ON bot_memory_jobs(domain_key,status);
       CREATE TABLE IF NOT EXISTS bot_withdrawn_sources(domain_key TEXT NOT NULL,source_id TEXT NOT NULL,PRIMARY KEY(domain_key,source_id));
+      CREATE TABLE IF NOT EXISTS bot_private_notice_exclusions(domain_key TEXT NOT NULL,source_id TEXT NOT NULL,PRIMARY KEY(domain_key,source_id));
       CREATE TABLE IF NOT EXISTS bot_history_projection(sequence INTEGER PRIMARY KEY AUTOINCREMENT,message_id TEXT NOT NULL UNIQUE REFERENCES bot_messages(id),conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),timestamp INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS bot_history_projection_cursor ON bot_history_projection(conversation_id,sequence);
       CREATE TABLE IF NOT EXISTS bot_native_retirements(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id),lane_id TEXT NOT NULL,admission_json TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,retry_at INTEGER NOT NULL DEFAULT 0,source_sequence INTEGER NOT NULL);
@@ -913,7 +926,10 @@ export class BotStore {
     const key = hash([companionId, securityDomainId]);
     return this.db.transaction(() => {
       let changes = 0;
-      const normalized = new Set(sourceIds.filter(id => !this.db.prepare('SELECT 1 FROM bot_withdrawn_sources WHERE domain_key=? AND source_id=?').get(key, id))), pending = [...normalized];
+      // Native VCP acknowledgement can repeat exact audience exclusions. Do
+      // not promote those exclusions into a normal recursive user withdrawal.
+      const normalized = new Set(sourceIds.filter(id => !this.db.prepare('SELECT 1 FROM bot_withdrawn_sources WHERE domain_key=? AND source_id=?').get(key, id)
+        && !this.db.prepare('SELECT 1 FROM bot_private_notice_exclusions WHERE domain_key=? AND source_id=?').get(key, id))), pending = [...normalized];
       const add = (value: string) => { if (!normalized.has(value)) { normalized.add(value); pending.push(value); } };
       while (pending.length) {
         const id = pending.pop()!;
@@ -933,21 +949,47 @@ export class BotStore {
       return changes;
     }).immediate();
   }
+  /** Compatibility repair for an internal receipt copied into the wrong
+   * actor's history. Exclude only that message, not the owner's later public
+   * answer/files, which may legitimately cite the same machine source. This
+   * uses a separate exact table so all ordinary source withdrawal joins keep
+   * their existing recursive semantics. The normal VCP outbox remains durable. */
+  withdrawPrivateNoticeSources(companionId: string, securityDomainId: string, sourceIds: readonly string[]): number {
+    const key = hash([companionId, securityDomainId]);
+    return this.db.transaction(() => {
+      let changes = 0;
+      for (const id of new Set(sourceIds)) {
+        const privateNotice = this.db.prepare(`SELECT m.id FROM bot_messages m JOIN bot_conversations c ON c.id=m.conversation_id
+          WHERE m.id=? AND c.domain_id=? AND ${internalTaskMessageSql}`).get(id, securityDomainId);
+        if (!privateNotice || this.isMessageVisibleToCompanion(id, companionId)) throw new Error('定向受众隔离仅能处理本伙伴不可读的内部任务回执。');
+        changes += this.db.prepare('INSERT OR IGNORE INTO bot_private_notice_exclusions VALUES(?,?)').run(key, text(id, '私有回执来源', 500)).changes;
+        this.db.prepare('INSERT OR IGNORE INTO bot_source_withdraw_outbox(domain_key,message_id) VALUES(?,?)').run(key, id);
+      }
+      if (changes) this.rotateDomainState(companionId, securityDomainId);
+      return changes;
+    }).immediate();
+  }
+  isPrivateNoticeSourceExcluded(companionId: string, securityDomainId: string, sourceId: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM bot_private_notice_exclusions WHERE domain_key=? AND source_id=?')
+      .get(hash([companionId, securityDomainId]), sourceId);
+  }
   withdrawnIn(companionId: string, securityDomainId: string, ids: readonly string[]): Set<string> {
     if (!ids.length) return new Set();
     const key = hash([companionId, securityDomainId]);
     return new Set(this.db.prepare(`WITH requested(id) AS(VALUES ${ids.map(() => '(?)').join(',')}) SELECT r.id FROM requested r
       WHERE EXISTS(SELECT 1 FROM bot_withdrawn_sources w WHERE w.domain_key=? AND w.source_id=r.id)
+      OR EXISTS(SELECT 1 FROM bot_private_notice_exclusions w WHERE w.domain_key=? AND w.source_id=r.id)
       OR EXISTS(SELECT 1 FROM bot_publications p JOIN bot_withdrawn_sources w ON w.source_id=p.event_id AND w.domain_key=? WHERE p.message_id=r.id)
       OR EXISTS(SELECT 1 FROM bot_inbox i JOIN bot_withdrawn_sources w ON w.source_id=i.id AND w.domain_key=? WHERE i.companion_id=? AND (i.source_record_id=r.id OR i.reply_message_id=r.id))
       OR EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.source_id=s.source_id AND w.domain_key=? WHERE s.message_id=r.id)`)
-      .all(...ids, key, key, key, companionId, key).map(raw => String(asRow(raw).id)));
+      .all(...ids, key, key, key, key, companionId, key).map(raw => String(asRow(raw).id)));
   }
-  withdrawnMessagesPage(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { after?: number; limit?: number } = {}): { items: Array<{ messageId: string; eventIds: string[]; sequence: number }>; hasMore: boolean; nextAfter?: number } {
+  withdrawnMessagesPage(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { after?: number; limit?: number } = {}): { items: Array<{ messageId: string; eventIds: string[]; sequence: number; exactPrivateNotice?: true }>; hasMore: boolean; nextAfter?: number } {
     const key = hash([scope.companionId, scope.securityDomainId]), limit = bounded(options.limit, 100, 200);
     const found = this.db.prepare(`SELECT m.id,w.sequence FROM bot_source_withdraw_outbox w JOIN bot_messages m ON m.id=w.message_id WHERE w.domain_key=? AND m.conversation_id=? AND w.sequence>? ORDER BY w.sequence LIMIT ?`)
       .all(key, scope.conversationId, options.after ?? 0, limit + 1);
     const items = found.slice(0, limit).map(raw => ({ messageId: String(asRow(raw).id), sequence: Number(asRow(raw).sequence),
+      ...(this.isPrivateNoticeSourceExcluded(scope.companionId, scope.securityDomainId, String(asRow(raw).id)) ? { exactPrivateNotice: true as const } : {}),
       eventIds: this.db.prepare('SELECT id FROM bot_inbox WHERE companion_id=? AND domain_id=? AND (source_record_id=? OR reply_message_id=?)').all(scope.companionId, scope.securityDomainId, asRow(raw).id, asRow(raw).id).map(value => String(asRow(value).id)) }));
     return { items, hasMore: found.length > limit, nextAfter: found.length > limit ? items.at(-1)?.sequence : undefined };
   }
@@ -1572,6 +1614,7 @@ export class BotStore {
       JOIN bot_message_media_grants mg ON mg.message_id=m.id AND mg.media_id=json_extract(a.value,'$.id')
       WHERE m.conversation_id=? AND m.status='sent' AND m.attachments_json<>'[]'
       AND (m.sequence<=? OR EXISTS(SELECT 1 FROM bot_publications own WHERE own.message_id=m.id AND own.event_id=? AND m.sender_id=?))
+      AND ${companionMessageVisibilitySql}
       ${ids ? `AND json_extract(a.value,'$.id') IN(${ids.map(() => '?').join(',')})` : ''}
       AND (?='' OR json_extract(a.value,'$.name') LIKE ? ESCAPE '\\')
       AND NOT EXISTS(SELECT 1 FROM bot_withdrawn_sources w WHERE w.domain_key=? AND w.source_id=m.id)
@@ -1580,10 +1623,17 @@ export class BotStore {
         WHERE i.companion_id=? AND (i.source_record_id=m.id OR i.reply_message_id=m.id))
       AND NOT EXISTS(SELECT 1 FROM bot_media_grant_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.grant_id=mg.grant_id)
       AND NOT EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.message_id=m.id)
-      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, publishingEvent?.id??'',scope.companionId, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
+      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, publishingEvent?.id??'',scope.companionId,
+        scope.companionId, scope.companionId, scope.companionId, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
       .map(raw => ({ ref: JSON.parse(String(asRow(raw).ref_json)) as BotMediaRef, grantId: String(asRow(raw).grant_id) }));
   }
   getMessage(id: string): BotMessage | undefined { const raw = this.db.prepare('SELECT * FROM bot_messages WHERE id=?').get(id); return raw ? this.message(raw) : undefined; }
+  /** Model/memory visibility only. Human UI history keeps the original task
+   * record; raw receipt knowledge belongs to its actual recipient and owner. */
+  isMessageVisibleToCompanion(messageId: string, companionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM bot_messages m WHERE m.id=? AND ${companionMessageVisibilitySql}`)
+      .get(messageId, companionId, companionId, companionId);
+  }
   private recordHistoryProjection(messageId: string, timestamp?: number): void {
     const message = this.getMessage(messageId); if (!message || message.status !== 'sent') return;
     this.db.prepare('INSERT OR IGNORE INTO bot_history_projection(message_id,conversation_id,timestamp) VALUES(?,?,?)')
@@ -1594,10 +1644,12 @@ export class BotStore {
   }
   /** UI placeholders receive their sequence before completion. Hot model
    * history follows actual publication, while the trigger bounds future input. */
-  recentPublishedMessages(conversationId: string, options: { throughSourceSequence: number; limit?: number; maxChars?: number }): BotMessage[] {
+  recentPublishedMessages(conversationId: string, options: { throughSourceSequence: number; limit?: number; maxChars?: number; companionId?: string; publicOnly?: boolean }): BotMessage[] {
     const rows = this.db.prepare(`SELECT m.* FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id
-      WHERE p.conversation_id=? AND m.sequence<=? AND m.status='sent' AND (length(m.content)>0 OR m.attachments_json<>'[]') ORDER BY p.sequence DESC LIMIT ?`)
-      .all(conversationId, options.throughSourceSequence, bounded(options.limit, 80, 200)).map(raw => this.message(raw));
+      WHERE p.conversation_id=? AND m.sequence<=? AND m.status='sent' AND (length(m.content)>0 OR m.attachments_json<>'[]')
+      ${options.publicOnly ? `AND NOT ${internalTaskMessageSql}` : ''}
+      ${options.companionId ? `AND ${companionMessageVisibilitySql}` : ''} ORDER BY p.sequence DESC LIMIT ?`)
+      .all(conversationId, options.throughSourceSequence, ...(options.companionId ? [options.companionId, options.companionId, options.companionId] : []), bounded(options.limit, 80, 200)).map(raw => this.message(raw));
     const selected: BotMessage[] = [], maxChars = bounded(options.maxChars, 24000, 256000); let size = 0;
     for (const message of rows) { const chars = botMessageEvidence(message).length; if (selected.length && size + chars > maxChars) break; selected.push(message); size += chars; }
     return selected.reverse();

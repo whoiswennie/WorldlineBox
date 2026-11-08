@@ -5,7 +5,7 @@ import { botTaskAnswerSchema, botTaskQuestionSchema, botEffectResolutionSchema, 
   type BotWorkerEffectStart, type BotWorkerQuestionResult } from '../../shared/companion-bot-task';
 import type { BotTask as BotTaskCard, BotTaskSummary } from '../../shared/companion-bot';
 import type { BotStore, BotTaskSql } from './store';
-import type { BotSource, BotTask } from './types';
+import type { BotEvent, BotSource, BotTask } from './types';
 import { BotDshBrain } from './dsh-brain';
 import { BotTaskReports, type BotStoredWorkerReport } from './task-report';
 
@@ -62,6 +62,11 @@ export class BotTaskRuntime {
   }
   visibleTasks(conversationId?: string): BotTask[] {
     return this.store.listTaskCatalog({ conversationId, view: 'context', order: 'activity', limit: 100 });
+  }
+  /** A human room directory may contain every participant's task card. Router
+   * context is an owner-scoped SQL query before LIMIT, never that UI directory. */
+  routerTasks(event: Pick<BotEvent, 'companionId' | 'conversationId'>): BotTask[] {
+    return this.store.listTaskCatalog({ companionId: event.companionId, conversationId: event.conversationId, view: 'context', order: 'activity', limit: 100 });
   }
   summary(conversationId: string): BotTaskSummary | undefined {
     const room = this.store.getConversation(conversationId);

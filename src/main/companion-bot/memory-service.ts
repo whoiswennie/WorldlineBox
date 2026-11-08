@@ -532,7 +532,7 @@ export class BotMemoryService {
       sourceMessageIds: Array.isArray(result.sourceMessageIds) ? result.sourceMessageIds.map(String) : [],
     }; }, undefined, true, true, onPhase);
   }
-  async withdrawSources(scope:BotMemoryScope,input:{sourceEventIds:string[];sourceMessageIds:string[]},signal?:AbortSignal):Promise<{withdrawn:true;revision:string;sourceEventIds:string[];sourceMessageIds:string[]}>{
+  async withdrawSources(scope:BotMemoryScope,input:{sourceEventIds:string[];sourceMessageIds:string[];mode?:'isolated-task-notices'},signal?:AbortSignal):Promise<{withdrawn:true;revision:string;sourceEventIds:string[];sourceMessageIds:string[]}>{
     return this.run(scope,async entry=>{
       try{
         const result=checked(await this.request(entry,'bot.sources.withdraw',{companionId:scope.companionId,...input},signal));

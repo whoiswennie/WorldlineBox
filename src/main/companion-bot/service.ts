@@ -39,6 +39,7 @@ import type { BotMediaService } from './media-service';
 import { botMessageEvidence } from '../../shared/bot-message-content';
 import type { BotClaim, BotEvent, BotMemoryJobInput, BotTask, BotAttachmentGrant } from './types';
 import { migrateBotHost, botConversationWorkdir, botHostHistoryRebuildKey, botNativeHostBindingKey } from './host-migration';
+import { isolateLegacyTaskNoticeContext, refreshTaskNoticeAudienceRebuild } from './task-notice-audience-migration';
 import type { NativeHostEvent } from '../dsh/native-host-client';
 import { GROUP_ATTENTION_SYSTEM, parseGroupAttention, isGroupStop, type GroupAttentionDecision } from './group-attention';
 import { resolveBotModelLimits } from './model-limits';
@@ -736,9 +737,9 @@ export class BotService {
           : '历史回执确认已投递到原伙伴群聊；未重新投递，也未转换原会话。' };
   }
   private memoryMessages(event: BotEvent, through = event.sourceMessageSequence): BotMemoryMessage[] {
-    const history = this.store.recentPublishedMessages(event.conversationId, { throughSourceSequence: through, limit: 80, maxChars: DEFAULT_MODEL_CONTEXT_CHARS });
+    const history = this.store.recentPublishedMessages(event.conversationId, { throughSourceSequence: through, limit: 80, maxChars: DEFAULT_MODEL_CONTEXT_CHARS, companionId: event.companionId });
     const source = this.store.getMessage(event.sourceMessageRecordId);
-    if (source && !history.some(message => message.id === source.id)) history.push(source);
+    if (source && this.store.isMessageVisibleToCompanion(source.id, event.companionId) && !history.some(message => message.id === source.id)) history.push(source);
     const withdrawn = this.store.withdrawnIn(event.companionId, event.securityDomainId, history.map(message => message.id));
     return history.filter(message => !withdrawn.has(message.id)).map(message => ({
       id: message.id, role: message.senderId === event.companionId ? 'assistant' : 'user', content: botMessageEvidence(message),
@@ -771,10 +772,21 @@ export class BotService {
     while (true) {
       const page = this.store.withdrawnMessagesPage(scope, { after, limit: 80 });
       if (page.items.length) {
-        const receipt = await this.options.memory.withdrawSources(scope, { sourceEventIds: [...new Set(page.items.flatMap(item => item.eventIds))], sourceMessageIds: page.items.map(item => item.messageId) }, this.maintenanceAbort.signal);
-        this.applyWithdrawal(scope, receipt, currentEventId);
+        let revision = '0';
+        // Targeted legacy task-notice corrections must not recursively revoke
+        // public messages which happened to share one VCP note. A page may
+        // also contain ordinary user withdrawals; keep their full semantics.
+        for (const exactPrivateNotice of [true, false]) {
+          const items = page.items.filter(item => (item.exactPrivateNotice === true) === exactPrivateNotice);
+          if (!items.length) continue;
+          const receipt = await this.options.memory.withdrawSources(scope, {
+            sourceEventIds: [...new Set(items.flatMap(item => item.eventIds))], sourceMessageIds: items.map(item => item.messageId),
+            ...(exactPrivateNotice ? { mode: 'isolated-task-notices' as const } : {}),
+          }, this.maintenanceAbort.signal);
+          this.applyWithdrawal(scope, receipt, currentEventId); revision = receipt.revision;
+        }
         after = page.items.at(-1)!.sequence;
-        this.store.setMetadataBatch([{ key: `withdrawal-revision:${digest(JSON.stringify([scope.companionId, scope.securityDomainId]))}`, value: receipt.revision }, { key: cursorKey, value: String(after) }]);
+        this.store.setMetadataBatch([{ key: `withdrawal-revision:${digest(JSON.stringify([scope.companionId, scope.securityDomainId]))}`, value: revision }, { key: cursorKey, value: String(after) }]);
       }
       if (!page.items.length) return;
     }
@@ -870,7 +882,7 @@ export class BotService {
         if (withdrawn(sources)) return { recipients: [], reason: '消息来源已撤回。' };
         const configured = this.options.model(), limits = resolveBotModelLimits(configured);
         const model = { ...configured, maxTokens: Math.max(1, Math.min(2048, limits.maxTokens, configured.maxOutputTokens ?? Number.MAX_SAFE_INTEGER, Math.floor(limits.window / 8))) };
-        const history = this.store.recentPublishedMessages(room.id, { throughSourceSequence: Number.MAX_SAFE_INTEGER, limit: 16, maxChars: 9000 })
+        const history = this.store.recentPublishedMessages(room.id, { throughSourceSequence: Number.MAX_SAFE_INTEGER, limit: 16, maxChars: 9000, publicOnly: true })
           .filter(message => !withdrawn(this.store.messageSourceIds(message.id)));
         let prompt = previous;
         if (prompt) {
@@ -982,7 +994,14 @@ export class BotService {
         this.changed(event.conversationId);
       }
       const memoryPhase = (phase: 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory') => progress({ phase });
+      const isolation = isolateLegacyTaskNoticeContext({ store: this.store, event });
+      if (isolation.state === 'deferred' && !this.store.getMetadata(dispatchKey)
+        && this.store.getEventNativeEpoch(event.id) === undefined && !event.dshEventId) {
+        throw Object.assign(new Error('旧主脑执行回执尚未结清，暂不能安全重建此聊天的受众上下文；原任务和聊天记录已保留。'), { code: 'BOT_AUDIENCE_CONTEXT_PENDING' });
+      }
+      if (isolation.state === 'isolated') this.loadedTombstones.delete(digest(JSON.stringify([event.companionId, event.securityDomainId])));
       await this.loadTombstones(scopeFor(event), event.id, memoryPhase);
+      if (isolation.state === 'isolated') refreshTaskNoticeAudienceRebuild(this.store, event);
       signal.throwIfAborted();
       if (this.store.withdrawnIn(event.companionId, event.securityDomainId, this.store.eventSourceIds(event.id)).size) { this.store.cancelEvent(event.id, true); return; }
       const retained = await this.retention.beforeTurn(event, signal);
@@ -1004,10 +1023,10 @@ export class BotService {
       dispatch = frozen;
       if (!dispatch) {
         const delivered = new Set(this.deliveredMessages(event.laneId, nativeLaneId));
-        const history = this.store.recentPublishedMessages(event.conversationId, { throughSourceSequence: contextThrough, limit: 80, maxChars: 24000 })
+        const history = this.store.recentPublishedMessages(event.conversationId, { throughSourceSequence: contextThrough, limit: 80, maxChars: 24000, companionId: event.companionId })
           .filter(message => !delivered.has(message.id) && (message.senderId !== event.companionId || !!this.store.getMetadata(botHostHistoryRebuildKey(event.laneId))));
         const withdrawn = this.store.withdrawnIn(event.companionId, event.securityDomainId, history.map(message => message.id));
-        const tasks = this.taskRuntime.visibleTasks(event.conversationId), withdrawnTasks = this.store.withdrawnIn(event.companionId, event.securityDomainId, tasks.map(task => task.sourceEventId));
+        const tasks = this.taskRuntime.routerTasks(event), withdrawnTasks = this.store.withdrawnIn(event.companionId, event.securityDomainId, tasks.map(task => task.sourceEventId));
         const handoffView = retained.handoff ? this.options.brainRuntime === 'worldlinebox'
           ? { kind: 'historical-context', compactionId: retained.handoff.compactionId,
             summaryText: Array.from(retained.handoff.summaryText).slice(0, 640).join(''), summaryIsExcerpt: Array.from(retained.handoff.summaryText).length > 640,
@@ -1332,7 +1351,8 @@ export class BotService {
       case 'chat_read_message': {
         const id = z.string().min(1).max(160).parse(args.messageId), message = this.store.getMessage(id);
         if (!message || message.conversationId !== event.conversationId || message.sequence > event.sourceMessageSequence
-          || message.status !== 'sent' || this.store.withdrawnIn(event.companionId, event.securityDomainId, [id]).size) throw new Error('原消息不属于当前主脑获准的会话范围。');
+          || message.status !== 'sent' || !this.store.isMessageVisibleToCompanion(id, event.companionId)
+          || this.store.withdrawnIn(event.companionId, event.securityDomainId, [id]).size) throw new Error('原消息不属于当前主脑获准的会话范围。');
         const chars = Array.from(botMessageEvidence(message)), offset = z.number().int().min(0).max(1000000).parse(args.offset ?? 0);
         const limit = z.number().int().min(1).max(1200).parse(args.limit ?? 800), end = Math.min(chars.length, offset + limit);
         const files = await this.verifiedAttachmentFiles(event, message.attachments?.map(ref => ref.id) ?? [], undefined, signal);
@@ -1531,6 +1551,7 @@ export class BotService {
       case 'dsh_task_result_read': {
         const task = this.store.getTask(nonempty.parse(args.taskId));
         if (!task || task.extra.removedAt || task.conversationId !== event.conversationId || task.companionId !== event.companionId || this.store.taskSourcesWithdrawn(task.id)) throw new Error('执行结果不属于当前伙伴和聊天，或任务记录已移除。');
+        this.companionRuntime.taskInView(event, task.id);
         const offset = z.number().int().min(0).max(10000000).default(0).parse(args.offset);
         const limit = z.number().int().min(1).max(12000).default(6000).parse(args.limit);
         const section = z.enum(['delivery', 'verification']).default('delivery').parse(args.section);

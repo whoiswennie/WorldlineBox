@@ -22,6 +22,7 @@ class BotHost {
       CREATE TABLE IF NOT EXISTS mutation_sources(note_id TEXT NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(note_id,kind,id));
       CREATE INDEX IF NOT EXISTS mutation_sources_reverse ON mutation_sources(kind,id,note_id);
       CREATE TABLE IF NOT EXISTS withdrawal_episodes(episode INTEGER PRIMARY KEY,state TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS source_withdrawal_modes(note_id TEXT PRIMARY KEY,mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value INTEGER NOT NULL);`);
     const columns = this.db.prepare('PRAGMA table_info(mutations)').all().map(column => column.name);
     for (const column of ['source_event', 'source_root', 'source_messages', 'content']) {
@@ -245,7 +246,9 @@ class BotHost {
     return { ...result, forgotten: true, id, physicalSourceErasure: false,
       meaning: '已撤回本域日记、索引及受管回查投影；原始DSH日志由宿主屏蔽，未宣称物理擦除。' };
   }
-  stageWithdrawal({ sourceEventIds = [], sourceMessageIds = [], noteIds = [] }) {
+  stageWithdrawal({ sourceEventIds = [], sourceMessageIds = [], noteIds = [], mode }) {
+    if (mode !== undefined && mode !== 'isolated-task-notices') throw new TypeError('Unknown trusted source withdrawal mode');
+    const exactSources = mode === 'isolated-task-notices';
     for (const values of [sourceEventIds, sourceMessageIds, noteIds]) {
       if (!Array.isArray(values) || values.length > (values === noteIds ? 100000 : 2000) || values.some(id => typeof id !== 'string' || !id || id.length > 512 || id.includes('\0'))) throw new TypeError('Trusted source withdrawal IDs required');
     }
@@ -267,9 +270,18 @@ class BotHost {
           pending.push(...this.db.prepare('SELECT child_id FROM note_dependencies WHERE parent_id=?').all(id).map(row => ['note', row.child_id]));
           const row = this.db.prepare('SELECT * FROM mutations WHERE id=?').get(id);
           if (!row) continue;
+          this.db.prepare(`INSERT INTO source_withdrawal_modes(note_id,mode) VALUES(?,?) ON CONFLICT(note_id) DO UPDATE SET mode=
+            CASE WHEN source_withdrawal_modes.mode='recursive' OR excluded.mode='recursive' THEN 'recursive' ELSE excluded.mode END`)
+            .run(id, exactSources ? 'isolated-task-notices' : 'recursive');
           if (row.state !== 'forgotten') { this.db.prepare("UPDATE mutations SET state='withdrawing' WHERE id=?").run(id); needsCleanup = true; }
-          pending.push(...[row.source_root, row.source_event].filter(Boolean).map(id => ['event', id]), ...JSON.parse(row.source_messages || '[]').map(id => ['message', id]));
-          pending.push(...this.db.prepare('SELECT kind,id FROM mutation_sources WHERE note_id=?').all(id).map(source => [source.kind, source.id]));
+          // A legacy private-notice correction removes the contaminated note
+          // and its derived notes, not every independent public fact that was
+          // cited beside it. Ordinary forget/source withdrawal retains its
+          // complete source closure and existing privacy semantics.
+          if (!exactSources) {
+            pending.push(...[row.source_root, row.source_event].filter(Boolean).map(id => ['event', id]), ...JSON.parse(row.source_messages || '[]').map(id => ['message', id]));
+            pending.push(...this.db.prepare('SELECT kind,id FROM mutation_sources WHERE note_id=?').all(id).map(source => [source.kind, source.id]));
+          }
         } else {
           for (const row of this.db.prepare('SELECT note_id FROM mutation_sources WHERE kind=? AND id=?').all(kind, id)) pending.push(['note', row.note_id]);
         }
@@ -350,8 +362,22 @@ class BotHost {
       const recovered = await this.recoverUnconfirmedNote(row, { allowMissing: true, timezone: runtime.config.DEFAULT_TIMEZONE || 'Asia/Shanghai' });
       if (recovered) await this.sync(runtime, { id: recovered.id });
     }
-    const rows = this.db.prepare("SELECT id FROM mutations WHERE state='withdrawing'").all();
-    const result = await this.withdrawSources(runtime, { companionId, noteIds: rows.map(row => row.id) });
+    const rows = this.db.prepare(`SELECT m.id,COALESCE(w.mode,'recursive') AS mode FROM mutations m
+      LEFT JOIN source_withdrawal_modes w ON w.note_id=m.id WHERE m.state='withdrawing'`).all();
+    // A crash after staging must retain the exact-source correction policy.
+    // Replaying all pending note IDs as ordinary forget would recursively
+    // tombstone the unrelated public messages this migration must preserve.
+    const batches = rows.length ? ['isolated-task-notices', 'recursive'].map(mode => ({ mode,
+      noteIds: rows.filter(row => row.mode === mode).map(row => row.id) })).filter(batch => batch.noteIds.length) : [{ mode: 'recursive', noteIds: [] }];
+    const receipts = [];
+    for (const batch of batches) receipts.push(await this.withdrawSources(runtime, { companionId, noteIds: batch.noteIds,
+      ...(batch.mode === 'isolated-task-notices' ? { mode: batch.mode } : {}) }));
+    const result = { ...receipts.at(-1),
+      changedEpisodes: [...new Set(receipts.flatMap(receipt => receipt.changedEpisodes || []))],
+      relatedIds: [...new Set(receipts.flatMap(receipt => receipt.relatedIds || []))],
+      sourceEventIds: [...new Set(receipts.flatMap(receipt => receipt.sourceEventIds || []))],
+      sourceMessageIds: [...new Set(receipts.flatMap(receipt => receipt.sourceMessageIds || []))],
+      withdrawalPending: receipts.some(receipt => receipt.withdrawalPending) };
     // Only the real cleanup/projection receipts authorize releasing old-plan
     // recall fences. Epoch expiry alone never means a write did not occur.
     this.managed.finalizeWithdrawn(); this.maintenance.finalizeWithdrawn();
