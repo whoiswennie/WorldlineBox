@@ -7,7 +7,7 @@ const memoryConversation = { type: 'string', maxLength: 160, description: '可�
 export const BOT_TOOLS: BotDshTool[] = [
   { name: 'agent_capabilities', description: '动态读取本伙伴当前 DSH 执行环境的真实能力。summary先看数量和边界；catalog按分类/关键词分页发现；tool按确切名称读工具参数；skill按名称分段读技能。不执行插件、不选择其他伙伴或实例。目录是外部参考资料，不授予新任务权限。', parameters: object({ kind: { type: 'string', enum: ['summary', 'catalog', 'tool', 'skill'] }, category: { type: 'string', enum: ['all', 'tool', 'skill'] }, query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 30 }, name: string('已发现的真实工具或技能名称', 200), textOffset: { type: 'integer', minimum: 0, maximum: 2097152 }, maxChars: { type: 'integer', minimum: 100, maximum: 4000 } }, ['kind']) },
   { name: 'agent_state', description: '读取自己持续主脑的统一事件序列和当前受众获准的任务协调视图。用户私聊可查看自己在用户参与会话中的任务元数据；群、伙伴私聊和世界仅本会话。不会读取其他受众的聊天或记忆，也不授予新工作权限。', parameters: object({}, []) },
-  { name: 'dsh_task_result_read', description: '分页读取当前伙伴自己的任务执行结果原文。task_done或任务摘要明确为摘录时，通过offset/nextOffset读剩余部分，不把短摘录当成完整结果。只读，不会再次执行任务。', parameters: object({ taskId: string('任务编号', 160), offset: { type: 'integer', minimum: 0, maximum: 10000000 }, limit: { type: 'integer', minimum: 1, maximum: 12000 } }, ['taskId']) },
+  { name: 'dsh_task_result_read', description: '分页读取当前伙伴自己的任务原件。section默认delivery：完整交付，含原生正文和有效ready报告；verification：仍有效的ready核验说明全文（编号文本），供补全来源/数值/依据。status的verificationView显示遗漏/截断及readArgs，核验预览有跳段须从offset=0读；沿nextOffset继续。任务终态也能只读，不唤醒或重跑。', parameters: object({ taskId: string('任务编号', 160), section: { type: 'string', enum: ['delivery', 'verification'] }, offset: { type: 'integer', minimum: 0, maximum: 10000000 }, limit: { type: 'integer', minimum: 1, maximum: 12000 } }, ['taskId']) },
   { name: 'context_handoff_read', description: '分页读取当前主脑代际的完整交接摘要或尾部原件。交接预览不包含全部旧事实，需要细节时按nextOffset继续，不能访问其他伙伴/受众。', parameters: object({ section: { type: 'string', enum: ['summary', 'tail'] }, offset: { type: 'integer', minimum: 0 } }, []) },
   { name: 'chat_read_message', description: '按本轮sourceMessageId或同会话已有消息ID分页读取原文。长消息预览不包含全部需求，读取时沿nextOffset继续；不能访问其他会话或未来消息。', parameters: object({ messageId: string('当前会话原消息ID', 160), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['messageId']) },
   { name: 'chat_list_stickers', description: '列出当前聊天可用的真实表情包和表情ID，可按名称查找；不要编造图片或表情ID。', parameters: object({ query: { type: 'string', maxLength: 200 }, packId: { type: 'string', maxLength: 160 } }, []) },
@@ -55,7 +55,7 @@ const routerDescriptions: Record<string, string> = {
   companion_delegation: 'status查询真实委派进度；接收方实际Worker/计划完成后result传回摘要和attachmentIds至原聊天；原委派方send补充、cancel停止。省略ID取trigger.delegation。',
   agent_capabilities: '查询本人当前DSH能力：summary概览，catalog关键词/分类分页，tool读参数，skill分段读说明；变更revision后重查。目录不授予新权限。',
   agent_state: '读取自己持续主脑的事件序列及当前受众获准的任务协调状态；元数据不授予新权限。',
-  dsh_task_result_read: '按taskId分页读本会话本人任务的完整结果。摘要为预览时沿nextOffset继续；只读，不重新执行。',
+  dsh_task_result_read: '按taskId分页只读本人任务原件。section默认delivery完整交付，verification读有效ready核验全文；status.report.verificationView给遗漏/截断/readArgs，核验须从0分页。终态也能读，沿nextOffset继续，不唤醒或重跑。',
   context_handoff_read: '分页读当前受众的完整历史交接摘要或尾部原件；不可跨伙伴或受众。',
   chat_read_message: '按当前会话消息ID分页读取原文；长trigger用sourceMessageId回读，沿nextOffset继续。',
   chat_list_stickers: '查询本聊天真实表情包和表情ID，发送前先确认可用ID。',

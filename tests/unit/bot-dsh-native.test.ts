@@ -40,7 +40,8 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native lanes
     const write = data.messages.some((message: { content?: string }) => typeof message.content === 'string' && message.content.includes('write-native-artifact'));
     const readImage = content.includes('read-image-from-absolute-path');
     const useTool = write || readImage || data.messages.some((message: { content?: string }) => typeof message.content === 'string' && message.content.includes('use-memory'));
-    const delta = useTool && !used ? { tool_calls: [{ index: 0, id: 'native-tool-' + randomUUID(), type: 'function', function: {
+    const delta = useTool && !used ? { ...(!write && !readImage ? { content: 'Brain intermediate text before its memory tool; only the final reply should be returned.' } : {}),
+      tool_calls: [{ index: 0, id: 'native-tool-' + randomUUID(), type: 'function', function: {
       name: write ? 'write' : readImage ? 'read_image' : 'memory_search', arguments: JSON.stringify(write ? { file_path: 'native-result.txt', content: 'native worker proof' } : readImage ? { file_path: imagePath } : { query: 'frozen fact' }) } }] }
       : { content: 'pong-from-native-loop' };
     if (write && !used) writeDispatches++;
@@ -63,7 +64,10 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native lanes
     const a = { laneId: 'lane-a', eventId: 'event-a', cwd: path.join(cwd, 'a'), system: 'Private identity ALPHA.', prompt: 'use-memory', model, tools, callback: callbacks };
     const b = { ...a, laneId: 'lane-b', eventId: 'event-b', cwd: path.join(cwd, 'b'), system: 'Private identity BETA.', prompt: 'reply directly' };
     const first = await Promise.all([brain.run(a), brain.run(b)]);
+    // Worker-only aggregation must not turn the main brain's intermediate
+    // tool narration into a second user-facing final reply.
     expect(first.map(result => result.text)).toEqual(['pong-from-native-loop', 'pong-from-native-loop']);
+    expect(JSON.stringify(requests)).toContain('Brain intermediate text');
     expect(first[0]!.sessionId).not.toBe(first[1]!.sessionId);
     const before = requests.length;
     const duplicate = await brain.run(a); expect(duplicate).toEqual(first[0]); expect(requests).toHaveLength(before);

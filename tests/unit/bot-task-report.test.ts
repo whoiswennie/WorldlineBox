@@ -53,6 +53,32 @@ it('refuses unproven completion, empty verification and descendant authority', a
   expect(() => f.reports.record(f.task, 'child', { ...ready, nativeSessionId: 'child-session', nativeCallId: 'child' })).toThrow('根执行器');
 });
 
+it('retains a current ready report alongside a generic native ending, without duplicating it on repeated reads', async () => {
+  const f = storeFixture(await root()), ending = '任务已完成，可直接转述的天气答复已在上面给出。';
+  const report = { state: 'ready' as const, summary: '上海：18.6°C，体感19.2°C，湿度80%。查询时间14:44，来源：天气数据服务。', verification: ['已核对时间、地点及单位。'] };
+  f.report('weather-delivery', report);
+  expect(f.runtime.verificationText(f.store.getTask(f.task.id)!)).toEqual({ text: '1. 已核对时间、地点及单位。', reportCallId: 'weather-delivery' });
+  const text = f.reports.deliveryText(f.store.getTask(f.task.id)!, ending);
+  expect(text).toBe(report.summary + '\n\n【执行器补充正文】\n' + ending);
+  expect(f.reports.deliveryText(f.store.getTask(f.task.id)!, text)).toBe(text);
+  expect(f.reports.deliveryText(f.store.getTask(f.task.id)!, report.summary)).toBe(report.summary);
+  f.runtime.startEffect(f.store.getTask(f.task.id)!, { callId: 'later-query', toolName: 'web_fetch', argsHash: 'c'.repeat(64), argumentsPreview: 'new fact' });
+  expect(f.reports.deliveryText(f.store.getTask(f.task.id)!, ending)).toBe(ending);
+  expect(f.runtime.verificationText(f.store.getTask(f.task.id)!)).toBeUndefined();
+});
+
+it('does not merge an earlier execution segment report or invent a missing result', async () => {
+  const f = storeFixture(await root());
+  expect(f.reports.deliveryText(f.store.getTask(f.task.id)!, '')).toBe('');
+  f.report('prior-ready', { state: 'ready', summary: '上一执行段的结论', verification: ['核对了旧条件'] });
+  const task = f.store.getTask(f.task.id)!;
+  f.store.updateTask(task.id, { extra: { ...task.extra, reportBaseline: 'prior-ready' } });
+  expect(f.reports.deliveryText(f.store.getTask(task.id)!, '新执行段尚无结论')).toBe('新执行段尚无结论');
+  expect(f.runtime.verificationText(f.store.getTask(task.id)!)).toBeUndefined();
+  f.report('progress-report', { state: 'progress', summary: '本轮尚未完成', verification: ['只有部分旧口径已检查'] });
+  expect(f.runtime.verificationText(f.store.getTask(task.id)!)).toBeUndefined();
+});
+
 class Memory extends BotMemoryService {
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> { return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'report', metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 }; }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
@@ -74,9 +100,9 @@ class Brain extends BotDshBrain {
   override async close() {}
 }
 async function until(check: () => boolean, timeout = 8000) { const end = Date.now() + timeout; while (!check()) { if (Date.now() > end) throw Error('Task report fixture timed out'); await new Promise(resolve => setTimeout(resolve, 10)); } }
-async function serviceFixture(initialReport?: BotWorkerReport) {
+async function serviceFixture(initialReport?: BotWorkerReport, ending?: string) {
   const directory = await root(), brain = new Brain(), memory = new Memory({ root: path.join(directory, 'memory'), runtime: async () => { throw Error('No VCP'); }, embedding: async () => { throw Error('No embedding'); } });
-  if (initialReport) brain.worker = async input => { await reportWorkerOutcome(input, initialReport); return initialReport.summary; };
+  if (initialReport) brain.worker = async input => { await reportWorkerOutcome(input, initialReport); return ending ?? initialReport.summary; };
   const service = new BotService({ root: directory, brain, memory, model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined });
   cleanup.push(() => service.shutdown());
   await service.handle({ type: 'state' }); const room = service.store.openDirect(DEFAULT_BOT_COMPANION_ID);
@@ -91,6 +117,104 @@ async function serviceFixture(initialReport?: BotWorkerReport) {
   };
   return { service, brain, task, room, restart };
 }
+
+it('delivers the actual ready report to the router and task card even when the final native sentence only says completed', async () => {
+  const report = { state: 'ready' as const, summary: '上海目前18.6°C，体感19.2°C，湿度80%；14:44查询，来源为天气服务。', verification: ['三处返回已核对，未编造数值。'] };
+  const ending = '任务已完成，可直接转述的天气答复已在上面给出；三处联网请求均返回真实数据。';
+  const f = await serviceFixture(report, ending);
+  await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
+  const task = f.service.store.getTask(f.task.id)!;
+  expect(task.summary).toContain(report.summary); expect(task.summary).toContain(ending);
+  const notice = f.service.store.taskTransaction(sql => sql.prepare("SELECT content FROM bot_inbox WHERE source='task' AND kind='task_done' AND json_extract(payload_json,'$.taskId')=?").get(task.id)) as { content: string };
+  expect(notice.content).toContain(report.summary);
+  expect((await f.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: task.id })).task?.summary).toBe(task.summary);
+  expect(f.brain.workers).toHaveLength(1);
+  expect(f.brain.workers[0]!.system).toContain('最终正文及worker_report.summary必须自包含');
+});
+
+it('reads full Unicode delivery and omitted verification from a legacy terminal task after restart without resuming its worker', async () => {
+  const report: BotWorkerReport = { state: 'ready', summary: '报告正文：上海18.6°C。' + '🐋'.repeat(7000) + '\n报告末尾：来源与适用时间完整保留✅',
+    verification: ['核验首项：' + '🐋'.repeat(350) + '\n预览之后的实际来源：https://weather.example/first', '第二项：核对单位', '第三项：核对适用时间', '第四项来源：https://weather.example/fourth，体感19.2°C，湿度80%。'] };
+  const ending = '原生正文：' + '🧭'.repeat(9000) + '\n原生末尾：NATIVE-END✅';
+  const f = await serviceFixture(report, ending); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
+  // Reproduce the previous application projection: the report receipt exists,
+  // but only the native final text was persisted as the task summary.
+  f.service.store.updateTask(f.task.id, { summary: ending });
+  const next = await f.restart(), raw = next.service.store.getTask(f.task.id)!;
+  expect(raw.summary).toBe(ending); expect(raw.status).toBe('succeeded');
+  const combined = report.summary + '\n\n【执行器补充正文】\n' + ending;
+  expect((await next.service.handle({ type: 'task.get', conversationId: f.room.id, taskId: raw.id })).task?.summary).toBe(combined);
+  let retrieved: string | undefined, retrievedVerification: string | undefined;
+  next.brain.router = async input => {
+    if (JSON.parse(input.prompt).trigger?.content !== '读取旧任务完整交付') return '收到';
+    const invoke = async (name: string, args: object, callId: string) => {
+      const response = await fetch(input.callback.url, { method: 'POST', headers: { authorization: 'Bearer ' + input.callback.token, 'content-type': 'application/json' },
+        body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId, name, args }) });
+      expect(response.ok).toBe(true);
+      const wire = await response.json() as { ok: boolean; result: { text: string; totalChars: number; nextOffset?: number; summary?: string; available?: boolean; reportCallId?: string;
+        report?: { verification: string[]; verificationView: { reportCallId: string } }; result?: { nextOffset: number } } };
+      expect(wire.ok).toBe(true); return wire.result;
+    };
+    const status = await invoke('dsh_task_control', { operation: 'status', taskId: raw.id }, 'read-existing-status');
+    expect(status.summary).toContain('上海18.6°C'); expect(status.result?.nextOffset).toBe(1200);
+    expect(status.report?.verification).toHaveLength(3);
+    expect(status.report?.verification[0]).not.toContain('weather.example/first');
+    expect(Array.from(status.report?.verification[0] ?? '')).toHaveLength(300);
+    expect(status.report?.verificationView).toMatchObject({ available: true, totalItems: 4, shownItems: 3, omittedItems: 1, truncatedItems: 1,
+      truncated: true, complete: false, readTool: 'dsh_task_result_read', readArgs: { taskId: raw.id, section: 'verification', offset: 0 } });
+    let offset = 0, text = '';
+    do {
+      const page = await invoke('dsh_task_result_read', { taskId: raw.id, offset, limit: 777 }, 'read-existing-result-' + offset);
+      expect(page.totalChars).toBe(Array.from(combined).length);
+      expect(page.text).not.toMatch(/[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/u);
+      text += page.text;
+      if (page.nextOffset === undefined) break;
+      offset = page.nextOffset;
+    } while (offset < 100000);
+    let verificationOffset = 0, verificationText = '';
+    const fullVerification = report.verification.map((value, index) => `${index + 1}. ${value}`).join('\n\n');
+    for (;;) {
+      const page = await invoke('dsh_task_result_read', { taskId: raw.id, section: 'verification', offset: verificationOffset, limit: 177 }, 'read-verification-' + verificationOffset);
+      expect(page.available).toBe(true); expect(page.totalChars).toBe(Array.from(fullVerification).length);
+      expect(page.reportCallId).toBe(status.report?.verificationView.reportCallId);
+      expect(page.text).not.toMatch(/[\uD800-\uDBFF]$|^[\uDC00-\uDFFF]/u);
+      verificationText += page.text;
+      if (page.nextOffset === undefined) break;
+      verificationOffset = page.nextOffset;
+    }
+    retrievedVerification = verificationText; retrieved = text; return '已读取已有完整交付及全部核验来源。';
+  };
+  await next.service.handle({ type: 'message.send', conversationId: f.room.id, requestId: 'read-old-delivery', content: '读取旧任务完整交付' });
+  await until(() => retrieved !== undefined);
+  expect(retrieved).toBe(combined); expect(next.brain.workers).toHaveLength(0);
+  expect(retrievedVerification).toBe(report.verification.map((value, index) => `${index + 1}. ${value}`).join('\n\n'));
+  expect(next.service.store.getTask(raw.id)?.summary).toBe(ending);
+});
+
+it('does not expose stale or foreign verification through the read-only result section', async () => {
+  const f = await serviceFixture({ state: 'ready', summary: '真实交付', verification: ['来源原件：SOURCE-ISOLATED'] });
+  await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
+  const task = f.service.store.getTask(f.task.id)!;
+  const otherRoom = f.service.store.createGroup({ title: '其他受众', memberIds: [DEFAULT_BOT_COMPANION_ID], participationMode: 'all' });
+  const receipts: Array<{ content: string; status: number; body: { result?: { text: string; available: boolean; reason: string } } }> = [];
+  f.brain.router = async input => {
+    const content = JSON.parse(input.prompt).trigger?.content;
+    if (!['foreign-verification', 'stale-verification'].includes(content)) return '收到';
+    const response = await fetch(input.callback.url, { method: 'POST', headers: { authorization: 'Bearer ' + input.callback.token, 'content-type': 'application/json' },
+      body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'read-' + content, name: 'dsh_task_result_read', args: { taskId: task.id, section: 'verification' } }) });
+    receipts.push({ content, status: response.status, body: await response.json() as { result?: { text: string; available: boolean; reason: string } } });
+    return '未重新执行任务。';
+  };
+  await f.service.handle({ type: 'message.send', conversationId: otherRoom.id, requestId: 'foreign-verification', content: 'foreign-verification' });
+  await until(() => receipts.length === 1);
+  expect(receipts[0]!.status).not.toBe(200); expect(JSON.stringify(receipts[0])).not.toContain('SOURCE-ISOLATED');
+  const updated = f.service.store.getTask(task.id)!;
+  f.service.store.updateTask(task.id, { extra: { ...updated.extra, reportBaseline: (updated.extra.workerReport as { callId: string }).callId } });
+  await f.service.handle({ type: 'message.send', conversationId: f.room.id, requestId: 'stale-verification', content: 'stale-verification' });
+  await until(() => receipts.length === 2);
+  expect(receipts[1]).toMatchObject({ status: 200, body: { result: { text: '', available: false, reason: expect.any(String) } } });
+  expect(JSON.stringify(receipts[1])).not.toContain('SOURCE-ISOLATED'); expect(f.brain.workers).toHaveLength(1);
+});
 
 it('repairs a legacy completed waiting projection on startup without repeating its worker or inventing verification', async () => {
   const f = await serviceFixture(); await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
@@ -138,7 +262,8 @@ it('finishes a successful native text result without requiring an optional repor
   await until(() => f.service.store.getTask(f.task.id)?.status === 'succeeded');
   expect(f.brain.workers).toHaveLength(2);
   expect(f.brain.workers[1]).toMatchObject({ laneId: f.brain.workers[0]!.laneId, eventId: f.brain.workers[0]!.eventId, taskContinuation: { id: 'followup-report', text: '请补充核验并提交结构化报告。' } });
-  expect(f.service.store.getTask(f.task.id)?.summary).toBe('完整文字解释');
+  expect(f.service.store.getTask(f.task.id)?.summary).toContain('完整文字解释');
+  expect(f.service.store.getTask(f.task.id)?.summary).toContain('已完成文字解释');
 });
 
 it('does not turn blocked or progress reports into completion and does not inherit an old ready report into new work', async () => {

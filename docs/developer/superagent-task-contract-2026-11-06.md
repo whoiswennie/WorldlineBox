@@ -194,3 +194,30 @@ Worker 返回失败、缺数据或工具不可用也需要通过 `companion_dele
 - `dsh-runtime-sealed-native.test.ts` 使用已安装官方运行文件及真实生产校验器，在独立临时实例中启动/关闭原生 Host，前后强制读取完整字节；不调用付费模型，不修改用户实例或运行程序。
 - `verify-bot-peer-work.mjs --real --scenario=requester-receives-environment-pause` 通过生产暂停/委派刷新发出事件，实际 DeepSeek 收到并如实说明暂停。
 - `verify-bot-peer-work.mjs --real --scenario=peer-acknowledges-environment-pause` 通过生产回复观察路径，实际 DeepSeek 以 Claude 身份回复大肥鱼，不新增任务或自动重试。两例各一次真实 POST，Worker 故障为明确注入的本地夹具，不声称实际查询天气。证据分别在 `peer-work-real-2026-11-08T05-59-55-688Z` 与 `peer-work-real-2026-11-08T06-13-34-419Z`。
+
+## 2026-11-08：Worker 交付正文与核验依据完整回传
+
+实际只读检查发现，截图中的天气任务已持久提交 252 字的 ready 报告及四条核验依据，最终原生回复却只有 47 字的“已完成、答案见上文”。旧版优先采用非空的原生结束语，导致任务卡和 task_done 通知省略了真正的业务报告；这不能据以断言 Worker 没取得任何数据，也不能只凭成功状态证明查询结果真实。
+
+交付现在由两个独立耐久事实组成：当前任务根 Worker 的有效 ready 报告与原生正文。报告必须通过原有指纹、调用来源、执行分段基线及后续工具失效检查，再按包含关系去重组合。无报告、过期报告、未核实效果及失败/暂停均不被提升为成功；普通原生终态仍不强制需要可选报告。任务卡、status 和 dsh_task_result_read 使用同一交付投影。旧成功任务已有完整报告时可只读取回，保持原记录和终态，不改写用户历史，不重跑执行器。
+
+DSH 桥接的 Worker 结果同时保留本次执行段已提交的多条助手正文，避免正文在 worker_report 调用之前、结束语在其之后时被覆盖。只采集当前根 Session 的 assistant/message 文本，排除推理、工具参数/结果、未提交尝试、中断草稿、投影改写、旧任务及旧续任务分段；App Router 与原生脑部仍仅使用最后回复。正文聚合最多 128,000 个 Unicode 字符，超限保留开头与结尾并明确标注省略，可在 DSH 原任务会话查看完整记录，不将有界预览声称为全文。重启、取消核实和重复请求复用相同提取规则及耐久结果，不触发额外推理。
+
+正常完成事件不默认复制全部核验日志。Router 的 status.report.verificationView 明确显示核验条目的总数、预览遗漏、单项截断以及只读 readArgs。dsh_task_result_read 的可选 section 默认为 delivery，兼容已有调用；section=verification 分页读取当前有效 ready 报告的完整编号核验文本，返回 reportCallId 区分版本。预览包含跳段时从 offset=0 开始，按 nextOffset 继续。读取核验依据不冒充读取了协作计划前置阶段的正式交付正文。跨聊天、跨伙伴、撤回来源及已移除任务仍被隔离。
+
+Worker 提示与原生 worker_report 工具说明要求自包含的具体答案、数值及单位、适用时间、来源、成果绝对路径和不确定性，不能仅给成功宣言或“见上文”。Router 在遇到缺少答案的通知时先只读已有交付及报告，不能为了取回现有正文重新派发，也不能把成功状态当成事实内容。
+
+验证入口：
+
+```powershell
+node scripts/run-vitest-with-electron.mjs run tests/unit/bot-task-report.test.ts tests/unit/dsh-worker-output.test.ts
+$env:WORLDLINEBOX_BOT_DSH_PROGRAM = '已安装官方 DSH 程序的完整目录'
+node scripts/run-vitest-with-electron.mjs run tests/unit/bot-task-report-native.test.ts tests/unit/bot-dsh-output-native.test.ts tests/unit/bot-dsh-native.test.ts --maxWorkers=1
+node scripts/verify-bot-worker-delivery.mjs --real
+```
+
+unit 覆盖截图中的结束语覆盖、长 Unicode 交付和核验分页、旧任务重启只读取回、失效报告、受众隔离及计划依赖门槛。原生用例使用真实安装的官方 DSH，模型传输为 localhost 确定性夹具；覆盖报告工具前正文、最后收尾、续任务边界、重启回放无新增模型请求、截断续写及脑部行为不变。
+
+真实验收使用隔离 BotService → App Router → 官方 DSH → 当前配置的 DeepSeek OpenAI Chat 接口 → Router，不模拟 Worker 答案或工具结果。样例为两份收据/更正文件，Worker 实际读取后提交包含金额、来源及核对标记的 ready 报告，验收要求允许最终只用简短结束语；Router 必须在同一聊天返回正确的 194.35 和 CEDAR-4829，只有一个任务和一次原生执行。透明本地转发器最多允许 18 次真实 provider POST，报告保存实际请求数。两次真实运行各 7 次 POST 均通过，证据目录分别为 `worldlinebox-bot-real-delivery-UjbE7O` 与 `worldlinebox-bot-real-delivery-jfd90b`。第一轮原生末尾仅结束语，第二轮 Worker 交付了更完整正文，并明确披露样例未注明币种及 Router 派发中的计算符号差异；验收证明正文/报告/不足都能传回，不据此声称模型永不误判或查询过真实天气。
+
+长期记忆单独关闭，不声称覆盖 VCP。证据保存在 `artifacts/superagent-bot-development/worker-delivery-real/`，包含原生 Session、实际派发要求、聊天、完成事件及清理结果；用户原配置只读并校验前后哈希一致。整合回归 210 套通过、16 套按原生 opt-in 条件跳过，共 1,584 项通过、19 项跳过；三个原生确定性套件另行显式启用并通过。Typecheck 通过，ESLint 零错误（四条既有 React Hook 警告）。

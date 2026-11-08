@@ -81,7 +81,8 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('continues truncated worker
     expect(requests).toHaveLength(beforeStaleCheckpoint);
     mode = 'finish'; modeCalls = 0;
     const continued = await brain.run({ ...pausedInput, continueAfterSeq: secondPause.checkpoint });
-    expect(continued).toMatchObject({ status: 'succeeded', sessionId: BotDshBrain.sessionId(pausedInput.laneId), text: 'COMPLETE_FROM_CHECKPOINT' });
+    expect(continued).toMatchObject({ status: 'succeeded', sessionId: BotDshBrain.sessionId(pausedInput.laneId) });
+    expect(continued.text).toContain('PARTIAL_SEGMENT'); expect(continued.text).toContain('COMPLETE_FROM_CHECKPOINT');
     expect(modeCalls).toBe(1);
     const beforeContinuedReplay = requests.length;
     expect(await brain.run({ ...pausedInput, continueAfterSeq: paused.checkpoint })).toEqual(continued); expect(requests).toHaveLength(beforeContinuedReplay);

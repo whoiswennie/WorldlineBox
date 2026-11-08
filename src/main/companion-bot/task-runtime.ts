@@ -7,7 +7,7 @@ import type { BotTask as BotTaskCard, BotTaskSummary } from '../../shared/compan
 import type { BotStore, BotTaskSql } from './store';
 import type { BotSource, BotTask } from './types';
 import { BotDshBrain } from './dsh-brain';
-import type { BotStoredWorkerReport } from './task-report';
+import { BotTaskReports, type BotStoredWorkerReport } from './task-report';
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 type Row = Record<string, string | number | null>;
@@ -31,7 +31,18 @@ export interface BotTaskControlInput { requestId: string; text?: string; questio
 /** Task facts survive native Session restore. Only durable native results or
  * explicit, individually recorded user decisions can resolve an unknown effect. */
 export class BotTaskRuntime {
-  constructor(private readonly store: BotStore, private readonly options: { followupAvailable?(task: BotTask): boolean } = {}) {}
+  private readonly reports: BotTaskReports;
+  constructor(private readonly store: BotStore, private readonly options: { followupAvailable?(task: BotTask): boolean } = {}) { this.reports = new BotTaskReports(store); }
+  /** Also repairs the read projection of old successful tasks whose native
+   * closing text hid their intact report. No task/receipt is rewritten and no
+   * worker needs to be resumed merely to read an existing result. */
+  resultText(task: BotTask): string | undefined {
+    return task.status === 'succeeded' ? this.reports.deliveryText(task, task.summary ?? '') : task.summary;
+  }
+  verificationText(task: BotTask): { text: string; reportCallId: string } | undefined {
+    const report = this.reports.currentReady(task);
+    return report ? { text: report.verification.map((value, index) => `${index + 1}. ${value}`).join('\n\n'), reportCallId: report.callId } : undefined;
+  }
   private nativeRef(taskId: string, callId: string, input: NativeRef): Required<NativeRef> {
     const root = BotDshBrain.sessionId(`worker-${taskId}`), nativeSessionId = input.nativeSessionId ?? root, nativeCallId = input.nativeCallId ?? callId;
     const expected = nativeSessionId === root ? nativeCallId : 'child-' + digest(`${nativeSessionId}:${nativeCallId}`).slice(0, 48);
@@ -88,7 +99,7 @@ export class BotTaskRuntime {
       diagnostic: details && (recoveryMessage || recoveryStage || attempts > 0) ? { attempts: Number.isSafeInteger(attempts) && attempts >= 0 ? attempts : 0, stage: recoveryStage, message: recoveryMessage ?? '此前没有保留更详细的连接错误。' } : undefined,
       activity: details && Array.isArray(task.extra.activity) ? task.extra.activity as BotTaskCard['activity'] : undefined,
       progress: task.extra.progress && typeof task.extra.progress === 'object' ? task.extra.progress as BotTaskCard['progress'] : undefined,
-      summary: details ? task.summary : undefined, summaryIsPreview: details ? task.summaryIsPreview : undefined, error: task.error,
+      summary: details ? this.resultText(task) : undefined, summaryIsPreview: details ? task.summaryIsPreview : undefined, error: task.error,
       waitingForAnswer: task.status === 'waiting' && this.store.taskTransaction(sql => Boolean(sql.prepare("SELECT 1 FROM bot_task_questions WHERE task_id=? AND state='queued' LIMIT 1").get(task.id))),
       attention: details ? this.attention(task.id) : undefined,
       pendingEffects: details ? this.pendingEffects(task.id) : undefined, outputs: details ? this.store.publicationsForTask(task.id) : undefined };
@@ -96,14 +107,23 @@ export class BotTaskRuntime {
   /** Router status is a read-only snapshot, not a worker transcript. Keep the
    * original goal/question intact while paging long result text separately. */
   routerStatus(task: BotTask, questionId?: string) {
-    const card = this.card(task), chars = Array.from(task.summary ?? ''), preview = chars.slice(0, 1200).join('');
+    const card = this.card(task), resultText = card.summary, chars = Array.from(resultText ?? ''), preview = chars.slice(0, 1200).join('');
     const effects = card.pendingEffects ?? [], outputs = card.outputs ?? [];
-    return { ...card, summary: task.summary === undefined ? undefined : preview,
+    const readyReport = this.reports.currentReady(task), verification = readyReport?.verification ?? [];
+    const shownVerification = verification.slice(0, 3).map(value => Array.from(value).slice(0, 300).join(''));
+    const truncatedItems = verification.slice(0, 3).filter(value => Array.from(value).length > 300).length;
+    return { ...card, summary: resultText === undefined ? undefined : preview,
       summaryIsPreview: chars.length > 1200 || card.summaryIsPreview === true,
       result: { totalChars: chars.length, complete: chars.length <= 1200,
         ...(chars.length > 1200 ? { readTool: 'dsh_task_result_read', nextOffset: 1200 } : {}) },
-      report: card.report ? { ...card.report, summary: card.report.summary.slice(0, 1200),
-        verification: card.report.verification.slice(0, 3).map(value => value.slice(0, 300)) } : undefined,
+      report: card.report ? { ...card.report, summary: Array.from(card.report.summary).slice(0, 1200).join(''),
+        summaryIsPreview: Array.from(card.report.summary).length > 1200, verification: shownVerification,
+        verificationView: { available: !!readyReport, totalItems: verification.length, shownItems: shownVerification.length,
+          omittedItems: Math.max(0, verification.length - shownVerification.length), truncatedItems,
+          truncated: verification.length > 3 || truncatedItems > 0,
+          complete: !!readyReport && verification.length <= 3 && truncatedItems === 0,
+          ...(readyReport ? { reportCallId: readyReport.callId, readTool: 'dsh_task_result_read',
+            readArgs: { taskId: task.id, section: 'verification' as const, offset: 0 } } : { reason: '当前没有仍有效的ready核验报告。' }) } } : undefined,
       activity: card.activity?.slice(-6).map(item => ({ id: item.id, phase: item.phase, toolName: item.toolName,
         createdAt: item.createdAt, updatedAt: item.updatedAt })),
       pendingEffectCount: effects.length,

@@ -32,8 +32,9 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('persists root business rep
       const lastUser = input.messages.findLastIndex(message => message.role === 'user'), messages = input.messages.slice(lastUser + 1);
       const reported = messages.some(message => message.tool_calls?.some(call => call.function.name === 'worker_report'));
       const second = input.messages[lastUser]?.content?.includes('SEGMENT_TWO') === true;
-      const delta = reported ? { content: second ? 'Second segment explanation.' : 'First segment explanation.' }
-        : { tool_calls: [{ index: 0, id: 'native-report-' + randomUUID(), type: 'function', function: { name: 'worker_report',
+      const delta = reported ? { content: 'Task complete; the concrete answer is above.' }
+        : { content: second ? 'SECOND_SEGMENT_BODY: source fixture two, measured value 27.' : 'FIRST_SEGMENT_BODY: source fixture one, measured value 18.6.',
+          tool_calls: [{ index: 0, id: 'native-report-' + randomUUID(), type: 'function', function: { name: 'worker_report',
           arguments: JSON.stringify({ state: 'ready', summary: second ? 'Second verified result' : 'First verified result', verification: ['Checked the provided fixture facts; this is a text-only result.'] }) } }] };
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n');
@@ -50,9 +51,12 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('persists root business rep
     model: { apiFormat: 'openai_chat' as const, model: 'protocol-fixture', baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'local-no-billing' } };
   try {
     const first = await brain.run(input); expect(first.status).toBe('succeeded'); expect(effects.report('report-native')).toMatchObject({ state: 'ready', summary: 'First verified result' });
+    expect(first.text).toContain('FIRST_SEGMENT_BODY: source fixture one, measured value 18.6.');
+    expect(first.text).toContain('Task complete; the concrete answer is above.'); expect(first.text).not.toContain('native-report-');
     expect(reportCalls).toBe(1);
     const next = { ...input, taskContinuation: { id: 'followup-two', text: 'SEGMENT_TWO: Explain the second provided facts.' } };
     const second = await brain.run(next); expect(second.status).toBe('succeeded'); expect(second.sessionId).toBe(first.sessionId);
+    expect(second.text).toContain('SECOND_SEGMENT_BODY: source fixture two, measured value 27.'); expect(second.text).not.toContain('FIRST_SEGMENT_BODY');
     expect(effects.report('report-native')).toMatchObject({ state: 'ready', summary: 'Second verified result' });
     expect(reportCalls).toBe(2); const requests = modelCalls;
     expect(await brain.run(next)).toMatchObject({ text: second.text, sessionId: first.sessionId }); expect(modelCalls).toBe(requests);

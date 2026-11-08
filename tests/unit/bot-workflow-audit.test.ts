@@ -4,6 +4,9 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runtime';
 import { BotWorkflowRuntime } from '../../src/main/companion-bot/workflow-runtime';
 import { BotDelegationRuntime } from '../../src/main/companion-bot/delegation-runtime';
+import { BotTaskRuntime } from '../../src/main/companion-bot/task-runtime';
+import { BotTaskReports } from '../../src/main/companion-bot/task-report';
+import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import type { BotActivityBudgetPolicy } from '../../src/main/companion-bot/activity-budget';
 import type { BotEvent } from '../../src/main/companion-bot/types';
 import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
@@ -31,7 +34,7 @@ function fixture(activityBudget?: Partial<BotActivityBudgetPolicy>) {
     content: '请按原始资料并行核算与审计，拿到真实结果后汇总；允许请 Bob 在双方私聊里协作。' }).events[0]!;
   const claim = store.claim({ workerId: 'audit-claim' })!; expect(claim.event.id).toBe(root.id); store.bindEventNativeEpoch(root.id, 1);
   const service = Object.create(BotService.prototype) as BotService;
-  Object.assign(service, { store, options: {}, workflows, companionRuntime: runtime, delegations: new BotDelegationRuntime(store) });
+  Object.assign(service, { store, options: {}, workflows, companionRuntime: runtime, delegations: new BotDelegationRuntime(store), taskRuntime: new BotTaskRuntime(store) });
   const execute = (event: BotEvent, name: string, args: Record<string, unknown>, callId: string) => (service as unknown as {
     executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown>;
   }).executeTool(event, { laneId: event.laneId, eventId: event.id, name, args, callId }, new AbortController().signal);
@@ -86,6 +89,23 @@ it('does not count an empty out-of-range result read as observing a prerequisite
   expect(read.text).toBe('');
   expect(() => f.workflows.ready(f.root, plan.id, 'merge')).toThrow(/先.*读|读取|结果/iu);
   await f.execute(f.root, 'dsh_task_result_read', { taskId: one.id, offset: 0, limit: 12000 }, 'read-real-result');
+  expect(() => f.workflows.ready(f.root, plan.id, 'merge')).not.toThrow();
+});
+
+it('does not substitute reading verification for observing the prerequisite deliverable', async () => {
+  const f = fixture(), plan = f.plan(), one = f.attach(plan.id, 'finance', 'verification-finance'), two = f.attach(plan.id, 'audit', 'verification-audit');
+  const runtime = new BotTaskRuntime(f.store), reports = new BotTaskReports(f.store), callId = 'actual-ready-report';
+  runtime.startEffect(one, { callId, toolName: 'worker_report', argsHash: 'b'.repeat(64), argumentsPreview: '完成核验' });
+  reports.record(one, callId, { state: 'ready', summary: '必须读取的金额核算结论。', verification: ['核验了文件来源与计算口径。'],
+    nativeSessionId: BotDshBrain.sessionId(`worker-${one.id}`), nativeCallId: callId });
+  runtime.commitEffect(f.store.getTask(one.id)!, { callId, toolName: 'worker_report', argsHash: 'b'.repeat(64), isError: false });
+  f.store.updateTask(one.id, { status: 'succeeded', summary: '原生任务完成。' });
+  f.store.updateTask(two.id, { status: 'succeeded', summary: '审计结果。' });
+  f.workflows.observedResult(f.root, f.store.getTask(two.id)!);
+  expect(await f.execute(f.root, 'dsh_task_result_read', { taskId: one.id, section: 'verification' }, 'read-verification-only'))
+    .toMatchObject({ section: 'verification', available: true, text: '1. 核验了文件来源与计算口径。' });
+  expect(() => f.workflows.ready(f.root, plan.id, 'merge')).toThrow(/先.*读|读取|结果/iu);
+  await f.execute(f.root, 'dsh_task_result_read', { taskId: one.id }, 'read-actual-delivery');
   expect(() => f.workflows.ready(f.root, plan.id, 'merge')).not.toThrow();
 });
 

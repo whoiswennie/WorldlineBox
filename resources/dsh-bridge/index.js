@@ -18,6 +18,42 @@ const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'wo
 const observationalWorkerTools = new Set(['read', 'read_image', 'glob', 'grep', 'present', 'working_directory', 'web_search', 'web_fetch',
   'ask_user_question', 'job_output', 'job_list', 'skill', 'cordis_inspect_list', 'cordis_inspect_query']);
 const maxWorkerContinuations = 4;
+/** Collect only committed, root-Session assistant text belonging to this exact
+ * task/continuation. The last model message can be only a report-tool closing
+ * acknowledgement; it must not erase the answer emitted before that call.
+ * Reasoning, tool input/results, projection rewrites and prior tasks stay out. */
+export function workerOutputFromEvents(events, { eventId, startMessageId, maxChars = 128000 }) {
+  if (!Number.isSafeInteger(maxChars) || maxChars < 256 || maxChars > 131072) throw new Error('Invalid worker output preview budget.');
+  const messageId = startMessageId ?? 'worldlinebox-bot:' + eventId;
+  const start = events.findIndex(event => event.type === 'user/message' && event.data.id === messageId);
+  if (start < 0) return { text: '', totalChars: 0, truncated: false, messages: 0 };
+  const seen = new Set(), head = [], tail = [], tailLimit = Math.floor(maxChars / 4);
+  let totalChars = 0, messages = 0, tailIndex = 0;
+  for (let index = start + 1; index < events.length; index++) {
+    const event = events[index];
+    if (event.type === 'user/message' && (event.data.source?.kind === 'worldlinebox-bot'
+      || startMessageId && ['worldlinebox-bot-task-continuation', 'worldlinebox-bot-guidance'].includes(event.data.source?.kind))) break;
+    if (event.type !== 'assistant/message' || event.data.interrupted === true || event.surfaceOp !== undefined && event.surfaceOp !== 'append') continue;
+    const body = textOf(event.data.message).trim(); if (!body) continue;
+    const signature = createHash('sha256').update(body).digest('hex'); if (seen.has(signature)) continue;
+    seen.add(signature); messages++;
+    const prefix = totalChars ? '\n\n' : '';
+    // Retain the beginning and latest ending, with an explicit omission
+    // notice below. Full committed messages remain in the native Session.
+    for (const chunk of [prefix, body]) for (const character of chunk) {
+      totalChars++; if (head.length < maxChars) head.push(character);
+      if (tail.length < tailLimit) tail.push(character);
+      else { tail[tailIndex] = character; tailIndex = (tailIndex + 1) % tailLimit; }
+    }
+  }
+  const truncated = totalChars > maxChars;
+  let text = head.join('');
+  if (truncated) text = head.slice(0, maxChars - tail.length).join('')
+    + '\n\n[本任务执行器正文超过预览额度，中段已省略；完整正文请在 DSH 工作台查看原任务会话。]\n\n'
+    + [...tail.slice(tailIndex), ...tail.slice(0, tailIndex)].join('');
+  else if (messages > 1) text = '[本任务执行器正文，含阶段说明；请结合实际核验判断结论]\n\n' + text;
+  return { text, totalChars, truncated, messages };
+}
 /** Reference data is selected from actual native registrations, never from
  * installed-package counts. Schemas are disclosed only by the detail query. */
 export function capabilityCatalogPage(tools, skills, query) {
@@ -468,6 +504,17 @@ export async function apply(ctx) {
       return true;
     } finally { record.botMutationActive = false; release(); }
   };
+  const workerOutput = async (record, eventId, startMessageId) => {
+    if (record.bot?.role !== 'worker') return record.text;
+    if (!startMessageId && record.bot.taskContinuationId) {
+      const receipt = await botReadReceipt(record, eventId + ':task-continuation:' + record.bot.taskContinuationId);
+      startMessageId = receipt?.messageId;
+      // Do not read the first segment as the current segment if its durable
+      // continuation binding has not been observed yet.
+      if (!startMessageId) return record.text;
+    }
+    return workerOutputFromEvents(record.agent.session.snapshotEvents(), { eventId, startMessageId }).text;
+  };
   const settle = async record => {
     if (record.waiting) return;
     record.waiting = true;
@@ -497,6 +544,11 @@ export async function apply(ctx) {
           }
         }
         if (await continueWorkerOutput(record)) continue;
+        if (record.bot?.role === 'worker') {
+          const text = await workerOutput(record, record.bot.eventId);
+          if (record.admissions || record.botMutationActive || revision !== record.revision || record.agent.status !== 'idle' || sequence !== record.agent.session.seq) continue;
+          record.text = text;
+        }
         // The host combines this native terminal receipt with effect proofs
         // and any explicit incomplete-business report before closing its task.
         record.status = record.cancelled ? 'cancelled' : record.reason?.kind === 'completed' ? 'succeeded' : 'failed';
@@ -730,7 +782,7 @@ export async function apply(ctx) {
       // so restoring an older task does not require replacing its Session.
       record.disposers.push(record.agent.ctx.tools.register({
         name: 'worker_report',
-        description: '提交本任务的补充结构化业务报告。progress为重要阶段，waiting等待后续事件，blocked受阻，failed失败，dropped无需继续；当前目标已完成才用ready，并列出实际核验依据。原生终态及真实工具回执决定任务完成，缺此可选报告不表示等待用户。ready后若又修改产物须重新核验报告；不要求一定创建文件。只有根执行器可提交，子Agent向父Agent汇报。',
+        description: '提交本任务的补充结构化业务报告。progress为重要阶段，waiting等待后续事件，blocked受阻，failed失败，dropped无需继续；当前目标已完成才用ready。summary须自包含地给出可直接交付的结论、关键事实/数值、成果绝对路径、来源及未完成项，不能只说已完成、见上文或答案已输出；verification列出实际核验依据。原生终态及真实工具回执决定任务完成，缺此可选报告不表示等待用户。ready后若又修改产物须重新核验报告；不要求一定创建文件。只有根执行器可提交，子Agent向父Agent汇报。',
         parameters: { type: 'object', properties: { state: { type: 'string', enum: ['progress', 'waiting', 'ready', 'blocked', 'failed', 'dropped'] },
           summary: { type: 'string', minLength: 1, maxLength: 16000 }, verification: { type: 'array', maxItems: 16, items: { type: 'string', minLength: 1, maxLength: 2000 } } },
           required: ['state', 'summary', 'verification'], additionalProperties: false },
@@ -1378,6 +1430,7 @@ export async function apply(ctx) {
             if (event.type === 'assistant/message') text = textOf(event.data.message);
             if (event.type === 'turn/end') end = event;
           }
+          if (record.bot.role === 'worker') text = await workerOutput(record, input.eventId);
           const reason = end?.data.reason.kind;
           const status = record.bot.role === 'worker' && record.cancelled ? 'cancelled'
             : reason === 'completed' ? 'succeeded' : !reason || ['aborted', 'interrupted'].includes(reason) ? 'cancelled' : 'failed';
@@ -1422,6 +1475,7 @@ export async function apply(ctx) {
                 if (event.type === 'assistant/message') text = textOf(event.data.message);
                 if (event.type === 'turn/end') end = event;
               }
+              if (record.bot.role === 'worker') text = await workerOutput(record, input.eventId, messageId);
               if (end?.data.reason.kind === 'completed' && record.agent.status === 'idle' && !queued) {
                 const result = { eventId: input.eventId, sessionId: record.id, status: 'succeeded', text, inputContextCommitted: true, taskContinuationId: continuation.id };
                 await botWriteReceipt(record, { eventId: key, status: 'complete', fingerprint, messageId, result });

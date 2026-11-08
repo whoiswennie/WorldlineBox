@@ -19,6 +19,22 @@ export interface BotStoredWorkerReport extends BotWorkerReport {
  * explain a pause or failure; child reports cannot close the parent task. */
 export class BotTaskReports {
   constructor(private readonly store: BotStore) {}
+  /** The native ending and the root business report are independent receipts.
+   * A short closing sentence must not erase the actual deliverable submitted
+   * through worker_report. Preserve both, without guessing which prose is
+   * useful. Only a current, durably recorded ready report can supplement it. */
+  deliveryText(task: BotTask, nativeText: string): string {
+    const report = this.currentReady(task);
+    if (!report) return nativeText;
+    const body = nativeText.trim(), summary = report.summary;
+    if (body.includes(summary)) return nativeText;
+    if (!body || summary.includes(body)) return summary;
+    return summary + '\n\n【执行器补充正文】\n' + nativeText;
+  }
+  currentReady(task: BotTask): BotStoredWorkerReport | undefined {
+    const report = this.current(task);
+    return report?.state === 'ready' && this.readyIsCurrent(task, report) ? report : undefined;
+  }
   record(task: BotTask, callId: string, input: unknown): BotStoredWorkerReport {
     const wire = z.object({ nativeSessionId: z.string().min(1), nativeCallId: z.string().min(1) }).passthrough().parse(input);
     const { nativeSessionId, nativeCallId, ...body } = wire;

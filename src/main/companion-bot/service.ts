@@ -76,6 +76,7 @@ const executorPauseCause = (task:BotTask):'executor'|'executor-history'|undefine
   :task.extra.executorPaused===true?'executor':task.extra.executorPaused!==false&&task.extra.executorInterruption&&typeof task.extra.executorInterruption==='object'?'executor-history':undefined;
 const MAX_WORKER_RUNS = 64;
 const workerSystem = `你是世界线盒子伙伴委派的DSH执行器。完成当前明确目标，验证实际产物。本任务会话可使用DSH完整原生工具和本机文件访问能力；这不是额外任务授权。严格遵守下面原始目标、用户明确限制和已提供事实，不擅自扩大范围；只读、不得删除、指定路径等约束始终有效。产物优先写入自己的任务工作区。遇到可依据原始目标和已知事实判断的执行细节，交由委派主脑回答；缺少用户偏好或新的操作授权时提出真实问题。不读取其他会话或伙伴记忆目录。不发送未经请求的外部消息。依据真实执行结果报告，未完成要说明。
+交付给主脑的最终正文及worker_report.summary必须自包含：直接写出本任务的实际答案、关键数值和单位、适用时间、来源或核验依据，保留失败项及不确定性；文件成果提供准确的绝对路径和用途，并按需用worker_chat_send_file发布真实文件。主脑不会自动看到你的工具轨迹或“上面的回答”，不能只写“已完成”“见上文”“结果已输出”，也不能用成功宣言代替答案。不要交付推理过程、无关历史或原始工具日志。任务完成后仍可只读已有交付，不要求主脑重跑任务才取得正文。
 业务状态可通过worker_report结构化回传：progress表示阶段进展，waiting表示等待后续事件，blocked表示阻碍，failed表示确实失败，dropped表示无需继续，ready表示当前目标已完成。ready须说明实际verification依据，文字答复也可核验，不强制创建文件。需要回答时提出真实问题，不用一段最终正文假装工具仍在运行。正常结束且没有未决问题或外部操作时，宿主按原生执行结果结束任务，缺少报告不会制造等待状态。完成报告之后不要再修改产物；有新工作或跟进时沿原任务继续，并重新核验。子Agent不能代替根执行器提交业务完成报告。`;
 const workerTools = [{ name: 'worker_chat_send_file', description: '将自己任务工作区中的实际产物文件发送到原委派聊天。只用任务内真实相对路径，成功回执表示已发送，不要重复发送；不代表整个任务完成。',
       parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1, maxLength: 32768 }, caption: { type: 'string', maxLength: 24000 } }, required: ['path'], additionalProperties: false } }];
@@ -1531,9 +1532,12 @@ export class BotService {
         if (!task || task.extra.removedAt || task.conversationId !== event.conversationId || task.companionId !== event.companionId || this.store.taskSourcesWithdrawn(task.id)) throw new Error('执行结果不属于当前伙伴和聊天，或任务记录已移除。');
         const offset = z.number().int().min(0).max(10000000).default(0).parse(args.offset);
         const limit = z.number().int().min(1).max(12000).default(6000).parse(args.limit);
-        const result = Array.from(task.summary ?? '');
-        if (offset < result.length || this.store.publicationsForTask(task.id).length) this.workflows.observedResult(event, task);
-        return { taskId: task.id, status: task.status, text: result.slice(offset, offset + limit).join(''), totalChars: result.length,
+        const section = z.enum(['delivery', 'verification']).default('delivery').parse(args.section);
+        const verification = section === 'verification' ? this.taskRuntime.verificationText(task) : undefined;
+        const result = Array.from(section === 'verification' ? verification?.text ?? '' : this.taskRuntime.resultText(task) ?? '');
+        if (section === 'delivery' && (offset < result.length || this.store.publicationsForTask(task.id).length)) this.workflows.observedResult(event, task);
+        return { taskId: task.id, status: task.status, section, text: result.slice(offset, offset + limit).join(''), totalChars: result.length,
+          ...(section === 'verification' ? { available: !!verification, ...(verification ? { reportCallId: verification.reportCallId } : { reason: '当前没有仍有效的ready核验报告。' }) } : {}),
           ...(offset + limit < result.length ? { nextOffset: offset + limit } : {}), outputs: this.store.publicationsForTask(task.id) };
       }
       case 'dsh_task_control': {
@@ -2142,16 +2146,17 @@ export class BotService {
       this.changed(task.conversationId); return;
     }
     const verified = report && this.taskReports.readyIsCurrent(current, report);
+    const deliveryText = this.taskReports.deliveryText(this.store.getTask(task.id)!, result.text);
     if (report?.state === 'failed') { this.finishTask(current, 'failed', report.summary, report.summary, result.sessionId); return; }
     if (report && ['ready', 'dropped'].includes(report.state) && verified) {
-      this.finishTask(current, 'succeeded', result.text || report.summary, undefined, result.sessionId); return;
+      this.finishTask(current, 'succeeded', deliveryText || report.summary, undefined, result.sessionId); return;
     }
     // A missing or stale optional report must not leave a finished native turn
     // permanently open. All root tool effects were reconciled above.
     if (!report || ['ready', 'dropped'].includes(report.state)) {
       const latest = this.store.getTask(task.id)!;
       this.store.updateTask(task.id, { extra: { ...latest.extra, completionBasis: verified ? 'verified-report' : 'native-terminal' } });
-      this.finishTask(this.store.getTask(task.id)!, 'succeeded', result.text || report?.summary, undefined, result.sessionId); return;
+      this.finishTask(this.store.getTask(task.id)!, 'succeeded', deliveryText || report?.summary, undefined, result.sessionId); return;
     }
     const phase = report.state === 'blocked' ? 'blocked' : report.state === 'waiting' ? 'waiting-event' : 'incomplete';
     const detail = report.summary;
