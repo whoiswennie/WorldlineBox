@@ -30,6 +30,8 @@ import { BotHistoryProjector } from './history-projection';
 import { BotTaskRuntime, type BotTaskControlInput } from './task-runtime';
 import { BotTaskReports } from './task-report';
 import { BotAgentMemoryScopes } from './agent-memory-scope';
+import { BotConversationContinuity, botConversationReadSchema } from './conversation-continuity';
+import { BotContactStatus } from './contact-status';
 import { clearBotTaskHistory, resumeBotTaskHistoryClears } from './task-history';
 import { botTaskAnswerSchema } from '../../shared/companion-bot-task';
 import type { BotActivityBudgetPolicy } from './activity-budget';
@@ -1038,7 +1040,9 @@ export class BotService {
         const taskFollowup = followed ? { taskId: followed.id, ...(followedAttention?.state === 'queued' ? { questionId: followedAttention.id } : {}) } : undefined;
         const files = await this.verifiedAttachmentFiles(event, undefined, contextThrough, signal);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        const context = buildBotContext({ companion, event, taskFollowup, participantWorkAuthorized: event.senderType === 'companion' && isBotParticipantRequest(event, room) ? !!this.companionRuntime.workAuthority(event) : undefined, delegation: this.delegations.forEvent(event), contactWorkAuthorized: event.source === 'companion' && event.payload.userRequestedContact === true ? !!this.companionRuntime.workAuthority(event) : undefined, files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
+        const context = buildBotContext({ companion, event, taskFollowup,
+          conversationActivity: event.source === 'user' || event.source === 'gateway' ? new BotConversationContinuity(this.store).activity(event) : undefined,
+          participantWorkAuthorized: event.senderType === 'companion' && isBotParticipantRequest(event, room) ? !!this.companionRuntime.workAuthority(event) : undefined, delegation: this.delegations.forEvent(event), contactWorkAuthorized: event.source === 'companion' && event.payload.userRequestedContact === true ? !!this.companionRuntime.workAuthority(event) : undefined, files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
           referenceLongTriggers: this.options.brainRuntime === 'worldlinebox',
           fitsEnvelope: this.options.brainRuntime === 'worldlinebox' ? (system, user) => {
             const prompt = handoffView ? JSON.stringify({ ...JSON.parse(user), nativeHandoff: handoffView }) : user;
@@ -1313,6 +1317,15 @@ export class BotService {
       || call.name === 'companion_delegation' && args.operation !== 'status'
       || call.name === 'memory_maintenance' && args.operation === 'plan') this.store.reserveAutomaticAction(event.id, call.callId, call.name);
     switch (call.name) {
+      case 'agent_conversations': {
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        if (args.operation === 'contacts') {
+          const input = z.strictObject({ operation: z.literal('contacts'), companionId: z.string().min(1).max(160).optional(),
+            limit: z.number().int().min(1).max(30).optional(), before: z.number().int().min(1).optional() }).parse(args);
+          return new BotContactStatus(this.store).list(event, { companionId: input.companionId, limit: input.limit, before: input.before });
+        }
+        return new BotConversationContinuity(this.store).read(event, botConversationReadSchema.parse(args));
+      }
       case 'agent_capabilities': {
         if (this.store.getCompanion(event.companionId)?.enabled === false) throw new Error('伙伴已关闭。');
         const query = dshTaskCapabilityQuerySchema.parse(args);

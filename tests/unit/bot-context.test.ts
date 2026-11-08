@@ -108,11 +108,15 @@ it('keeps ended task reports out of ordinary chat but includes the selected resu
   }
 });
 it('budgets JSON escaping and whole supplemental records while preserving the request', () => {
-  const built = buildBotContext({ companion, event, messages: [message('old', 1, '\\'.repeat(4000))], memories: 'large'.repeat(1000), maxEnvelopeChars: 1600 });
+  const built = buildBotContext({ companion, event, messages: [message('old', 1, '\\'.repeat(4000))], memories: 'large'.repeat(1000), maxEnvelopeChars: 1600,
+    conversationActivity: { authority: 'published-chat-journal', companionId: companion.id, readTool: 'agent_conversations', meaning: '最新消息索引',
+      conversations: [{ conversationId: 'peer', title: 'Alice × Bob', kind: 'peer', current: false, lastMessageId: 'latest-peer-reply',
+        senderId: 'bob', senderName: 'Bob', createdAt: '2026-11-02T20:01:00+08:00', projectionSequence: 10 }] } });
   const body = JSON.parse(built.user);
   expect(built.user.length).toBeLessThanOrEqual(1600);
   expect(body.trigger.content).toBe(event.content); expect(body.history).toEqual([]);
   expect(body.memoryEvidenceOmitted).toBe(true);
+  expect(body.conversationActivity).toBeUndefined();
   expect(() => buildBotContext({ companion, event: { ...event, content: '\\'.repeat(3000) }, messages: [], maxEnvelopeChars: 1600 })).toThrow('请拆成几条');
 });
 it('fits the actual app request by omitting optional evidence rather than rejecting a short Chinese trigger', () => {

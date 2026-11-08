@@ -32,7 +32,7 @@ const row = (value: unknown): Row => value && typeof value === 'object' && !Arra
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const terminal = (state: string) => ['succeeded', 'failed', 'cancelled'].includes(state);
-const safeRead = (call: BotToolCall) => ['agent_capabilities', 'agent_state', 'agent_memory_scopes', 'memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
+const safeRead = (call: BotToolCall) => ['agent_capabilities', 'agent_state', 'agent_conversations', 'agent_memory_scopes', 'memory_search', 'memory_history', 'memory_read', 'memory_list', 'memory_note', 'memory_recall_details', 'chat_list_stickers', 'chat_list_files', 'chat_read_message', 'context_handoff_read', APP_TOOL_RESULT_READER.name].includes(call.name)
   || call.name === 'dsh_plan' && call.args.operation === 'status'
   || call.name === 'companion_delegation' && call.args.operation === 'status'
   || call.name === 'memory_maintenance' && call.args.operation === 'status'

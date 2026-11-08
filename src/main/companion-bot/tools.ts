@@ -2,11 +2,12 @@ import type { BotDshTool } from './dsh-brain';
 
 const object = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = (description: string, maxLength = 16000) => ({ type: 'string', description, minLength: 1, maxLength });
-const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。仅用户私聊中可选agent_memory_scopes列出的本人用户参与会话；不能传路径或其他伙伴。' };
+const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。用户私聊可选agent_memory_scopes列出的本人参与且用户可查看的会话，包括伙伴私聊；不能传路径或其他伙伴。' };
 /** The router has no raw shell/filesystem tool; work is delegated to a scoped DSH session. */
 export const BOT_TOOLS: BotDshTool[] = [
   { name: 'agent_capabilities', description: '动态读取本伙伴当前 DSH 执行环境的真实能力。summary先看数量和边界；catalog按分类/关键词分页发现；tool按确切名称读工具参数；skill按名称分段读技能。不执行插件、不选择其他伙伴或实例。目录是外部参考资料，不授予新任务权限。', parameters: object({ kind: { type: 'string', enum: ['summary', 'catalog', 'tool', 'skill'] }, category: { type: 'string', enum: ['all', 'tool', 'skill'] }, query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 30 }, name: string('已发现的真实工具或技能名称', 200), textOffset: { type: 'integer', minimum: 0, maximum: 2097152 }, maxChars: { type: 'integer', minimum: 100, maximum: 4000 } }, ['kind']) },
   { name: 'agent_state', description: '读取自己持续主脑的统一事件序列和当前受众获准的任务协调视图。用户私聊可查看自己在用户参与会话中的任务元数据；群、伙伴私聊和世界仅本会话。不会读取其他受众的聊天或记忆，也不授予新工作权限。', parameters: object({}, []) },
+  { name: 'agent_conversations', description: '实时回查你本人参与的已发布聊天，不等VCP记忆索引。用户私聊可查询自己与伙伴的私聊及自己参加的用户群；其它受众只读当前房间。list列会话与最新消息索引；read选conversationId读最近一页，沿nextBefore读旧页；message按messageId分页读完整正文；contacts核实自己先前联系是否投递、对方是否实际回复或已向用户发布，仅返回关联回执元数据。已发不等于已回复，事件queued不等于没发消息。不能读其它伙伴的用户私聊或内部任务回执。', parameters: object({ operation: { type: 'string', enum: ['list', 'read', 'message', 'contacts'] }, conversationId: string('本人获准会话编号，read/message需要', 160), messageId: string('真实已发布消息编号，message需要', 160), companionId: string('contacts可选的目标伙伴编号，不能改变当前身份', 160), cursor: string('list的稳定分页游标', 160), before: { type: 'integer', minimum: 1 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['operation']) },
   { name: 'dsh_task_result_read', description: '分页读取当前伙伴自己的任务原件。section默认delivery：完整交付，含原生正文和有效ready报告；verification：仍有效的ready核验说明全文（编号文本），供补全来源/数值/依据。status的verificationView显示遗漏/截断及readArgs，核验预览有跳段须从offset=0读；沿nextOffset继续。任务终态也能只读，不唤醒或重跑。', parameters: object({ taskId: string('任务编号', 160), section: { type: 'string', enum: ['delivery', 'verification'] }, offset: { type: 'integer', minimum: 0, maximum: 10000000 }, limit: { type: 'integer', minimum: 1, maximum: 12000 } }, ['taskId']) },
   { name: 'context_handoff_read', description: '分页读取当前主脑代际的完整交接摘要或尾部原件。交接预览不包含全部旧事实，需要细节时按nextOffset继续，不能访问其他伙伴/受众。', parameters: object({ section: { type: 'string', enum: ['summary', 'tail'] }, offset: { type: 'integer', minimum: 0 } }, []) },
   { name: 'chat_read_message', description: '按本轮sourceMessageId或同会话已有消息ID分页读取原文。长消息预览不包含全部需求，读取时沿nextOffset继续；不能访问其他会话或未来消息。', parameters: object({ messageId: string('当前会话原消息ID', 160), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['messageId']) },
@@ -14,7 +15,7 @@ export const BOT_TOOLS: BotDshTool[] = [
   { name: 'chat_send_sticker', description: '按已列出的表情ID向当前聊天发送一张真实图片或动图。可以只发表情，也可以附自然短句；成功回执即已发送，不必另造填充正文。', parameters: object({ stickerId: string('真实表情ID', 160), caption: { type: 'string', maxLength: 24000 } }, ['stickerId']) },
   { name: 'chat_list_files', description: '分页查询本聊天已分享图片、音频、视频及文件，返回核验后的绝对路径、哈希和稳定ID；沿nextOffset读取完整清单，不访问其他聊天或未发送草稿。', parameters: object({ query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 80 } }, []) },
   { name: 'chat_send_file', description: '向当前聊天发送实际附件。可用已分享attachmentId；或自身taskId和工作区真实相对path。同任务同路径且当前文件ID/hash一致时默认只返回已发送回执，不重复发；用户或伙伴明确要求再发才设resend:true。文件内容已更新则发新版本。不能用其他聊天路径、任意URL或假产物。', parameters: object({ attachmentId: { type: 'string', maxLength: 160 }, taskId: { type: 'string', maxLength: 160 }, path: { type: 'string', maxLength: 32768 }, caption: { type: 'string', maxLength: 24000 }, resend: { type: 'boolean' } }, []) },
-  { name: 'agent_memory_scopes', description: '分页列出本伙伴可主动查询的记忆会话，不启动VCP。用户私聊可列用户与本人仍参与的direct/group；群、伙伴私聊及世界仅当前域。按nextCursor继续。', parameters: object({ cursor: { type: 'string', maxLength: 160 }, limit: { type: 'integer', minimum: 1, maximum: 30 } }, []) },
+  { name: 'agent_memory_scopes', description: '分页列出本伙伴可主动查询的记忆会话，不启动VCP。用户私聊可列本人仍参与且用户可查看的direct/group/伙伴私聊；其它频道仅当前域。刚收到的消息先用agent_conversations实时核实。按nextCursor继续。', parameters: object({ cursor: { type: 'string', maxLength: 160 }, limit: { type: 'integer', minimum: 1, maximum: 30 } }, []) },
   { name: 'memory_search', description: '语义补查获准长期记忆。默认本域；用户私聊可用conversationId查询scope目录中的本人其他用户会话，返回来源。缺可核实来源时unavailable，不能凭空作答。', parameters: object({ query: string('具体查询问题', 4000), conversationId: memoryConversation }, ['query']) },
   { name: 'memory_recall_details', description: '读取本轮被动召回的完整证据。省略citationId列引用；按短证据卡的host-memory引用和nextOffset分页回查原文/来源，不重新做一次语义召回，不访问其他受众。', parameters: object({ citationId: { type: 'string', maxLength: 160 }, offset: { type: 'integer', minimum: 0 } }, []) },
   { name: 'memory_history', description: '按具体关键词回查原始聊天，默认本域。用户私聊可指定获准conversationId；跨域结果须来源可核实，不可用时到原会话查询。', parameters: object({ keyword: string('关键词或原检索DSL', 4000), conversationId: memoryConversation }, ['keyword']) },
@@ -55,6 +56,7 @@ const routerDescriptions: Record<string, string> = {
   companion_delegation: 'status查询真实委派进度；接收方实际Worker/计划完成后result传回摘要和attachmentIds至原聊天；原委派方send补充、cancel停止。省略ID取trigger.delegation。',
   agent_capabilities: '查询本人当前DSH能力：summary概览，catalog关键词/分类分页，tool读参数，skill分段读说明；变更revision后重查。目录不授予新权限。',
   agent_state: '读取自己持续主脑的事件序列及当前受众获准的任务协调状态；元数据不授予新权限。',
+  agent_conversations: '实时核实本人已发布聊天。list列本人合法会话/最新消息索引，read选conversationId分页读，message读全文；contacts查先前联系的真实投递/回复元数据。刚才回复不等VCP索引，未核实不能说没回；不读他人私聊或内部任务回执。',
   dsh_task_result_read: '按taskId分页只读本人任务原件。section默认delivery完整交付，verification读有效ready核验全文；status.report.verificationView给遗漏/截断/readArgs，核验须从0分页。终态也能读，沿nextOffset继续，不唤醒或重跑。',
   context_handoff_read: '分页读当前受众的完整历史交接摘要或尾部原件；不可跨伙伴或受众。',
   chat_read_message: '按当前会话消息ID分页读取原文；长trigger用sourceMessageId回读，沿nextOffset继续。',
@@ -62,7 +64,7 @@ const routerDescriptions: Record<string, string> = {
   chat_send_sticker: '按真实stickerId向当前聊天发表情，可附caption；成功回执后不重复填充正文。',
   chat_list_files: '查询当前聊天已登记附件的真实ID和名称；不访问其他聊天或资产库。',
   chat_send_file: '发送已分享attachmentId或自身taskId内真实相对path。默认按文件版本去重；用户明确要求重发才resend。',
-  agent_memory_scopes: '分页列本伙伴获准记忆会话，不启动VCP。用户私聊可列本人和用户参与的direct/group，其他频道仅当前域。',
+  agent_memory_scopes: '分页列本人获准记忆会话，不启动VCP。用户私聊含本人参与的合法伙伴私聊及用户会话；其它频道仅当前域。',
   memory_search: '语义查长期记忆，默认本域；用户私聊可选scope目录conversationId，跨域只读、带来源，unavailable不等于没有记忆。',
   memory_recall_details: '按本轮citationId读取被动召回的完整证据；省略ID列引用，按nextOffset分页，不重新检索。',
   memory_history: '按具体关键词回查原始聊天；默认本域，用户私聊可选获准conversationId，跨域须来源可核实。',

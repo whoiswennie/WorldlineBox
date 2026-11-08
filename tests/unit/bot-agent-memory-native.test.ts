@@ -13,7 +13,7 @@ import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
 
 const packageRoot = path.resolve('.tools/bot-memory-release/vcp-memory');
 const nodePath = path.resolve('.tools/node-v24.15.0-win-x64/node.exe');
-it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/client.cjs')))('reads a real VCP managed group diary through its owner direct view and refuses it after native withdrawal', async () => {
+for (const kind of ['group', 'peer'] as const) it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/client.cjs')))(`reads a real VCP managed ${kind} diary through its owner direct view and refuses it after native withdrawal`, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-agent-memory-native-'));
   if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-agent-memory-native-')) throw Error('Invalid owned memory fixture cleanup');
   const store = new BotStore(path.join(root, 'store.sqlite')), nativeCalls: string[] = []; let embeddings = 0, sessions = 0, unexpected = 0;
@@ -31,11 +31,14 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/clien
       request: (operation, payload, requestOptions) => { nativeCalls.push(operation); return actual.request(operation, payload, requestOptions); } }; } });
   try {
     store.createCompanion({ id: 'alice', name: 'Alice', persona: 'native memory fixture' });
-    const direct = store.openDirect('alice'), group = store.createGroup({ title: 'Approved group', memberIds: ['alice'] });
-    const target = store.enqueue({ conversationId: group.id, senderId: 'user', content: 'SCOPE_NATIVE_DIARY_2026：我们决定保持夜间喝麦茶。' }).events[0]!;
+    store.createCompanion({ id: 'bob', name: 'Bob', persona: 'native peer fixture' });
+    const direct = store.openDirect('alice'), group = kind === 'group' ? store.createGroup({ title: 'Approved group', memberIds: ['alice'] }) : store.openPeer('alice', 'bob');
+    const target = store.enqueue({ conversationId: group.id, senderId: kind === 'group' ? 'user' : 'bob', content: 'SCOPE_NATIVE_DIARY_2026：我们决定保持夜间喝麦茶。' }).events[0]!;
+    const peerReply = kind === 'peer' ? store.enqueue({ conversationId: group.id, senderId: 'alice', source: 'companion', recipientIds: ['bob'], content: 'PEER_NATIVE_ACK_2026：我已经回复你，稍后告诉用户。' }).message : undefined;
     const source = store.enqueue({ conversationId: direct.id, senderId: 'user', content: '回忆我们群里的决定' }).events[0]!;
     const scope = { companionId: 'alice', conversationId: group.id, securityDomainId: group.securityDomainId };
-    expect(await memory.remember(scope, { sourceEventId: target.id, sourceMessageIds: [target.sourceMessageRecordId], content: target.content, waitForIndex: true })).toMatchObject({ indexed: 1, pending: 0 });
+    expect(await memory.remember(scope, { sourceEventId: target.id, sourceMessageIds: [target.sourceMessageRecordId, ...(peerReply ? [peerReply.id] : [])],
+      content: target.content + (peerReply ? '\n' + peerReply.content : ''), waitForIndex: true })).toMatchObject({ indexed: 1, pending: 0 });
     const service = Object.create(BotService.prototype) as BotService;
     Object.assign(service, { store, options: { memory }, loadTombstones: async () => undefined });
     const invoke = (name: string, args: Record<string, unknown>) => (service as unknown as { executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> }).executeTool(source,
@@ -45,7 +48,8 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/clien
     const catalog = await invoke('memory_list', { query: 'SCOPE_NATIVE_DIARY_2026', conversationId: group.id, limit: 10 }) as { result: { available: boolean; records: Array<{ id: string }> } };
     expect(catalog.result.available).toBe(true); const note = catalog.result.records[0]; expect(note?.id).toBeTruthy();
     const read = () => invoke('memory_note', { id: note!.id, conversationId: group.id });
-    const result = await read(); expect(result).toMatchObject({ sourceConversation: { id: group.id }, result: { available: true } }); expect(JSON.stringify(result)).toContain('SCOPE_NATIVE_DIARY_2026');
+    const result = await read(); expect(result).toMatchObject({ sourceConversation: { id: group.id, kind }, result: { available: true } }); expect(JSON.stringify(result)).toContain('SCOPE_NATIVE_DIARY_2026');
+    if (peerReply) expect(JSON.stringify(result)).toContain('PEER_NATIVE_ACK_2026');
     expect(nativeCalls).toContain('bot.source.filter'); expect(sessions).toBe(1);
     const receipt = await memory.forget(scope, { id: note!.id }); store.withdrawSources('alice', group.securityDomainId, [...receipt.sourceEventIds, ...receipt.sourceMessageIds]);
     expect(store.peerWithdrawalTargets('alice', group.securityDomainId)).toEqual([{ conversationId: direct.id, messageId: source.replyMessageId }]);
