@@ -59,7 +59,7 @@ export class InstanceService {
   private readonly startControllers = new Map<string, AbortController>();
   private readonly busy = new Set<string>();
   private readonly recoveryBlocked = new Set<string>();
-  private readonly creatingCompanions = new Map<string, Promise<DshInstance>>();
+  private sharedProvisioning?: Promise<DshInstance>;
   private readonly leases = new CompanionInstanceLeases();
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleStops = new Map<string, Promise<boolean>>();
@@ -74,13 +74,9 @@ export class InstanceService {
     for (const directory of ['instances', 'snapshots', 'staging']) await mkdir(path.join(this.options.rootPath, directory), { recursive: true });
     this.instances = (await readJson<unknown[]>(path.join(this.options.rootPath, 'native-instances.json')) ?? []).map(value => dshInstanceSchema.parse(value));
     this.snapshotRecords = (await readJson<unknown[]>(path.join(this.options.rootPath, 'native-snapshots.json')) ?? []).map(value => dshSnapshotSchema.parse(value));
-    const ids = new Set<string>(), companionIds = new Set<string>();
+    const ids = new Set<string>();
     for (const instance of this.instances) {
       if (ids.has(instance.id)) throw new Error('Duplicate DSH instance identity.'); ids.add(instance.id);
-      if (instance.companionId) {
-        if (companionIds.has(instance.companionId)) throw new Error('Duplicate companion environment identity.');
-        companionIds.add(instance.companionId);
-      }
       const paths = this.paths(instance.id);
       if (instance.homePath !== paths.homePath || instance.agentsPath !== paths.agentsPath || instance.workspacePath !== paths.workspacePath
         || instance.browserPartition !== `persist:dsh-instance-${instance.id}`) throw new Error('DSH registry contains an unmanaged path.');
@@ -105,7 +101,13 @@ export class InstanceService {
       }
       instance.status = this.recoveryBlocked.has(instance.id) ? 'failed' : 'stopped'; delete instance.pid; delete instance.port;
     }
-    if (!this.instances.some(value => value.isDefault)) { const ordinary = this.instances.find(value => !value.companionId); if (ordinary) ordinary.isDefault = true; }
+    // Migrate selection only. Existing homes, browser logins and plugin data
+    // remain untouched; legacy companion ownership is historical metadata.
+    const defaults = this.instances.filter(value => value.isDefault);
+    const selected = defaults[0] ?? this.instances.find(value => !value.companionId && value.name !== 'WorldlineBox 伙伴主脑')
+      ?? [...this.instances].filter(value => value.name !== 'WorldlineBox 伙伴主脑')
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))[0];
+    for (const instance of this.instances) instance.isDefault = instance.id === selected?.id;
     await this.save();
   }
   list() { return this.instances.map(value => ({ ...value })); }
@@ -113,62 +115,60 @@ export class InstanceService {
   getRoot(id: string): string { if (!/^[a-z0-9-]{1,80}$/.test(id)) throw new Error('Invalid instance ID.'); return path.join(this.options.rootPath, 'instances', id); }
   get(id: string): DshInstance { return { ...this.require(id) }; }
   getUrl(id: string) { return this.hosts.get(id)?.url; }
-  companion(companionId: string): DshInstance | undefined { const value = this.instances.find(instance => instance.companionId === companionId); return value && { ...value }; }
+  /** Every companion uses the same explicit execution selection. Legacy owner
+   * fields are retained for history and recovery, never used as a routing ACL. */
+  companion(companionId: string): DshInstance | undefined { void companionId; return this.executionInstance(); }
+  executionInstance(): DshInstance | undefined { const value = this.instances.find(instance => instance.isDefault); return value && { ...value }; }
   companionStopEpoch(id: string): number { return this.manualStops.get(id) ?? 0; }
-  /** Explicit provisioning primitive; callers must already have the user's
-   * selected runtime. Read/open/chat routes never call this helper. */
+  /** Compatibility IPC: create one shared profile from the selected runtime,
+   * regardless of which character opened the first-run setup. */
   async createCompanion(companionId: string, name: string, runtimeId: string): Promise<DshInstance> {
-    const owner = dshInstanceSchema.shape.companionId.unwrap().parse(companionId);
-    const label = dshInstanceSchema.shape.companionName.unwrap().parse(name);
-    if (this.companion(owner)) throw new Error('该角色已绑定独立实例，请在原实例中管理或升级能力。');
-    if (this.creatingCompanions.has(owner)) throw new Error('该角色的实例绑定正在保存，请稍后刷新。');
+    dshInstanceSchema.shape.companionId.unwrap().parse(companionId);
+    dshInstanceSchema.shape.companionName.unwrap().parse(name);
     const runtime = this.options.runtimes.get(runtimeId);
     if (!runtime || runtime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 版本。');
-    const pending = this.create(`${label} 的能力环境`.slice(0, 100), runtime.id, undefined,
-      { companionId: owner, companionName: label, keepAlive: false });
-    this.creatingCompanions.set(owner, pending);
-    void pending.finally(() => { if (this.creatingCompanions.get(owner) === pending) this.creatingCompanions.delete(owner); }).catch(() => undefined);
+    const existing = this.executionInstance();
+    if (existing) {
+      if (existing.runtimeId !== runtimeId) throw new Error('共享执行实例已经配置，请在启动器升级或切换共享实例。');
+      return existing;
+    }
+    if (this.sharedProvisioning) return this.sharedProvisioning.then(instance => {
+      if (instance.runtimeId !== runtimeId) throw new Error('共享实例正在使用另一版本完成配置，请在创建后升级或切换。');
+      return instance;
+    });
+    const pending = this.create('共享 DSH', runtimeId).then(async instance => {
+      await this.selectExecutionInstance(instance.id); return this.get(instance.id);
+    });
+    this.sharedProvisioning = pending;
+    void pending.finally(() => { if (this.sharedProvisioning === pending) this.sharedProvisioning = undefined; }).catch(() => undefined);
     return pending;
   }
-  /** Claim an ordinary instance without moving or replacing any native data.
-   * A profile is exclusively owned from this point; it cannot be lent to a
-   * second character or implicitly substituted for an existing binding. */
+  /** Selecting an existing profile does not claim it, copy credentials or
+   * disturb in-flight Sessions bound to the previously selected profile. */
   async bindCompanion(companionId: string, name: string, instanceId: string): Promise<DshInstance> {
-    const owner = dshInstanceSchema.shape.companionId.unwrap().parse(companionId);
-    const label = dshInstanceSchema.shape.companionName.unwrap().parse(name);
-    const existing = this.companion(owner);
-    if (existing) {
-      if (existing.id === instanceId) return existing;
-      throw new Error('该角色已绑定独立实例，请在原实例中管理或升级能力。');
-    }
-    if (this.creatingCompanions.has(owner)) throw new Error('该角色的实例绑定正在保存，请稍后刷新。');
-    const instance = this.available(instanceId, true);
-    if (instance.companionId) throw new Error('此实例已属于其他角色，请选择未绑定的实例。');
-    const runtime = this.options.runtimes.get(instance.runtimeId);
-    if (!runtime || runtime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 实例。');
-    this.busy.add(instance.id);
-    const pending = this.commitRegistry(async () => {
-      if (this.closing) throw new Error('DSH launcher is closing.');
-      const records = this.list(), claimed = records.find(value => value.id === instanceId)!;
-      const wasDefault = claimed.isDefault;
-      claimed.companionId = owner; claimed.companionName = label; claimed.keepAlive = false;
-      claimed.isDefault = false; claimed.updatedAt = new Date().toISOString();
-      if (wasDefault) { const ordinary = records.find(value => !value.companionId); if (ordinary) ordinary.isDefault = true; }
-      await atomicJson(path.join(this.options.rootPath, 'native-instances.json'), records);
-      // Publish ownership only after its one-file durable commit. Other chat
-      // admissions must not observe an unconfirmed or failed binding.
-      Object.assign(instance, claimed);
-      for (const value of this.instances) value.isDefault = records.find(record => record.id === value.id)!.isDefault;
-      return this.get(instance.id);
-    }).finally(() => { this.busy.delete(instance.id); });
-    this.creatingCompanions.set(owner, pending);
-    void pending.finally(() => { if (this.creatingCompanions.get(owner) === pending) this.creatingCompanions.delete(owner); }).catch(() => undefined);
-    const bound = await pending; this.notifyChanged(); return bound;
+    dshInstanceSchema.shape.companionId.unwrap().parse(companionId);
+    dshInstanceSchema.shape.companionName.unwrap().parse(name);
+    return this.selectExecutionInstance(instanceId);
   }
-  /** Native fixture/provisioning compatibility. Production user routes use
-   * createCompanion with an explicit selected version instead. */
-  async ensureCompanion(companionId: string, name: string, base: DshInstance): Promise<DshInstance> {
-    return this.companion(companionId) ?? this.creatingCompanions.get(companionId) ?? this.createCompanion(companionId, name, base.runtimeId);
+  async selectExecutionInstance(instanceId: string): Promise<DshInstance> {
+    const instance = this.available(instanceId), runtime = this.options.runtimes.get(instance.runtimeId);
+    if (!runtime || runtime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 实例。');
+    const selected = await this.commitRegistry(async () => {
+      // A queued selection must not publish a removed target or one which
+      // entered an upgrade/data mutation while another registry write ran.
+      const current = this.available(instanceId), currentRuntime = this.options.runtimes.get(current.runtimeId);
+      if (!currentRuntime || currentRuntime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 实例。');
+      const records = this.list();
+      for (const record of records) record.isDefault = record.id === instanceId;
+      await atomicJson(path.join(this.options.rootPath, 'native-instances.json'), records);
+      for (const value of this.instances) value.isDefault = value.id === instanceId;
+      return this.get(instanceId);
+    });
+    this.notifyChanged(); return selected;
+  }
+  /** Compatibility helper no longer allocates per-character environments. */
+  async ensureCompanion(_companionId: string, _name: string, base: DshInstance): Promise<DshInstance> {
+    return this.executionInstance() ?? this.selectExecutionInstance(base.id);
   }
   touchInstance(id: string): void {
     this.require(id); this.leases.touch(id);
@@ -180,7 +180,7 @@ export class InstanceService {
     return this.leases.acquire(id, kind, () => { this.lastCompanionUse.set(id, ++this.companionUseOrder); this.scheduleIdle(id); });
   }
   async configureCompanion(id: string, keepAlive: boolean): Promise<DshInstance> {
-    const instance = this.available(id); if (!instance.companionId) throw new Error('Only private companion environments have a connection policy.');
+    const instance = this.available(id);
     this.touchInstance(id); instance.keepAlive = keepAlive; instance.updatedAt = new Date().toISOString(); await this.changed();
     if (keepAlive) await this.ensureHost(id); else this.scheduleIdle(id);
     return this.get(id);
@@ -448,11 +448,12 @@ export class InstanceService {
     if (this.closing) throw new Error('DSH launcher is closing.'); this.options.runtimes.get(runtimeId); op?.signal.throwIfAborted();
     const id = randomUUID(), now = new Date().toISOString();
     const instance = dshInstanceSchema.parse({ id, name, runtimeId, ...this.paths(id), browserPartition: `persist:dsh-instance-${id}`,
-      profile: 'web', status: 'stopped', isDefault: !companion && !this.instances.some(value => !value.companionId), createdAt: now, updatedAt: now, ...companion });
+      profile: 'web', status: 'stopped', isDefault: !companion && !this.instances.some(value => value.isDefault), createdAt: now, updatedAt: now, ...companion });
     try {
       await instanceEnvironment(this.getRoot(id), instance, this.options.runtimes.plan(runtimeId));
       await this.commitRegistry(async () => {
         if (this.closing) throw new Error('DSH launcher is closing.'); op?.signal.throwIfAborted();
+        instance.isDefault = !companion && !this.instances.some(value => value.isDefault);
         await atomicJson(path.join(this.options.rootPath, 'native-instances.json'), [...this.list(), instance]);
         this.instances.push(instance);
       });
@@ -465,7 +466,6 @@ export class InstanceService {
   /** Switch code only; all stable environment paths and browser identity are retained. */
   async upgradeCompanion(id: string, runtimeId: string, op: OperationContext): Promise<void> {
     const instance = this.available(id), next = this.options.runtimes.get(runtimeId);
-    if (!instance.companionId) throw new Error('Only private companion environments can be upgraded here.');
     if (next.adapter !== 'node-cli-web-v1') throw new Error('伙伴需要原生 Node Web 运行环境。');
     if (runtimeId === instance.runtimeId) return;
     if (this.held(id) || this.starts.has(id)) throw new Error('伙伴环境仍在使用中，请等待任务、问题或工作台结束后升级。');
@@ -578,20 +578,21 @@ export class InstanceService {
       this.manualStops.delete(id); this.suspendedCompanions.delete(id);
       this.lastCompanionUse.delete(id);
       await removeManaged(this.options.rootPath, this.getRoot(id)); this.instances = this.instances.filter(value => value.id !== id);
-      if (instance.isDefault) { const ordinary = this.instances.find(value => !value.companionId); if (ordinary) ordinary.isDefault = true; }
+      if (instance.isDefault) { const next = this.instances.find(value => !value.companionId) ?? this.instances[0]; if (next) next.isDefault = true; }
       await this.changed();
     } finally { this.busy.delete(id); }
   }
   async handle(request: DshLauncherRequest): Promise<DshLauncherResponse> {
     try {
       if (request.type === 'instance.rename') { this.available(request.instanceId).name = request.name; await this.changed(); return { ok: true }; }
-      if (request.type === 'instance.default') { if (this.require(request.instanceId).companionId) throw new Error('伙伴私有能力环境不能设为共享默认实例。'); for (const value of this.instances) value.isDefault = value.id === request.instanceId; await this.changed(); return { ok: true }; }
+      if (request.type === 'instance.default') { await this.selectExecutionInstance(request.instanceId); return { ok: true }; }
       if (request.type === 'instance.logs') return { ok: true, text: sanitizeOutput((await readFile(path.join(this.getRoot(request.instanceId), 'logs', 'host.log'), 'utf8').catch(() => '')).slice(-128000)) };
       if (request.type === 'snapshot.delete') { const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
         await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'snapshots', snapshot.id)); this.snapshotRecords = this.snapshotRecords.filter(value => value.id !== snapshot.id); await this.changed(); return { ok: true }; }
       const id = 'instanceId' in request ? request.instanceId : undefined;
       const operationId = await this.options.operations.run(request.type, request.type, id, async op => {
         switch (request.type) {
+          case 'instance.upgrade': await this.upgradeCompanion(request.instanceId, request.runtimeId, op); break;
           case 'instance.create': await this.create(request.name, request.runtimeId, op); break;
           case 'instance.start': case 'instance.open': {
             const started = performance.now(); await this.ensureHost(request.instanceId, op.signal);
@@ -632,7 +633,7 @@ export class InstanceService {
   async shutdown(): Promise<void> {
     for (const timer of this.idleTimers.values()) clearTimeout(timer); this.idleTimers.clear();
     this.closing = true; for (const controller of this.startControllers.values()) controller.abort(new Error('Launcher closing.'));
-    await Promise.allSettled(this.creatingCompanions.values());
+    await Promise.allSettled(this.sharedProvisioning ? [this.sharedProvisioning] : []);
     await Promise.allSettled(this.starts.values()); await Promise.allSettled([...this.hosts.keys()].map(id => this.stop(id, { automatic: true }))); await Promise.allSettled(this.stops.values()); await this.writes;
   }
 }

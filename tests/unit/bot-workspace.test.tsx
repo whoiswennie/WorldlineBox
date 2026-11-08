@@ -30,7 +30,7 @@ beforeEach(() => {
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); root = undefined; vi.useRealTimers(); });
 function boundLauncherState(): DshLauncherState {
   const runtime = { id: 'runtime-a', version: '0.2.2-rc.1', nodeVersion: '24', platform: 'win32-x64' as const, adapter: 'node-cli-web-v1' as const, source: '', sourceSha256: '0'.repeat(64), contentSha256: '0'.repeat(64), installedAt: '', fileCount: 1, byteLength: 1 };
-  return { supported: true, rootPath: 'fixture', runtimes: [runtime], instances: ['alice','bob'].map(id => ({ id: `${id}-instance`, companionId: id, name: id, runtimeId: runtime.id, profile: 'web', status: 'stopped', isDefault: false, homePath: '', agentsPath: '', workspacePath: '', browserPartition: id, createdAt: at, updatedAt: at })), snapshots: [], packs: [], operations: [] };
+  return { supported: true, rootPath: 'fixture', runtimes: [runtime], instances: [{ id: 'shared-instance', name: '共享 DSH', runtimeId: runtime.id, profile: 'web', status: 'stopped', isDefault: true, homePath: '', agentsPath: '', workspacePath: '', browserPartition: 'shared', createdAt: at, updatedAt: at }], snapshots: [], packs: [], operations: [] };
 }
 async function mount(launcherApi: WorldlineBoxDshLauncherApi = { request: async () => ({ ok: true, state: boundLauncherState() }), onChanged: () => () => undefined }) {
   const api: WorldlineBoxBotApi = {
@@ -55,36 +55,38 @@ async function mount(launcherApi: WorldlineBoxDshLauncherApi = { request: async 
   await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} launcherApi={launcherApi} onOpenSettings={() => undefined} /></LocaleProvider>));
 }
 const composer = () => host.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
-it('blocks private chat and calls until the user explicitly selects a runtime and binds the companion', async () => {
-  let state = boundLauncherState(); state.instances = [{ ...state.instances[0]!, id: 'ordinary-default', isDefault: true, companionId: undefined }];
+it('requires one shared setup before the first chat or call, then unlocks every companion without extra bindings', async () => {
+  let state = { ...boundLauncherState(), instances: [] as DshLauncherState['instances'] };
   const launcherRequest = vi.fn<WorldlineBoxDshLauncherApi['request']>(async request => {
-    if (request.type === 'companion.environment.create') state = { ...state, instances: [...state.instances, { ...boundLauncherState().instances[0]!, runtimeId: request.runtimeId }] };
+    if (request.type === 'companion.environment.create') state = boundLauncherState();
     return { ok: true, state };
   });
   await mount({ request: launcherRequest, onChanged: () => () => undefined });
   expect(composer()).toBeNull(); expect(host.querySelector<HTMLButtonElement>('.bot-call-entry')?.disabled).toBe(true);
-  expect(host.querySelector('[data-companion-binding="alice"]')).not.toBeNull();
+  expect(host.querySelector('[data-shared-dsh-setup]')).not.toBeNull();
   expect(launcherRequest.mock.calls.every(([value]) => value.type === 'state')).toBe(true);
-  await click('稍后设置'); expect(host.querySelector('[data-companion-binding]')).toBeNull(); expect(composer()).toBeNull();
-  await click('绑定实例');
-  const select = host.querySelector<HTMLSelectElement>('select[aria-label="选择 DSH 版本"]')!;
-  await act(() => { select.value = 'runtime-a'; select.dispatchEvent(new Event('change', { bubbles: true })); });
-  await click('确认创建并绑定');
-  expect(composer()).not.toBeNull(); expect(host.querySelector('[data-companion-binding]')).toBeNull();
+  await click('稍后设置'); expect(host.querySelector('[data-shared-dsh-setup]')).toBeNull(); expect(composer()).toBeNull();
+  await select('私聊乙'); expect(host.querySelector('[data-shared-dsh-setup]')).toBeNull();
+  await click('配置 DSH');
+  const runtimeSelect = host.querySelector<HTMLSelectElement>('select[aria-label="选择 DSH 版本"]')!;
+  await act(() => { runtimeSelect.value = 'runtime-a'; runtimeSelect.dispatchEvent(new Event('change', { bubbles: true })); });
+  await click('创建并共享');
+  expect(composer()).not.toBeNull(); expect(host.querySelector('[data-shared-dsh-setup]')).toBeNull();
   expect(host.querySelector<HTMLButtonElement>('.bot-call-entry')?.disabled).toBe(false);
+  await select('私聊甲'); expect(composer()).not.toBeNull(); expect(host.querySelector('[data-shared-dsh-setup]')).toBeNull();
+  expect(launcherRequest.mock.calls.filter(([value]) => value.type === 'companion.environment.create')).toHaveLength(1);
   expect(sends()).toHaveLength(0);
 });
-it('requires both group bindings, including the installed runtime, and does not allow the first bound member to unlock chat', async () => {
+it('unlocks a group with one installed shared runtime while ignoring missing old private runtimes', async () => {
   snapshots.a!.conversations[0] = { ...snapshots.a!.conversations[0]!, kind: 'group', memberIds: ['user', 'alice', 'bob'] };
   let state = boundLauncherState(); state.instances = [{ ...state.instances[0]!, runtimeId: 'removed-runtime' }];
-  let change: (value: DshLauncherState) => void = () => undefined;
-  await mount({ request: async () => ({ ok: true, state }), onChanged: listener => { change = listener; return () => undefined; } });
-  expect(host.textContent).toContain('已绑定实例的运行版本不可用'); expect(composer()).toBeNull();
-  state = { ...state, instances: boundLauncherState().instances.slice(0, 1) };
-  await act(() => change(state));
-  expect(host.querySelector('[data-companion-binding="bob"]')).not.toBeNull(); expect(composer()).toBeNull();
-  state = boundLauncherState(); await act(() => change(state));
-  expect(host.querySelector('[data-companion-binding]')).toBeNull(); expect(composer()).not.toBeNull(); expect(sends()).toHaveLength(0);
+  const changes = new Set<(value: DshLauncherState) => void>();
+  await mount({ request: async () => ({ ok: true, state }), onChanged: listener => { changes.add(listener); return () => changes.delete(listener); } });
+  expect(host.textContent).toContain('运行版本不可用'); expect(composer()).toBeNull();
+  state = { ...boundLauncherState(), instances: [...boundLauncherState().instances, { ...boundLauncherState().instances[0]!, id: 'bob-old-private', isDefault: false, companionId: 'bob', runtimeId: 'removed-runtime' }] };
+  await act(() => changes.forEach(change => change(state)));
+  expect(host.querySelector('[data-shared-dsh-setup]')).toBeNull(); expect(composer()).not.toBeNull(); expect(sends()).toHaveLength(0);
+  expect(host.textContent).not.toContain('还需绑定');
 });
 it('shows a disabled companion clearly and re-enables through the shared runtime command before chatting', async () => {
   snapshots.a!.companions[0]!.enabled = false;

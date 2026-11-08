@@ -1,5 +1,7 @@
 # Super Agent 伙伴运行说明
 
+2026-11-08 执行环境更新：所有伙伴共用启动器选定的一个 DSH，账号、API、插件和技能统一配置；Router、聊天、记忆、任务与独立 Worker Session 的归属仍按伙伴保持。旧任务固定原环境，升级保留同实例数据。当前迁移与测试见[共享 DSH 执行实例](shared-dsh-execution-2026-11-08.md)。
+
 基线更新：2026年11月5日。主脑由世界线盒子自身运行，DSH仅作委派执行器；新增每伙伴统一事件账本、授权任务与结构化业务报告。当前重构范围和验收见[伙伴持续主脑重构方案](companion-superagent-refactor-2026-11-05.md)。早期[实施方案](superagent-bot-implementation-plan-2026-11-02.md)与[调研报告](superagent-bot-research-2026-11-02.md)保留为历史记录，不再据其DSH承载主脑的决定解释新实现。
 
 此前版本的436项相关单测、5项功能与2项渲染性能检查及其边界见[历史实现与验收](companion-superagent-current-2026-11-03.md)。下文保留的旧版性能样本不代表11月5日重构后的分布。

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 import { BotIcon } from './BotIcon';
+import { sharedDshInstance } from './useBotDshBindings';
 
 export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { api?: WorldlineBoxDshLauncherApi; zh:boolean; companionIds?: readonly string[]; onOpenLauncher?():void }) {
   const [state,setState]=useState<DshLauncherState>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0);
@@ -24,9 +25,7 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
   },[api,zh,refresh]);
   if(!api||!companionIds?.length)return null;
   const readiness=state?.executionReadiness;
-  const owned=new Map(state?.instances.filter(value=>value.companionId).map(value=>[value.companionId,value]));
-  const relevant=companionIds.flatMap(id=>owned.get(id)??[]);
-  const instance=relevant.find(value=>value.status!=='running'||readiness?.instanceId===value.id&&readiness.status!=='ready')??relevant[0];
+  const instance=sharedDshInstance(state);
   const failed=instance?.status==='failed'||readiness?.instanceId===instance?.id&&readiness?.status==='failed';
   const warming=readiness?.instanceId===instance?.id&&readiness?.status==='warming';
   const starting=busy||instance?.status==='starting',preparing=instance?.status==='running'&&warming,stopping=instance?.status==='stopping',unsupported=state?.supported===false;
@@ -39,10 +38,10 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
     :preparing?(zh?'DSH 正在准备…':'DSH is preparing…')
     :stopping?(zh?'DSH 正在关闭…':'DSH is stopping…')
     :failed?(zh?'DSH 启动失败':'DSH could not start')
-    :instance?(zh?'DSH 未启动':'DSH is stopped')
+    :instance?(zh?'共享 DSH 未启动':'Shared DSH is stopped')
     :(zh?'尚未配置 DSH':'DSH is not configured');
   const diagnostic=error||(failed?instance?.lastError:undefined);
-  const hint=zh?'已绑定专属实例，执行任务时按需启动；用户主动关闭的实例需要重新启动，已暂停的任务可在任务中心继续。':'A private instance is bound and starts on demand. Manually stopped instances require a restart; paused tasks can be resumed in the task center.';
+  const hint=zh?'所有伙伴共用此 DSH，执行任务时按需启动。停止共享实例会影响所有运行中的任务；暂停的任务可在任务中心继续。':'All companions share this DSH, which starts on demand. Stopping it affects all active tasks; paused tasks can be resumed in the task center.';
   const start=async()=>{
     if(!instance||busy||starting||preparing||stopping||unsupported)return;
     const current=generation.current,requestedAt=revision.current;

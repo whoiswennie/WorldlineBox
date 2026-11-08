@@ -40,31 +40,24 @@ it('uses only the default compatible user instance, independent of the recently 
   f.select('missing'); expect((await f.launcher.resolveBotInstance()).id).toBe('default');
   expect(f.create).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled();
 });
-it('requires explicit provisioning before opening a companion DSH and never borrows the default', async () => {
+it('opens the same shared environment for every character without provisioning a new owner', async () => {
   const f = fixture();
   vi.spyOn(f.launcher, 'state').mockImplementation(() => ({ supported: true }) as ReturnType<DshLauncher['state']>);
-  const service = Reflect.get(f.launcher, 'instances');
-  const own = { ...f.records[0]!, id: 'private-fish', companionId: 'fish', isDefault: false };
-  let created = false;
-  const ensure = vi.fn(async () => { created = true; return own; });
-  const handle = vi.fn(async () => ({ ok: true }));
-  Reflect.set(service, 'companion', () => created ? own : undefined);
-  Reflect.set(service, 'createCompanion', ensure);
-  Reflect.set(service, 'get', (id: string) => id === own.id ? own : f.records.find(value => value.id === id));
-  Reflect.set(service, 'handle', handle);
+  const service = Reflect.get(f.launcher, 'instances'), handle = vi.fn(async () => ({ ok: true })), create = vi.fn();
+  Reflect.set(service, 'handle', handle); Reflect.set(service, 'createCompanion', create);
   const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
-  const unbound = await route({ type: 'companion.environment.state', companionId: 'fish', name: '大肥鱼' });
-  expect(unbound.ok).toBe(true); expect(unbound.companionEnvironment).toBeUndefined();
-  expect(ensure).not.toHaveBeenCalled(); expect(handle).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled();
-  await expect(route({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' })).rejects.toMatchObject({ reason: 'configuration' });
-  await expect(route({ type: 'companion.environment.ensure', companionId: 'fish', name: '大肥鱼' })).rejects.toMatchObject({ reason: 'configuration' });
-  expect(ensure).not.toHaveBeenCalled();
-  expect(await route({ type: 'companion.environment.create', companionId: 'fish', name: '大肥鱼', runtimeId: 'compatible' })).toMatchObject({ ok: true, companionEnvironment: { mode: 'private', instance: own } });
-  expect(await route({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' })).toMatchObject({ ok: true, companionEnvironment: { mode: 'private', instance: own } });
-  expect(ensure).toHaveBeenCalledExactlyOnceWith('fish', '大肥鱼', 'compatible');
-  expect(handle).toHaveBeenCalledExactlyOnceWith({ type: 'instance.open', instanceId: own.id });
-  await route({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' });
-  expect(ensure).toHaveBeenCalledTimes(1);
+  for (const companionId of ['fish', 'gpt', 'claude']) {
+    expect(await route({ type: 'companion.environment.state', companionId, name: companionId })).toMatchObject({ ok: true, companionEnvironment: { mode: 'shared', instance: { id: 'default' } } });
+    expect(await route({ type: 'companion.environment.ensure', companionId, name: companionId })).toMatchObject({ ok: true, companionEnvironment: { mode: 'shared', instance: { id: 'default' } } });
+    expect(await route({ type: 'companion.environment.open', companionId, name: companionId })).toMatchObject({ ok: true, companionEnvironment: { mode: 'shared', instance: { id: 'default' } } });
+  }
+  expect(create).not.toHaveBeenCalled(); expect(handle).toHaveBeenCalledTimes(3);
+  for (const call of handle.mock.calls) expect(call).toEqual([{ type: 'instance.open', instanceId: 'default' }]);
+});
+it('does not shut down a shared DSH Host when one character is stopped', async () => {
+  const f = fixture(), stop = vi.fn(); Reflect.set(Reflect.get(f.launcher, 'instances'), 'stop', stop);
+  await f.launcher.stopCompanionEnvironment('fish'); await f.launcher.stopCompanionEnvironment('claude');
+  expect(stop).not.toHaveBeenCalled(); expect((await f.launcher.resolveCompanionInstance('gpt', 'GPT')).id).toBe('default');
 });
 it.each(['0.2.2-rc.1','0.2.2-alpha.3','0.3.0','1.0.0-beta.1','0.2.1-rc.2'])('selects the native Web adapter independently of DSH version %s', async version => {
   const f=fixture(false,version); expect((await f.launcher.resolveBotInstance()).id).toBe('default');
@@ -72,8 +65,14 @@ it.each(['0.2.2-rc.1','0.2.2-alpha.3','0.3.0','1.0.0-beta.1','0.2.1-rc.2'])('sel
 });
 it('accepts a legacy Host only through an explicit binding and does not choose it for a new lane', async () => {
   const f = fixture(); f.records.splice(0, 2);
-  await expect(f.launcher.resolveBotInstance()).rejects.toThrow('手动创建或绑定');
+  await expect(f.launcher.resolveBotInstance()).rejects.toThrow('创建或选择一个共享执行实例');
   expect((await f.launcher.resolveBotInstance('old-bot')).id).toBe('old-bot');
+  expect(f.create).not.toHaveBeenCalled();
+});
+it('accepts a historical profile for new shared work when the user explicitly selected it as default', async () => {
+  const f = fixture(); f.records[0]!.isDefault = false; f.records[2]!.isDefault = true;
+  expect((await f.launcher.resolveBotInstance()).id).toBe('old-bot');
+  expect(f.launcher.companionCapabilityState('claude')).toMatchObject({ mode: 'shared', instanceId: 'old-bot', configured: true });
   expect(f.create).not.toHaveBeenCalled();
 });
 it('requires user-confirmed instance creation even after a runtime has been installed', async () => {
@@ -82,25 +81,27 @@ it('requires user-confirmed instance creation even after a runtime has been inst
   expect(selected.every(value => value.status === 'rejected')).toBe(true);
   expect(f.create).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled(); expect(f.records).toHaveLength(0);
 });
-it('reports a companion without a binding as unconfigured even while the default Host is ready', async () => {
+it('reports the same configured state and revision for every companion, independent of old private ownership', async () => {
   const f = fixture(), service = Reflect.get(f.launcher, 'instances');
   Reflect.set(service, 'companion', () => undefined);
-  expect(f.launcher.companionCapabilityState('fish')).toMatchObject({ mode: 'private', configured: false, status: 'unconfigured', instanceId: undefined });
-  await expect(f.launcher.resolveCompanionInstance('fish', '大肥鱼')).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'configuration' });
+  Reflect.set(f.records[1]!, 'companionId', 'fish');
+  const fish = f.launcher.companionCapabilityState('fish'), gpt = f.launcher.companionCapabilityState('gpt');
+  expect(fish).toMatchObject({ mode: 'shared', configured: true, status: 'running', instanceId: 'default' });
+  expect(gpt).toEqual(fish);
+  expect((await f.launcher.resolveCompanionInstance('fish', '大肥鱼')).id).toBe('default');
   expect(f.ensureHost).not.toHaveBeenCalled(); expect(f.create).not.toHaveBeenCalled();
 });
-it('selects an owned CLI without changing the default, and rejects an owned default before touching CLI context', async () => {
-  const f = fixture(), own = f.records[1]!;
-  Reflect.set(own, 'companionId', 'fish');
+it('keeps terminal context separate while allowing an existing legacy profile to become the shared default', async () => {
+  const f = fixture(), own = f.records[1]!; Reflect.set(own, 'companionId', 'fish');
   vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
   const instances = Reflect.get(f.launcher, 'instances'), cli = Reflect.get(f.launcher, 'cliTerminal');
-  const prepare = vi.fn(async () => ({ instance: own })), select = vi.fn(async () => undefined), defaults = vi.fn();
+  const prepare = vi.fn(async () => ({ instance: own })), select = vi.fn(async () => undefined), defaults = vi.fn(async () => ({ ok: true }));
   Reflect.set(instances, 'prepareCli', prepare); Reflect.set(instances, 'handle', defaults); Reflect.set(cli, 'selectContext', select);
   const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
   expect(await route({ type: 'cli.select', instanceId: own.id })).toMatchObject({ ok: true });
   expect(prepare).toHaveBeenCalledExactlyOnceWith(own.id); expect(select).toHaveBeenCalledOnce(); expect(defaults).not.toHaveBeenCalled();
-  await expect(route({ type: 'instance.default', instanceId: own.id })).rejects.toThrow('不能设为默认');
-  expect(prepare).toHaveBeenCalledTimes(1); expect(select).toHaveBeenCalledTimes(1); expect(defaults).not.toHaveBeenCalled();
+  expect(await route({ type: 'instance.default', instanceId: own.id })).toMatchObject({ ok: true });
+  expect(prepare).toHaveBeenCalledTimes(2); expect(defaults).toHaveBeenCalledExactlyOnceWith({ type: 'instance.default', instanceId: own.id });
 });
 it('prevents runtime deletion or cleanup during an explicit role provisioning commit', async () => {
   const f = fixture(), own = { ...f.records[1]!, companionId: 'fish' };
@@ -173,15 +174,15 @@ it('automatically prewarms only default and does not start profiles merely selec
   f.select('selected'); observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
   expect(discover).toHaveBeenCalledExactlyOnceWith('default');
 });
-it('invalidates Router capability facts when another companion binding is created, upgraded or deleted', () => {
+it('invalidates Router capability facts only when the shared execution selection or runtime changes', () => {
   vi.useFakeTimers();
   const f = fixture(), changed = vi.fn();
   Reflect.set(f.launcher, 'onExecutionCapabilitiesChanged', changed);
   const observe = Reflect.get(f.launcher, 'observeExecutionCapabilities') as () => void;
   observe.call(f.launcher);
-  Reflect.set(f.records[1]!, 'companionId', 'fish'); observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(1);
-  f.records[1]!.runtimeId = 'other-runtime'; observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(2);
-  f.records.splice(1, 1); observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(3);
+  Reflect.set(f.records[1]!, 'companionId', 'fish'); observe.call(f.launcher); expect(changed).not.toHaveBeenCalled();
+  f.records[0]!.runtimeId = 'other-runtime'; observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(1);
+  f.records[0]!.isDefault = false; f.records[1]!.isDefault = true; observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(2);
 });
 
 it.each(['running', 'stopped', 'failed'])('does not confuse capability-discovery errors with the current Host state (%s)', async status => {

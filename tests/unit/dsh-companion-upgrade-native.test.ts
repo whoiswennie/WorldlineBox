@@ -17,7 +17,7 @@ const text = (content: Wire['messages'][number]['content']) => typeof content ==
  * exercises genuine tools without any paid account. Fixture runtime metadata
  * is deliberately not represented as sealed-package integrity verification. */
 it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)(
-  'upgrades one private companion from the real rc5 runtime to rc1 with the same native Session and all native data', async () => {
+  'upgrades the shared companion Host from the real rc5 runtime to rc1 with the same native Session and all native data', async () => {
     const previousProgram = path.resolve(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!), nextProgram = path.resolve(process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM!);
     const native = await createBotNativeHost(previousProgram), previousRuntime = (native.instances as unknown as { options: { runtimes: RuntimeServiceLike } }).options.runtimes.get(native.instance.runtimeId);
     const nextManifest = JSON.parse(await readFile(path.join(nextProgram, 'dsh/node_modules/@deepseek-ai/dsh/package.json'), 'utf8')) as { version: string };
@@ -29,7 +29,7 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
       verify: async (id, signal) => { signal?.throwIfAborted(); const manifest = JSON.parse(await readFile(path.join(programs.get(id)!, 'dsh/node_modules/@deepseek-ai/dsh/package.json'), 'utf8'));
         expect(manifest.version).toBe(records.find(value => value.id === id)!.version); },
     };
-    const output = path.resolve('artifacts/superagent-bot-development/native-private-upgrade', path.basename(native.root)); await mkdir(output, { recursive: true });
+    const output = path.resolve('artifacts/superagent-bot-development/native-shared-upgrade', path.basename(native.root)); await mkdir(output, { recursive: true });
     const stage = (value: string) => writeFile(path.join(output, 'stage.json'), JSON.stringify({ stage: value, root: native.root, previousVersion: previousRuntime.version, nextVersion: nextRuntime.version }));
     let modelRequests = 0, toolResponses = 0, primaryError: unknown, cleanupError: unknown;
     const server = createServer(async (request, response) => {
@@ -58,7 +58,10 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
     });
     server.listen(0, '127.0.0.1'); await once(server, 'listening'); const address = server.address();
     if (!address || typeof address === 'string') throw Error('No local model listener');
-    const own = await native.instances.ensureCompanion('upgrade-private-partner', '升级伙伴', native.instance);
+    const own = await native.instances.ensureCompanion('upgrade-shared-partner', '升级伙伴', native.instance);
+    expect(own.id).toBe(native.instance.id);
+    expect((await native.instances.ensureCompanion('another-shared-partner', '另一伙伴', native.instance)).id).toBe(own.id);
+    expect(native.instances.list()).toHaveLength(1);
     const brain = new BotDshBrain({ getHost: async () => ({ client: await native.instances.ensureHost(own.id) }),
       acquireLease: () => native.instances.acquireCompanionLease(own.id, 'task') });
     const input: BotDshRun = { role: 'worker', workerAccess: 'full', laneId: 'worker-native-upgrade', eventId: 'work-native-upgrade',
@@ -66,7 +69,7 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
       prompt: 'UPGRADE_REQUEST=' + JSON.stringify({ hex: '#123456' }), tools: [], callback: { url: `http://127.0.0.1:${address.port}/bot/tool`, token: 'e'.repeat(64) },
       model: { apiFormat: 'openai_chat', model: 'local-native-upgrade', baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'local-native-upgrade-key' } };
     try {
-      await stage('starting-rc5'); const oldClient = await native.instances.ensureHost(own.id);
+      await stage('starting-shared-rc5'); const oldClient = await native.instances.ensureHost(own.id);
       const plugin = await oldClient.request<{ application: string }>('/plugins', { action: 'add', spec: 'file:' + path.resolve('resources/dsh-demo-plugins/palette').replaceAll('\\', '/') }, undefined, 420000);
       expect(plugin.application).toBe('applied'); await stage('rc5-plugin-installed');
       const first = await brain.run(input); expect(first.text).toContain('#EDCBA9'); expect(first.status).toBe('succeeded');
@@ -83,10 +86,10 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
       await preserveBotNativeJournals(native.root, path.join(output, 'native-history-before.json'), value => value.replaceAll('local-native-upgrade-key', '<redacted>'));
       const journals = JSON.parse(await readFile(path.join(output, 'native-history-before.json'), 'utf8')) as Array<{ path: string; records: unknown[] }>;
       const originalHistory = journals.find(journal => journal.path.includes(first.sessionId)); expect(originalHistory).toBeDefined();
-      await stage('upgrading-same-private-environment');
+      await stage('upgrading-same-shared-environment');
       await native.instances.upgradeCompanion(own.id, nextRuntime.id, { id: randomUUID(), signal: AbortSignal.timeout(360000), log: async () => undefined, update: async () => undefined });
-      await stage('upgraded-same-private-environment');
-      const upgraded = native.instances.get(own.id); expect(upgraded).toMatchObject({ id: own.id, companionId: own.companionId,
+      await stage('upgraded-same-shared-environment');
+      const upgraded = native.instances.get(own.id); expect(upgraded).toMatchObject({ id: own.id, isDefault: true,
         runtimeId: nextRuntime.id, homePath: own.homePath, agentsPath: own.agentsPath, workspacePath: own.workspacePath, browserPartition: own.browserPartition });
       for (const [filename, bytes] of preserved) expect(await readFile(filename)).toEqual(bytes);
       expect(await readFile(receiptPath)).toEqual(originalReceipt);
@@ -106,7 +109,7 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
       await writeFile(path.join(output, 'receipt.json'), JSON.stringify({ actualNativeHost: true, usesPaidModel: false, sealedIntegrityClaimed: false,
         fixtureRuntimeVerification: 'real program entry points and manifest identity; sealed importer verification remains separately tested',
         previousVersion: previousRuntime.version, nextVersion: nextRuntime.version, originalPid: oldClient.pid, upgradedPid: newClient.pid,
-        samePrivateInstance: true, sameHomeAndPartition: true, sameNativeSession: true, originalHistoryPrefixUnchanged: true,
+        sameSharedInstance: true, sameHomeAndPartition: true, sameNativeSession: true, originalHistoryPrefixUnchanged: true,
         originalReceiptUnchanged: true, duplicateDidNotReplayModelOrTools: true, nativePluginStillLoaded: true, preservedFiles: [...preserved.keys()].map(filename => path.relative(native.root, filename)),
         preservedNativeSnapshots: native.instances.snapshots().length, realToolResults: toolResponses, modelRequests }, null, 2));
       await stage('passed');
@@ -116,8 +119,7 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
         hostLog: await readFile(path.join(native.instances.getRoot(own.id), 'logs/host.log'), 'utf8').catch(() => '') }, null, 2));
     } finally {
       await brain.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
-      try { await native.close([{ id: native.instance.id, name: native.instance.name, runtimeId: previousRuntime.id },
-        { id: own.id, name: own.name, runtimeId: native.instances.get(own.id).runtimeId }]); }
+      try { await native.close([{ id: own.id, name: own.name, runtimeId: native.instances.get(own.id).runtimeId }]); }
       catch (error) { cleanupError = error; }
     }
     if (primaryError && cleanupError) throw new AggregateError([primaryError, cleanupError], 'Native upgrade and safe cleanup both failed.', { cause: primaryError });

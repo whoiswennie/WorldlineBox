@@ -17,7 +17,7 @@ VCP提供长期记忆。memoryEvidence是带citationId的被动召回证据卡�
 trigger.taskFollowup若存在，是用户选中的原任务及原始questionId；仅在该任务范围内回答原问题或管理原任务，不能改答其他任务、批量操作或另建任务。trigger.contentIsPreview表示原文节选，用chat_read_message按sourceMessageId分页读全；不要将摘录当成完整需求。任务或工具结果的预览同理，沿nextOffset读取原件。
 普通聊天、回忆、表情和附件直接处理；目录、指定文件、脚本、研究、编码及文件处理通过dsh_task执行，不因没有直接read_file就声称不能用电脑。goal就是执行器收到的完整任务要求：写清本次目标、必要事实、授权范围、明确约束和交付要求；上下文由你筛选，仅摘取完成本任务必需的事实及适用的用户原话、更正，不复制整段聊天、记忆、无关旧任务或内部事件参数。执行器不会自动收到当前trigger或聊天历史，不写“见上文”等依赖隐含历史的要求。尚未读取的附件只知道名称及元数据，不猜测其中字段、公式或业务规则，不把推测包装成用户要求；交给Worker读取原件后按实际依据确定。比如列桌面名称只能列名称，不读内容、不修改或删除。
 files是宿主按本受众和历史水位核验的真实附件绝对路径与哈希，包含图片、音频、视频和文件；filesOmitted时用chat_list_files沿nextOffset补全。需要解析文件时由DSH按绝对路径读取，不把base64抄入提示词。dsh_task省略attachmentIds仅交接触发本轮消息所附的文件；历史附件必须显式选择与本任务相关的ID，不把整个files目录全部转发；不需要附件时传空数组。宿主会自动追加所选文件的核验副本路径，goal仅说明相关文件用途，不重复原清单的路径或哈希。无关聊天和文件直接省略，不在goal中列举“忽略哪些话题/文件”，否则仍会将无关历史带给Worker。analysisBlocked仍须遵守其限制。
-伙伴必须绑定自己的独立DSH实例，任务仅在该角色的专属实例中创建独立full-access会话，不回退到默认实例，也不借用其他角色的插件、技能或配置。群聊、伙伴私聊或任务回执也遵循此绑定；full只表示工具能力，不增加目标授权，不沿用其他私聊资料，不覆盖本次只读等约束。可并行独立任务，等待时仍可聊天。
+所有伙伴共用启动器选定的一个DSH执行实例，统一使用它已生效的账号、API、插件和技能，无需逐个角色登录或绑定。每项任务仍创建独立full-access会话和工作目录，归属、事件与交付按伙伴和受众隔离。旧任务固定原实例，切换共享实例只影响新任务；不能擅自搬移或重发旧任务。full只表示工具能力，不增加目标授权，不沿用其他私聊资料，不覆盖本次只读等约束。可并行独立任务，等待时仍可聊天。
 复杂请求可拆成边界清楚的独立子任务并行派发。Router负责保留用户总目标、分工与依赖，不代替Worker调查文件或补写技术方案、计算公式、数据假设、额外交付物。每个Worker只接收自己的任务要求、必要资料与约束，不能将整个父任务聊天复制给所有Worker。记录并使用工具返回的真实taskId；任务完成/提问事件到达后读取对应status，必要时dsh_task_result_read分页读取结果，交叉检查已返回的摘要/交付事实。存在依赖的汇总、集成或复核任务必须等前置任务真实完成且所需结果已读取后才派发；只传相关结论、来源产物与原约束，不传其他Worker的完整轨迹或内部事件。前置成果为文件时，先确认已真实发布到当前聊天（尚未发布则chat_send_file用原taskId/path发布），再把对应真实attachmentIds交给汇总Worker；不能用复制JSON/报告正文代替原文件，不能让Worker搜索其他任务目录找成果。失败、问题、结果冲突按原授权指导原任务修正，缺用户事实或新授权才问用户，不谎称整体完成。所有分工完成且最终结果核验后才报告总任务完成；无新事件时结束当前回复，不轮询自聊或反复派相同任务。
 有依赖的多Worker协作先用dsh_plan.create登记阶段和dependsOn，再dsh_task带planId及stageKey绑定阶段。只拆分职责，不拆掉对该阶段适用的全局用户约束；范围、日期、单位、排除口径、只读、隐私及联网限制等须在每个相关阶段完整保留。计划是宿主耐久事实，压缩或重启后用dsh_plan.status恢复；每阶段只能绑定一个任务。前置成功后先dsh_task_control.status或dsh_task_result_read读取其当前结果，宿主才允许提交依赖阶段。同计划的回执可用send把具体差异交回原阶段澄清，最多自动返工两次且必须仍有未派发的依赖阶段；超限或仍有冲突如实告诉用户，不无限唤醒。task回执只能推进原计划已登记阶段，不产生任意新工作授权；普通任务回执仍不能另建任务或计划。失败、用户暂停、停止、删除的前置阶段均不能当成功。用户整体停止后计划关闭，不因迟到通知重新派发。
 提交不等于完成；只根据真实回执说明执行、产物和记忆状态，不捏造。progress.recovering是连接/回执核实，不是普通排队。用户要求停止/清队列时实际调用dsh_task_control。task_done后自然传达有用成果，不复制内部编号、不可点击路径或整篇报告；优先发送真实文件。
@@ -139,12 +139,12 @@ export function buildBotContext(input: BotContextInput): { system: string; user:
         ...(input.participants ?? []).filter(member => member.id !== 'user' && input.conversation!.memberIds.includes(member.id))
           .sort((a, b) => Number(b.id === companion.id || b.id === event.senderId) - Number(a.id === companion.id || a.id === event.senderId))
           .slice(0, input.conversation.memberIds.includes('user') ? 63 : 64).map(member => ({ id: member.id, name: member.name }))] } : undefined,
-    ...(input.participantWorkAuthorized !== undefined ? { participantRequest: { senderId: event.senderId, workAuthorization: input.participantWorkAuthorized ? 'equal-participant-request' : 'inactive-or-invalid', executor: 'own-private-dsh', userReconfirmationRequired: false } } : {}),
+    ...(input.participantWorkAuthorized !== undefined ? { participantRequest: { senderId: event.senderId, workAuthorization: input.participantWorkAuthorized ? 'equal-participant-request' : 'inactive-or-invalid', executor: 'shared-dsh', userReconfirmationRequired: false } } : {}),
     peerContact: input.conversation && event.payload.userRequestedContact === true ? {
       requestedBy: event.payload.contactRequester === 'companion' ? 'companion' : 'user', deliveredBy: event.senderId, userPresent: input.conversation.memberIds.includes('user'),
       ...(input.contactWorkAuthorized !== undefined ? { workAuthorization: input.contactWorkAuthorized ? event.payload.contactRequester === 'companion' ? 'inherited-participant-request' : 'inherited-user-request' : 'communication-only' } : {}),
       responseDestination: event.payload.responseDestination === 'user-direct' ? 'user-direct' : input.conversation.kind === 'peer' ? 'peer' : 'legacy-group', privateHistoryTransferred: false } : undefined,
-    capabilities: { ...(input.capabilities ?? { configured: false, mode: 'private', revision: 'unavailable' }),
+    capabilities: { ...(input.capabilities ?? { configured: false, mode: 'shared', revision: 'unavailable' }),
       readTool: 'agent_capabilities', discovery: ['summary', 'catalog', 'tool', 'skill'], authority: 'current-host-state',
       router: 'worldlinebox', taskExecutor: 'dsh_task',
       companionDirectory: input.companionDirectory?.filter(item => item.id !== companion.id).slice(0, 64).map(item => ({ id: item.id, name: item.name })),

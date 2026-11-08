@@ -2,7 +2,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { botUiPrivateLauncher } from '../fixtures/bot-ui-private-launcher';
+import { botUiSharedLauncher } from '../fixtures/bot-ui-shared-launcher';
 import { BotWorkspace } from '../../src/renderer/companion-bot/BotWorkspace';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import type { BotRequest, BotResponse, BotSnapshot } from '../../src/shared/companion-bot';
@@ -46,7 +46,7 @@ async function mount() {
     if (input.type === 'packs.list') return { ok: true, packs: [{ id: 'whale', name: '鲸鱼', builtin: true, count: 1 }] };
     return { ok: true, media: [sticker] };
   } };
-  await act(async () => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace launcherApi={botUiPrivateLauncher(['alice', 'bob', 'carol'])} api={api} mediaApi={mediaApi} onOpenSettings={call.noop} /></LocaleProvider>));
+  await act(async () => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace launcherApi={botUiSharedLauncher()} api={api} mediaApi={mediaApi} onOpenSettings={call.noop} /></LocaleProvider>));
 }
 const input = () => document.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
 async function type(value: string) { await act(async () => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input(), value); input().dispatchEvent(new Event('input', { bubbles: true })); }); }

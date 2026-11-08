@@ -28,7 +28,7 @@ export async function createBotNativeHost(program: string, options?: {
     onChanged: () => undefined, openWorkbench: async () => undefined, closeWorkbench: async () => undefined, clearBrowserData: async () => undefined });
   await instances.init(); const instance = await instances.create('Bot native acceptance', runtime.id);
   let closed = false;
-  return { root, instances, instance, runtimeVersion: manifest.version,
+  return { root, instances, instance, runtime, runtimeVersion: manifest.version,
     close: async (expectedInstances?: readonly AcceptanceOwnedInstance[]) => {
       if (closed) return; closed = true;
       await instances.shutdown(); await operations.shutdown();

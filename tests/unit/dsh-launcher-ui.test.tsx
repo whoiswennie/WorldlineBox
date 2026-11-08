@@ -38,6 +38,10 @@ function fixture(operations: DshOperation[] = [], extra: Partial<DshLauncherStat
       state = { ...state, operations: state.operations.filter(operation => operation.status === 'running') };
       return { ok: true, state, removedOperations: count };
     }
+    if (input.type === 'instance.default') {
+      state = { ...state, instances: state.instances.map(value => ({ ...value, isDefault: value.id === input.instanceId })) };
+      return { ok: true, state };
+    }
     if (input.type === 'cli.select') {
       state = { ...state, cli: { ...state.cli!, selectedInstanceId: input.instanceId } };
       return { ok: true, state };
@@ -75,35 +79,21 @@ function button(text: string, scope: ParentNode = document): HTMLButtonElement {
 
 async function click(text: string, scope?: ParentNode) { await act(() => button(text, scope).click()); }
 
-it('shows the selected instance immediately, coalesces preparation and keeps navigation responsive', async () => {
+it('browses instance details without changing shared execution or CLI selection', async () => {
   const subject = fixture([], { cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: [] } });
-  const original = subject.request.getMockImplementation()!;
-  let finish!: () => void;
-  const preparation = new Promise<void>(resolve => { finish = resolve; });
-  subject.request.mockImplementation(async request => {
-    if (request.type === 'cli.select') await preparation;
-    return original(request);
-  });
   await mount(subject.api);
   const itemA = container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-a"]')!;
   const itemB = container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!;
   await act(() => itemA.click());
-  expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(0);
   await act(() => { itemB.click(); itemB.click(); });
   expect(container!.querySelector('.launcher-instance-details h1')!.textContent).toBe('环境 B');
   expect(itemA.disabled).toBe(false); expect(itemB.disabled).toBe(false);
   expect(button('启动实例').disabled).toBe(false);
-  expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(0);
-  const selectCli = button('设为执行实例');
-  await act(() => { selectCli.click(); selectCli.click(); });
-  expect(subject.request.mock.calls.filter(([request]) => request.type === 'cli.select')).toHaveLength(1);
-  expect(container!.querySelector('[data-dsh-notification]')!.textContent).toContain('正在选择执行实例');
+  expect(subject.request.mock.calls.some(([request]) => request.type === 'cli.select' || request.type === 'instance.default')).toBe(false);
   await click('运行版本', container!.querySelector('.launcher-navigation')!);
   expect(container!.querySelector('[data-dsh-official-versions]')).toBeNull();
-  expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
-  await act(() => finish());
-  expect(container!.querySelector('[data-dsh-notification]')).toBeNull();
-  expect(subject.state().cli?.selectedInstanceId).toBe('instance-b');
+  expect(subject.state().cli?.selectedInstanceId).toBe('instance-a');
+  expect(subject.state().instances.find(value => value.isDefault)?.id).toBe('instance-a');
 });
 
 async function fill(value: string) {
@@ -147,7 +137,7 @@ it('creates a named instance with an explicit pinned runtime', async () => {
   await mount(f.api);
   await click('创建实例');
   expect(document.querySelectorAll('[role="dialog"] [role="combobox"]')).toHaveLength(1);
-  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('共用同一个 Web Host');
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain('用户与所有伙伴共同使用');
   await fill('新的共享实例');
   await click('保存', document.querySelector('[role="dialog"]')!);
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.create', name: '新的共享实例', runtimeId: 'runtime-a' });
@@ -176,42 +166,29 @@ it('selects the default instance and starts a second Web Host without switching 
   await mount(f.api);
   await act(() => container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!.click());
   expect(f.request.mock.calls.some(([request]) => request.type === 'cli.select')).toBe(false);
-  await click('设为执行实例');
-  expect(f.request).toHaveBeenCalledWith({ type: 'cli.select', instanceId: 'instance-b' });
+  await click('设为共享执行实例');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.default', instanceId: 'instance-b' });
+  expect(f.state().cli?.selectedInstanceId).toBe('instance-a');
   expect(f.request.mock.calls.some(([request]) => request.type === 'instance.stop' || request.type === 'instance.start')).toBe(false);
   expect(button('启动实例').disabled).toBe(false);
   await click('启动实例');
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.start', instanceId: 'instance-b' });
 });
 
-it('requests an upgrade copy without changing the source runtime', async () => {
-  const f = fixture();
-  await mount(f.api);
-  await click('创建升级副本');
-  await fill('升级验证');
-  const select = document.querySelector<HTMLButtonElement>('[role="dialog"] [role="combobox"]')!;
-  await act(() => select.click());
-  await act(() => document.querySelector<HTMLButtonElement>('[role="option"][data-value="runtime-b"]')!.click());
-  await click('保存', document.querySelector('[role="dialog"]')!);
-  expect(f.request).toHaveBeenCalledWith({ type: 'instance.clone', instanceId: 'instance-a', name: '升级验证', runtimeId: 'runtime-b' });
-  expect(f.state().instances[0]!.runtimeId).toBe('runtime-a');
-});
-
-it('upgrades a bound character in place and explains preservation without creating an unbound copy', async () => {
-  const own = { ...instance('instance-a', '大肥鱼的能力环境'), companionId: 'builtin-dafeiyu', companionName: '大肥鱼', isDefault: false };
-  const f = fixture([], { instances: [own] });
-  await mount(f.api);
-  await click('升级角色实例');
+it.each([false, true])('upgrades an instance in place regardless of its legacy owner (legacy=%s)', async legacy => {
+  const target = { ...instance('instance-a', '共享环境'), ...(legacy ? { companionId: 'builtin-dafeiyu', companionName: '大肥鱼' } : {}) };
+  const f = fixture([], { instances: [target] });
+  await mount(f.api); await click('升级运行版本');
   const dialog = document.querySelector('[role="dialog"]')!;
-  expect(dialog.textContent).toContain('保留插件、技能、配置');
-  expect(dialog.textContent).toContain('自动回退');
+  expect(dialog.textContent).toContain('保留原有登录、API、插件、技能和会话');
+  expect(dialog.textContent).toContain('失败时恢复原版本');
   expect(dialog.querySelector('input')).toBeNull();
   expect(button('保存', dialog).disabled).toBe(true);
   await act(() => dialog.querySelector<HTMLButtonElement>('[role="combobox"]')!.click());
   await act(() => document.querySelector<HTMLButtonElement>('[role="option"][data-value="runtime-b"]')!.click());
   await click('保存', dialog);
-  expect(f.request).toHaveBeenCalledWith({ type: 'companion.environment.upgrade', companionId: 'builtin-dafeiyu', name: '大肥鱼', runtimeId: 'runtime-b' });
-  expect(f.request.mock.calls.some(([input]) => input.type === 'instance.clone')).toBe(false);
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.upgrade', instanceId: 'instance-a', runtimeId: 'runtime-b' });
+  expect(f.request.mock.calls.some(([input]) => input.type === 'instance.clone' || input.type === 'companion.environment.upgrade')).toBe(false);
 });
 
 it('requires a concrete credentials notice before exporting a full backup', async () => {

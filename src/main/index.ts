@@ -5165,23 +5165,18 @@ async function startApplication(): Promise<void> {
       const capacity = currentBotModel().limits.window;
       botService = new BotService({ root, brain, brainRuntime: 'worldlinebox', prewarmMemory: true, memory, media,
         ensureCompanionBindings: async ids => {
-          if (!launcher) throw Object.assign(new Error('DSH 启动器尚未就绪，请先为角色绑定独立执行环境。'), { code: 'BOT_COMPANION_INSTANCE_REQUIRED' });
-          for (const id of new Set(ids)) {
-            const companion = botService?.store.getCompanion(id);
-            if (!companion) throw new Error('角色不存在。');
-            const instance = await launcher.resolveCompanionInstance(id, companion.name).catch(cause => {
-              throw Object.assign(new Error(`请先为「${companion.name}」绑定独立 DSH 实例；可选择已有空闲实例，或选择已安装的版本并确认创建。`, { cause }),
-                { code: 'BOT_COMPANION_INSTANCE_REQUIRED', companionId: id });
-            });
-            const state = launcher.companionCapabilityState(id);
-            if (!state.configured || state.mode !== 'private') throw Object.assign(
-              new Error(`请先为「${companion.name}」绑定独立 DSH 实例；可选择已有空闲实例，或选择已安装的版本并确认创建。`),
-              { code: 'BOT_COMPANION_INSTANCE_REQUIRED', companionId: id });
-            if (instance.companionId !== id) throw Object.assign(new Error(`「${companion.name}」的 DSH 实例绑定已失效，请重新绑定。`), { code: 'BOT_COMPANION_INSTANCE_REQUIRED', companionId: id });
-          }
+          // One selected DSH serves every Router. Admission checks availability
+          // without starting a Host, provisioning one per character or copying
+          // credentials. Native tasks retain their own durable Host binding.
+          for (const id of new Set(ids)) if (!botService?.store.getCompanion(id)) throw new Error('角色不存在。');
+          if (!launcher) throw Object.assign(new Error('DSH 启动器尚未就绪，请在启动器配置共享执行实例。'), { code: 'BOT_EXECUTION_INSTANCE_REQUIRED' });
+          await launcher.resolveBotInstance().catch(cause => {
+            throw Object.assign(new Error('请在启动器选择一个共享 DSH 执行实例；所有伙伴将共用它的账号、API、插件和技能，无需逐个配置。', { cause }),
+              { code: 'BOT_EXECUTION_INSTANCE_REQUIRED' });
+          });
         },
         capabilityState: companionId => launcher?.companionCapabilityState(companionId)
-          ?? { configured: false, mode: 'private', revision: 'unavailable' },
+          ?? { configured: false, mode: 'shared', revision: 'unavailable' },
         capabilities: async (companionId, query, signal) => {
           if (!launcher) throw new Error('DSH 启动器尚未就绪。');
           const companion = botService?.store.getCompanion(companionId);

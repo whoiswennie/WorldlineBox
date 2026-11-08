@@ -9,6 +9,7 @@ import { useDialogFocusTrap } from '../use-dialog-focus-trap';
 import { CompanionNativeCapabilities } from './CompanionNativeCapabilities';
 import './companion-capability-archive.css';
 import { BotDshBindingDialog } from '../companion-bot/BotDshBindingDialog';
+import { sharedDshInstance } from '../companion-bot/useBotDshBindings';
 
 type Companion = Pick<BotCompanion, 'id' | 'name' | 'enabled'>;
 type Props = { api: WorldlineBoxDshLauncherApi; botApi?: WorldlineBoxBotApi; companion: Companion; onRuntimeChanged?(): void; onOpenLauncher?(): void };
@@ -61,8 +62,7 @@ export function CompanionCapabilities({ api, companion, onRuntimeChanged, onOpen
     return () => { requests.current++; unsubscribe(); };
   }, [api, read]);
   const [bindingOpen, setBindingOpen] = useState(false);
-  const own = state?.instances.find(instance => instance.companionId === companion.id);
-  const instance = own;
+  const instance = sharedDshInstance(state);
   const runtime = state?.runtimes.find(runtime => runtime.id === instance?.runtimeId);
   const online = instance?.status === 'running' && companion.enabled !== false;
   const status = companion.enabled === false ? zh ? '角色已关闭' : 'Character disabled' : !instance ? zh ? '尚未连接' : 'Not connected'
@@ -79,11 +79,11 @@ export function CompanionCapabilities({ api, companion, onRuntimeChanged, onOpen
   };
   return <section className="companion-capabilities capability-archive" data-companion-capabilities={companion.id} aria-label={zh ? `${companion.name}的能力档案` : `${companion.name} capability archive`}>
     <header className="capability-archive-hero"><div className="capability-archive-emblem" aria-hidden="true"><Icon name="sparkles" size={27} /></div><div className="capability-archive-hero-copy"><span className="capability-archive-eyebrow">CAPABILITY ARCHIVE</span><h3>{zh ? '能力档案' : 'Capability archive'}</h3><p>{zh ? '每一份能力，都来自真实连接的执行环境。' : 'Capabilities, grounded in the connected environment.'}</p></div><span className="capability-archive-status" data-online={online || undefined}><i />{status}</span></header>
-    <section className="capability-archive-binding" aria-label={zh ? '执行环境绑定' : 'Environment binding'}><div><span className="capability-archive-label">{zh ? '执行环境' : 'EXECUTION ENVIRONMENT'}</span><strong>{own ? zh ? '专属 DSH' : 'Private DSH' : zh ? '尚未绑定 DSH' : 'DSH not bound'}</strong><p>{instance?.name ?? (zh ? '选择版本或已有实例，确认后建立专属绑定。' : 'Choose a runtime or existing instance, then confirm the private binding.')}{runtime ? ` · v${runtime.version}` : ''}</p></div><div className="capability-archive-actions"><Button size="sm" iconName="refresh" variant="quiet" disabled={reading || opening} onClick={() => { setRevision(value => value + 1); void read(); }}>{zh ? '刷新档案' : 'Refresh archive'}</Button><Button size="sm" iconName="external-link" disabled={opening || state?.supported === false || !state || companion.enabled === false} loading={opening} onClick={() => void open()}>{zh ? instance ? '前往专属 DSH' : '绑定专属 DSH' : instance ? 'Open private DSH' : 'Bind private DSH'}</Button></div><p className="capability-archive-binding-hint">{zh ? '每位伙伴必须绑定独立实例。插件、技能与配置均在对应 DSH 中管理；升级会保留已有配置。' : 'Each companion requires an independent instance. Manage its plugins, skills and settings in DSH; upgrades retain existing settings.'}</p></section>
+    <section className="capability-archive-binding" aria-label={zh ? '执行环境绑定' : 'Environment binding'}><div><span className="capability-archive-label">{zh ? '执行环境' : 'EXECUTION ENVIRONMENT'}</span><strong>{instance ? zh ? '共享 DSH' : 'Shared DSH' : zh ? '尚未配置 DSH' : 'DSH not configured'}</strong><p>{instance?.name ?? (zh ? '选择一个 DSH 实例，所有伙伴共同使用。' : 'Choose one DSH instance for all companions.')}{runtime ? ` · v${runtime.version}` : ''}</p></div><div className="capability-archive-actions"><Button size="sm" iconName="refresh" variant="quiet" disabled={reading || opening} onClick={() => { setRevision(value => value + 1); void read(); }}>{zh ? '刷新档案' : 'Refresh archive'}</Button><Button size="sm" iconName="external-link" disabled={opening || state?.supported === false || !state || companion.enabled === false} loading={opening} onClick={() => void open()}>{zh ? instance ? '打开共享工作台' : '配置共享 DSH' : instance ? 'Open shared workbench' : 'Set up shared DSH'}</Button></div><p className="capability-archive-binding-hint">{zh ? '所有伙伴共用此执行环境，账号、API、插件和技能只需配置一次。各自的聊天、记忆和任务分别保存。' : 'All companions share this executor. Configure accounts, API, plugins and skills once; chats, memories and tasks remain separate.'}</p></section>
     <div className="capability-archive-metrics" aria-label={zh ? '实际生效能力' : 'Effective capabilities'}>{[
       ['code', zh ? '原生工具' : 'Native tools', actualSummary ? String(actualSummary.toolsTotal ?? actualSummary.effective?.toolCount ?? actualSummary.tools.length) : '—'],
       ['file-text', zh ? '生效技能' : 'Effective skills', actualSummary ? String(actualSummary.skillsTotal ?? actualSummary.effective?.skillCount ?? actualSummary.skills.length) : '—'],
-      ['shield', zh ? '能力来源' : 'Capability source', zh ? own ? '专属环境' : '未绑定' : own ? 'Private' : 'Unbound'],
+      ['shield', zh ? '能力来源' : 'Capability source', zh ? instance ? '共享环境' : '未配置' : instance ? 'Shared' : 'Unconfigured'],
     ].map(([icon, label, value]) => <div key={label}><Icon name={icon as 'code' | 'file-text' | 'shield'} size={17} /><span>{label}</span><strong>{value}</strong></div>)}</div>
     <p className="capability-archive-native-note"><Icon name="info" size={15} /><span>{zh ? '插件安装、配置与启停均在 DSH 中完成。此处仅记录已注册能力；皮肤、桌宠等插件不会仅因安装而计为新能力。' : 'Install, configure and toggle plugins in DSH. Only registered capabilities appear here; installing a theme or pet does not make it a callable capability.'}</span></p>
     {error && <p className="companion-capability-error" role="alert">{error}</p>}

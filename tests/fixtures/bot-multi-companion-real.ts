@@ -10,6 +10,9 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
+import { selectBotWorkerInstance } from '../../src/main/companion-bot/worker-host-selection';
+import { botNativeHostBindingKey } from '../../src/main/companion-bot/host-migration';
+import { DshLauncher } from '../../src/main/dsh/launcher';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
@@ -45,6 +48,7 @@ void app.whenReady().then(async () => {
     executionEnvironment: 'One isolated official DSH host; distinct companion Router lanes, task workspaces and native Worker sessions.' };
   const errors: string[] = [], timeline: Array<{ taskId: string; companionId: string; conversationId: string; prompt: string; continuation?: unknown; startedAt: number; nativeStartedAt?: number; endedAt?: number; sessionId?: string; toolNames: string[]; cwd: string }> = [];
   const routerRequests: Array<{ eventId: string; laneId: string; prompt: string }> = [];
+  const hostSelections: Array<{ laneId: string; instanceId: string }> = [];
   const states: Array<{ at: number; tasks: unknown[] }> = []; const seenStates = new Set<string>();
   const redact = (value: string) => value.replaceAll(secret || '\0', '<redacted>').replace(/Bearer\s+\S+/giu, 'Bearer <redacted>');
   const safe = (error: unknown) => redact(error instanceof Error ? error.message : String(error)).slice(0, 2000);
@@ -68,9 +72,28 @@ void app.whenReady().then(async () => {
     stage = 'native-host'; progress(stage, report.model as object);
     native = await createBotNativeHost(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!); process.send?.({ kind: 'multi-companion-owned-root', root: native.root });
     const client = await native.instances.ensureHost(native.instance.id); report.dshVersion = native.runtimeVersion;
+    // Real production selection methods and InstanceService over the owned
+    // temporary profile. Electron UI, runtime downloader and prewarming are
+    // outside this model acceptance, not substituted execution semantics.
+    const launcher = Object.create(DshLauncher.prototype) as DshLauncher;
+    Reflect.set(launcher, 'initialization', Promise.resolve()); Reflect.set(launcher, 'closed', false);
+    Reflect.set(launcher, 'instances', native.instances);
+    Reflect.set(launcher, 'runtimes', { list: () => [native!.runtime], get: (id: string) => {
+      if (id !== native!.runtime.id) throw Error('Unexpected acceptance runtime.'); return native!.runtime;
+    } });
+    Reflect.set(launcher, 'operations', { list: () => [] }); Reflect.set(launcher, 'companionCapabilityEpoch', new Map());
     const botRoot = path.join(root, 'bot'), inputRoot = path.join(root, 'inputs'); await mkdir(inputRoot);
     media = new BotMediaService({ root: path.join(botRoot, 'media'), builtinRoot: path.resolve('resources/bot-stickers') });
-    const brain = new BotBrainRouter({ worker: new BotDshBrain({ getHost: async () => ({ client }) }), app: new BotAppBrain({ root: path.join(botRoot, 'router'),
+    const brain = new BotBrainRouter({ worker: new BotDshBrain({
+      acquireLease: host => native!.instances.acquireCompanionLease(host.instance!.id, 'task'),
+      getHost: async (id, signal, laneId) => {
+        signal?.throwIfAborted();
+        const instance = await selectBotWorkerInstance(launcher, service?.store, laneId, id);
+        if (!laneId) throw Error('Native task identity missing.');
+        service!.store.setMetadata(botNativeHostBindingKey(laneId), instance.id);
+        hostSelections.push({ laneId, instanceId: instance.id });
+        return { client, instance, runtime: native!.runtime };
+      } }), app: new BotAppBrain({ root: path.join(botRoot, 'router'),
       fetchFn: async (...args) => { if (new URL(String(args[0])).host === new URL(model.baseUrl!).host) report.actualModel = true; return fetch(...args); },
       reconcileTool: (call, signal) => service!.reconcileToolReceipt(call, signal) }) });
     const run = brain.run.bind(brain);
@@ -91,6 +114,8 @@ void app.whenReady().then(async () => {
       } finally { row.endedAt = Date.now(); }
     };
     service = new BotService({ root: botRoot, brainRuntime: 'worldlinebox', brain, media, prewarmMemory: false,
+      ensureCompanionBindings: async () => { await launcher.resolveBotInstance(); },
+      capabilityState: id => launcher.companionCapabilityState(id),
       memory: new NoMemory({ root: path.join(botRoot, 'memory'), runtime: async () => { throw Error('Memory disabled for isolated collaboration fixture.'); }, embedding: async () => { throw Error('No memory embedding in handoff fixture.'); } }),
       model: () => ({ ...model, baseUrl: model.baseUrl! }), onEvent: () => sample(), report: error => { const message = safe(error); errors.push(message); progress('runtime-error', { message }); } });
     await service.handle({ type: 'state' });
@@ -218,6 +243,8 @@ void app.whenReady().then(async () => {
     }
     await until(() => !(service!.store.taskTransaction(sql => sql.prepare("SELECT id FROM bot_inbox WHERE status IN ('queued','running') LIMIT 1").all()) as unknown[]).length,
       'all-routers-settled', 90000);
+    if (native.instances.list().length !== 1 || !hostSelections.length || hostSelections.some(selection => selection.instanceId !== native!.instance.id)) throw Error('Companions did not share the single selected DSH instance.');
+    report.sharedExecution = { instances: native.instances.list().length, selectedInstanceId: native.instance.id, hostSelections };
     report.passed = true; report.workers = timeline.map(({ taskId, companionId, conversationId, startedAt, nativeStartedAt, endedAt, sessionId, toolNames, continuation }) => ({ taskId, companionId, conversationId, startedAt, nativeStartedAt, endedAt, sessionId, toolNames, continuation: !!continuation }));
     report.sourceFilesUnchanged = true; report.contextScopePassed = true; report.allRoutersSettled = true; report.promptAudit = promptAudit; report.stateSamples = states.length; report.errors = errors;
   } catch (error) { report.passed = false; report.stage = stage; report.error = safe(error); report.errors = errors; }

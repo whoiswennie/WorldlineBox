@@ -19,6 +19,7 @@
 - [Serpent 0.3.4 资产管理升级](serpent-034-upgrade/README.md)——链接文本写回、查看器跳转、筛选计数、进程恢复与语义索引兼容验证
 - [Super Agent 伙伴运行说明](superagent-bot-runtime-guide.md)——真实组件边界、lane/epoch、原生 DSH loop、VCP、任务、世界与验证限制
 - [伙伴使用说明](../user-guide/companions.md)——当前聊天、任务、记忆与世界 UI
+- [共享 DSH 执行实例](shared-dsh-execution-2026-11-08.md)——统一账号与插件配置、角色归属隔离、旧任务恢复与升级
 - [重构调研报告](superagent-bot-research-2026-11-02.md)——已退役链路的证据、原因分析与设计依据
 - [重构实施方案](superagent-bot-implementation-plan-2026-11-02.md)——分阶段设计与验收要求；[开发记录](superagent-bot-development-log.md)记录实际进展
 - [应用内物理世界](companion-world.md)——新窄 domain、位置图和 Three.js 的实际边界

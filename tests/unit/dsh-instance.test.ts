@@ -173,91 +173,97 @@ it('backs up native data without dropping ordinary workspace directories and res
 });
 
 const upgradeOperation = () => ({ id: 'fixture-upgrade', signal: new AbortController().signal, update: vi.fn(async () => undefined), log: vi.fn(async () => undefined) });
-it('creates each companion environment once on demand while sharing immutable runtime code', async () => {
+it('shares one user-configured Host, login and plugin data across all companions without allocating profiles', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a');
-  const first = await Promise.all(Array.from({ length: 6 }, () => f.service.ensureCompanion('partner-a', '甲', base)));
-  const second = await f.service.ensureCompanion('partner-b', '乙', base);
-  expect(new Set(first.map(value => value.id)).size).toBe(1);
-  expect(f.service.list()).toHaveLength(3); expect(f.verify).not.toHaveBeenCalled();
-  expect(first[0]).toMatchObject({ companionId: 'partner-a', runtimeId: base.runtimeId, isDefault: false, status: 'stopped' });
-  expect(second.runtimeId).toBe(base.runtimeId); expect(second.homePath).not.toBe(first[0]!.homePath);
-  expect(second.browserPartition).not.toBe(first[0]!.browserPartition); expect(second.agentsPath).not.toBe(first[0]!.agentsPath);
-  const a = await f.service.ensureHost(first[0]!.id), b = await f.service.ensureHost(second.id);
-  expect(a.pid).not.toBe(b.pid);
-  for (const [environment, value] of [[first[0]!, 'qq-one'], [second, 'qq-two']] as const) {
-    await writeFile(path.join(environment.homePath, 'profiles/web/private-plugin.json'), JSON.stringify({ qq: value }));
-  }
-  expect(await readFile(path.join(first[0]!.homePath, 'profiles/web/private-plugin.json'), 'utf8')).toContain('qq-one');
-  expect(await readFile(path.join(second.homePath, 'profiles/web/private-plugin.json'), 'utf8')).toContain('qq-two');
-  expect(JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8')).filter((value: { companionId?: string }) => value.companionId)).toHaveLength(2);
-  expect(f.service.get(base.id).status).toBe('stopped');
-});
-it('creates a private instance only from the selected runtime and rejects duplicate provisioning', async () => {
-  const f = await fixture();
-  const creating = f.service.createCompanion('fish', '大肥鱼', 'runtime-b');
-  await expect(f.service.createCompanion('fish', '大肥鱼', 'runtime-a')).rejects.toThrow('正在保存');
-  const own = await creating;
-  expect(own).toMatchObject({ companionId: 'fish', companionName: '大肥鱼', name: '大肥鱼 的能力环境', runtimeId: 'runtime-b', isDefault: false, status: 'stopped' });
-  await expect(f.service.createCompanion('fish', '大肥鱼', 'runtime-a')).rejects.toThrow('已绑定');
-  await expect(f.service.createCompanion('gpt', 'GPT', 'missing-runtime')).rejects.toThrow('请选择');
+  const first = await Promise.all(Array.from({ length: 6 }, (_, index) => f.service.ensureCompanion(`partner-${index}`, '伙伴', base)));
+  expect(new Set(first.map(value => value.id))).toEqual(new Set([base.id]));
   expect(f.service.list()).toHaveLength(1); expect(f.verify).not.toHaveBeenCalled();
+  await writeFile(path.join(base.homePath, 'credentials.json'), 'existing login');
+  const clients = await Promise.all(first.map(instance => f.service.ensureHost(instance.id)));
+  expect(new Set(clients.map(value => value.pid)).size).toBe(1);
+  expect(await readFile(path.join(f.service.companion('partner-new')!.homePath, 'credentials.json'), 'utf8')).toBe('existing login');
+  expect(f.service.list()[0]!.companionId).toBeUndefined();
+});
+it('provisions a single shared instance from the explicitly selected version even for concurrent characters', async () => {
+  const f = await fixture();
+  const [fish, gpt] = await Promise.all([f.service.createCompanion('fish', '大肥鱼', 'runtime-b'), f.service.createCompanion('gpt', 'GPT', 'runtime-b')]);
+  expect(fish.id).toBe(gpt.id); expect(f.service.list()).toHaveLength(1);
+  expect(fish).toMatchObject({ name: '共享 DSH', runtimeId: 'runtime-b', isDefault: true, status: 'stopped' });
+  expect(fish.companionId).toBeUndefined(); expect(f.verify).not.toHaveBeenCalled();
+  await expect(f.service.createCompanion('fish', '大肥鱼', 'runtime-a')).rejects.toThrow('共享执行实例已经配置');
+  await expect(f.service.createCompanion('gpt', 'GPT', 'missing-runtime')).rejects.toThrow('请选择');
   const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
-  expect(restored.companion('fish')).toMatchObject({ id: own.id, runtimeId: 'runtime-b', homePath: own.homePath });
-  expect(restored.companion('gpt')).toBeUndefined();
+  for (const id of ['fish', 'gpt', 'new-character']) expect(restored.companion(id)).toMatchObject({ id: fish.id, homePath: fish.homePath });
 });
-it('claims an existing unowned default instance exclusively without altering its files, name or native identity', async () => {
-  const f = await fixture(), selected = await f.service.create('用户手动建的实例', 'runtime-a');
-  const other = await f.service.create('尚未分配', 'runtime-b');
-  await writeFile(path.join(selected.homePath, 'native-plugin.json'), 'existing customized plugin settings');
-  const own = await f.service.bindCompanion('fish', '大肥鱼', selected.id);
-  expect(own).toMatchObject({ ...selected, companionId: 'fish', companionName: '大肥鱼', isDefault: false, keepAlive: false, updatedAt: expect.any(String) });
-  expect(f.service.get(other.id).isDefault).toBe(true);
-  expect(await readFile(path.join(own.homePath, 'native-plugin.json'), 'utf8')).toBe('existing customized plugin settings');
-  await expect(f.service.bindCompanion('gpt', 'GPT', selected.id)).rejects.toThrow('其他角色');
-  await expect(f.service.bindCompanion('fish', '大肥鱼', other.id)).rejects.toThrow('已绑定');
-  expect((await f.service.bindCompanion('fish', '大肥鱼', selected.id)).id).toBe(own.id);
-  const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
-  expect(restored.companion('fish')).toMatchObject({ id: selected.id, name: selected.name, browserPartition: selected.browserPartition });
-  expect(restored.companion('gpt')).toBeUndefined(); expect(restored.list()).toHaveLength(2);
+it('can select a legacy owned running instance as the shared default without claiming, copying or stopping its data', async () => {
+  const f = await fixture(), previous = await f.service.create('我的 DSH', 'runtime-a');
+  const legacy = await f.service.create('原大肥鱼环境', 'runtime-b', undefined, { companionId: 'fish', companionName: '大肥鱼', keepAlive: true });
+  await writeFile(path.join(legacy.homePath, 'native-plugin.json'), 'custom native plugin configuration');
+  await writeFile(path.join(legacy.homePath, 'credentials.json'), 'existing native API and login');
+  const host = await f.service.ensureHost(legacy.id), release = f.service.acquireCompanionLease(legacy.id, 'task');
+  const selected = await f.service.bindCompanion('gpt', 'GPT', legacy.id);
+  expect(selected).toMatchObject({ id: legacy.id, companionId: 'fish', isDefault: true, browserPartition: legacy.browserPartition });
+  expect(f.service.get(previous.id).isDefault).toBe(false);
+  for (const id of ['gpt', 'fish', 'claude']) expect(f.service.companion(id)?.id).toBe(legacy.id);
+  expect(await readFile(path.join(selected.homePath, 'credentials.json'), 'utf8')).toBe('existing native API and login');
+  expect(await readFile(path.join(selected.homePath, 'native-plugin.json'), 'utf8')).toBe('custom native plugin configuration');
+  expect(await f.service.recycleCompanionIfIdle(selected.id)).toBe(false); await host.health(); release();
+  expect(f.service.list()).toHaveLength(2);
 });
-it('serializes competing claims and rejects binding an environment while a worker or Host holds it', async () => {
-  const f = await fixture(), selected = await f.service.create('待分配', 'runtime-a');
-  const release = f.service.acquireCompanionLease(selected.id, 'task');
-  await expect(f.service.bindCompanion('fish', '大肥鱼', selected.id)).rejects.toThrow('Stop this instance'); release();
-  await f.service.ensureHost(selected.id);
-  await expect(f.service.bindCompanion('fish', '大肥鱼', selected.id)).rejects.toThrow('Stop this instance');
-  await f.service.stop(selected.id);
-  const claims = await Promise.allSettled([f.service.bindCompanion('fish', '大肥鱼', selected.id), f.service.bindCompanion('gpt', 'GPT', selected.id)]);
-  expect(claims.map(value => value.status)).toEqual(['fulfilled', 'rejected']);
-  const registry = JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'));
-  expect(registry).toHaveLength(1); expect(registry[0]).toMatchObject({ companionId: 'fish', isDefault: false });
-  expect(f.service.companion('gpt')).toBeUndefined();
-});
-it('publishes neither a new nor an existing role binding before the registry commit finishes', async () => {
-  const f = await fixture(), selected = await f.service.create('未分配', 'runtime-a');
-  let release!: () => void;
-  Reflect.set(f.service, 'writes', new Promise<void>(resolve => { release = resolve; }));
-  const bind = f.service.bindCompanion('fish', '大肥鱼', selected.id);
-  const create = f.service.createCompanion('gpt', 'GPT', 'runtime-b');
-  await new Promise(resolve => setTimeout(resolve, 25));
-  expect(f.service.companion('fish')).toBeUndefined(); expect(f.service.companion('gpt')).toBeUndefined();
-  expect(f.service.get(selected.id).isDefault).toBe(true); expect(f.service.list()).toHaveLength(1);
-  release(); await Promise.all([bind, create]);
-  const registry = JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'));
-  expect(registry.map((value: { companionId: string }) => value.companionId).sort()).toEqual(['fish', 'gpt']);
-});
-it('leaves no ownership or orphan environment when a registry write fails, and can retry after repair', async () => {
-  const f = await fixture(), selected = await f.service.create('未分配', 'runtime-a');
+it('publishes a shared selection only after its durable commit and leaves the old selection on write failure', async () => {
+  const f = await fixture(), before = await f.service.create('Default', 'runtime-a'), next = await f.service.create('Other', 'runtime-b');
+  let release!: () => void; Reflect.set(f.service, 'writes', new Promise<void>(resolve => { release = resolve; }));
+  const pending = f.service.bindCompanion('fish', '大肥鱼', next.id);
+  await new Promise(resolve => setTimeout(resolve, 25)); expect(f.service.companion('fish')?.id).toBe(before.id);
+  release(); await pending; expect(f.service.companion('fish')?.id).toBe(next.id);
   const registry = path.join(f.root, 'native-instances.json'), backup = path.join(f.root, 'registry-before.json');
   await rename(registry, backup); await mkdir(registry);
-  await expect(f.service.bindCompanion('fish', '大肥鱼', selected.id)).rejects.toThrow();
-  await expect(f.service.createCompanion('gpt', 'GPT', 'runtime-b')).rejects.toThrow();
-  expect(f.service.companion('fish')).toBeUndefined(); expect(f.service.companion('gpt')).toBeUndefined();
-  expect(f.service.list()).toHaveLength(1); expect(f.service.get(selected.id).isDefault).toBe(true);
-  expect(await readdir(path.join(f.root, 'instances'))).toEqual([selected.id]);
+  await expect(f.service.selectExecutionInstance(before.id)).rejects.toThrow();
+  expect(f.service.companion('fish')?.id).toBe(next.id); expect(f.service.list()).toHaveLength(2);
   await rm(registry, { recursive: true }); await rename(backup, registry);
-  expect((await f.service.bindCompanion('fish', '大肥鱼', selected.id)).companionId).toBe('fish');
-  expect((await f.service.createCompanion('gpt', 'GPT', 'runtime-b')).companionId).toBe('gpt');
+  expect((await f.service.selectExecutionInstance(before.id)).id).toBe(before.id);
+});
+it('rechecks a queued shared selection after its target was removed before the registry commit', async () => {
+  const f = await fixture(), before = await f.service.create('Default', 'runtime-a'), removed = await f.service.create('Remove concurrently', 'runtime-b');
+  let release!: () => void; Reflect.set(f.service, 'writes', new Promise<void>(resolve => { release = resolve; }));
+  const selection = f.service.selectExecutionInstance(removed.id), rejected = expect(selection).rejects.toThrow('not found');
+  const removing = f.service.remove(removed.id);
+  await vi.waitFor(() => expect(f.service.list().some(value => value.id === removed.id)).toBe(false));
+  release(); await Promise.all([rejected, removing]);
+  expect(f.service.executionInstance()?.id).toBe(before.id);
+  const registry = JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'));
+  expect(registry).toHaveLength(1); expect(registry[0]).toMatchObject({ id: before.id, isDefault: true });
+});
+it('rejects a queued selection when its target entered an upgrade lock before commit', async () => {
+  const f = await fixture(), before = await f.service.create('Default', 'runtime-a'), changing = await f.service.create('Upgrade concurrently', 'runtime-b');
+  let release!: () => void; Reflect.set(f.service, 'writes', new Promise<void>(resolve => { release = resolve; }));
+  const selection = f.service.selectExecutionInstance(changing.id), rejected = expect(selection).rejects.toThrow('busy');
+  const busy = Reflect.get(f.service, 'busy') as Set<string>; busy.add(changing.id); release();
+  await rejected; busy.delete(changing.id);
+  expect(f.service.executionInstance()?.id).toBe(before.id);
+  expect((await f.service.selectExecutionInstance(changing.id)).id).toBe(changing.id);
+});
+it('migrates private-only registries to one deterministic default without editing any legacy home', async () => {
+  const f = await fixture();
+  const legacy = await f.service.create('旧大肥鱼', 'runtime-a', undefined, { companionId: 'fish', companionName: '大肥鱼' });
+  const other = await f.service.create('旧Claude', 'runtime-b', undefined, { companionId: 'claude', companionName: 'Claude' });
+  await writeFile(path.join(legacy.homePath, 'credentials.json'), 'KEEP_AUTH');
+  await writeFile(path.join(other.homePath, 'plugin.json'), 'KEEP_OTHER_PLUGIN');
+  const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
+  expect(restored.list().filter(value => value.isDefault)).toHaveLength(1);
+  const chosen = [...restored.list()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))[0]!;
+  expect(restored.companion('any')?.id).toBe(chosen.id);
+  expect(restored.get(legacy.id).homePath).toBe(legacy.homePath); expect(restored.get(other.id).homePath).toBe(other.homePath);
+  expect(await readFile(path.join(legacy.homePath, 'credentials.json'), 'utf8')).toBe('KEEP_AUTH');
+  expect(await readFile(path.join(other.homePath, 'plugin.json'), 'utf8')).toBe('KEEP_OTHER_PLUGIN');
+  expect(f.verify).not.toHaveBeenCalled();
+});
+it('preserves an existing default over all legacy owner and keep-alive metadata after restart', async () => {
+  const f = await fixture(), shared = await f.service.create('Configured', 'runtime-a');
+  await f.service.create('Old role', 'runtime-b', undefined, { companionId: 'fish', keepAlive: true });
+  const restored = new InstanceService(f.serviceOptions); cleanup.unshift(() => restored.shutdown()); await restored.init();
+  expect(restored.companion('fish')?.id).toBe(shared.id); expect(restored.companion('new')?.id).toBe(shared.id);
+  expect(restored.list()).toHaveLength(2); expect(restored.list().filter(value => value.isDefault)).toHaveLength(1);
 });
 it('does not persist a new role environment when shutdown interrupts its uncommitted creation', async () => {
   const f = await fixture();
@@ -269,7 +275,7 @@ it('does not persist a new role environment when shutdown interrupts its uncommi
   expect(f.service.list()).toHaveLength(0); expect(await readdir(path.join(f.root, 'instances'))).toHaveLength(0);
 });
 it('recycles only private environments with no leases and a complete native idle proof', async () => {
-  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.create('Legacy role', base.runtimeId, undefined, { companionId: 'partner-a', keepAlive: false });
   const client = await f.service.ensureHost(own.id), release = f.service.acquireCompanionLease(own.id, 'task');
   expect(await f.service.recycleCompanionIfIdle(own.id)).toBe(false); release(); release();
   const proof = { known: true, idle: true, activeTurns: 0, backgroundJobs: 0, pendingQuestions: 0, pendingInbox: 0, settling: 0, activeSubagents: 0 };
@@ -286,7 +292,7 @@ it('recycles only private environments with no leases and a complete native idle
   await f.service.stop(own.id); expect(f.service.get(own.id)).toMatchObject({ status: 'stopped', keepAlive: true });
 });
 it('rejects an idle proof if another use arrived while the native check was in flight', async () => {
-  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.create('Legacy role', base.runtimeId, undefined, { companionId: 'partner-a', keepAlive: false });
   const client = await f.service.ensureHost(own.id), original = client.request.bind(client);
   let resume!: () => void; const gate = new Promise<void>(resolve => { resume = resolve; });
   vi.spyOn(client, 'request').mockImplementation(async <T>(endpoint: string, input?: unknown, signal?: AbortSignal, timeout?: number): Promise<T> => {
@@ -298,7 +304,7 @@ it('rejects an idle proof if another use arrived while the native check was in f
   expect(await recycling).toBe(false); await client.health(); release();
 });
 it('does not revive an explicitly stopped companion when an automatic plugin restart was already shutting down', async () => {
-  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);
+  const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.create('Legacy role', base.runtimeId, undefined, { companionId: 'partner-a', keepAlive: false });
   await f.service.ensureHost(own.id); await f.service.recordPluginChange(own.id, { application: 'restart-required' });
   const stop = f.service.stop.bind(f.service); let released!: () => void, waiting!: () => void;
   const gate = new Promise<void>(resolve => { released = resolve; }), reached = new Promise<void>(resolve => { waiting = resolve; });
@@ -314,7 +320,7 @@ it('does not revive an explicitly stopped companion when an automatic plugin res
 });
 it('reclaims the least recently used idle private Host before warming a fourth environment', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = [];
-  for (let index = 0; index < 4; index++) own.push(await f.service.ensureCompanion(`partner-${index}`, `伙伴${index}`, base));
+  for (let index = 0; index < 4; index++) own.push(await f.service.create(`Legacy ${index}`, base.runtimeId, undefined, { companionId: `partner-${index}`, keepAlive: false }));
   await f.service.ensureHost(own[0]!.id); await f.service.ensureHost(own[1]!.id); await f.service.ensureHost(own[2]!.id);
   // The old first Host was used again; the second is now the oldest cache entry.
   await f.service.ensureHost(own[0]!.id); await f.service.ensureHost(own[3]!.id);
@@ -323,23 +329,25 @@ it('reclaims the least recently used idle private Host before warming a fourth e
 });
 it('treats the private Host cache size as a soft target and never kills held work to admit another authorized request', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = [], releases = [];
-  for (let index = 0; index < 4; index++) own.push(await f.service.ensureCompanion(`partner-${index}`, `伙伴${index}`, base));
+  for (let index = 0; index < 4; index++) own.push(await f.service.create(`Legacy ${index}`, base.runtimeId, undefined, { companionId: `partner-${index}`, keepAlive: false }));
   for (const instance of own.slice(0, 3)) { await f.service.ensureHost(instance.id); releases.push(f.service.acquireCompanionLease(instance.id, 'task')); }
   await f.service.ensureHost(own[3]!.id);
   expect(own.map(instance => f.service.get(instance.id).status)).toEqual(['running', 'running', 'running', 'running']);
   for (const release of releases) release();
 });
-it('upgrades the same private environment and preserves plugin configuration, sessions, media and workspace', async () => {
+it('upgrades the selected shared instance through launcher IPC while preserving login, plugins, Sessions and workspace', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a');
   const selected = await f.service.create('用户预先配置的环境', 'runtime-a');
   const own = await f.service.bindCompanion('partner-a', '甲', selected.id);
   await f.service.ensureHost(own.id);
-  const data = ['profiles/web/private-plugin.json', 'profiles/web/pnpm-lock.yaml', 'sessions/session-1.json', 'attachments/picture.png', 'storages/qq/message.json'];
+  const data = ['profiles/web/credentials.json', 'profiles/web/private-plugin.json', 'profiles/web/pnpm-lock.yaml', 'sessions/session-1.json', 'attachments/picture.png', 'storages/qq/message.json'];
   for (const relative of data) { const target = path.join(own.homePath, relative); await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, relative); }
   await writeFile(path.join(own.agentsPath, 'agent.json'), 'agent-settings'); await writeFile(path.join(own.workspacePath, 'result.txt'), 'work');
   const skill = path.join(own.agentsPath, 'skills', 'private-research', 'SKILL.md'); await mkdir(path.dirname(skill), { recursive: true }); await writeFile(skill, '# Only this companion\nNative skill configuration.');
-  await f.service.upgradeCompanion(own.id, 'runtime-b', upgradeOperation());
-  expect(f.service.get(own.id)).toMatchObject({ id: own.id, companionId: 'partner-a', runtimeId: 'runtime-b', homePath: own.homePath, browserPartition: own.browserPartition });
+  const upgrade = await f.service.handle({ type: 'instance.upgrade', instanceId: own.id, runtimeId: 'runtime-b' });
+  expect(upgrade.ok).toBe(true); await f.operations.settle();
+  expect(f.operations.list().find(operation => operation.id === (upgrade.ok ? upgrade.operationId : undefined))?.status).toBe('succeeded');
+  expect(f.service.get(own.id)).toMatchObject({ id: own.id, isDefault: true, runtimeId: 'runtime-b', homePath: own.homePath, browserPartition: own.browserPartition });
   for (const relative of data) expect(await readFile(path.join(own.homePath, relative), 'utf8')).toBe(relative);
   expect(await readFile(path.join(own.agentsPath, 'agent.json'), 'utf8')).toBe('agent-settings');
   expect(await readFile(path.join(own.workspacePath, 'result.txt'), 'utf8')).toBe('work');
@@ -369,5 +377,5 @@ it('recovers an interrupted upgrade from its verified snapshot while retaining t
   expect(restored.companion('partner-a')).toMatchObject({ id: own.id, runtimeId: 'runtime-a', status: 'stopped', homePath: own.homePath });
   expect(await readFile(path.join(own.homePath, 'plugin-state.json'), 'utf8')).toBe('before upgrade');
   expect((await restored.ensureCompanion('partner-a', '甲', base)).id).toBe(own.id);
-  expect(restored.list()).toHaveLength(2);
+  expect(restored.list()).toHaveLength(1);
 });

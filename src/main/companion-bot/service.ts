@@ -62,7 +62,8 @@ export interface BotServiceOptions {
   hostMigration?: { fromHostId: string; toHostId: string };
   onHostMigrationComplete?(instanceId: string): Promise<void>;
   capabilityState?(companionId: string): BotCapabilityState;
-  /** Admission checks ownership only. It must never create or start an instance. */
+  /** Compatibility hook name: validates the one shared execution selection,
+   * never allocates, starts or requires a separate DSH binding per companion. */
   ensureCompanionBindings?(companionIds: string[]): Promise<void>;
   capabilities?(companionId: string, query: DshTaskCapabilityQuery, signal: AbortSignal): Promise<DshTaskCapabilities>;
   companionRuntime?(companionId: string, name: string, operation: 'start' | 'stop', signal: AbortSignal): Promise<void>;
@@ -272,7 +273,7 @@ export class BotService {
       this.memoryWarmPhases.set(key, phase);
       for (const event of this.store.activeDomainEvents(companionId, room.securityDomainId)) this.replyProgress.set(event.replyMessageId, { phase });
       this.changed(room.id);
-    })).catch(error => { if (!this.closed && (error as { code?: string })?.code !== 'BOT_COMPANION_INSTANCE_REQUIRED') this.options.report?.(error); })
+    })).catch(error => { if (!this.closed && !['BOT_COMPANION_INSTANCE_REQUIRED', 'BOT_EXECUTION_INSTANCE_REQUIRED'].includes((error as { code?: string })?.code ?? '')) this.options.report?.(error); })
       .finally(() => { this.memoryWarmRuns.delete(key); this.memoryWarmPhases.delete(key); });
     this.memoryWarmRuns.set(key, run);
   }
@@ -1862,8 +1863,8 @@ export class BotService {
         // paused native stream detaches. Its late error cannot undo that receipt.
         if (current.status !== 'queued' || this.taskRuntime.pendingEffects(task.id).length) this.taskRuntime.markUnknown(current);
         this.scheduler.wake();
-      } else if (code === 'BOT_COMPANION_INSTANCE_REQUIRED') {
-        this.pauseForExecutor(current, 'configuration', '伙伴尚未绑定专属 DSH 实例，任务已暂停；绑定后可继续原任务。', errorText(error));
+      } else if (code === 'BOT_COMPANION_INSTANCE_REQUIRED' || code === 'BOT_EXECUTION_INSTANCE_REQUIRED') {
+        this.pauseForExecutor(current, 'configuration', '尚未配置共享 DSH 执行实例，任务已暂停；在启动器配置后可继续原任务。', errorText(error));
       } else if (code === 'DSH_HOST_UNAVAILABLE') {
         const reason = (error as { reason?: string }).reason;
         // getHost failed before native admission. Do not invent an uncertain
@@ -1989,7 +1990,9 @@ export class BotService {
   }
   private async runTask(task: BotTask, signal: AbortSignal, onPrepared: () => void): Promise<void> {
     if (!task.extra.cancelRequested && !task.extra.pauseRequested && !this.store.taskSourcesWithdrawn(task.id)) {
-      await this.ensureCompanionBindings([task.companionId]);
+      // An existing native task retains its original Host. A missing or newly
+      // selected global executor must not strand a recoverable old task.
+      if (!this.store.getMetadata(botNativeHostBindingKey(`worker-${task.id}`))) await this.ensureCompanionBindings([task.companionId]);
       signal.throwIfAborted();
     }
     if (task.extra.hostResumeRequested === true) {
@@ -2219,7 +2222,8 @@ export class BotService {
   }
   private async controlTask(task: BotTask, operation: 'status' | 'send' | 'cancel' | 'answer' | 'resume' | 'continue' | 'pause' | 'resume_paused' | 'remove', text?: string, messageId: string = randomUUID(), input: Omit<BotTaskControlInput, 'requestId' | 'text'> = { caller: 'brain' }): Promise<unknown> {
     if (!['status', 'cancel', 'pause', 'remove'].includes(operation) && this.store.getCompanion(task.companionId)?.enabled === false) throw new Error('伙伴已关闭，请先启用后再继续任务。');
-    if (!['status', 'cancel', 'pause', 'remove'].includes(operation)) await this.ensureCompanionBindings([task.companionId]);
+    if (!['status', 'cancel', 'pause', 'remove'].includes(operation)
+      && !this.store.getMetadata(botNativeHostBindingKey(`worker-${task.id}`))) await this.ensureCompanionBindings([task.companionId]);
     const request = input.sourceEventId ? this.store.getEvent(input.sourceEventId) : undefined;
     const userControl = input.caller === 'user' || input.source === 'user' || !!request && request.senderType === 'companion'
       && request.companionId === task.companionId && request.conversationId === task.conversationId

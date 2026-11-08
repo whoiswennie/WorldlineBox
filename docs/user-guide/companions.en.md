@@ -4,7 +4,9 @@ This guide covers the companion workspace rebuilt on 3 November 2026. It is a de
 
 ## Start
 
-For research, coding or file tasks, install and select a supported official DSH artifact in Launcher. Ordinary chat runs in the application and does not require DSH to be running. In Model settings, configure an **OpenAI Chat Completions** connection. The companion brain and its workers currently use the application's connection; DSH terminals and its Web workbench have separate settings. Open Companions, select 大肥鱼 or another of the 14 built-in companions, or create a companion with a name and persona, and send a message. Enter sends; Shift+Enter adds a line. IME composition does not send.
+Install an official DSH runtime in Launcher, then select or confirm creation of one shared execution instance. Every companion uses that instance's account, API, plugins and skills; no per-character binding or login is required. Ordinary chat runs in the application and does not require the configured DSH Host to be running. In Model settings, configure an **OpenAI Chat Completions** connection for the companion Router. DSH's Web workbench manages its native configuration. Open Companions, choose a built-in companion or create your own, and send a message. Enter sends; Shift+Enter adds a line. IME composition does not send.
+
+Chats, memories, task ownership, Worker sessions and task directories remain separate. Disabling one companion pauses only its tasks and leaves the shared Host available to everyone else. Existing tasks retain their original instance when the shared selection changes, including tasks from older private environments; those environments are retained without merging credentials or plugins. Upgrading the shared instance preserves its identity, home, account configuration and plugins, with a snapshot and rollback on failure.
 
 Companion data does not require an asset library. Missing model or runtime configuration produces a real error while saved messages remain readable.
 

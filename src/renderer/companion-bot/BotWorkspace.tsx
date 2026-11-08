@@ -30,7 +30,7 @@ import type { WorldlineBoxBotSpeechApi } from '../../shared/companion-bot-speech
 import { BotChatContext } from './BotChatContext';
 import { BotExecutorNotice } from './BotExecutorNotice';
 import { BotDshBindingDialog } from './BotDshBindingDialog';
-import { hasCompanionDshBinding, useBotDshBindings } from './useBotDshBindings';
+import { hasSharedDshBinding, useBotDshBindings } from './useBotDshBindings';
 import { isBotFilePaste } from './clipboard-paste';
 import type { WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 const ignoreLink = () => undefined;
@@ -123,7 +123,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const invalidate = useCallback(() => { ++generation.current; }, []);
   const selectConversation = useCallback((id: string) => {
     if (id === selectedRef.current) return;
-    closeCall(); setDismissedBinding('');
+    closeCall();
     selectedRef.current = id; ++selectionEpoch.current; ++generation.current;
     ++windowEpoch.current; historyMode.current = false; latestSeen.current = 0; jumping.current = false; refreshAfterJump.current = false; paging.current = false; preserveScroll.current = undefined;
     setBrowsingHistory(false); setNewMessages(false); setLoadingLatest(false);
@@ -223,9 +223,8 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const unreadTaskUpdates = taskUpdates.count(selected);
   const participants = conversation?.memberIds.flatMap(id => snapshot?.companions.find(item => item.id === id) ?? []) ?? [];
   const companion = participants[0];
-  const missingBindings = participants.filter(person => !hasCompanionDshBinding(bindings.state, person.id));
-  const bindingKey = `${selected}:${missingBindings.map(person => person.id).join(',')}`;
-  const bindingRequired = !!conversation && !observing && (!!missingBindings.length || !bindings.state || !!bindings.error);
+  const bindingKey = `shared-dsh:${bindings.state?.instances.find(instance => instance.isDefault)?.id ?? 'unconfigured'}`;
+  const bindingRequired = !!conversation && !observing && (!hasSharedDshBinding(bindings.state) || !!bindings.error);
   const bindingOpen = isActive && bindingRequired && !bindings.loading && !!bindings.state && dismissedBinding !== bindingKey && !dialog && !panel && !showMembers;
   const showBinding = () => setDismissedBinding('');
   useEffect(() => {
@@ -262,7 +261,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
     } finally { joiningPeers.current.delete(origin); setJoiningPeer(current => current === origin ? '' : current); }
   };
   const sendMessage = async (kind: 'message' | 'world' = 'message', sticker?: BotMediaRef, override?: { content: string; requestId: string; attachments: readonly BotMediaRef[]; bypassCallBridge: true }): Promise<BotResponse> => {
-    if (bindingRequired) { showBinding(); return { ok: false, error: locale === 'zh-CN' ? '请先为聊天中的每位伙伴绑定独立 DSH 实例。' : 'Bind an independent DSH instance for every companion first.' }; }
+    if (bindingRequired) { showBinding(); return { ok: false, error: locale === 'zh-CN' ? '请先配置共享 DSH 执行环境，所有伙伴只需配置一次。' : 'Set up the shared DSH executor once for all companions.' }; }
     const files = override ? override.attachments : sticker ? [sticker] : draftFiles[selected] ?? [], attachmentIds = files.map(file => file.id);
     const content = override ? override.content : sticker ? '' : draft, conversationId = selected;
     const target = kind === 'message' && !sticker ? followups[conversationId] : undefined;
@@ -393,7 +392,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   };
   const currentTaskCount = snapshot?.taskSummary?.activeCount ?? snapshot?.tasks.filter(task => task.conversationId === selected && botTaskActive(task)).length ?? 0;
   const callCompanion = callTarget && snapshot?.companions.find(item => item.id === callTarget.companionId);
-  const renderComposer = (options?: BotCallComposerOptions) => bindingRequired ? <div className="bot-binding-blocked" role="status"><div><strong>{locale === 'zh-CN' ? bindings.loading ? '正在确认专属实例…' : '绑定专属 DSH 后开始聊天' : bindings.loading ? 'Checking private instances…' : 'Bind private DSH instances to chat'}</strong><p>{bindings.error || (locale === 'zh-CN' ? '每位伙伴独立保存自己的插件、技能和配置。已有聊天记录仍可查看。' : 'Every companion owns separate plugins, skills and settings. Existing chat history remains available.')}</p></div><button type="button" disabled={bindings.loading} onClick={() => { showBinding(); if (!bindings.state) void bindings.refresh(); }}>{locale === 'zh-CN' ? bindings.state ? '绑定实例' : '重新检查' : bindings.state ? 'Bind instance' : 'Check again'}</button></div> : conversation?.kind === 'direct' && companion?.enabled === false ? <div className="bot-companion-disabled" role="status"><div><strong>{locale === 'zh-CN' ? `${companion.name}已关闭` : `${companion.name} is disabled`}</strong><p>{locale === 'zh-CN' ? '启用伙伴后可以继续聊天。已有记录和任务进度已保留。' : 'Enable this companion to continue chatting. History and task progress are preserved.'}</p></div><button type="button" disabled={busy} onClick={() => void request({ type: 'companion.runtime', companionId: companion.id, operation: 'start' }).then(result => { if (result.ok) void refresh(); })}>{locale === 'zh-CN' ? '启用伙伴' : 'Enable companion'}</button></div> : <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={next => { if (next && callTarget) closeCall(); setPanel(next); }} send={send}
+  const renderComposer = (options?: BotCallComposerOptions) => bindingRequired ? <div className="bot-binding-blocked" role="status"><div><strong>{locale === 'zh-CN' ? bindings.loading ? '正在检查共享 DSH…' : '配置共享 DSH 后开始聊天' : bindings.loading ? 'Checking shared DSH…' : 'Set up shared DSH to chat'}</strong><p>{bindings.error || (locale === 'zh-CN' ? '所有伙伴共用账号、API、插件和技能，只需配置一次。已有聊天记录仍可查看。' : 'All companions share one account, API configuration, plugins and skills. Existing history remains available.')}</p></div><button type="button" disabled={bindings.loading} onClick={() => { showBinding(); if (!bindings.state) void bindings.refresh(); }}>{locale === 'zh-CN' ? bindings.state ? '配置 DSH' : '重新检查' : bindings.state ? 'Set up DSH' : 'Check again'}</button></div> : conversation?.kind === 'direct' && companion?.enabled === false ? <div className="bot-companion-disabled" role="status"><div><strong>{locale === 'zh-CN' ? `${companion.name}已关闭` : `${companion.name} is disabled`}</strong><p>{locale === 'zh-CN' ? '启用伙伴后可以继续聊天。已有记录和任务进度已保留。' : 'Enable this companion to continue chatting. History and task progress are preserved.'}</p></div><button type="button" disabled={busy} onClick={() => void request({ type: 'companion.runtime', companionId: companion.id, operation: 'start' }).then(result => { if (result.ok) void refresh(); })}>{locale === 'zh-CN' ? '启用伙伴' : 'Enable companion'}</button></div> : <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={next => { if (next && callTarget) closeCall(); setPanel(next); }} send={send}
     followup={followedTask ? { ...followedTask, unavailable: followupUnavailable } : undefined} onClearFollowup={() => setFollowups(current => { const next = { ...current }; delete next[selected]; return next; })} mediaApi={mediaApi} conversationId={selected} attachments={draftFiles[selected] ?? []} addingFiles={imports[selected]} addFiles={() => addFiles()} removeFile={id => setDraftFiles(current => ({ ...current, [selected]: (current[selected] ?? []).filter(file => file.id !== id) }))} sendSticker={async media => { await send('message', media); }} sendVoice={async media => { if (!await send('message', media)) throw Error(locale === 'zh-CN' ? '语音未发送，请重试。录音已保留。' : 'Voice message was not sent. Your recording is retained.'); }}
     extraTools={options?.toolbar} cornerControl={options?.corner} status={options && <>{options.status}{error && <p className="bot-call-send-error" role="alert">{error}</p>}</>} onVoiceInputStart={options?.onVoiceInputStart} onVoiceInputActivity={options?.onVoiceInputActivity} returnToChatOnPanel={!!options} />;
   return <div className={`bot-workspace bot-atmosphere${conversation ? ` has-context${showContext ? '' : ' context-collapsed'}` : ''}${dialog || panel === 'memory' || callTarget ? ' is-modal-open' : ''}`}>
@@ -479,6 +478,6 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
       onEditText={text => setDrafts(current => ({ ...current, [selected]: current[selected] ? `${current[selected]}\n${text}` : text }))}
       onDropFiles={files => { if (bindingRequired || observing || followedTask) return; const paths = mediaApi?.getDroppedFilePaths(files) ?? []; if (paths.length) void addFiles(paths); }} onPasteFiles={() => { if (!observing && !followedTask) void addFiles(undefined, true); }}
       send={(content, requestId) => sendMessage('message', undefined, { content, requestId, attachments: [], bypassCallBridge: true })} />}
-    {bindingOpen && launcherApi && bindings.state && <BotDshBindingDialog key={selected} api={launcherApi} state={bindings.state} companions={participants} locale={locale} onState={bindings.accept} onClose={() => setDismissedBinding(bindingKey)} onOpenLauncher={onOpenLauncher} />}
+    {bindingOpen && launcherApi && bindings.state && <BotDshBindingDialog key="shared-dsh" api={launcherApi} state={bindings.state} companions={participants} locale={locale} onState={bindings.accept} onClose={() => setDismissedBinding(bindingKey)} onOpenLauncher={onOpenLauncher} />}
   </div>;
 }

@@ -8,7 +8,7 @@ import type { DshInstance, DshLauncherResponse, DshLauncherState, WorldlineBoxDs
 Object.assign(globalThis,{IS_REACT_ACT_ENVIRONMENT:true});
 let root:Root|undefined,host:HTMLDivElement;
 afterEach(async()=>{await act(()=>root?.unmount());host?.remove();root=undefined;});
-const instance:DshInstance={id:'default',name:'我的 DSH',runtimeId:'runtime',createdAt:'now',updatedAt:'now',profile:'web',status:'stopped',homePath:'home',agentsPath:'agents',workspacePath:'workspace',browserPartition:'default',isDefault:false,companionId:'alice'};
+const instance:DshInstance={id:'default',name:'我的 DSH',runtimeId:'runtime',createdAt:'now',updatedAt:'now',profile:'web',status:'stopped',homePath:'home',agentsPath:'agents',workspacePath:'workspace',browserPartition:'default',isDefault:true};
 const state=(status:DshInstance['status']='stopped'):DshLauncherState=>({supported:true,rootPath:'fixture',runtimes:[],instances:[{...instance,status}],snapshots:[],packs:[],operations:[]});
 function deferred(){let resolve!:(value:DshLauncherResponse)=>void;return{promise:new Promise<DshLauncherResponse>(done=>{resolve=done;}),resolve:(value:DshLauncherResponse)=>resolve(value)};}
 async function mount(handler:WorldlineBoxDshLauncherApi['request'],companionIds:string[]=['alice']){
@@ -23,23 +23,23 @@ async function click(label:string){const button=[...host.querySelectorAll('butto
 it('shows the stopped default instance with a working start button and accepts the returned running state',async()=>{
   const f=await mount(async request=>({ok:true,state:state(request.type==='instance.start'?'running':'stopped')}));
   expect(host.textContent).toContain('DSH 未启动');await click('前往启动器');expect(f.open).toHaveBeenCalledOnce();
-  expect(host.querySelector('.bot-executor-status-label')?.getAttribute('title')).toContain('已绑定专属实例');
+  expect(host.querySelector('.bot-executor-status-label')?.getAttribute('title')).toContain('所有伙伴共用此 DSH');
   expect(host.querySelector('small')).toBeNull();
   await click('启动');expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});expect(host.textContent).toBe('');
 });
-it('starts the selected companion environment and ignores an unrelated stopped default',async()=>{
-  const privateInstance={...instance,id:'private',isDefault:false,companionId:'alice',companionName:'Alice'};
-  const f=await mount(async()=>({ok:true,state:{...state('running'),instances:[{...instance,status:'running'},privateInstance]}}),['alice']);
-  expect(host.textContent).toContain('DSH 未启动');await click('启动');
-  expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'private'});
-  await f.change({...state(),instances:[{...instance,status:'stopped'},{...privateInstance,status:'running'}]});
+it('uses the same shared host for any companion and ignores stopped legacy private hosts',async()=>{
+  const legacy={...instance,id:'legacy-private',isDefault:false,companionId:'alice',status:'failed' as const};
+  const f=await mount(async()=>({ok:true,state:{...state('running'),instances:[{...instance,status:'running'},legacy]}}),['alice','bob']);
   expect(host.textContent).toBe('');
+  await f.change({...state('stopped'),instances:[{...instance,status:'stopped'},{...legacy,status:'running'}]});
+  expect(host.textContent).toContain('共享 DSH 未启动');await click('启动');
+  expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});
 });
-it('finds the unavailable member environment in a mixed group without starting another member host',async()=>{
-  const f=await mount(async()=>({ok:true,state:{...state('running'),instances:[{...instance,status:'running'},
-    {...instance,id:'bob-env',isDefault:false,companionId:'bob',status:'failed'}]}}),['alice','bob']);
+it('reports one shared failure in a group rather than starting individual member environments',async()=>{
+  const f=await mount(async()=>({ok:true,state:{...state('failed'),instances:[{...instance,status:'failed'},
+    {...instance,id:'bob-env',isDefault:false,companionId:'bob',status:'running'}]}}),['alice','bob']);
   expect(host.textContent).toContain('DSH 启动失败');await click('启动');
-  expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'bob-env'});
+  expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});
 });
 it('shows starting, stopping and execution-readiness failures instead of hiding a running-but-unready executor',async()=>{
   const f=await mount(async()=>({ok:true,state:state('starting')}));

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 
-/** A launcher snapshot is the source of truth; a running default never implies ownership. */
+/** The launcher default is the shared executor for every companion. CLI selection is independent. */
 export function useBotDshBindings(api?: WorldlineBoxDshLauncherApi) {
   const [state, setState] = useState<DshLauncherState>();
   const [error, setError] = useState('');
@@ -32,7 +32,12 @@ export function useBotDshBindings(api?: WorldlineBoxDshLauncherApi) {
   return { state, error, loading, accept, refresh };
 }
 
-export function hasCompanionDshBinding(state: DshLauncherState | undefined, companionId: string): boolean {
-  const instance = state?.instances.find(value => value.companionId === companionId);
+export function sharedDshInstance(state: DshLauncherState | undefined) {
+  return state?.instances.find(value => value.isDefault);
+}
+
+/** Readiness applies equally to direct chats, groups and calls. */
+export function hasSharedDshBinding(state: DshLauncherState | undefined): boolean {
+  const instance = sharedDshInstance(state);
   return state?.supported === true && !!instance && state.runtimes.some(value => value.id === instance.runtimeId);
 }

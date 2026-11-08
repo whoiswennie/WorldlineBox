@@ -32,7 +32,7 @@ export const dshInstanceSchema = z.object({
   lastError: z.string().optional(), lastExitCode: z.number().nullable().optional(),
   parentInstanceId: id.optional(), isDefault: z.boolean(),
   restartRequired: z.boolean().optional(),
-  /** Exclusive owner, set only after an explicit create/bind confirmation. */
+  /** Historical owner metadata from private environments; not an exclusive binding. */
   companionId: z.string().min(1).max(160).optional(), companionName: name.optional(), keepAlive: z.boolean().optional(),
 });
 export type DshInstance = z.infer<typeof dshInstanceSchema>;
@@ -175,6 +175,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('task.record'), query: dshRecordQuerySchema }),
   z.strictObject({ type: z.literal('task.events'), taskId: id, after: z.number().int().min(-1).optional() }),
   z.strictObject({ type: z.literal('task.message'), taskId: id, content: z.string().trim().min(1).max(16000), mode: z.enum(['steer', 'queue']), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional() }),
+  z.strictObject({ type: z.literal('instance.upgrade'), instanceId: id, runtimeId: id }),
   z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id }),
   z.strictObject({ type: z.literal('instance.rename'), instanceId: id, name }),
   z.strictObject({ type: z.literal('instance.default'), instanceId: id }),

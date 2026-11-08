@@ -50,13 +50,12 @@ export class DshLauncher {
       if (this.runtimes.get(instance.runtimeId).adapter !== 'node-cli-web-v1') throw new DshHostUnavailableError('configuration', '伙伴需要原生 Node Web 运行环境；请在 DSH 启动器安装或导入该环境。', instanceId);
       return instanceId;
     }
-    // The retired dedicated instance is eligible only through an explicit
-    // durable lane binding, while its existing native context is still used.
-    const compatible = this.instances.list().filter(instance => !instance.companionId && instance.name !== 'WorldlineBox 伙伴主脑'
-      && this.runtimes.list().some(runtime => runtime.id === instance.runtimeId && runtime.adapter === 'node-cli-web-v1'));
+    // Only the persisted shared selection is eligible for new work. Historical
+    // profiles remain available through their explicit durable lane binding.
+    const compatible = this.instances.list().filter(instance => this.runtimes.list().some(runtime => runtime.id === instance.runtimeId && runtime.adapter === 'node-cli-web-v1'));
     const selected = compatible.find(instance => instance.isDefault);
     if (!selected) {
-      throw new DshHostUnavailableError('configuration', '请先下载 DSH 版本，并手动创建或绑定执行实例。');
+      throw new DshHostUnavailableError('configuration', '请先下载 DSH 版本，并创建或选择一个共享执行实例。');
     }
     this.botInstanceId = selected.id; return selected.id;
   }
@@ -79,20 +78,19 @@ export class DshLauncher {
   async resolveCompanionInstance(companionId: string, name: string): Promise<DshInstance> {
     await this.initialization;
     if (this.closed) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。');
-    const existing = this.instances.companion(companionId);
-    if (!existing) throw new DshHostUnavailableError('configuration', `请先为 ${name} 选择版本并确认创建，或绑定一个独立的 DSH 实例。`);
-    return this.resolveBotInstance(existing.id);
+    this.validateCompanion?.(companionId); void name;
+    return this.resolveBotInstance();
   }
   acquireCompanionLease(instanceId: string, kind: CompanionInstanceLeaseKind): () => void { return this.instances.acquireCompanionLease(instanceId, kind); }
   companionCapabilityState(companionId: string): DshCompanionCapabilityState {
-    const own = this.instances.companion(companionId), instance = own;
+    void companionId; const instance = this.instances.list().find(value => value.isDefault);
     const runtime = instance && this.runtimes.list().find(value => value.id === instance.runtimeId);
     const mutations = this.operations.list().filter(value => value.instanceId === instance?.id && value.status === 'succeeded'
       && /(?:plugin|skill|upgrade)/.test(value.kind)).map(value => value.id).sort();
     const revision = createHash('sha256').update(JSON.stringify([instance?.id, runtime?.contentSha256, instance?.updatedAt,
       this.companionCapabilityEpoch.get(instance?.id ?? '') ?? 0, mutations])).digest('hex');
-    return { mode: 'private', instanceId: instance?.id, runtimeVersion: runtime?.version, revision,
-      status: instance?.status ?? 'unconfigured', configured: !!instance && !!runtime, keepAlive: own?.keepAlive };
+    return { mode: 'shared', instanceId: instance?.id, runtimeVersion: runtime?.version, revision,
+      status: instance?.status ?? 'unconfigured', configured: !!instance && !!runtime, keepAlive: instance?.keepAlive };
   }
   async startCompanionEnvironment(companionId: string, name: string, signal?: AbortSignal): Promise<DshInstance> {
     signal?.throwIfAborted();
@@ -100,17 +98,15 @@ export class DshLauncher {
     signal?.throwIfAborted(); await this.instances.ensureHost(instance.id, signal); return this.instances.get(instance.id);
   }
   async stopCompanionEnvironment(companionId: string): Promise<void> {
-    await this.initialization;
-    const own = this.instances.companion(companionId);
-    if (own && !own.isDefault) await this.instances.stop(own.id);
+    // BotService stops this actor's turns/tasks first. A role-level action must
+    // never stop the shared process used by other actors or the native Web UI.
+    void companionId;
   }
   async restoreCompanionEnvironments(companions: readonly CompanionEnvironmentOwner[], signal?: AbortSignal, isEnabled?: (id: string) => boolean): Promise<void> {
     await this.initialization; signal?.throwIfAborted();
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
-    const instances = this.instances.list(), epochs = new Map(instances.map(instance => [instance.id, this.instances.companionStopEpoch(instance.id)]));
-    await restoreCompanionKeepAlive(companions, instances, async (owner, instance) => {
-      const current = this.instances.companion(owner.id);
-      if (this.closed || isEnabled?.(owner.id) === false || current?.id !== instance.id || !current.keepAlive || this.instances.companionStopEpoch(instance.id) !== epochs.get(instance.id)) return;
+    await restoreCompanionKeepAlive(companions, this.instances.list(), async (_owner, instance) => {
+      if (this.closed || this.instances.list().find(value => value.isDefault)?.id !== instance.id) return;
       signal?.throwIfAborted(); await this.instances.ensureHost(instance.id, signal, { automatic: true });
     }, signal, isEnabled);
   }
@@ -139,7 +135,7 @@ export class DshLauncher {
   async taskCapabilities(instanceId?: string, execution?: DshTaskExecutionOptions, query?: DshTaskCapabilityQuery): Promise<DshTaskCapabilities> {
     await this.initialization;
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
-    const selected = instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
+    const selected = instanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
     if (selected && this.prewarming?.instanceId === selected) await this.prewarming.promise;
     return this.tasks.discover(instanceId, snapshotDshTaskExecution({ ...execution, capabilityQuery: dshTaskCapabilityQuerySchema.parse(query ?? { kind: 'overview' }) }));
   }
@@ -235,7 +231,7 @@ export class DshLauncher {
       networkEnvironment: env => this.network.environment(env),
       isCliInUse: id => (this.cliTerminal.state().terminals ?? []).some(terminal => terminal.status === 'running' && (!id || terminal.instanceId === id)),
       isExternallyInUse: id => !!this.windows.get(id) && !this.windows.get(id)!.isDestroyed()
-        || this.operations.list().some(value => value.instanceId === id && value.status === 'running' && value.kind !== 'companion.environment.upgrade'),
+        || this.operations.list().some(value => value.instanceId === id && value.status === 'running' && !['companion.environment.upgrade', 'instance.upgrade'].includes(value.kind)),
       openWorkbench: (instance, url) => this.openWorkbench(instance, url),
       closeWorkbench: async id => { const window = this.windows.get(id); if (window && !window.isDestroyed()) window.destroy(); this.windows.delete(id); },
       clearBrowserData: async id => { await session.fromPartition(`persist:dsh-instance-${id}`).clearStorageData(); },
@@ -254,7 +250,7 @@ export class DshLauncher {
     } });
     this.tasks = new DshTaskBroker({ rootPath: this.rootPath, onChanged,
       getHost: async (id, signal) => {
-        const selected = id ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
+        const selected = id ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!selected) throw new DshHostUnavailableError('configuration', '请先安装 DSH 并配置执行实例。');
         const instance = this.instances.get(selected);
         const client = await this.instances.ensureHost(selected, signal, { automatic: true });
@@ -319,16 +315,14 @@ export class DshLauncher {
   }
   /** Capability facts depend on selection/configuration; task stream updates do not invalidate them. */
   private observeExecutionCapabilities(): void {
-    const selected = this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
+    const selected = this.instances.list().find(instance => instance.isDefault)?.id;
     const instance = this.instances.list().find(value => value.id === selected);
     const runtime = this.runtimes.list().find(value => value.id === instance?.runtimeId);
     const changes = this.operations.list().filter(operation => operation.status === 'succeeded' &&
       ['instance.plugin', 'instance.plugin-toggle', 'skill.install', 'skill.toggle', 'skill.remove', 'instance.restore', 'backup.import', 'pack.import', 'pack.import-url'].includes(operation.kind)).map(operation => operation.id);
     const mutation = changes.some(id => !this.capabilityMutations.has(id));
     for (const id of changes) this.capabilityMutations.add(id);
-    const bindings = this.instances.list().filter(value => value.companionId).map(value => [value.companionId, value.id, value.runtimeId,
-      this.runtimes.list().find(runtime => runtime.id === value.runtimeId)?.contentSha256]).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
-    const identity = JSON.stringify([selected, instance?.runtimeId, runtime?.contentSha256, bindings]);
+    const identity = JSON.stringify([selected, instance?.runtimeId, runtime?.contentSha256]);
     if (identity !== this.capabilityIdentity) {
       const previous = this.capabilityIdentity; this.capabilityIdentity = identity;
       if (previous !== undefined) this.onExecutionCapabilitiesChanged?.();
@@ -484,16 +478,16 @@ export class DshLauncher {
           const instance = request.type === 'companion.environment.create'
             ? await this.instances.createCompanion(request.companionId, request.name, request.runtimeId)
             : await this.instances.bindCompanion(request.companionId, request.name, request.instanceId);
-          return { ok: true, companionEnvironment: { mode: 'private', instance }, state: this.state() };
+          return { ok: true, companionEnvironment: { mode: 'shared', instance }, state: this.state() };
         } finally { this.companionProvisioning--; }
       }
       case 'companion.environment.state': {
-        const instance = this.instances.companion(request.companionId);
-        return { ok: true, ...(instance ? { companionEnvironment: { mode: 'private' as const, instance } } : {}), state: this.state() };
+        const instance = this.instances.list().find(value => value.isDefault);
+        return { ok: true, ...(instance ? { companionEnvironment: { mode: 'shared' as const, instance } } : {}), state: this.state() };
       }
       case 'companion.environment.ensure': case 'companion.environment.open': {
         const instance = await this.resolveCompanionInstance(request.companionId, request.name);
-        const companionEnvironment = { mode: 'private' as const, instance };
+        const companionEnvironment = { mode: 'shared' as const, instance };
         if (request.type === 'companion.environment.open') {
           const opened = await this.instances.handle({ type: 'instance.open', instanceId: instance.id });
           return opened.ok ? { ...opened, companionEnvironment } : opened;
@@ -502,16 +496,16 @@ export class DshLauncher {
       }
       case 'companion.environment.configure': {
         const own = await this.resolveCompanionInstance(request.companionId, request.name);
-        return { ok: true, companionEnvironment: { mode: 'private', instance: await this.instances.configureCompanion(own.id, request.keepAlive) } };
+        return { ok: true, companionEnvironment: { mode: 'shared', instance: await this.instances.configureCompanion(own.id, request.keepAlive) } };
       }
       case 'companion.environment.refresh': {
-        const own = this.instances.companion(request.companionId); if (!own) throw new Error('请先为伙伴配置私有能力环境。');
+        const own = await this.resolveCompanionInstance(request.companionId, request.name);
         await this.instances.recordPluginChange(own.id, { application: 'restart-required' });
-        return { ok: true, companionEnvironment: { mode: 'private', instance: this.instances.get(own.id) } };
+        return { ok: true, companionEnvironment: { mode: 'shared', instance: this.instances.get(own.id) } };
       }
       case 'companion.environment.upgrade': {
-        const own = this.instances.companion(request.companionId); if (!own) throw new Error('请先为伙伴配置私有能力环境。');
-        return { ok: true, operationId: await this.operations.run(request.type, `升级 ${request.name} 的能力环境`, own.id,
+        const own = await this.resolveCompanionInstance(request.companionId, request.name);
+        return { ok: true, operationId: await this.operations.run(request.type, '升级伙伴共享执行环境', own.id,
           op => this.instances.upgradeCompanion(own.id, request.runtimeId, op)) };
       }
       case 'operation.cancel': this.operations.cancel(request.operationId); return { ok: true };
@@ -519,7 +513,7 @@ export class DshLauncher {
       case 'task.run': {
         const continuedInstance = execution?.resume?.instanceId ?? (execution?.task?.session?.mode === 'resume'
           ? this.tasks.state().find(record => record.id === execution.task!.session!.taskId)?.instanceId : undefined);
-        const instanceId = continuedInstance ?? request.instanceId ?? this.cliTerminal.state().selectedInstanceId ?? this.instances.list().find(value => value.isDefault)?.id;
+        const instanceId = continuedInstance ?? request.instanceId ?? this.instances.list().find(value => value.isDefault)?.id;
         if (!instanceId) throw new Error('Create and select a DSH execution instance first.');
         return { ok: true, operationId: await this.operations.run(request.type, redact(request.title ?? 'DSH 执行任务'), instanceId, async op => {
           await this.tasks.execute({ prompt: request.prompt, instanceId, sessionId: request.sessionId, title: request.title,
@@ -536,10 +530,8 @@ export class DshLauncher {
       case 'task.events': return { ok: true, ...await this.tasks.readEvents(request.taskId, request.after) };
       case 'task.message': await this.tasks.sendInput(request.taskId, request.content, request.mode, request.messageId); return { ok: true };
       case 'cli.select': case 'instance.default': {
-        // Selecting an owned profile for its native terminal does not turn it
-        // into a shared default, or transfer its ownership to another role.
-        const requested = this.instances.get(request.instanceId);
-        if (request.type === 'instance.default' && requested.companionId) throw new Error('伙伴专属环境不能设为默认实例。');
+        // Terminal selection is separate from the shared execution default.
+        this.instances.get(request.instanceId);
         const epoch = ++this.selectionEpoch; const selection = await this.instances.prepareCli(request.instanceId);
         if (epoch !== this.selectionEpoch) return { ok: true, cancelled: true, state: this.state() };
         await this.cliTerminal.selectContext(selection);

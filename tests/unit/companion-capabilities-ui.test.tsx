@@ -16,7 +16,7 @@ function fixture(status: 'running' | 'stopped' = 'running', privateMode = true) 
     runtimes: [{ id: 'runtime-a', version: '0.2.2-rc.1', nodeVersion: '24', platform: 'win32-x64', adapter: 'node-cli-web-v1', source: '', sourceSha256: '0'.repeat(64), contentSha256: '0'.repeat(64), installedAt: '', fileCount: 1, byteLength: 1 }] };
   const changed = new Set<(value: DshLauncherState) => void>();
   const request = vi.fn(async (input: DshLauncherRequest): Promise<DshLauncherResponse> => {
-    const instance = privateMode ? own : base;
+    const instance = base;
     if (input.type === 'state') return { ok: true, state };
     if (input.type === 'companion.environment.capabilities') return { ok: true, taskCapabilities: { instanceId: instance.id, runtimeId: 'runtime-a', runtimeVersion: '0.2.2-rc.1', capturedAt: '2026-11-06T12:00:00Z', modes: ['native'], preset: 'native', workspacePath: '', toolRestrictions: true, skillSelection: true,
       tools: [], skills: [], toolsTotal: 1, skillsTotal: 0, catalog: { kind: 'catalog', category: 'all', offset: input.query?.offset ?? 0, limit: 30, total: 1, items: [{ kind: 'tool', name: 'native_actual_tool', description: '实际注册的工具' }], source: 'native-agent-scope', trust: 'capability_reference_data' } } };
@@ -39,12 +39,12 @@ const observations = new Set(['state', 'companion.environment.capabilities', 'in
 
 it('shows the actual native catalog without allocating environments, starting hosts or exposing management actions', async () => {
   const f = fixture(); await mount(f);
-  expect(container!.textContent).toContain('专属 DSH'); expect(container!.textContent).toContain('native_actual_tool');
+  expect(container!.textContent).toContain('共享 DSH'); expect(container!.textContent).toContain('native_actual_tool');
   expect(container!.querySelectorAll('[data-callable-capability]')).toHaveLength(1);
   expect(container!.textContent).not.toMatch(/安装插件|插件市场|技能市场|关闭伙伴|保持连接|应用待更新能力/);
   expect(f.request.mock.calls.every(([input]) => observations.has(input.type))).toBe(true);
   expect(f.request.mock.calls.some(([input]) => input.type === 'instance.plugins')).toBe(false);
-  await click('前往专属 DSH'); expect(f.request).toHaveBeenCalledWith({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' });
+  await click('打开共享工作台'); expect(f.request).toHaveBeenCalledWith({ type: 'companion.environment.open', companionId: 'fish', name: '大肥鱼' });
 });
 
 it.each([true, false])('never wakes a stopped or disabled environment while reading (disabled=%s)', async disabled => {
@@ -55,10 +55,11 @@ it.each([true, false])('never wakes a stopped or disabled environment while read
   await click('刷新档案'); expect(f.request.mock.calls.map(([input]) => input.type)).toEqual(['state', 'state']);
 });
 
-it('never borrows a default or another companion’s private environment when this character is unbound', async () => {
-  const f = fixture('stopped', false); f.state.instances.push({ ...f.state.instances[0]!, id: 'other', isDefault: false, companionId: 'other', name: '其他角色私有环境' }); await mount(f);
-  expect(container!.textContent).toContain('尚未绑定 DSH'); expect(container!.textContent).not.toContain('共享执行器'); expect(container!.textContent).not.toContain('其他角色私有环境');
-  expect(f.request.mock.calls.map(([input]) => input.type)).toEqual(['state']);
+it('shows the common executor for any companion while ignoring old private environments', async () => {
+  const f = fixture('running', false); f.state.instances.push({ ...f.state.instances[0]!, id: 'other', isDefault: false, companionId: 'other', name: '其他角色旧环境' }); await mount(f, { ...companion, id: 'new-companion', name: '新伙伴' });
+  expect(container!.textContent).toContain('共享 DSH'); expect(container!.textContent).toContain('共享执行器'); expect(container!.textContent).not.toContain('其他角色旧环境');
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'companion.environment.capabilities', companionId: 'new-companion' }));
+  expect(f.request.mock.calls.every(([input]) => observations.has(input.type))).toBe(true);
 });
 
 it('keeps plugin records separate from actual capabilities and contains no package mutations', async () => {
@@ -115,7 +116,7 @@ it('rejects another environment’s capability response and removes live entries
 
 it('refreshes only this environment’s registry revision and hides an obsolete summary until new evidence arrives', async () => {
   const f = fixture(), original = f.request.getMockImplementation()!;
-  f.state.companionCapabilityRevisions = { 'fish-environment': 0, other: 0 };
+  f.state.companionCapabilityRevisions = { shared: 0, other: 0 };
   await mount(f); const reads = f.request.mock.calls.filter(([input]) => input.type === 'companion.environment.capabilities').length;
   f.state.companionCapabilityRevisions.other = 1; await act(() => f.emit()); await settle();
   expect(f.request.mock.calls.filter(([input]) => input.type === 'companion.environment.capabilities')).toHaveLength(reads);
@@ -123,7 +124,7 @@ it('refreshes only this environment’s registry revision and hides an obsolete 
   f.request.mockImplementation(async input => { const result = await original(input); if (input.type === 'companion.environment.capabilities' && result.ok && result.taskCapabilities) {
     await pending; return { ...result, taskCapabilities: { ...result.taskCapabilities, toolsTotal: 2 } }; } return result;
   });
-  f.state.companionCapabilityRevisions['fish-environment'] = 1; await act(() => f.emit()); await settle();
+  f.state.companionCapabilityRevisions.shared = 1; await act(() => f.emit()); await settle();
   expect(container!.querySelector('.capability-archive-metrics')?.textContent).toContain('—');
   expect(container!.querySelector('[data-callable-capability]')).toBeNull();
   await act(async () => { release(); await pending; }); await settle();
