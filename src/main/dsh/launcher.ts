@@ -230,8 +230,8 @@ export class DshLauncher {
       bridgePackagePath: app.isPackaged ? path.join(process.resourcesPath, 'dsh-bridge') : path.join(app.getAppPath(), 'resources', 'dsh-bridge'),
       networkEnvironment: env => this.network.environment(env),
       isCliInUse: id => (this.cliTerminal.state().terminals ?? []).some(terminal => terminal.status === 'running' && (!id || terminal.instanceId === id)),
-      isExternallyInUse: id => !!this.windows.get(id) && !this.windows.get(id)!.isDestroyed()
-        || this.operations.list().some(value => value.instanceId === id && value.status === 'running' && !['companion.environment.upgrade', 'instance.upgrade'].includes(value.kind)),
+      isExternallyInUse: (id, exceptOperationId) => !!this.windows.get(id) && !this.windows.get(id)!.isDestroyed()
+        || this.operations.isInstanceInUse(id, exceptOperationId),
       openWorkbench: (instance, url) => this.openWorkbench(instance, url),
       closeWorkbench: async id => { const window = this.windows.get(id); if (window && !window.isDestroyed()) window.destroy(); this.windows.delete(id); },
       clearBrowserData: async id => { await session.fromPartition(`persist:dsh-instance-${id}`).clearStorageData(); },

@@ -17,7 +17,7 @@ export interface PackInstanceService {
   list(): DshInstance[];
   create(name: string, runtimeId: string, operation?: OperationContext): Promise<DshInstance>;
   getRoot(id: string): string;
-  withStoppedInstance<T>(id: string, work: () => Promise<T>): Promise<T>;
+  withStoppedInstance<T>(id: string, work: () => Promise<T>, operationId?: string): Promise<T>;
   installDependencies(id: string, signal?: AbortSignal): Promise<void>;
   remove(id: string): Promise<void>;
 }
@@ -237,7 +237,7 @@ export class PackService {
         operation.signal.throwIfAborted();
         await this.commit(staging, id, manifest);
       } finally { await removeManaged(this.directory, staging); }
-    });
+    }, operation.id);
   }
   private async install(packId: string, name: string, operation: OperationContext): Promise<void> {
     await operation.update('verifying-pack', 5);
@@ -252,7 +252,7 @@ export class PackService {
         await this.options.instances.installDependencies(instance.id, operation.signal);
         operation.signal.throwIfAborted();
         await operation.log(`Installed pack ${packId} into instance ${instance.id}.`);
-      });
+      }, operation.id);
     } catch (error) { await this.options.instances.remove(instance.id); throw error; }
   }
   async exportArchive(packId: string, filePath: string, signal: AbortSignal): Promise<PackManifest> {

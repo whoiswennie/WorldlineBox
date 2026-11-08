@@ -37,10 +37,70 @@ process.on('SIGTERM',()=>server.close(()=>process.exit(0)));}
     runtimes: { list: () => runtimes, get: id => runtimes.find(value => value.id === id)!, directory: () => program,
       plan: id => ({ executable: TEST_NODE_EXECUTABLE, cli, env: { FIXTURE_VERSION: runtimes.find(value => value.id === id)!.version, ...(holdTokenExchange ? { FIXTURE_READY_GATE: readyGate } : {}) } }), verify },
     onChanged: () => undefined, onStartup: startup, onManualStop: manualStop, openWorkbench, closeWorkbench: async () => undefined, clearBrowserData: async () => undefined };
+  serviceOptions.isExternallyInUse = (id, operationId) => operations.isInstanceInUse(id, operationId);
   const service = new InstanceService(serviceOptions);
   await service.init(); cleanup.push(async () => { await service.shutdown(); await operations.shutdown(); await rm(root, { recursive: true, force: true }); });
   return { service, serviceOptions, operations, root, verify, openWorkbench, startup, manualStop, readyGate };
 }
+
+it('creates, selects, uses, stops and deletes through journaled operations without counting deletion as its own holder', async () => {
+  const f = await fixture(), sibling = await f.service.create('Keep this shared environment', 'runtime-a');
+  const siblingHost = await f.service.ensureHost(sibling.id);
+  const created = await f.service.handle({ type: 'instance.create', name: 'Disposable shared environment', runtimeId: 'runtime-a' });
+  expect(created.ok).toBe(true); await f.operations.settle();
+  const instance = f.service.list().find(value => value.id !== sibling.id)!;
+  await f.service.selectExecutionInstance(instance.id);
+  expect((await f.service.ensureCompanion('fish', 'Fish', sibling)).id).toBe(instance.id);
+  const host = await f.service.ensureHost(instance.id);
+  await host.health(); expect((await host.request<{ home: string }>('/health')).home).toBe(instance.homePath);
+  const stopped = await f.service.handle({ type: 'instance.stop', instanceId: instance.id });
+  expect(stopped.ok).toBe(true); await f.operations.settle();
+  expect(f.service.get(instance.id).status).toBe('stopped');
+  const deleted = await f.service.handle({ type: 'instance.delete', instanceId: instance.id });
+  if (!deleted.ok) throw Error(deleted.error); await f.operations.settle();
+  expect(f.operations.list().find(value => value.id === deleted.operationId)).toMatchObject({ status: 'succeeded' });
+  expect(f.service.list().map(value => value.id)).toEqual([sibling.id]);
+  await expect(readdir(f.service.getRoot(instance.id))).rejects.toMatchObject({ code: 'ENOENT' });
+  expect(JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'))).toEqual([expect.objectContaining({ id: sibling.id, isDefault: true })]);
+  await siblingHost.health();
+});
+
+it('still refuses deletion while a real task lease, terminal or another operation holds the instance', async () => {
+  const f = await fixture(), instance = await f.service.create('Protected', 'runtime-a');
+  const attempt = async (message: string) => {
+    const response = await f.service.handle({ type: 'instance.delete', instanceId: instance.id });
+    if (!response.ok) throw Error(response.error); await f.operations.settle();
+    expect(f.operations.list().find(value => value.id === response.operationId)).toMatchObject({ status: 'failed', error: expect.stringContaining(message) });
+    expect(f.service.get(instance.id).id).toBe(instance.id);
+  };
+  const release = f.service.acquireCompanionLease(instance.id, 'task'); await attempt('任务'); release();
+  f.serviceOptions.isCliInUse = () => true; await attempt('终端'); f.serviceOptions.isCliInUse = () => false;
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  const holding = await f.operations.run('snapshot.create', 'Other operation', instance.id, () => gate);
+  const deletion = await f.service.handle({ type: 'instance.delete', instanceId: instance.id });
+  if (!deletion.ok) throw Error(deletion.error);
+  await vi.waitFor(() => expect(f.operations.list().find(value => value.id === deletion.operationId)).toMatchObject({ status: 'failed', error: expect.stringContaining('其他操作') }));
+  expect(f.operations.isInstanceInUse(instance.id, deletion.operationId)).toBe(true);
+  expect(f.operations.isInstanceInUse(instance.id, holding)).toBe(false);
+  finish(); await f.operations.settle();
+  await f.service.remove(instance.id);
+});
+
+it('can snapshot, clone and export a stopped instance from its own journaled operation', async () => {
+  const f = await fixture(), instance = await f.service.create('Snapshot source', 'runtime-a');
+  await writeFile(path.join(instance.workspacePath, 'proof.txt'), 'retained original content');
+  for (const request of [
+    { type: 'snapshot.create' as const, instanceId: instance.id, name: 'Snapshot' },
+    { type: 'instance.clone' as const, instanceId: instance.id, name: 'Clone' },
+  ]) {
+    const response = await f.service.handle(request); if (!response.ok) throw Error(response.error); await f.operations.settle();
+    expect(f.operations.list().find(value => value.id === response.operationId)).toMatchObject({ status: 'succeeded' });
+  }
+  const exportId = await f.operations.run('instance.export', 'Export', instance.id, op => f.service.exportTo(instance.id, path.join(f.root, 'export-proof'), op));
+  await f.operations.settle(); expect(f.operations.list().find(value => value.id === exportId)).toMatchObject({ status: 'succeeded' });
+  expect(await readFile(path.join(f.root, 'export-proof/data/workspace/proof.txt'), 'utf8')).toBe('retained original content');
+});
 it('deduplicates concurrent starts and opens the same native Host for the user', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a');
   const clients = await Promise.all(Array.from({ length: 8 }, () => f.service.ensureHost(instance.id)));

@@ -28,6 +28,11 @@ export class OperationStore {
     await this.save();
   }
   list(): DshOperation[] { return structuredClone(this.records); }
+  /** A mutating operation may exclude only its own durable identity. Another
+   * operation on the same instance still holds it, regardless of its kind. */
+  isInstanceInUse(instanceId: string, exceptOperationId?: string): boolean {
+    return this.records.some(record => record.instanceId === instanceId && record.status === 'running' && record.id !== exceptOperationId);
+  }
   private save(): Promise<void> {
     const values = this.list();
     this.writes = this.writes.catch(() => undefined).then(() => atomicJson(path.join(this.rootPath, 'operations.json'), values));

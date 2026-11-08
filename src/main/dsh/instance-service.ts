@@ -25,7 +25,7 @@ interface Options {
   closeWorkbench: (instanceId: string) => Promise<void>; clearBrowserData: (instanceId: string) => Promise<void>;
   networkEnvironment?: (base: NodeJS.ProcessEnv) => Promise<NodeJS.ProcessEnv>;
   isCliInUse?: (instanceId?: string) => boolean;
-  isExternallyInUse?: (instanceId: string) => boolean;
+  isExternallyInUse?: (instanceId: string, exceptOperationId?: string) => boolean;
   companionIdleMs?: number;
   onStartup?: (progress: DshHostStartupProgress) => void;
   onManualStop?: (instanceId: string) => void;
@@ -185,8 +185,8 @@ export class InstanceService {
     if (keepAlive) await this.ensureHost(id); else this.scheduleIdle(id);
     return this.get(id);
   }
-  private held(id: string): boolean {
-    return this.leases.count(id) > 0 || !!this.options.isCliInUse?.(id) || !!this.options.isExternallyInUse?.(id);
+  private held(id: string, exceptOperationId?: string): boolean {
+    return this.leases.count(id) > 0 || !!this.options.isCliInUse?.(id) || !!this.options.isExternallyInUse?.(id, exceptOperationId);
   }
   /** A warm-cache target, never an admission limit: busy or unknown Hosts stay alive. */
   private async reclaimCompanionCacheBeforeStart(id: string): Promise<void> {
@@ -245,14 +245,19 @@ export class InstanceService {
   }); this.writes = pending.catch(() => undefined); return pending; }
   private notifyChanged() { try { this.options.onChanged(); } catch { /* An observer cannot undo or obscure a completed durable mutation. */ } }
   private async changed() { await this.save(); this.notifyChanged(); }
-  private available(id: string, stopped = false) {
+  private available(id: string, stopped = false, operationId?: string) {
     const instance = this.require(id);
     if (this.closing || this.busy.has(id) || this.recoveryBlocked.has(id)) throw new Error('This DSH instance is busy or its previous process could not be recovered.');
-    if (stopped && (this.hosts.has(id) || this.starts.has(id) || this.held(id))) throw new Error('Stop this instance and its terminal before changing its data.');
+    if (stopped) {
+      if (this.hosts.has(id) || this.starts.has(id)) throw new Error('请先停止此 DSH 实例，再修改或删除它的数据。');
+      if (this.leases.count(id)) throw new Error('此实例仍被任务或能力查询使用，请等待任务结束后再删除。');
+      if (this.options.isCliInUse?.(id)) throw new Error('此实例的终端仍在运行，请先关闭该终端。');
+      if (this.options.isExternallyInUse?.(id, operationId)) throw new Error('此实例的工作台或其他操作仍在使用中，请关闭工作台或等待操作结束。');
+    }
     return instance;
   }
-  async withStoppedInstance<T>(id: string, work: () => Promise<T>): Promise<T> {
-    this.available(id, true); this.busy.add(id); try { return await work(); } finally { this.busy.delete(id); }
+  async withStoppedInstance<T>(id: string, work: () => Promise<T>, operationId?: string): Promise<T> {
+    this.available(id, true, operationId); this.busy.add(id); try { return await work(); } finally { this.busy.delete(id); }
   }
   private async environment(instance: DshInstance) {
     const env = await instanceEnvironment(this.getRoot(instance.id), instance, this.launchPlan(instance.id));
@@ -468,7 +473,7 @@ export class InstanceService {
     const instance = this.available(id), next = this.options.runtimes.get(runtimeId);
     if (next.adapter !== 'node-cli-web-v1') throw new Error('伙伴需要原生 Node Web 运行环境。');
     if (runtimeId === instance.runtimeId) return;
-    if (this.held(id) || this.starts.has(id)) throw new Error('伙伴环境仍在使用中，请等待任务、问题或工作台结束后升级。');
+    if (this.held(id, op.id) || this.starts.has(id)) throw new Error('伙伴环境仍在使用中，请等待任务、问题或工作台结束后升级。');
     this.touchInstance(id); this.busy.add(id);
     const previousRuntimeId = instance.runtimeId, journal = path.join(this.getRoot(id), 'upgrade.json');
     const wasRunning = this.hosts.has(id), wasSuspended = this.suspendedCompanions.has(id), stopEpoch = this.manualStops.get(id) ?? 0;
@@ -480,7 +485,7 @@ export class InstanceService {
     try {
       const host = this.hosts.get(id);
       if (host && (!host.client || !nativeIdleConfirmed(await host.client.request('/idle', {}, op.signal, 5000)))) throw new Error('原生执行器仍有活动或无法确认空闲，请稍后升级。');
-      if (this.held(id)) throw new Error('伙伴环境仍在使用中。');
+      if (this.held(id, op.id)) throw new Error('伙伴环境仍在使用中。');
       await this.options.runtimes.verify(runtimeId, op.signal);
       stillAuthorized();
       await this.stop(id, { automatic: true }); op.signal.throwIfAborted(); await op.update('保存升级前完整数据', 20);
@@ -547,7 +552,7 @@ export class InstanceService {
     await this.initializeProfile(this.require(id), signal ?? new AbortController().signal);
   }
   async exportTo(id: string, destination: string, op?: OperationContext): Promise<void> {
-    await this.withStoppedInstance(id, () => this.exportData(id, destination, op));
+    await this.withStoppedInstance(id, () => this.exportData(id, destination, op), op?.id);
   }
   private async exportData(id: string, destination: string, op?: OperationContext) {
     await mkdir(destination, { recursive: true }); if ((await readdir(destination)).length) throw new Error('Backup destination must be empty.');
@@ -570,8 +575,9 @@ export class InstanceService {
       await this.installDependencies(instance.id, op?.signal); return instance;
     } catch (error) { await this.remove(instance.id); throw error; }
   }
-  async remove(id: string): Promise<void> {
-    const instance = this.available(id, true); this.busy.add(id);
+  async remove(id: string, operation?: OperationContext): Promise<void> {
+    operation?.signal.throwIfAborted();
+    const instance = this.available(id, true, operation?.id); this.busy.add(id);
     try {
       await this.options.closeWorkbench(id); await this.options.clearBrowserData(id);
       this.touchInstance(id); this.leases.forget(id);
@@ -600,7 +606,7 @@ export class InstanceService {
             await this.options.openWorkbench(this.get(request.instanceId), this.getUrl(request.instanceId)!); break;
           }
           case 'instance.stop': await this.stop(request.instanceId); break;
-          case 'instance.delete': await this.remove(request.instanceId); break;
+          case 'instance.delete': await this.remove(request.instanceId, op); break;
           case 'instance.plugin': await op.log(await this.plugin(request.instanceId, request.action, request.spec, op)); break;
           case 'instance.check': await this.options.runtimes.verify(this.require(request.instanceId).runtimeId, op.signal, true); break;
           case 'snapshot.restore': {
@@ -615,7 +621,7 @@ export class InstanceService {
                 this.snapshotRecords.unshift({ id: snapshotId, instanceId: request.instanceId, name: request.name, runtimeId: this.require(request.instanceId).runtimeId,
                   createdAt: new Date().toISOString(), contentSha256: inventory.contentSha256, fileCount: inventory.fileCount, byteLength: inventory.byteLength }); await this.changed();
               } finally { await removeManaged(this.options.rootPath, stage); }
-            }); break;
+            }, op.id); break;
           }
           case 'instance.clone': {
             await this.withStoppedInstance(request.instanceId, async () => {
@@ -623,7 +629,7 @@ export class InstanceService {
               for (const name of ['home', 'agents']) await copyTree(path.join(this.getRoot(request.instanceId), name), path.join(this.getRoot(cloned.id), name),
                 { signal: op.signal, skip: relative => skipData(`${name}/${relative}`) || name === 'home' && /^(sessions|attachments|storages)([/\\]|$)/.test(relative) });
               await this.installDependencies(cloned.id, op.signal);
-            }); break;
+            }, op.id); break;
           }
           default: throw new Error('Unsupported instance request.');
         }
