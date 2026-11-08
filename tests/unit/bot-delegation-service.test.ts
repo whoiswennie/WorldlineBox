@@ -65,6 +65,147 @@ it('keeps ordinary contact as communication and never runs a delegated proxy as 
   const tasks=f.store.listTasks();expect(tasks).toHaveLength(1);expect(tasks[0]!.companionId).toBe('alice');
 });
 
+it.each(['user','peer'] as const)('promotes verified %s contact work once and delivers results back to the original user conversation',async destination=>{
+  const f=await fixture(),root=await f.source('让 Bob 查上海天气后告诉我。');
+  const contact=await f.execute(root.event,'companion_contact',{companionId:'bob',destination,message:'用户请你查询上海当前天气，给出温度与是否需要雨伞，只读查询。'},'weather-contact') as {conversationId:string};
+  expect(f.store.listTasks()).toEqual([]);
+  const peer=f.store.taskTransaction(sql=>{const row=sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? AND companion_id=? ORDER BY sequence DESC LIMIT 1').get(contact.conversationId,'bob') as {id:string};return f.store.getEvent(row.id)!;});
+  f.claim(peer);
+  const first=await f.execute(peer,'dsh_task',{goal:'只读查询上海当前天气，返回来源和查询时间。',title:'上海天气',attachmentIds:[]},'weather-worker') as {taskId:string;delegationId:string;resultDelivery:string};
+  expect(first).toMatchObject({resultDelivery:'companion_delegation.result'});
+  const ticket=f.delegations.get(first.delegationId)!;
+  expect(ticket).toMatchObject({sourceEventId:root.event.id,requesterId:'alice',recipientId:'bob',goal:peer.content,state:'active'});
+  expect(f.store.getTask(ticket.proxyTaskId)).toMatchObject({conversationId:f.room.id,companionId:'alice',extra:{delegationProxy:true,externalDelegationId:ticket.id}});
+  expect(f.store.getTask(first.taskId)).toMatchObject({companionId:'bob',extra:{delegationId:ticket.id}});
+  const second=await f.execute(peer,'dsh_task',{goal:'只读复核同次上海天气来源。',attachmentIds:[]},'weather-check') as {taskId:string;delegationId:string};
+  expect(second.delegationId).toBe(ticket.id);
+  const recovered=await f.service.reconcileToolReceipt(f.call(peer,'dsh_task',{goal:'只读查询上海当前天气，返回来源和查询时间。',title:'上海天气',attachmentIds:[]},'weather-worker'));
+  expect(recovered).toMatchObject({state:'committed',result:{taskId:first.taskId,delegationId:ticket.id,resultDelivery:'companion_delegation.result'}});
+  expect(f.store.listTasks().filter(task=>task.extra.delegationProxy)).toHaveLength(1);
+  expect(f.launch).toHaveBeenCalledTimes(2);
+  expect(f.launch.mock.calls.every(([task])=>task.extra.delegationProxy!==true)).toBe(true);
+  expect(await f.execute(peer,'companion_reply_user',{message:'尚未核验，不能冒充完成。'},'early-answer')).toMatchObject({sent:false,requiredNextAction:'companion_delegation.result'});
+  f.controller.finishTask(f.store.getTask(first.taskId)!,'succeeded','已查询天气，来源和时间已核验。');
+  f.controller.finishTask(f.store.getTask(second.taskId)!,'succeeded','来源复核一致。');
+  const delivered=await f.execute(peer,'companion_delegation',{operation:'result',message:'上海当前天气已查询并复核，以下是实际结果。'},'weather-result') as {sent:boolean;taskId:string};
+  expect(delivered).toMatchObject({sent:true,taskId:ticket.proxyTaskId});
+  expect(f.store.getTask(ticket.proxyTaskId)?.status).toBe('succeeded');
+  expect(f.delegations.get(ticket.id)?.state).toBe('completed');
+  expect(f.store.taskTransaction(sql=>sql.prepare("SELECT count(*) AS n FROM bot_inbox WHERE conversation_id=? AND source='task' AND json_extract(payload_json,'$.taskId')=?").get(f.room.id,ticket.proxyTaskId))).toMatchObject({n:1});
+  expect(await f.execute(peer,'dsh_task',{goal:'结束后不能自动继续',attachmentIds:[]},'late-work')).toMatchObject({allowed:false});
+});
+
+it('revokes a promoted user-route contact when the original user source is withdrawn',async()=>{
+  const f=await fixture(),root=await f.source('让 Bob 查天气。');
+  await f.execute(root.event,'companion_contact',{companionId:'bob',destination:'user',message:'用户请你只读查天气。'},'withdrawn-contact');
+  const peer=f.store.claim({workerId:'contact-withdrawal',leaseMs:300000})!.event;f.store.bindEventNativeEpoch(peer.id,1);
+  const worker=await f.execute(peer,'dsh_task',{goal:'只读查天气。',attachmentIds:[]},'first-worker') as {taskId:string;delegationId:string};
+  f.store.withdrawSources('alice',root.event.securityDomainId,[root.event.id]);
+  expect(f.companionRuntime.authorize(peer,'after-withdrawal')).toMatchObject({allowed:false});
+  expect(()=>f.delegations.assertActive(f.delegations.get(worker.delegationId)!)).toThrow(/失效|撤回/u);
+  expect(await f.execute(peer,'dsh_task',{goal:'不能继续派发',attachmentIds:[]},'withdrawn-worker')).toMatchObject({allowed:false});
+  expect(f.store.listTasks()).toHaveLength(2);
+});
+
+it('lets an ordinary peer request execute, pause and resume its own Worker without asking a user',async()=>{
+  const f=await fixture(),room=f.store.openPeer('alice','bob');
+  const peer=f.store.enqueue({conversationId:room.id,senderId:'alice',source:'companion',recipientIds:['bob'],content:'请只读查询天气，自己调用Worker完成。',sourceMessageId:'ordinary-peer-request'}).events[0]!;
+  f.claim(peer);
+  expect(f.companionRuntime.authorize(peer,'peer-scope')).toMatchObject({allowed:true,authorizingEventId:peer.id});
+  const result=await f.execute(peer,'dsh_task',{goal:'只读查询天气。',attachmentIds:[]},'peer-worker') as {taskId:string};
+  expect(f.store.getTask(result.taskId)).toMatchObject({companionId:'bob',conversationId:room.id});
+  expect(f.store.listTasks()).toHaveLength(1);expect(f.delegations.forEvent(peer)).toBeUndefined();
+  await f.execute(peer,'dsh_task_control',{operation:'pause',taskId:result.taskId},'peer-pause');
+  expect(f.store.getTask(result.taskId)?.status).toBe('paused');
+  await f.execute(peer,'dsh_task_control',{operation:'resume_paused',taskId:result.taskId},'peer-resume');
+  expect(f.store.getTask(result.taskId)?.status).toBe('queued');
+});
+
+it('lets a peer-initiated task delegate to another companion and return a real artifact to its original peer chat',async()=>{
+  const f=await fixture(),room=f.store.openPeer('alice','bob');
+  const peer=f.store.enqueue({conversationId:room.id,senderId:'alice',source:'companion',recipientIds:['bob'],content:'请让 Carol 整理这次天气结果，把报告交回这里。',sourceMessageId:'peer-delegates'}).events[0]!;
+  f.claim(peer);
+  const result=await f.execute(peer,'companion_delegate',{companionId:'carol',title:'天气报告',goal:'只读整理天气结果，生成报告文件。',attachmentIds:[]},'delegate-carol') as {delegationId:string};
+  const ticket=f.delegations.get(result.delegationId)!,received=f.store.getEvent(ticket.contactEventId)!;f.claim(received);
+  const worker=await f.execute(received,'dsh_task',{goal:'只读整理天气结果，生成报告文件。',attachmentIds:[]},'carol-worker') as {taskId:string};
+  const file=path.join(f.root,'weather.txt');await writeFile(file,'Verified fixture report, not a real weather query.');
+  const [ref]=await f.media.importFiles({conversationId:received.conversationId,paths:[file]});
+  f.store.updateTask(worker.taskId,{status:'running',extra:{...f.store.getTask(worker.taskId)!.extra,nativeAttempted:true}});
+  f.store.publishForTask(worker.taskId,'weather-report',{content:'报告文件',attachments:[ref!]});
+  f.controller.finishTask(f.store.getTask(worker.taskId)!,'succeeded','报告已生成并核验。');
+  expect(await f.execute(received,'companion_delegation',{operation:'result',message:'报告已核验。'},'carol-result')).toMatchObject({sent:true,taskId:ticket.proxyTaskId});
+  const publication=f.store.publicationsForTask(ticket.proxyTaskId)[0]!;
+  expect(f.store.getMessage(publication.messageId)?.attachments?.[0]).toMatchObject({sha256:ref!.sha256,name:'weather.txt'});
+  expect(f.store.getTask(ticket.proxyTaskId)?.status).toBe('succeeded');
+});
+
+it('cascades an original stop through peer subdelegations and rejects late ordinary peer messages from that stopped chain',async()=>{
+  const f=await fixture(),root=await f.source('让 Bob 和 Carol 配合整理天气报告。'),outer=await f.delegate(root.event,[]);f.claim(outer.peer);
+  const nested=await f.execute(outer.peer,'companion_delegate',{companionId:'carol',title:'Carol复核',goal:'只读复核天气报告。',attachmentIds:[]},'nested-carol') as {delegationId:string};
+  const inner=f.delegations.get(nested.delegationId)!,contact=f.store.getEvent(inner.contactEventId)!;f.claim(contact);
+  expect(f.store.getTask(inner.proxyTaskId)?.extra.parentDelegationId).toBe(outer.ticket.id);
+  const child=await f.execute(contact,'dsh_task',{goal:'只读复核天气报告。',attachmentIds:[]},'carol-check') as {taskId:string};
+  await f.controller.controlQueue(f.room.id,'cancel_all','stop-all-levels','alice',root.event.id);
+  expect(f.delegations.get(outer.ticket.id)?.state).toBe('cancelled');expect(f.delegations.get(inner.id)?.state).toBe('cancelled');
+  expect(f.store.getTask(child.taskId)?.status).toBe('cancelled');
+  const late=f.store.enqueue({conversationId:contact.conversationId,senderId:'carol',source:'companion',recipientIds:['bob'],content:'迟到的回复不能重开已停止的任务。',sourceMessageId:'late-peer-after-stop',causationId:contact.id,correlationId:contact.correlationId,payload:{hop:3}}).events[0]!;
+  expect(f.companionRuntime.authorize(late,'late-peer-work')).toMatchObject({allowed:false});
+});
+
+it('also stops running work when a nested contact was promoted instead of using the explicit delegate tool',async()=>{
+  const f=await fixture(),root=await f.source('让 Bob 和 Carol 合作。'),outer=await f.delegate(root.event,[]);f.claim(outer.peer);
+  await f.execute(outer.peer,'companion_contact',{companionId:'carol',destination:'user',message:'请只读复核天气报告。'},'nested-contact');
+  const contact=f.store.claim({workerId:'nested-contact',leaseMs:300000})!.event;expect(contact.companionId).toBe('carol');f.store.bindEventNativeEpoch(contact.id,1);
+  const child=await f.execute(contact,'dsh_task',{goal:'只读复核天气报告。',attachmentIds:[]},'promoted-nested-worker') as {taskId:string;delegationId:string};
+  const inner=f.delegations.get(child.delegationId)!;
+  expect(f.store.getTask(inner.proxyTaskId)?.extra.parentDelegationId).toBe(outer.ticket.id);
+  f.store.updateTask(child.taskId,{status:'running',extra:{...f.store.getTask(child.taskId)!.extra,nativeAttempted:true}});
+  await f.controller.controlQueue(f.room.id,'cancel_all','stop-nested-contact','alice',root.event.id);
+  expect(f.store.getTask(child.taskId)?.status).toBe('cancelled');expect(f.delegations.get(inner.id)?.state).toBe('cancelled');
+});
+
+it('includes running work requested through an ordinary peer message in the original delegation stop chain',async()=>{
+  const f=await fixture(),root=await f.source('让 Bob 协作整理天气报告。'),outer=await f.delegate(root.event,[]),outerClaim=f.claim(outer.peer);
+  f.store.settle({eventId:root.event.id,leaseToken:root.claim.leaseToken,status:'done',content:'已交给 Bob。'});
+  const sent=await f.execute(outer.peer,'message_peer',{companionId:'alice',content:'请你用自己的Worker只读复核天气报告。'},'ask-requester') as {eventIds:string[]};
+  f.store.settle({eventId:outer.peer.id,leaseToken:outerClaim.leaseToken,status:'done',content:'请复核本次报告。'});
+  const peer=f.store.getEvent(sent.eventIds[0]!)!;f.claim(peer);
+  const child=await f.execute(peer,'dsh_task',{goal:'只读复核天气报告。',attachmentIds:[]},'ordinary-causal-worker') as {taskId:string};
+  expect(f.store.getTask(child.taskId)?.extra.causalDelegationId).toBe(outer.ticket.id);
+  f.store.updateTask(child.taskId,{status:'running',extra:{...f.store.getTask(child.taskId)!.extra,nativeAttempted:true}});
+  await f.controller.controlQueue(f.room.id,'cancel_all','stop-derived-peer-work','alice',root.event.id);
+  expect(f.store.getTask(child.taskId)?.status).toBe('cancelled');
+});
+
+it('gives natural group-observer companion messages the same Worker and plan privileges',async()=>{
+  const f=await fixture(),room=f.store.createGroup({title:'伙伴自然交流',memberIds:['alice','bob']});
+  const source=f.store.enqueue({conversationId:room.id,senderId:'user',recipientIds:['alice'],content:'请你们协作核验天气。',sourceMessageId:'natural-group-source'}).events[0]!,claimed=f.claim(source);
+  f.store.setMetadata(`group-discussion:${room.id}:${source.correlationId}`,'1');
+  f.store.settle({eventId:source.id,leaseToken:claimed.leaseToken,status:'done',content:'@bob 请用你的Worker只读核验天气。'});
+  const observed=f.store.observeGroupReply(source.id).find(event=>event.companionId==='bob')!;
+  expect(observed).toMatchObject({source:'group',senderType:'companion',senderId:'alice'});f.claim(observed);
+  const plan=await f.execute(observed,'dsh_plan',{operation:'create',title:'核验天气',stages:[{key:'check',title:'核验',dependsOn:[]}]},'natural-plan') as {plans:Array<{id:string}>};
+  const worker=await f.execute(observed,'dsh_task',{goal:'只读核验天气。',attachmentIds:[],planId:plan.plans[0]!.id,stageKey:'check'},'natural-worker') as {taskId:string};
+  expect(f.store.getTask(worker.taskId)).toMatchObject({companionId:'bob',conversationId:room.id});
+  await f.execute(observed,'dsh_plan',{operation:'cancel',planId:plan.plans[0]!.id},'natural-cancel');
+  expect(f.store.getTask(worker.taskId)?.status).toBe('cancelled');
+});
+
+it('atomically promotes a forwarded multi-worker plan and allows the original user to stop all recipient work',async()=>{
+  const f=await fixture(),root=await f.source('让 Bob 查询并复核上海天气。');
+  await f.execute(root.event,'companion_contact',{companionId:'bob',destination:'user',message:'用户让你查询并复核上海天气，只读联网，不读取本地文件。'},'plan-contact');
+  const peer=f.store.claim({workerId:'forwarded-plan',leaseMs:300000})!.event;expect(peer.companionId).toBe('bob');f.store.bindEventNativeEpoch(peer.id,1);
+  await expect(f.execute(peer,'dsh_plan',{operation:'create',title:'无效计划',stages:[{key:'loop',title:'自身依赖',dependsOn:['loop']}]},'invalid-plan')).rejects.toThrow();
+  expect(f.store.listTasks()).toEqual([]);expect(f.delegations.forEvent(peer)).toBeUndefined();
+  const plan=await f.execute(peer,'dsh_plan',{operation:'create',title:'查询与复核',stages:[{key:'query',title:'只读查询',dependsOn:[]},{key:'check',title:'来源复核',dependsOn:['query']}]},'weather-plan') as {plans:Array<{id:string}>};
+  const ticket=f.delegations.forEvent(peer)!;expect(ticket.goal).toBe(peer.content);
+  const child=await f.execute(peer,'dsh_task',{title:'天气查询',goal:'只读联网查询上海天气，不读取本地文件。',attachmentIds:[],planId:plan.plans[0]!.id,stageKey:'query'},'plan-worker') as {taskId:string};
+  expect(f.store.getTask(child.taskId)?.extra.delegationId).toBe(ticket.id);
+  await f.controller.controlQueue(f.room.id,'cancel_all','stop-forwarded-work','alice',root.event.id);
+  expect(f.store.getTask(child.taskId)?.status).toBe('cancelled');expect(f.store.getTask(ticket.proxyTaskId)?.status).toBe('cancelled');
+  expect(await f.execute(peer,'dsh_task',{goal:'迟到执行',attachmentIds:[]},'after-stop')).toMatchObject({allowed:false});
+});
+
 it('stops an original-owner queue and its recipient children while preserving unrelated peer, direct and group tasks',async()=>{
   const f=await fixture(),root=await f.source(),delegated=await f.delegate(root.event,[]);f.claim(delegated.peer);
   const worker=await f.execute(delegated.peer,'dsh_task',{goal:'核算指定原件。',title:'Bob核算',attachmentIds:[]},'bob-worker') as {taskId:string};

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { BotStore } from './store';
 import type { BotEvent, BotTask } from './types';
 import type { BotTaskFollowupReceipt } from '../../shared/companion-bot';
+import { isBotParticipantRequest } from './participant-request';
 
 type Row = Record<string, unknown>;
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -79,35 +80,38 @@ export class BotCompanionRuntime {
   private authority(event: BotEvent): BotEvent | undefined {
     const current = this.assertEvent(event), room = this.store.getConversation(current.conversationId)!;
     if (this.options.authorityGuard?.(current) === false) return;
-    if (current.source === 'user' && current.senderType === 'user' && current.senderId === 'user' && room.memberIds.includes('user')) return current;
-    // A causal link records context, not authority. Only the host's committed
-    // peer collaboration delivery transfers an original user's work request.
-    // Notifications/world observations cannot create another task, and a
-    // destination=user contact grants a reply only, never computer work.
-    if (current.source !== 'companion' || room.kind !== 'peer' || !current.causationId) return;
+    if (!isBotParticipantRequest(current, room)) return;
+    if (current.source === 'user') return current;
+    // A real peer request has the same privileges as a real user request.
+    // Preserve a committed contact's original lineage rather than treating its
+    // destination as a permission tier. Notifications/world observations cannot
+    // create another task. A contact's
+    // destination selects its reply route, not whether the user's request may
+    // be executed. Both routes require the same committed delivery proof.
+    if (!current.causationId) return current;
     const parent = this.store.getEvent(current.causationId);
-    if (!parent || parent.source !== 'user' || parent.senderType !== 'user' || parent.senderId !== 'user'
-      || parent.correlationId !== current.correlationId || parent.companionId !== current.senderId) return;
+    if (!parent || parent.correlationId !== current.correlationId || parent.companionId !== current.senderId) return;
     try { this.assertEvent(parent); } catch { return; }
     const prefix = `peer-contact:${parent.id}:`;
-    if (!current.sourceMessageId.startsWith(prefix)) return;
+    if (!current.sourceMessageId.startsWith(prefix)) return current.payload.userRequestedContact === true ? undefined : current;
+    if (room.kind !== 'peer' || !isBotParticipantRequest(parent, this.store.getConversation(parent.conversationId)!)) return;
     const saved = this.store.getMetadata(`peer-contact-receipt:${parent.id}:${current.sourceMessageId.slice(prefix.length)}`);
     if (!saved) return;
     const receipt = JSON.parse(saved) as Row;
-    if (receipt.destination !== 'peer' || receipt.recipientId !== current.companionId || receipt.conversationId !== room.id
-      || receipt.messageId !== current.sourceMessageRecordId || receipt.fingerprint !== digest([current.companionId, 'peer', this.store.getMessage(current.sourceMessageRecordId)?.content ?? current.content])
+    if (!['peer', 'user'].includes(String(receipt.destination)) || receipt.recipientId !== current.companionId || receipt.conversationId !== room.id
+      || receipt.messageId !== current.sourceMessageRecordId || receipt.fingerprint !== digest([current.companionId, receipt.destination, this.store.getMessage(current.sourceMessageRecordId)?.content ?? current.content])
       || JSON.stringify([...room.memberIds].sort()) !== JSON.stringify([parent.companionId, current.companionId].sort())) return;
     return parent;
   }
   /** Read-only host verification; a causal link by itself is never a grant. */
   workAuthority(event: BotEvent): BotEvent | undefined { return this.authority(event); }
-  /** New automatic work starts in observation mode until a real human source
-   * grants its scope. Chat participation and resource budgets are not grants. */
+  /** Verified participant requests can start work. System callbacks cannot
+   * create new scope merely by claiming a participant asked for something. */
   authorize(event: BotEvent, operationId: string): { allowed: true; authorizingEventId: string; basis: 'explicit' | 'inherited' } | { allowed: false; observed: true; reason: string } {
     this.assertEvent(event);
     const authority = this.authority(event);
     if (!authority) {
-      const result = { allowed: false as const, observed: true as const, reason: '当前事件没有可核实的用户工作授权；已记录候选，等待用户明确请求，不创建执行任务。' };
+      const result = { allowed: false as const, observed: true as const, reason: '当前事件没有有效的用户或伙伴任务授权，或者原任务已经停止/撤回；不创建执行任务。' };
       this.decide(event, operationId, 'observe', result); return result;
     }
     return { allowed: true, authorizingEventId: authority.id, basis: authority.id === event.id ? 'explicit' : 'inherited' };
@@ -304,7 +308,7 @@ export class BotCompanionRuntime {
     const exists = task && this.store.taskTransaction(sql => sql.prepare(`SELECT 1 FROM bot_tasks t WHERE t.id=? AND t.companion_id=? AND ${visible.predicate}`).get(taskId, event.companionId, ...visible.args));
     const stopControl = !!task && !!options.stopping && (task.extra.cancelRequested === true && !ended.has(task.status)
       || task.status === 'cancelled' || task.extra.humanStopped === true && ended.has(task.status))
-      && (options.stopping === 'status' || event.source === 'user' && event.senderId === 'user' && event.senderType === 'user');
+      && (options.stopping === 'status' || isBotParticipantRequest(event, this.store.getConversation(event.conversationId)));
     if (!task || !exists || task.extra.removedAt || !this.taskVisible(task.id) && !stopControl) throw new Error('任务不属于当前主脑获准的协调视图。');
     return task;
   }

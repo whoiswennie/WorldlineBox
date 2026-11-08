@@ -4,6 +4,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import type { BotDshHandoff } from './dsh-brain';
 import { botTaskRemovalFingerprint } from './task-history';
+import { isBotParticipantRequest } from './participant-request';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotCompanionPresenceEvent, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
@@ -677,7 +678,8 @@ export class BotStore {
    * membership of (or an incoming message in) its user-private channel. */
   contactPeer(source: BotEvent, targetId: string, callId: string, content: string, destination: 'user' | 'peer' = 'peer', transfer?: { attachments: BotMediaRef[]; sourceIds: string[] }) {
     if (!['user', 'peer'].includes(destination)) throw new Error('转达目的地必须为 user 或 peer。');
-    if (source.source !== 'user' || source.senderId !== 'user') throw new Error('联系其他聊天中的伙伴需要当前用户明确请求。');
+    const requestRoom = this.getConversation(source.conversationId);
+    if (!requestRoom || !isBotParticipantRequest(source, requestRoom)) throw new Error('联系其他聊天中的伙伴需要有效的用户或伙伴请求。');
     if (targetId === source.companionId || this.isRetiredDevelopmentDefault(targetId)) throw new Error('请选择另一位可用伙伴。');
     const sender = this.getCompanion(source.companionId), target = this.getCompanion(targetId);
     if (!sender || !target) throw new Error('伙伴不存在。');
@@ -699,7 +701,7 @@ export class BotStore {
       const room = this.openPeer(sender.id, target.id);
       const result = this.tryEnqueueAutomatic({ conversationId: room.id, source: 'companion', senderId: sender.id, recipientIds: [targetId],
         content: text(content, '转达内容', 8000), sourceMessageId: `peer-contact:${source.id}:${callId}`, correlationId: source.correlationId, causationId: source.id,
-        payload: { hop: 1, userRequestedContact: true, originalSenderName: source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer' }, attachments, sourceIds: transferSources });
+        payload: { hop: source.source === 'user' ? 1 : Number(source.payload.hop ?? 0) + 1, userRequestedContact: true, contactRequester: source.senderType === 'companion' ? 'companion' : 'user', originalSenderName: source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer' }, attachments, sourceIds: transferSources });
       if (result.accepted && destination === 'user') for (const event of result.events) this.setMetadata(`peer-user-reply-grant:${event.id}`,
         JSON.stringify({ sourceEventId: source.id, relayMessageId: result.message.id, peerConversationId: room.id, recipientId: target.id,
           requesterId: sender.id, correlationId: source.correlationId, sourceAclRevision: source.aclRevision }));
@@ -726,7 +728,7 @@ export class BotStore {
       const grant = JSON.parse(savedGrant) as { sourceEventId: string; relayMessageId: string; peerConversationId: string; recipientId: string;
         requesterId: string; correlationId: string; sourceAclRevision: number; reply?: { fingerprint: string; result: NonNullable<ReturnType<BotStore['peerReplyReceipt']>> } };
       const origin = this.getEvent(grant.sourceEventId), originRoom = origin && this.getConversation(origin.conversationId), peer = this.getConversation(event.conversationId);
-      if (!origin || origin.source !== 'user' || origin.senderId !== 'user' || !originRoom || originRoom.dissolvedAt || originRoom.revision !== grant.sourceAclRevision
+      if (!origin || !originRoom || !isBotParticipantRequest(origin, originRoom) || originRoom.dissolvedAt || originRoom.revision !== grant.sourceAclRevision
         || !originRoom.memberIds.includes(grant.requesterId) || peer?.kind !== 'peer' || peer.revision !== event.aclRevision || peer.id !== grant.peerConversationId
         || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([grant.requesterId, grant.recipientId].sort())
         || event.companionId !== grant.recipientId || event.senderId !== grant.requesterId || event.sourceMessageRecordId !== grant.relayMessageId
@@ -1477,7 +1479,7 @@ export class BotStore {
   }
   private delegationProxyCanPublish(task: BotTask, event: BotEvent): boolean {
     if (task.extra.delegationProxy !== true || task.extra.humanStopped || task.extra.removedAt || task.extra.pauseRequested
-      || event.source !== 'user' || event.senderId !== 'user' || event.senderType !== 'user' || event.status === 'cancelled') return false;
+      || !isBotParticipantRequest(event, this.getConversation(event.conversationId)!) || event.status === 'cancelled') return false;
     // Ordinary Worker stores predate the delegation module and need no table
     // or metadata lookup. The flag alone is never a publication capability.
     if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_delegations'").get()) return false;
@@ -1493,7 +1495,8 @@ export class BotStore {
       || contact.conversationId !== peer.id || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([event.companionId, ticket.recipientId].sort())) return false;
     return ticket.state === 'active' && ticket.proxyTaskId === task.id && ticket.requesterId === event.companionId && ticket.sourceConversationId === event.conversationId
       && ticket.sourceEventId === event.id && ticket.sourceAclRevision === event.aclRevision && ticket.correlationId === event.correlationId && ticket.goal === task.goal
-      && (task.extra.delegationId === undefined || task.extra.delegationId === ticket.id);
+      && (task.extra.delegationId === undefined || task.extra.delegationId === ticket.id)
+      && (task.extra.externalDelegationId === undefined || task.extra.externalDelegationId === ticket.id);
   }
   private publishMedia(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; relativePath?: string; outputTaskId?: string; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }, task?: BotTask): BotMessage {
     const fingerprint = hash([input.content ?? '', JSON.stringify(input.attachments), input.relativePath ?? '', ...(!task && input.outputTaskId ? [input.outputTaskId] : [])]);

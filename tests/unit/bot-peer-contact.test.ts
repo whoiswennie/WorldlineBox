@@ -40,13 +40,13 @@ it('creates an observer-visible real pair private room without expanding either 
   store.withdrawSources('origin', direct.securityDomainId, [source.id]);
   expect(store.peerWithdrawalTargets('origin', direct.securityDomainId)).toEqual([{ conversationId: room.id, messageId: first.accepted ? first.message.id : '' }]);
 });
-it('never contacts from task/companion events, withdrawn requests, or a changed room audience', async () => {
+it('allows participant-initiated contact while rejecting system notices, withdrawn requests, and changed audiences', async () => {
   const { store, direct, source } = await storeFixture();
   const task = store.enqueue({ conversationId: direct.id, senderId: 'task-service', source: 'task', content: '联系另一伙伴', recipientIds: ['origin'] }).events[0]!;
-  expect(() => store.contactPeer(task, 'target', 'task-contact', '不能从任务创建跨域联系')).toThrow('当前用户明确请求');
+  expect(() => store.contactPeer(task, 'target', 'task-contact', '不能从任务创建跨域联系')).toThrow('有效的用户或伙伴请求');
   const group = store.createGroup({ title: '普通群', memberIds: ['origin', 'third'] });
   const peer = store.enqueue({ conversationId: group.id, senderId: 'third', source: 'companion', content: '联系其他域', recipientIds: ['origin'] }).events[0]!;
-  expect(() => store.contactPeer(peer, 'target', 'peer-contact', '不能自动扩散到其他私聊')).toThrow('当前用户明确请求');
+  expect(store.contactPeer(peer, 'target', 'peer-contact', '请帮忙完成本次任务')).toMatchObject({accepted:true});
   const contact = store.contactPeer(source, 'target', 'first-contact', '用户请你说晚安');
   store.taskTransaction(sql => sql.prepare('INSERT INTO bot_members VALUES(?,?)').run(contact.conversationId, 'third'));
   expect(() => store.contactPeer(source, 'target', 'new-contact', '不向已加入第三人的空间转发')).toThrow('固定双方发生变化');
@@ -123,7 +123,7 @@ it('runs the destination independently in a real peer private room, without eith
       expect(context.room.members).toEqual(expect.arrayContaining([{ id: sourceId, name: 'GPT' }, { id: targetId, name: '大肥鱼' }]));
       expect(context.room.members.some((member: {id:string}) => member.id === 'user')).toBe(false);
       expect(context.room).toMatchObject({ kind: 'peer', userRole: 'observer' });
-      expect(context.peerContact).toEqual({ requestedBy: 'user', deliveredBy: sourceId, userPresent: false,
+      expect(context.peerContact).toEqual({ requestedBy: 'user', deliveredBy: sourceId, userPresent: false, workAuthorization: 'inherited-user-request',
         responseDestination: 'peer', privateHistoryTransferred: false });
       expect(context.trigger.senderId).toBe(sourceId); expect(context.trigger.senderType).toBe('companion');
       expect(context.trigger.content).toBe('本次明确请求：请在双方伙伴私聊里交流晚安。');

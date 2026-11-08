@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { BotStore } from './store';
 import type { BotEvent, BotTask } from './types';
+import { isBotParticipantRequest } from './participant-request';
 
 const key = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u);
 export const botWorkflowStages = z.array(z.strictObject({ key, title: z.string().trim().min(1).max(120), dependsOn: z.array(key).max(8).default([]) })).min(1).max(8);
@@ -87,7 +88,7 @@ export class BotWorkflowRuntime {
   ready(event: BotEvent, planId: string, stageKey: string): void {
     const plan = this.scoped(event, planId), root = this.root(plan), stage = plan.stages.find(stage => stage.key === stageKey);
     if (!stage) throw Error('协作阶段不存在。');
-    if (event.source !== 'user' && event.id !== plan.sourceEventId) {
+    if (!isBotParticipantRequest(event, this.store.getConversation(event.conversationId)!) && event.id !== plan.sourceEventId) {
       const parent = plan.stages.find(value => value.taskId === event.payload.taskId);
       if (event.source !== 'task' || !parent || event.correlationId !== root.correlationId) throw Error('该通知不能推进此协作计划。');
     }
@@ -171,7 +172,7 @@ export class BotWorkflowRuntime {
     }) }; }), ...(plans.length > 10 ? { nextOffset: offset + 10 } : {}) };
   }
   cancel(event: BotEvent, id: string, callId?: string): string[] {
-    if (event.source !== 'user') throw Error('停止整个协作计划需要用户请求。');
+    if (!isBotParticipantRequest(event, this.store.getConversation(event.conversationId)!)) throw Error('停止整个协作计划需要用户或伙伴请求。');
     const plan = this.scoped(event, id);
     this.store.taskTransaction(() => { plan.state = 'cancelled'; this.save(plan); if (callId) this.recordCommand(event, callId, id, { operation: 'cancel', planId: id }); });
     return plan.stages.flatMap(stage => stage.taskId ? [stage.taskId] : []);

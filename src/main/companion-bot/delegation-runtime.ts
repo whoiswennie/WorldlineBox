@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import type {BotStore} from './store';
 import type {BotEvent,BotTask} from './types';
+import {isBotParticipantRequest} from './participant-request';
 
 const id=z.string().min(1).max(200).regex(/^[A-Za-z0-9_-]+$/u);
 const inputSchema=z.strictObject({recipientId:id,peerConversationId:id,contactEventId:id,proxyTaskId:id,goal:z.string().trim().min(1).max(32000),title:z.string().trim().min(1).max(120)});
@@ -54,7 +55,7 @@ export class BotDelegationRuntime {
     if(!source||!contact)throw Error('委派缺少原始用户请求或真实转达事件。');
     this.assertEvent(source);this.assertEvent(contact);
     const room=this.store.getConversation(source.conversationId)!,peer=this.store.getConversation(contact.conversationId)!;
-    if(source.source!=='user'||source.senderId!=='user'||source.senderType!=='user'||source.status==='cancelled'||!room.memberIds.includes('user')
+    if(!isBotParticipantRequest(source,room)||source.status==='cancelled'
       ||source.companionId!==ticket.requesterId||source.conversationId!==ticket.sourceConversationId||source.aclRevision!==ticket.sourceAclRevision
       ||source.correlationId!==ticket.correlationId||contact.source!=='companion'||contact.senderType!=='companion'||contact.senderId!==ticket.requesterId
       ||contact.companionId!==ticket.recipientId||contact.conversationId!==ticket.peerConversationId||contact.causationId!==source.id
@@ -65,8 +66,8 @@ export class BotDelegationRuntime {
     const saved=this.store.getMetadata(`peer-contact-receipt:${source.id}:${contact.sourceMessageId.slice(prefix.length)}`);
     const receipt=saved?JSON.parse(saved) as Record<string,unknown>:undefined;
     const message=this.store.getMessage(contact.sourceMessageRecordId);
-    if(!receipt||!message||receipt.destination!=='peer'||receipt.recipientId!==ticket.recipientId||receipt.conversationId!==ticket.peerConversationId
-      ||receipt.messageId!==contact.sourceMessageRecordId||receipt.fingerprint!==digest([ticket.recipientId,'peer',message.content]))throw Error('委派缺少可核实的伙伴转达回执。');
+    if(!receipt||!message||!['peer','user'].includes(String(receipt.destination))||receipt.recipientId!==ticket.recipientId||receipt.conversationId!==ticket.peerConversationId
+      ||receipt.messageId!==contact.sourceMessageRecordId||receipt.fingerprint!==digest([ticket.recipientId,receipt.destination,message.content]))throw Error('委派缺少可核实的伙伴转达回执。');
     if(receipt.transferFingerprint||message.attachments?.length){
       const sources=this.store.messageSourceIds(message.id).filter(sourceId=>sourceId!==message.id).sort();
       if(receipt.transferFingerprint!==digest([JSON.stringify(message.attachments??[]),JSON.stringify(sources)]))throw Error('委派附件或原始授权血缘与真实转达回执不匹配。');
@@ -76,7 +77,8 @@ export class BotDelegationRuntime {
   private proxy(ticket:BotDelegationTicket):BotTask{
     const proxy=this.store.getTask(ticket.proxyTaskId);
     if(!proxy||proxy.sourceEventId!==ticket.sourceEventId||proxy.companionId!==ticket.requesterId||proxy.conversationId!==ticket.sourceConversationId
-      ||proxy.goal!==ticket.goal||typeof proxy.extra.delegationId==='string'&&proxy.extra.delegationId!==ticket.id)throw Error('委派代理任务与原始用户请求不匹配。');
+      ||proxy.goal!==ticket.goal||typeof proxy.extra.delegationId==='string'&&proxy.extra.delegationId!==ticket.id
+      ||typeof proxy.extra.externalDelegationId==='string'&&proxy.extra.externalDelegationId!==ticket.id)throw Error('委派代理任务与原始用户请求不匹配。');
     return proxy;
   }
   assertActive(ticket:BotDelegationTicket):void{
@@ -89,7 +91,7 @@ export class BotDelegationRuntime {
   }
   create(source:BotEvent,callId:string,input:BotDelegationCreateInput):BotDelegationTicket{
     const actual=this.assertEvent(source),args=inputSchema.parse(input);id.parse(callId);
-    if(actual.source!=='user'||actual.senderId!=='user'||actual.senderType!=='user'||args.recipientId===actual.companionId)throw Error('跨伙伴委派需要当前用户明确请求及另一位伙伴。');
+    if(!isBotParticipantRequest(actual,this.store.getConversation(actual.conversationId)!)||args.recipientId===actual.companionId)throw Error('跨伙伴委派需要有效的用户或伙伴请求及另一位伙伴。');
     const ticketId='delegation-'+digest([actual.id,callId]).slice(0,40),now=stamp();
     const ticket:BotDelegationTicket={...args,id:ticketId,sourceEventId:actual.id,requesterId:actual.companionId,sourceConversationId:actual.conversationId,
       state:'active',correlationId:actual.correlationId,sourceAclRevision:actual.aclRevision,createdAt:now,updatedAt:now};
@@ -118,8 +120,9 @@ export class BotDelegationRuntime {
     }
     if(current.source!=='task'||current.senderId!=='task-service'||typeof current.payload.taskId!=='string')return;
     const task=this.store.getTask(current.payload.taskId);
-    if(!task||typeof task.extra.delegationId!=='string')return;
-    const ticket=this.require(task.extra.delegationId);
+    const delegationId=task?.extra.delegationId??task?.extra.parentDelegationId;
+    if(!task||typeof delegationId!=='string')return;
+    const ticket=this.require(delegationId);
     if(task.id===ticket.proxyTaskId||task.companionId!==ticket.recipientId||task.conversationId!==ticket.peerConversationId)return;
     if(current.companionId!==ticket.recipientId||current.conversationId!==ticket.peerConversationId||current.correlationId!==ticket.correlationId
       ||current.causationId!==task.sourceEventId)throw Error('任务通知不属于此伙伴委派。');
@@ -139,11 +142,36 @@ export class BotDelegationRuntime {
   }
   tasks(ticketId:string):BotTask[]{
     const ticket=this.require(ticketId);
-    const rows=this.store.taskTransaction(sql=>sql.prepare(`SELECT id FROM bot_tasks WHERE companion_id=? AND conversation_id=? AND id<>? AND json_extract(extra_json,'$.delegationId')=? ORDER BY created_at,id`)
-      .all(ticket.recipientId,ticket.peerConversationId,ticket.proxyTaskId,ticket.id)) as Array<{id:string}>;
+    const rows=this.store.taskTransaction(sql=>sql.prepare(`SELECT id FROM bot_tasks WHERE companion_id=? AND conversation_id=? AND id<>? AND (json_extract(extra_json,'$.delegationId')=? OR json_extract(extra_json,'$.parentDelegationId')=?) ORDER BY created_at,id`)
+      .all(ticket.recipientId,ticket.peerConversationId,ticket.proxyTaskId,ticket.id,ticket.id)) as Array<{id:string}>;
     return rows.flatMap(row=>{const task=this.store.getTask(row.id);return task?[task]:[];});
   }
-  allowsWork(event:BotEvent):boolean{try{const ticket=this.forEvent(event);if(ticket)this.assertActive(ticket);return true;}catch{return false;}}
+  causalParent(event:BotEvent):BotDelegationTicket|undefined{
+    const visited=new Set<string>();let current:BotEvent|undefined=this.assertEvent(event);
+    while(current){
+      if(visited.has(current.id)||visited.size>=32)throw Error('任务因果链无效。');visited.add(current.id);
+      const ticket=this.forEvent(current);if(ticket){this.assertActive(ticket);return ticket;}
+      current=current.causationId?this.store.getEvent(current.causationId):undefined;
+    }
+  }
+  controlledTasks(ticketId:string):BotTask[]{
+    const own=this.tasks(ticketId),rows=this.store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_tasks WHERE id<>? AND json_extract(extra_json,'$.causalDelegationId')=? ORDER BY created_at,id")
+      .all(this.require(ticketId).proxyTaskId,ticketId)) as Array<{id:string}>;
+    return [...new Map([...own,...rows.flatMap(row=>{const task=this.store.getTask(row.id);return task?[task]:[];})].map(task=>[task.id,task])).values()];
+  }
+  allowsWork(event:BotEvent):boolean{
+    try{
+      const visited=new Set<string>();let current:BotEvent|undefined=event;
+      // Equal participant privileges do not revive a stopped delegation via a
+      // late ordinary peer message derived from its old Worker or contact.
+      while(current){
+        if(visited.has(current.id)||visited.size>=32)return false;visited.add(current.id);
+        const ticket=this.forEvent(current);if(ticket)this.assertActive(ticket);
+        current=current.causationId?this.store.getEvent(current.causationId):undefined;
+      }
+      return true;
+    }catch{return false;}
+  }
   scoped(event:BotEvent,ticketId:string):BotDelegationTicket{
     const current=this.assertEvent(event),ticket=this.require(ticketId);
     if(!(current.companionId===ticket.requesterId&&current.conversationId===ticket.sourceConversationId)
@@ -157,7 +185,9 @@ export class BotDelegationRuntime {
       let available=true;try{this.assertGrant(ticket);}catch{available=false;}
       let allowsWork=false;try{this.assertActive(ticket);allowsWork=true;}catch{/* A read-only status must not restore stopped authority. */}
       const tasks=available?this.tasks(ticket.id):[];
+      const ownIds=new Set(tasks.map(task=>task.id)),derived=available?this.controlledTasks(ticket.id).filter(task=>!ownIds.has(task.id)):[];
       return{...ticket,title:available?ticket.title:'',goal:available?ticket.goal.slice(0,2000):'',available,allowsWork,taskCount:tasks.length,
+        derivedTaskCount:derived.length,derivedTasks:derived.slice(0,10).map(task=>({id:task.id,companionId:task.companionId,status:task.extra.removedAt?'removed':task.status})),
         tasks:tasks.slice(0,10).map(task=>({id:task.id,status:task.extra.removedAt?'removed':task.status,title:typeof task.extra.title==='string'?task.extra.title.slice(0,120):task.goal.slice(0,120),
           updatedAt:task.updatedAt,...(task.extra.progress&&typeof task.extra.progress==='object'?{progress:{phase:String((task.extra.progress as Record<string,unknown>).phase??'').slice(0,100),detail:String((task.extra.progress as Record<string,unknown>).detail??'').slice(0,1000)}}:{})}))};
     }),...(tickets.length>limit?{nextOffset:offset+limit}:{})};
@@ -175,7 +205,7 @@ export class BotDelegationRuntime {
     id.parse(scope);if(requesterId)id.parse(requesterId);
     return this.store.taskTransaction(sql=>{
       const rows=sql.prepare(`SELECT id FROM bot_delegations WHERE source_conversation_id=?${requesterId?' AND requester_id=?':''}`).all(scope,...(requesterId?[requesterId]:[])) as Array<{id:string}>;
-      const tickets=rows.map(row=>this.require(row.id)).filter(ticket=>ticket.state==='active');const taskIds=[...new Set(tickets.flatMap(ticket=>this.tasks(ticket.id).map(task=>task.id)))];
+      const tickets=rows.map(row=>this.require(row.id)).filter(ticket=>ticket.state==='active');const taskIds=[...new Set(tickets.flatMap(ticket=>this.controlledTasks(ticket.id).map(task=>task.id)))];
       return{tickets:tickets.map(ticket=>this.finish(ticket.id,'cancelled')),taskIds};
     });
   }

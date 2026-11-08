@@ -211,6 +211,6 @@ it('executes the actual actor-bound maintenance tool as plan/status only and ref
   const result = await internal.executeTool(f.event, call, new AbortController().signal);
   expect(result).toMatchObject({ accepted: true, job: { kind: 'dream', status: 'queued' } });
   expect(journal.list(f.scope).items).toHaveLength(1); expect(journal.candidates(f.scope, journal.list(f.scope).items[0]!.id).items).toEqual([]);
-  await expect(internal.executeTool({ ...f.event, source: 'world' }, { ...call, callId: 'world-plan' }, new AbortController().signal)).rejects.toThrow('用户本轮请求');
+  await expect(internal.executeTool({ ...f.event, source: 'world' }, { ...call, callId: 'world-plan' }, new AbortController().signal)).rejects.toThrow(/请求|失效/u);
   expect(f.getHost).not.toHaveBeenCalled();
 });

@@ -14,6 +14,7 @@ import { BotScheduler } from './scheduler';
 import { BotStore } from './store';
 import { botLocalTimestamp, buildBotContext } from './context';
 import { taskContextPolicy } from './task-context-policy';
+import { isBotParticipantRequest } from './participant-request';
 import { BotWorkflowRuntime, botWorkflowStages } from './workflow-runtime';
 import { BotDelegationRuntime, type BotDelegationTicket } from './delegation-runtime';
 import { botHandoffFile, botTaskFileEvidence, buildBotTaskPrompt } from './task-handoff';
@@ -574,7 +575,9 @@ export class BotService {
       if (!task) return { state: 'absent' };
       if (task.sourceEventId !== event.id || task.companionId !== event.companionId || task.conversationId !== event.conversationId
         || task.extra.dispatchFingerprint !== digest(JSON.stringify(call.args))) return { state: 'unknown' };
-      const result = { taskId: task.id, mandateId: this.companionRuntime.mandate(task.id)?.id, status: task.status, meaning: '原任务提交已经持久保存；读取真实状态，不重复派发。' };
+      const result = { taskId: task.id, mandateId: this.companionRuntime.mandate(task.id)?.id, status: task.status,
+        ...(typeof task.extra.delegationId === 'string' ? { delegationId: task.extra.delegationId, resultDelivery: 'companion_delegation.result' } : {}),
+        meaning: '原任务提交已经持久保存；读取真实状态，不重复派发。' };
       this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return { state: 'committed', result };
     }
     if (call.name === 'memory_write') {
@@ -616,7 +619,7 @@ export class BotService {
       this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return { state: 'committed', result };
     }
     if (call.name === 'memory_maintenance') {
-      if (event.source !== 'user' || call.args.operation !== 'plan') return { state: 'unknown' };
+      if (!this.companionRuntime.workAuthority(event) || call.args.operation !== 'plan') return { state: 'unknown' };
       const proof = this.memoryMaintenance.journal.toolReceipt(scopeFor(event), z.enum(['organize', 'dream']).parse(call.args.kind ?? 'organize'), `${event.id}:${call.callId}`);
       if (!proof.found) return { state: 'absent' };
       this.store.setMetadata(key, JSON.stringify({ fingerprint, result: proof.result })); return { state: 'committed', result: proof.result };
@@ -1012,7 +1015,7 @@ export class BotService {
         const taskFollowup = followed ? { taskId: followed.id, ...(followedAttention?.state === 'queued' ? { questionId: followedAttention.id } : {}) } : undefined;
         const files = await this.verifiedAttachmentFiles(event, undefined, contextThrough, signal);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        const context = buildBotContext({ companion, event, taskFollowup, delegation: this.delegations.forEvent(event), files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
+        const context = buildBotContext({ companion, event, taskFollowup, participantWorkAuthorized: event.senderType === 'companion' && isBotParticipantRequest(event, room) ? !!this.companionRuntime.workAuthority(event) : undefined, delegation: this.delegations.forEvent(event), contactWorkAuthorized: event.source === 'companion' && event.payload.userRequestedContact === true ? !!this.companionRuntime.workAuthority(event) : undefined, files, taskPolicy: taskContextPolicy(this.store, event), capabilities: this.options.capabilityState?.(event.companionId), historyThroughSequence: contextThrough, agent: this.companionRuntime.view(event), conversation: room, participants, companionDirectory: this.store.listCompanions(), maxEnvelopeChars: DEFAULT_MODEL_CONTEXT_CHARS - handoffChars, messages: history.filter(message => !withdrawn.has(message.id)), memories: prepared.evidence,
           referenceLongTriggers: this.options.brainRuntime === 'worldlinebox',
           fitsEnvelope: this.options.brainRuntime === 'worldlinebox' ? (system, user) => {
             const prompt = handoffView ? JSON.stringify({ ...JSON.parse(user), nativeHandoff: handoffView }) : user;
@@ -1310,7 +1313,7 @@ export class BotService {
       }
       case 'memory_maintenance': {
         const operation = z.enum(['plan', 'status']).parse(args.operation);
-        if (operation === 'plan' && event.source !== 'user') throw new Error('后台来源只能查看维护状态；新计划需要用户本轮请求。');
+        if (operation === 'plan' && !this.companionRuntime.workAuthority(event)) throw new Error('维护计划需要有效的用户或伙伴请求；后台通知不能自行创建。');
         const result = this.memoryMaintenance.tool(scope, { operation, kind: z.enum(['organize', 'dream']).optional().parse(args.kind), jobId: z.string().min(1).max(160).optional().parse(args.jobId) }, `${event.id}:${call.callId}`);
         this.maintainSafely(); return result;
       }
@@ -1439,6 +1442,9 @@ export class BotService {
       case 'companion_reply_user': {
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         if (causalHop(event) >= maxCausalHop) return causalLimit();
+        const delegation = this.delegations.forEvent(event);
+        if (delegation) return { sent: false, delegationId: delegation.id, requiredNextAction: delegation.state === 'active' ? 'companion_delegation.result' : 'none',
+          reason: delegation.state === 'active' ? '这次转达已进入正式任务协作；核验实际成果后用companion_delegation.result交回原用户聊天，不要求用户重复请求。' : '本次任务委派已经结束，不重复发送成果。' };
         const result = this.store.replyPeerToUser(event, call.callId, z.string().trim().min(1).max(24000).parse(args.message));
         this.changed(result.conversationId); this.changed(event.conversationId); return result;
       }
@@ -1468,7 +1474,15 @@ export class BotService {
         const operation = z.enum(['create', 'status', 'cancel']).parse(args.operation);
         if (operation === 'status') return this.workflows.status(event, z.string().min(1).max(200).optional().parse(args.planId), z.number().int().min(0).max(1000000).default(0).parse(args.offset));
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        if (operation === 'create') return this.workflows.create(event, call.callId, z.string().trim().min(1).max(120).parse(args.title), botWorkflowStages.parse(args.stages));
+        if (operation === 'create') {
+          const title = z.string().trim().min(1).max(120).parse(args.title), stages = botWorkflowStages.parse(args.stages);
+          const plan = this.store.taskTransaction(() => {
+            this.promoteContactWork(event, title);
+            return this.workflows.create(event, call.callId, title, stages);
+          });
+          const ticket = this.delegations.forEvent(event); if (ticket) this.changed(ticket.sourceConversationId);
+          return plan;
+        }
         const taskIds = this.workflows.cancel(event, nonempty.parse(args.planId), call.callId);
         for (const taskId of taskIds) { const task = this.store.getTask(taskId); if (task) await this.controlTask(task, 'cancel', undefined, `${event.id}:${call.callId}:${taskId}`, { caller: 'brain', source: event.source, sourceEventId: event.id }); }
         return this.workflows.status(event, String(args.planId));
@@ -1476,6 +1490,7 @@ export class BotService {
       case 'dsh_task': {
         if (this.companionRuntime.boundFollowup(event)) return { allowed: false, reason: '当前消息已绑定原任务跟进，不能另建任务。' };
         if (causalHop(event) >= maxCausalHop) return causalLimit();
+        nonempty.parse(args.goal);
         const id = `task-${digest(`${event.id}:${call.callId}`).slice(0, 48)}`;
         const workflow = args.planId === undefined && args.stageKey === undefined ? undefined
           : z.strictObject({ planId: z.string().min(1).max(200), stageKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u) }).parse({ planId: args.planId, stageKey: args.stageKey });
@@ -1492,17 +1507,23 @@ export class BotService {
         for (let index = 0; index < requested.length; index += 64) attachmentRefs.push(...await this.requireMedia().resolveForConversation(event.conversationId, requested.slice(index, index + 64)));
         const attachmentIds = attachmentRefs.map(ref => ref.id);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
-        const { task, mandate } = this.store.taskTransaction(() => {
+        const { task, mandate, contactWork } = this.store.taskTransaction(() => {
+          const contactWork = this.promoteContactWork(event, typeof args.title === 'string' ? args.title.slice(0, 120) : '伙伴协作任务');
+          const causalParent = contactWork ? undefined : this.delegations.causalParent(event);
           const task = this.store.createTask({ id, conversationId: event.conversationId, companionId: event.companionId,
             sourceEventId: event.id, goal: nonempty.parse(args.goal), attachmentGrants, extra: { title: typeof args.title === 'string' ? args.title : 'DSH任务', securityDomainId: event.securityDomainId,
               dispatchFingerprint: digest(JSON.stringify(call.args)),
               ...(this.delegations.forEvent(event) ? { delegationId: this.delegations.forEvent(event)!.id } : {}),
+              ...(causalParent ? { causalDelegationId: causalParent.id } : {}),
               ...(workflow ? { workflowId: workflow.planId, workflowStage: workflow.stageKey } : {}),
               attachmentIds, handoffThroughSequence: through, workspaceLayout: 'companion-v1', workerAccess: 'full' } });
           if (workflow) this.workflows.bind(event, task, workflow.planId, workflow.stageKey);
-          return { task, mandate: this.companionRuntime.bindTask(task) };
+          return { task, mandate: this.companionRuntime.bindTask(task), contactWork };
         });
-        this.launchTask(task); this.changed(event.conversationId); return { taskId: task.id, mandateId: mandate.id, status: task.status, meaning: '任务已持久保存并交由DSH执行，完成后回报；尚未完成。' };
+        if (contactWork) this.changed(contactWork.sourceConversationId);
+        this.launchTask(task); this.changed(event.conversationId); return { taskId: task.id, mandateId: mandate.id, status: task.status,
+          ...(contactWork ? { delegationId: contactWork.id, resultDelivery: 'companion_delegation.result', meaning: '用户转交请求已确认，正式协作已建立。任务由自己的DSH执行，核验成果后通过companion_delegation.result交回原用户聊天，无需用户再请求一次。' }
+            : { meaning: '任务已持久保存并交由DSH执行，完成后回报；尚未完成。' }) };
       }
       case 'dsh_task_result_read': {
         const task = this.store.getTask(nonempty.parse(args.taskId));
@@ -1563,11 +1584,34 @@ export class BotService {
       default: throw new Error('未知主脑工具。');
     }
   }
-  /** Cross-companion work is a durable, narrow subscription to a real user
-   * request. A proxy is visible in that user's room; execution stays with B. */
+  /** A verified contact may contain work even when its sender selected the
+   * user-reply route. Promote only when the recipient actually requests work;
+   * greetings stay messages. One contact owns one durable, controllable proxy. */
+  private promoteContactWork(event: BotEvent, title: string) {
+    const existing = this.delegations.forEvent(event);
+    if (existing || event.source !== 'companion') return existing;
+    const source = this.companionRuntime.workAuthority(event);
+    if (!source || source.id === event.id || !event.sourceMessageId.startsWith(`peer-contact:${source.id}:`)) return;
+    return this.store.taskTransaction(() => {
+      const prior = this.delegations.forEvent(event); if (prior) return prior;
+      const proxy = this.store.createTask({ id: `task-contact-${digest(event.id).slice(0, 40)}`, conversationId: source.conversationId,
+        companionId: source.companionId, sourceEventId: source.id, goal: event.content,
+        extra: { title: title.trim() || '伙伴协作任务', delegationProxy: true, attachmentIds: [], securityDomainId: source.securityDomainId,
+          ...(this.delegations.forEvent(source) ? { parentDelegationId: this.delegations.forEvent(source)!.id } : {}),
+          progress: { phase: 'queued', detail: `交给${this.store.getCompanion(event.companionId)!.name}处理。` } } });
+      this.companionRuntime.bindTask(proxy);
+      const ticket = this.delegations.create(source, `contact-work-${digest(event.id).slice(0, 40)}`, {
+        recipientId: event.companionId, peerConversationId: event.conversationId, contactEventId: event.id, proxyTaskId: proxy.id,
+        goal: proxy.goal, title: title.trim() || '伙伴协作任务' });
+      this.store.updateTask(proxy.id, { extra: { ...proxy.extra, externalDelegationId: ticket.id } });
+      return ticket;
+    });
+  }
+  /** Cross-companion work is a durable subscription to a real participant
+   * request. Its proxy stays in the original room; execution stays with B. */
   private async delegateTask(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> {
     this.assertCurrentEvent(event); signal.throwIfAborted();
-    if (event.source !== 'user' || this.companionRuntime.boundFollowup(event)) throw new Error('跨伙伴委派需要当前用户请求，任务跟进不能另建委派。');
+    if (!this.companionRuntime.workAuthority(event) || this.companionRuntime.boundFollowup(event)) throw new Error('跨伙伴委派需要有效的用户或伙伴请求，任务跟进不能另建委派。');
     const args = z.strictObject({ companionId: z.string().min(1).max(160), title: z.string().trim().min(1).max(120), goal: z.string().trim().min(1).max(8000),
       attachmentIds: z.array(z.string().min(1).max(160)).max(16).optional(), planId: z.string().min(1).max(200).optional(), stageKey: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/u).optional() }).parse(call.args);
     if (Boolean(args.planId) !== Boolean(args.stageKey)) throw new Error('委派阶段需要同时指定计划和阶段。');
@@ -1586,6 +1630,8 @@ export class BotService {
       const proxy = this.store.createTask({ id: `task-${digest(`${event.id}:${call.callId}`).slice(0,48)}`, conversationId: event.conversationId,
         companionId: event.companionId, sourceEventId: event.id, goal: args.goal, attachmentGrants: grants, extra: { title: args.title,
           delegationProxy: true, dispatchFingerprint: digest(JSON.stringify(call.args)), attachmentIds: ids, securityDomainId: event.securityDomainId,
+          ...(this.delegations.forEvent(event) ? { parentDelegationId: this.delegations.forEvent(event)!.id } : {}),
+          ...(!this.delegations.forEvent(event) && this.delegations.causalParent(event) ? { causalDelegationId: this.delegations.causalParent(event)!.id } : {}),
           ...(args.planId ? { workflowId: args.planId, workflowStage: args.stageKey } : {}), progress: { phase: 'queued', detail: `交给${target.name}处理。` } } });
       if (args.planId) this.workflows.bind(event, proxy, args.planId, args.stageKey!);
       this.companionRuntime.bindTask(proxy);
@@ -1627,6 +1673,7 @@ export class BotService {
     if (bound?.id!==ticket.id||event.companionId!==ticket.recipientId||event.conversationId!==ticket.peerConversationId) throw new Error('只能由实际接收委派的伙伴交回成果。');
     const tasks=this.delegations.tasks(ticket.id);
     if(!tasks.length||tasks.some(task=>!['succeeded','failed'].includes(task.status)||task.extra.humanStopped||task.extra.removedAt)) throw new Error('应先完成本委派实际Worker，未完成、暂停或停止的任务不能当作交付。');
+    if(this.delegations.controlledTasks(ticket.id).some(task=>!['succeeded','failed'].includes(task.status)||task.extra.humanStopped||task.extra.removedAt))throw new Error('本委派派生的伙伴任务尚未完成，不能提前交付。');
     const plans=this.workflows.status(event).plans;
     if(plans?.some(plan=>plan.state==='active' && plan.stages.some(stage=>tasks.some(task=>task.id===stage.taskId)))) throw new Error('本委派还有未完成的计划阶段。');
     const outputs=[...new Set(tasks.flatMap(task=>this.store.publicationsForTask(task.id).flatMap(output=>output.attachmentIds)))];
@@ -1680,7 +1727,7 @@ export class BotService {
     }
     const cancel=operation==='cancel'||operation==='remove';
     if(!cancel&&!['pause','resume_paused'].includes(operation))throw new Error('伙伴委派支持查看、补充、暂停、恢复、停止和移除；实际问题由接收方主脑处理。');
-    const childIds=this.delegations.tasks(ticket.id).map(task=>task.id);
+    const childIds=this.delegations.controlledTasks(ticket.id).map(task=>task.id);
     if(cancel){if(ticket.state==='active')this.delegations.finish(ticket.id,'cancelled');this.companionRuntime.withdraw(proxy.id);
       this.store.updateTask(proxy.id,{extra:{...proxy.extra,humanStopped:true,cancelRequested:true,humanStoppedAt:new Date().toISOString()}});
       this.finishTask(this.store.getTask(proxy.id)!,'cancelled',proxy.summary??'');this.suppressStoppedTaskNotices(proxy.id,event?.id);
@@ -1708,7 +1755,7 @@ export class BotService {
   private remindDelegationReturn(event:BotEvent):void{
     const ticket=this.delegations.forEvent(event);if(!ticket||ticket.state!=='active')return;
     this.delegations.assertActive(ticket);
-    const tasks=this.delegations.tasks(ticket.id);if(!tasks.length||tasks.some(task=>!['succeeded','failed'].includes(task.status)||task.extra.removedAt||task.extra.humanStopped))return;
+    const tasks=this.delegations.tasks(ticket.id);if(!tasks.length||this.delegations.controlledTasks(ticket.id).some(task=>!['succeeded','failed'].includes(task.status)||task.extra.removedAt||task.extra.humanStopped))return;
     const planIds=[...new Set(tasks.map(task=>task.extra.workflowId).filter((id):id is string=>typeof id==='string'))];
     if(planIds.some(id=>this.workflows.status(event,id).plans.some(plan=>!['completed','blocked'].includes(plan.state))))return;
     const key=`delegation-return-reminders:${ticket.id}`,count=Number(this.store.getMetadata(key)??0);
@@ -1717,7 +1764,7 @@ export class BotService {
     this.store.taskTransaction(()=>{
       this.store.enqueueTaskNotice({conversationId:ticket.peerConversationId,senderId:'task-service',senderName:'协作交付',source:'task',
         sourceMessageId:`delegation-return-reminder:${ticket.id}:${count+1}`,recipientIds:[ticket.recipientId],kind:'task_done',
-        content:'正式伙伴委派的实际Worker已返回，原用户聊天尚未收到交付。请核验这些真实结果后调用companion_delegation.result；省略attachmentIds会交回本委派Worker已发布的成果文件。普通正文或message_peer不完成交付，不另派任务，不将其他聊天带入。',
+        content:'正式伙伴委派的实际Worker已返回，原委派聊天尚未收到交付。请现在先核验这些真实结果并调用companion_delegation.result；失败、缺少可用数据或工具不可用也应如实交回，不用询问是否重做代替交付；省略attachmentIds会交回本委派Worker已发布的成果文件。普通正文或message_peer不完成交付，不另派任务，不将其他聊天带入。',
         correlationId:ticket.correlationId,causationId:source.id,payload:{taskId:task.id,attemptId:task.attemptId,hop:Math.min(5,causalHop(event)+1)}});
       this.store.setMetadata(key,String(count+1));
     });this.scheduler.wake();this.changed(ticket.peerConversationId);
@@ -1726,7 +1773,7 @@ export class BotService {
     const rows=this.store.taskTransaction(sql=>sql.prepare("SELECT id,rowid AS seq FROM bot_delegations WHERE rowid>? AND json_extract(record_json,'$.state')<>'completed' ORDER BY rowid LIMIT 32").all(this.delegationCursor)) as Array<{id:string;seq:number}>;
     this.delegationCursor=rows.at(-1)?.seq??0;
     for(const row of rows){const ticket=this.delegations.get(row.id)!,proxy=this.store.getTask(ticket.proxyTaskId);if(!proxy)continue;
-      const needsCleanup=ticket.state==='cancelled'&&this.delegations.tasks(ticket.id).some(task=>!['succeeded','failed','cancelled'].includes(task.status));
+      const needsCleanup=ticket.state==='cancelled'&&this.delegations.controlledTasks(ticket.id).some(task=>!['succeeded','failed','cancelled'].includes(task.status));
       let invalid=false;if(ticket.state==='active'&&proxy.status!=='paused')try{this.delegations.assertActive(ticket);}catch{invalid=true;}
       if(needsCleanup||invalid){if(this.delegationCleanup.size<4&&!this.delegationCleanup.has(ticket.id)){
         this.delegationCleanup.add(ticket.id);void this.controlDelegation(ticket,'cancel',undefined,`host-close:${ticket.id}`,{caller:'user'})
@@ -2136,7 +2183,10 @@ export class BotService {
   private async controlTask(task: BotTask, operation: 'status' | 'send' | 'cancel' | 'answer' | 'resume' | 'continue' | 'pause' | 'resume_paused' | 'remove', text?: string, messageId: string = randomUUID(), input: Omit<BotTaskControlInput, 'requestId' | 'text'> = { caller: 'brain' }): Promise<unknown> {
     if (!['status', 'cancel', 'pause', 'remove'].includes(operation) && this.store.getCompanion(task.companionId)?.enabled === false) throw new Error('伙伴已关闭，请先启用后再继续任务。');
     if (!['status', 'cancel', 'pause', 'remove'].includes(operation)) await this.ensureCompanionBindings([task.companionId]);
-    const userControl = input.caller === 'user' || input.source === 'user';
+    const request = input.sourceEventId ? this.store.getEvent(input.sourceEventId) : undefined;
+    const userControl = input.caller === 'user' || input.source === 'user' || !!request && request.senderType === 'companion'
+      && request.companionId === task.companionId && request.conversationId === task.conversationId
+      && isBotParticipantRequest(request, this.store.getConversation(request.conversationId)!) && !!this.companionRuntime.workAuthority(request);
     let routerControl = false;
     if (!userControl && input.caller === 'brain' && input.sourceEventId && ['cancel', 'pause', 'resume_paused', 'remove', 'continue'].includes(operation)) {
       const event = this.store.getEvent(input.sourceEventId);

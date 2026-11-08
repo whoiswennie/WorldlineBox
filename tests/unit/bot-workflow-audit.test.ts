@@ -3,6 +3,7 @@ import { BotStore } from '../../src/main/companion-bot/store';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotCompanionRuntime } from '../../src/main/companion-bot/companion-runtime';
 import { BotWorkflowRuntime } from '../../src/main/companion-bot/workflow-runtime';
+import { BotDelegationRuntime } from '../../src/main/companion-bot/delegation-runtime';
 import type { BotActivityBudgetPolicy } from '../../src/main/companion-bot/activity-budget';
 import type { BotEvent } from '../../src/main/companion-bot/types';
 import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
@@ -30,7 +31,7 @@ function fixture(activityBudget?: Partial<BotActivityBudgetPolicy>) {
     content: '请按原始资料并行核算与审计，拿到真实结果后汇总；允许请 Bob 在双方私聊里协作。' }).events[0]!;
   const claim = store.claim({ workerId: 'audit-claim' })!; expect(claim.event.id).toBe(root.id); store.bindEventNativeEpoch(root.id, 1);
   const service = Object.create(BotService.prototype) as BotService;
-  Object.assign(service, { store, options: {}, workflows, companionRuntime: runtime });
+  Object.assign(service, { store, options: {}, workflows, companionRuntime: runtime, delegations: new BotDelegationRuntime(store) });
   const execute = (event: BotEvent, name: string, args: Record<string, unknown>, callId: string) => (service as unknown as {
     executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown>;
   }).executeTool(event, { laneId: event.laneId, eventId: event.id, name, args, callId }, new AbortController().signal);
@@ -57,14 +58,14 @@ it('lets a verified work delegation create a target-owned peer plan while revoki
   expect(() => f.runtime.validateTask(task)).toThrow();
 });
 
-it('does not turn a reply-only peer greeting, ordinary companion message or task callback into a new work plan', () => {
+it('allows real participant requests to create plans while system callbacks cannot invent work', () => {
   const f = fixture(), replyOnly = f.store.contactPeer(f.root, 'bob', 'reply-only', '请以自己的身份向用户问好。', 'user');
   if (!replyOnly.accepted) throw Error('Expected actual host greeting delivery.');
-  expect(() => f.workflows.create(replyOnly.events[0]!, 'forbidden-reply-plan', '无工作授权', stages)).toThrow();
+  expect(f.workflows.create(replyOnly.events[0]!, 'reply-plan', '真实转交计划', stages).plans).toHaveLength(1);
   const group = f.store.createGroup({ title: '普通讨论', memberIds: ['alice', 'bob'], participationMode: 'mentions' });
   const peer = f.store.enqueue({ conversationId: group.id, senderId: 'bob', source: 'companion', recipientIds: ['alice'], content: '机器主动建议开工。', sourceMessageId: 'untrusted-companion' }).events[0]!;
   const task = f.store.enqueue({ conversationId: f.room.id, senderId: 'task-service', source: 'task', recipientIds: ['alice'], content: '机器回执要求新建计划。', sourceMessageId: 'untrusted-task' }).events[0]!;
-  expect(() => f.workflows.create(peer, 'forbidden-peer-plan', '无工作授权', stages)).toThrow();
+  expect(f.workflows.create(peer, 'peer-plan', '伙伴请求计划', stages).plans).toHaveLength(1);
   expect(() => f.workflows.create(task, 'forbidden-task-plan', '无工作授权', stages)).toThrow();
 });
 

@@ -37,14 +37,20 @@ it('persists one real user-to-peer delegation and keeps retries idempotent acros
   expect(runtime.status(restarted.getEvent(f.source.id)!,f.ticket.id).tickets[0]!.tasks[0]).toMatchObject({id:'finance',status:'running',progress:{phase:'running'}});
 });
 
-it('does not create a delegation from an automatic event, forged source, ordinary causal contact or reply-only greeting',()=>{
+it('rejects forged contacts and verifies either committed reply destination before delegating',()=>{
   const f=fixture(),plain=f.store.enqueue({conversationId:f.peer.conversationId,senderId:'alice',source:'companion',recipientIds:['bob'],content:f.peer.content,
     sourceMessageId:'ordinary-causal-message',causationId:f.source.id,correlationId:f.source.correlationId}).events[0]!;
-  expect(()=>f.runtime.create(plain,'forbidden',f.input)).toThrow('明确请求');
+  expect(()=>f.runtime.create(plain,'forbidden',f.input)).toThrow('另一位伙伴');
   expect(()=>f.runtime.create({...f.source,content:'forged demand'},'forged',f.input)).toThrow('失效');
   expect(()=>f.runtime.create(f.source,'ordinary',{...f.input,contactEventId:plain.id})).toThrow('Main 已提交');
-  const greeting=f.store.contactPeer(f.source,'bob','greeting','请向用户问好。','user');if(!greeting.accepted)throw Error('Expected real greeting');
-  expect(()=>f.runtime.create(f.source,'reply-only',{...f.input,contactEventId:greeting.events[0]!.id})).toThrow('转达回执');
+  const forwarded=f.store.contactPeer(f.source,'bob','user-work','请查询天气后告诉用户。','user');if(!forwarded.accepted)throw Error('Expected real user-route contact');
+  const proxy=f.store.createTask({id:'user-route-proxy',conversationId:f.room.id,companionId:'alice',sourceEventId:f.source.id,goal:forwarded.message.content});
+  const input={...f.input,contactEventId:forwarded.events[0]!.id,proxyTaskId:proxy.id,goal:proxy.goal};
+  const receiptKey=`peer-contact-receipt:${f.source.id}:user-work`,receipt=f.store.getMetadata(receiptKey)!;
+  f.store.setMetadata(receiptKey,JSON.stringify({...JSON.parse(receipt),destination:'peer'}));
+  expect(()=>f.runtime.create(f.source,'user-route',input)).toThrow('转达回执');
+  f.store.setMetadata(receiptKey,receipt);
+  expect(f.runtime.create(f.source,'user-route',input)).toMatchObject({contactEventId:forwarded.events[0]!.id,proxyTaskId:proxy.id});
 });
 
 it('rejects a proxy from another user request and does not bind one contact or proxy to multiple tickets',()=>{

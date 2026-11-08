@@ -71,20 +71,25 @@ it('preserves immutable work authority and revalidates ACL and withdrawal on res
   expect(() => runtime.validateTask(work)).toThrow(); expect(runtime.mandate(work.id)?.state).toBe('revoked');
 });
 
-it('records autonomous candidates and transfers work authority only through a verified peer collaboration delivery', () => {
+it('gives real companion requests equal task privileges and preserves verified contact lineage', () => {
   const room = store.createGroup({ title: '来源测试', memberIds: ['alice', 'bob'], participationMode: 'all' });
   const automated = event(room.id, '自动伙伴建议开工', { source: 'companion', senderId: 'bob' });
-  expect(runtime.authorize(automated, 'attempt')).toMatchObject({ allowed: false, observed: true });
-  expect(runtime.authorize(automated, 'attempt')).toMatchObject({ allowed: false });
+  expect(runtime.authorize(automated, 'attempt')).toMatchObject({ allowed: true, authorizingEventId: automated.id });
+  expect(runtime.authorize(automated, 'attempt')).toMatchObject({ allowed: true });
   const human = event(room.id, '请让伙伴完成这个目标');
   const inherited = event(room.id, '限定范围的真实转达', { source: 'companion', senderId: 'bob', causationId: human.id, correlationId: human.correlationId });
   expect(runtime.authorize(inherited, 'child')).toMatchObject({ allowed: false, observed: true });
   const delivered = store.contactPeer(human, 'bob', 'collaborate', '限定范围的真实转达', 'peer');
   expect(delivered.accepted).toBe(true); if (!delivered.accepted) throw Error('Expected host delivery');
   expect(runtime.authorize(delivered.events[0]!, 'work')).toEqual({ allowed: true, authorizingEventId: human.id, basis: 'inherited' });
-  const replyOnly = store.contactPeer(human, 'bob', 'greet-user', '向用户问好', 'user');
-  expect(replyOnly.accepted).toBe(true); if (!replyOnly.accepted) throw Error('Expected reply-only delivery');
-  expect(runtime.authorize(replyOnly.events[0]!, 'forbidden-work')).toMatchObject({ allowed: false, observed: true });
+  const toUser = store.contactPeer(human, 'bob', 'weather-user', '用户让你查天气后回复', 'user');
+  expect(toUser.accepted).toBe(true); if (!toUser.accepted) throw Error('Expected user-route delivery');
+  expect(runtime.authorize(toUser.events[0]!, 'weather-work')).toEqual({ allowed: true, authorizingEventId: human.id, basis: 'inherited' });
+  const child = store.createTask({ id: 'relayed-weather', conversationId: toUser.conversationId, companionId: 'bob', sourceEventId: toUser.events[0]!.id, goal: '查询上海天气，只读。' });
+  expect(runtime.bindTask(child)).toMatchObject({ basis: 'inherited', authorizingEventId: human.id });
+  store.withdrawSources('alice', human.securityDomainId, [human.id]);
+  expect(runtime.authorize(toUser.events[0]!, 'withdrawn-weather')).toMatchObject({ allowed: false });
+  expect(() => runtime.validateTask(child)).toThrow('失效');
 });
 
 it('does not convert task receipts, world observations or forged cross-correlation causes into work grants', () => {
@@ -102,12 +107,13 @@ it('does not convert task receipts, world observations or forged cross-correlati
   expect(runtime.authorize(counterfeit, 'forged-transfer')).toMatchObject({ allowed: false, observed: true });
 });
 
-it('imports a legacy task only when its original user authority can still be proven', () => {
+it('imports legacy tasks from verified user or companion requests but never a system callback', () => {
   const room = store.createGroup({ title: '旧任务', memberIds: ['alice', 'bob'] });
   const automatic = event(room.id, '机器自行要求执行', { source: 'companion', senderId: 'bob' });
   const ungranted = task(automatic, 'LEGACY_AUTOMATIC');
-  expect(() => runtime.validateTask(ungranted)).toThrow('没有可核实');
-  expect(runtime.mandate(ungranted.id)).toBeUndefined();
+  expect(runtime.validateTask(ungranted)).toMatchObject({ basis: 'legacy', authorizingEventId: automatic.id });
+  const callback = event(room.id, '系统回执不是新请求', { source: 'task', senderId: 'task-service' });
+  expect(() => runtime.validateTask(task(callback, 'SYSTEM_CALLBACK'))).toThrow('没有有效');
   const human = event(room.id), legacy = task(human, 'LEGACY_EXPLICIT');
   expect(runtime.validateTask(legacy)).toMatchObject({ basis: 'legacy', authorizingEventId: human.id, state: 'active' });
 });
