@@ -1,9 +1,12 @@
-.bot-execution { min-width:0;margin:0 0 13px;color:var(--bot-muted);font-size:11px; }
-.bot-execution:last-child { margin-bottom:0; }
-.bot-workspace .bot-execution-toggle { display:flex;align-items:center;gap:7px;width:100%;padding:0 0 9px;border:0;border-bottom:1px solid var(--bot-edge);border-radius:0;background:transparent;color:var(--bot-muted);text-align:left;font-size:11px; }
+.bot-execution { min-width:0;margin:0;color:var(--bot-muted,var(--ui-content-secondary));font-size:11px; }
+.bot-execution>.bot-execution-toggle { display:flex;align-items:center;justify-content:flex-start;gap:7px;width:100%;min-height:28px;padding:0 0 8px;border:0;border-bottom:1px solid var(--bot-edge,var(--ui-border-subtle));border-radius:0;background:transparent;color:var(--bot-muted,var(--ui-content-secondary));text-align:left;font-size:11px;line-height:1.5; }
+.bot-execution>.bot-execution-toggle:hover { background:transparent; }
 .bot-execution-toggle>.bot-icon { flex-shrink:0;width:14px;height:14px; }
-.bot-execution-toggle>span:first-of-type { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
-.bot-execution-toggle small { flex-shrink:0;font-size:10px;color:var(--bot-accent); }
+.bot-execution-status { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.bot-execution-action { display:inline-flex;align-items:center;flex-shrink:0;gap:4px;margin-right:-5px;padding:3px 5px;border-radius:5px;white-space:nowrap;transition:background .15s,color .15s; }
+.bot-execution-action>.bot-icon { width:14px;height:14px;transition:transform .15s; }
+.bot-execution-toggle[aria-expanded=true] .bot-execution-action>.bot-icon { transform:rotate(180deg); }
+.bot-execution-toggle:hover .bot-execution-action { background:var(--bot-panel-soft,var(--ui-surface-hover));color:var(--bot-text,var(--ui-content-primary)); }
 .bot-execution-session { margin:10px 0;overflow-wrap:anywhere;font-size:10px; }
 .bot-execution-contents { max-height:340px;overflow:auto;scrollbar-width:thin; }
 .bot-execution-contents[hidden] { display:none; }

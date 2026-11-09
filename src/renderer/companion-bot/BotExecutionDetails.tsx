@@ -18,7 +18,9 @@ function ExecutionDetails({ execution, locale, onAnswer }: { execution: BotExecu
     : execution.status === 'succeeded' ? zh ? '已完成' : 'Completed' : execution.status === 'failed' ? zh ? '执行失败' : 'Execution failed' : zh ? '已停止' : 'Stopped';
   return <section className="bot-execution" data-status={execution.status} aria-label={zh ? 'DSH 执行过程' : 'DSH execution'}>
     <button className="bot-execution-toggle" type="button" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}>
-      <BotIcon name={running ? 'clock' : 'check'} /><span>{status}</span><small>{expanded ? zh ? '收起过程' : 'Hide details' : zh ? '查看过程' : 'Show details'}</small><span aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
+      <BotIcon name={running ? 'clock' : 'check'} />
+      <span className="bot-execution-status">{status}</span>
+      <span className="bot-execution-action"><span>{expanded ? zh ? '收起过程' : 'Hide details' : zh ? '查看过程' : 'Show details'}</span><BotIcon name="chevron-down" /></span>
     </button>
     <div id={id} hidden={!expanded} className="bot-execution-contents">
       {execution.sessionId && <p className="bot-execution-session">DSH · <code>{execution.sessionId}</code></p>}
