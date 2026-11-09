@@ -4,7 +4,7 @@ import { z } from 'zod';
 
 const toolCall = z.strictObject({ laneId: z.string().min(1).max(200), eventId: z.string().min(1).max(200),
   callId: z.string().min(1).max(300), name: z.string().min(1).max(100), args: z.record(z.string(), z.unknown()),
-  nativeSessionId:z.string().min(1).max(200).optional(),nativeCallId:z.string().min(1).max(300).optional() });
+  nativeSessionId:z.string().min(1).max(200).optional(),nativeCallId:z.string().min(1).max(300).optional(),rootSessionId:z.string().min(1).max(200).optional(),rootSequence:z.number().int().nonnegative().optional() });
 export type BotToolCall = z.infer<typeof toolCall>;
 /** Native Host receives an ephemeral capability, never a renderer-accessible server. */
 export class BotToolServer {

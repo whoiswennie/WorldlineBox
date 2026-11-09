@@ -6,7 +6,7 @@ import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotRepl
 import { appendBotExecutionStep } from '../../shared/companion-bot-execution';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
-import { BotDshBrain, type BotDshModel } from './dsh-brain';
+import { BotDshBrain, type BotDshModel, type BotDshResult } from './dsh-brain';
 import type { BotBrain } from './brain-router';
 import type { BotMemoryService, BotMemoryPrepared, BotMemoryScope, BotMemoryMessage, BotMemoryForget, BotMemoryUpdate, BotMemoryOrganize, BotMemoryWrite } from './memory-service';
 import { BotScheduler } from './scheduler';
@@ -30,7 +30,8 @@ import { botMessageEvidence } from '../../shared/bot-message-content';
 import type { BotClaim, BotEvent, BotMemoryJobInput, BotAttachmentGrant } from './types';
 import { botHandoffFile } from './task-handoff';
 import { isGroupStop } from './group-attention';
-import { BotTopics, type BotGuidance } from './topics';
+import { BotTopics, type BotGuidance,type BotTopicTitleSync } from './topics';
+import {botReplyDisplayParts} from '../../shared/companion-bot-reply';
 
 export interface BotServiceOptions {
   root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel;
@@ -70,6 +71,7 @@ export class BotService {
   private readonly nativeStops = new Map<string, Promise<void>>();
   private readonly topics: BotTopics;
   private readonly guidanceRuns = new Map<string, Promise<void>>();
+  private readonly titleRuns=new Map<string,Promise<void>>();
   private readonly loadedTombstones = new Map<string, true>();
   private readonly sourceWithdrawalRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
@@ -239,7 +241,9 @@ export class BotService {
       this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
     }
     switch (input.type) {
-      case 'topic.list': { const result=this.topics.list(input.conversationId,input.query,input.before);return {ok:true,topics:result.items,nextTopicCursor:result.next}; }
+      case 'topic.list': { const result=this.topics.list(input.conversationId,input.query,input.before,input.mode);return {ok:true,topics:result.items,nextTopicCursor:result.next}; }
+      case 'topic.flags':{const topic=this.topics.flags(input.conversationId,input.topicId,input);this.changed(input.conversationId);return{ok:true,topic};}
+      case 'topic.rename':{const topic=this.topics.rename(input.conversationId,input.topicId,input.title,input.requestId);this.maintainSafely();this.changed(input.conversationId);return{ok:true,topic};}
       case 'topic.new': { const topic=this.topics.create(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
       case 'topic.select': { const topic=this.topics.select(input.conversationId,input.topicId);this.changed(input.conversationId);return {ok:true,topic}; }
       case 'topic.compact': {
@@ -578,6 +582,16 @@ export class BotService {
       if(!this.closed)this.changed(command.conversation_id);
     })().finally(()=>this.guidanceRuns.delete(key));this.guidanceRuns.set(key,operation);return operation;
   }
+  private flushTitle(job:BotTopicTitleSync):Promise<void>{
+    const prior=this.titleRuns.get(job.native_lane_id);if(prior)return prior;
+    const operation=(async()=>{try{
+      if(!this.options.brain.renameTopic)throw Error('当前 DSH 桥接器不支持话题名称同步。');
+      await this.options.brain.renameTopic(job.native_lane_id,{title:job.title,revision:job.revision,cwd:this.workspace(job.companion_id)});
+      if(!this.closed)this.topics.titleResult(job);
+    }catch(error){if(!this.closed)this.topics.titleResult(job,errorText(error));}
+    if(!this.closed)this.changed(job.conversation_id);
+    })().finally(()=>this.titleRuns.delete(job.native_lane_id));this.titleRuns.set(job.native_lane_id,operation);return operation;
+  }
   private async respond(claim: BotClaim, signal: AbortSignal): Promise<void> {
     const event = claim.event, companion = this.store.getCompanion(event.companionId);
     if (!companion || companion.enabled === false) { this.scheduler.cancel(event.id); return; }
@@ -586,16 +600,16 @@ export class BotService {
     let prepared: BotMemoryPrepared | undefined, text = '';
     let lastDraftAt = 0, firstTextRecorded = false;
     let artifactProjection = Promise.resolve();
-    const delivered = new Set<string>();
-    const projectArtifacts = (files: readonly {path:string}[]) => {
-      const pending = files.filter(file => !delivered.has(file.path));
-      for (const file of pending) delivered.add(file.path);
+    const delivered = new Set<string>(),deliveredPaths=new Set<string>();
+    const projectArtifacts = (files: readonly {path:string}[],part?:{id:string;sequence:number}) => {
+      const pending = files.filter(file => part?!delivered.has(part.id+':'+file.path):!deliveredPaths.has(file.path));
+      for (const file of pending){delivered.add((part?.id??'fallback')+':'+file.path);deliveredPaths.add(file.path);}
       if (!pending.length) return;
       artifactProjection = artifactProjection.then(async () => {
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         const attachments = await this.requireMedia().importFiles({ conversationId: event.conversationId, paths: pending.map(file => file.path) });
         signal.throwIfAborted();
-        if (!this.closed) { this.store.appendNativeArtifacts(event.id, claim.leaseToken, attachments); this.changed(event.conversationId); }
+        if (!this.closed) { this.store.appendNativeArtifacts(event.id, claim.leaseToken, attachments);this.store.appendReplyPart(event.id,{id:part?.id??'fallback-files',sequence:part?.sequence,kind:'media',attachments}); this.changed(event.conversationId); }
       });
       void artifactProjection.catch(() => undefined);
     };
@@ -641,13 +655,14 @@ export class BotService {
         continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
         model: this.options.model(), tools: [], workerTools: BOT_TOOLS, callback, signal, role: 'worker', workerAccess: 'full',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds },
-        workspaceTitle: companion.name, sessionTitle: Array.from(event.content).slice(0, 60).join(''),
+        workspaceTitle: companion.name, sessionTitle:this.topics.reference(event.id)?.title??Array.from(event.content).slice(0, 60).join(''),
         onEvent: update => {
           if (this.closed || signal.aborted) return;
           this.store.markDispatched(event.id, claim.leaseToken, event.id);
-          if (update.type === 'artifacts' && update.artifacts?.length) projectArtifacts(update.artifacts);
+          if (update.type === 'artifacts' && update.artifacts?.length) projectArtifacts(update.artifacts,Number.isSafeInteger(update.nativeSequence)?{id:update.nativeSessionId===BotDshBrain.sessionId(nativeLaneId)?'native-files-'+update.nativeSequence:'child-files-'+update.nativeSessionId+'-'+update.nativeSequence,sequence:update.rootSequence??update.nativeSequence!}:undefined);
           if (['text_stream','text'].includes(update.type) && typeof update.text === 'string') {
             text = update.text;
+            if(update.type==='text'&&text.trim()&&Number.isSafeInteger(update.nativeSequence))this.store.appendReplyPart(event.id,{id:'native-text-'+update.nativeSequence,sequence:update.nativeSequence,kind:'text',text});
             if (text && !firstTextRecorded) { firstTextRecorded = true; this.store.recordTurnTiming(event.id, claim.leaseToken, { firstTextAt: Date.now() }); }
             const phaseChanged = this.replyProgress.get(event.replyMessageId)?.phase !== 'generating';
             if (phaseChanged || Date.now() - lastDraftAt >= 700) { lastDraftAt = Date.now(); this.store.updateDraft(event.id, claim.leaseToken, text); }
@@ -671,11 +686,17 @@ export class BotService {
           }
         } });
       text = result.text;
+      for(const output of result.outputs??[]){if(output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
       await Promise.allSettled([...this.guidanceRuns].filter(([key])=>key.endsWith(':'+event.id)).map(([,operation])=>operation));
       if (result.artifacts?.length) projectArtifacts(result.artifacts);
       await artifactProjection; signal.throwIfAborted();
+      if(text.trim()&&!result.outputs&&!this.store.replyParts(event.replyMessageId).some(part=>part.kind==='text'))this.store.appendReplyPart(event.id,{id:'legacy-final-text',kind:'text',text});
+      const visibleParts=botReplyDisplayParts(this.store.replyParts(event.replyMessageId));if(visibleParts.length)text=visibleParts.flatMap(part=>part.text?[part.text]:[]).join('\n\n');
+      this.topics.touch(event);
       this.updateExecution(event, { status: result.status, question: undefined, continuation: undefined });
-      this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: result.status === 'succeeded' ? 'done' : result.status === 'cancelled' ? 'cancelled' : 'failed', content: text, dshEventId: event.id,
+      // The searchable/history summary stays bounded; immutable native parts
+      // retain the complete visible answer, including very long multi-step work.
+      this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: result.status === 'succeeded' ? 'done' : result.status === 'cancelled' ? 'cancelled' : 'failed', content: text.slice(0,512000), dshEventId: event.id,
         memoryJobs: [this.responseJob(event, prepared, text, result.status === 'succeeded'),
           { key: 'history-completed:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } },
           ...(result.status === 'succeeded' && ['user', 'companion', 'group', 'gateway'].includes(event.source) && this.store.getMetadata('skipCapture:' + event.id) !== 'true'
@@ -692,11 +713,20 @@ export class BotService {
         if (code === 'BOT_DELIVERY_UNKNOWN') this.store.markDispatched(event.id, claim.leaseToken, event.id);
         this.store.requeue(event.id, claim.leaseToken, event.attempts * 1000); return;
       }
+      // A terminal failure can still contain an answer or files delivered
+      // before the failing step. Reconcile cached receipts after reconnect too.
+      const partial=(error as {result?:BotDshResult})?.result;
+      if(!signal.aborted){
+        for(const output of partial?.outputs??[]){if(output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
+        if(partial?.artifacts?.length)projectArtifacts(partial.artifacts);
+        try{await artifactProjection;}catch(projectionError){this.options.report?.(projectionError);}
+        const parts=botReplyDisplayParts(this.store.replyParts(event.replyMessageId));if(parts.length)text=parts.flatMap(part=>part.text?[part.text]:[]).join('\n\n');
+      }
       const checkpoint=code==='BOT_OUTPUT_LIMIT'?(error as {checkpoint:number}).checkpoint:undefined;
-      if(checkpoint!==undefined)text=(error as {partialText?:string}).partialText||text;
+      if(checkpoint!==undefined&&!this.store.replyParts(event.replyMessageId).length)text=(error as {partialText?:string}).partialText||text;
       this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed', question: undefined,
         continuation: !signal.aborted&&Number.isSafeInteger(checkpoint)?{checkpoint:checkpoint!}:undefined });
-      this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: signal.aborted ? 'cancelled' : 'failed', content: text, error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
+      this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: signal.aborted ? 'cancelled' : 'failed', content: text.slice(0,512000), error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
       // A resumable turn still owns its prepared VCP context. Finish it once,
       // with the final answer, instead of closing and then reusing a failed job.
       if (prepared && checkpoint === undefined) this.store.enqueueMemoryJob(this.responseJob(event, prepared, text, false));
@@ -709,6 +739,7 @@ export class BotService {
   private async tool(call: BotToolCall, signal: AbortSignal): Promise<unknown> {
     const event = this.store.getEvent(call.eventId);
     if (!event || this.topics.lane(event) !== call.laneId || event.status !== 'running') throw new Error('工具调用没有有效的运行事件。');
+    if(call.rootSessionId&&call.rootSessionId!==BotDshBrain.sessionId(call.laneId))throw Error('原生回复片段来自其他话题。');
     const conversation = this.store.getConversation(event.conversationId);
     if (!conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)) throw new Error('会话权限已变化。');
     signal.throwIfAborted(); this.assertCurrentEvent(event);
@@ -857,7 +888,10 @@ export class BotService {
         const [sticker] = await this.requireMedia().resolveForConversation(event.conversationId, [nonempty.parse(args.stickerId)]);
         if (!sticker || sticker.kind !== 'sticker') throw new Error('只能发送已列出的真实表情。');
         signal.throwIfAborted();
-        const message = this.store.publishForEvent(event.id, call.callId, { content: typeof args.caption === 'string' ? args.caption.slice(0, 24000) : '', attachments: [sticker] });
+        const message = this.store.taskTransaction(()=>{
+          const message=this.store.publishForEvent(event.id, call.callId, { content: typeof args.caption === 'string' ? args.caption.slice(0, 24000) : '', attachments: [sticker] });
+          this.store.appendReplyPart(event.id,{id:'media-'+digest(call.callId),kind:'media',sequence:call.rootSequence,text:message.content||undefined,attachments:[sticker],publicationId:message.id});return message;
+        });
         this.changed(event.conversationId); return { sent: true, messageId: message.id, attachmentIds: [sticker.id] };
       }
 
@@ -974,6 +1008,7 @@ export class BotService {
   private maintainSafely(): void { void this.maintain().catch(error => this.options.report?.(error)); }
   private async maintain(): Promise<void> {
     if (this.closed) return;
+    for(const job of this.topics.titleJobs()){if(this.titleRuns.size>=2)break;void this.flushTitle(job);}
     for(const command of this.topics.pendingGuidance())void this.flushGuidance(command);
     const stops = this.store.taskTransaction(sql => sql.prepare("SELECT value FROM bot_metadata WHERE key LIKE 'native-stop:%' AND value<>''").all() as Array<{ value: string }>);
     for (const row of stops) {

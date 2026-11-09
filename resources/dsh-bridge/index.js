@@ -43,25 +43,26 @@ export function observeAssistantStream(record, nativeSessionId, frame, publish, 
     reasoning(frame.outcome?.kind === 'committed' && frame.outcome.eventType === 'assistant/message' ? 'committed' : 'abandoned');
   }
 }
-/** Only the final committed native assistant message is the user-facing answer.
- * Earlier assistant messages, reasoning and tools belong to the foldable trace. */
+/** Preserve every committed user-facing message and native delivery in order.
+ * Reasoning and tool payloads stay in the trace, independent of answer position. */
 export function workerOutputFromEvents(events, { eventId, startMessageId, maxChars = 128000 }) {
   if (!Number.isSafeInteger(maxChars) || maxChars < 256 || maxChars > 131072) throw new Error('Invalid worker output preview budget.');
   const messageId = startMessageId ?? 'worldlinebox-bot:' + eventId;
   const start = events.findIndex(event => event.type === 'user/message' && event.data.id === messageId);
-  if (start < 0) return { text: '', totalChars: 0, truncated: false, messages: 0 };
-  let text = '', messages = 0;
+  if (start < 0) return { text: '', totalChars: 0, truncated: false, messages: 0,outputs:[] };
+  const outputs=[];let messages=0;
   for (const event of events.slice(start + 1)) {
     if (event.type === 'user/message' && (event.data.source?.kind === 'worldlinebox-bot'
       || startMessageId && ['worldlinebox-bot-task-continuation', 'worldlinebox-bot-guidance'].includes(event.data.source?.kind))) break;
     if (event.type === 'assistant/message' && event.data.interrupted !== true
       && (event.surfaceOp === undefined || event.surfaceOp === 'append')) {
       const body = textOf(event.data.message);
-      if (body.trim()) { text = body; messages++; }
+      if (body.trim()) { outputs.push({id:'native-text-'+event.seq,sequence:event.seq,text:body}); messages++; }
     }
+    if(event.type==='deliverables/presented')outputs.push({id:'native-files-'+event.seq,sequence:event.seq,files:event.data.files});
   }
-  // Do not truncate or synthesize a replacement for the DSH final response.
-  return { text, totalChars: text.length, truncated: false, messages };
+  const text=outputs.filter(part=>part.text).map(part=>part.text).join('\n\n');
+  return { text, totalChars: text.length, truncated: false, messages,outputs };
 }
 /** Reference data is selected from actual native registrations, never from
  * installed-package counts. Schemas are disclosed only by the detail query. */
@@ -294,7 +295,7 @@ export async function apply(ctx) {
   // A user may also launch this profile through the official CLI.
   if (!token) return;
   if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('The WorldlineBox Host capability is invalid.');
-  const sessions = new Map(), clients = new Set(), workerOwners = new Map(), workerAgents = new Map(), botOpenings = new Map(), botCancelChecks = new Map();
+  const sessions = new Map(), clients = new Set(), workerOwners = new Map(), workerAgents = new Map(), botOpenings = new Map(), botCancelChecks = new Map(),topicTitleChanges=new Map();
   const botIdleCacheTarget = 16, botActiveLaneLimit = 64;
   let botOpeningAdmission = Promise.resolve();
   const pendingWorkerQuestions = new Set();
@@ -493,24 +494,25 @@ export async function apply(ctx) {
           if (terminal?.status === 'complete') {
             record.status = terminal.result.status; record.text = terminal.result.text;
             emit(record, { type: 'complete', status: record.status, text: record.text, artifacts: terminal.result.artifacts, error: terminal.result.error, inputContextCommitted: terminal.result.inputContextCommitted,
-              outputCheckpoint: terminal.result.outputCheckpoint }); break;
+              outputCheckpoint: terminal.result.outputCheckpoint,outputs:terminal.result.outputs }); break;
           }
         }
         if (record.bot?.role === 'worker') {
-          const text = await workerOutput(record, record.bot.eventId);
+          const output=workerOutputFromEvents(record.agent.session.snapshotEvents(),{eventId:record.bot.eventId}),text=output.text;
           if (record.admissions || record.botMutationActive || revision !== record.revision || record.agent.status !== 'idle' || sequence !== record.agent.session.seq) continue;
           record.text = text;
+          record.outputs=output.outputs;
         }
         // The host combines this native terminal receipt with effect proofs
         // and any explicit incomplete-business report before closing its task.
         record.status = record.cancelled ? 'cancelled' : record.reason?.kind === 'completed' ? 'succeeded' : 'failed';
         if(record.status==='failed'&&record.reason?.kind==='max-tokens')record.outputCheckpoint=record.agent.session.seq;
         if (record.bot?.eventId) await botWriteReceipt(record, { eventId: record.bot.eventId, status: 'complete',
-          result: { eventId: record.bot.eventId, sessionId: record.id, status: record.status, text: record.text, artifacts: record.artifacts,
+          result: { eventId: record.bot.eventId, sessionId: record.id, status: record.status, text: record.text, artifacts: record.artifacts,outputs:record.outputs,
             inputContextCommitted: record.bot.inputContextCommitted === true,
             ...(record.outputCheckpoint !== undefined ? { outputCheckpoint: record.outputCheckpoint } : {}),
             ...(record.status === 'failed' ? { error: botTerminalError(record) } : {}) } });
-        emit(record, { type: 'complete', status: record.status, text: record.text, reason: record.reason, artifacts: record.artifacts,
+        emit(record, { type: 'complete', status: record.status, text: record.text, reason: record.reason, artifacts: record.artifacts,outputs:record.outputs,
           ...(record.status === 'failed' ? { error: botTerminalError(record) } : {}),
           ...(record.outputCheckpoint !== undefined ? { outputCheckpoint: record.outputCheckpoint } : {}),
           ...(record.bot ? { inputContextCommitted: record.bot.inputContextCommitted === true } : {}) });
@@ -537,7 +539,7 @@ export async function apply(ctx) {
       ...(typeof data.step === 'number' ? { nativeStep: data.step } : {}) };
     if (event.type === 'turn/start') delete position.nativeStep;
     record.positions.set(nativeSessionId, position);
-    const publish = value => emit(record, { nativeSessionId, nativeSequence: event.seq, ...position, ...value });
+    const publish = value => emit(record, { nativeSessionId, nativeSequence: event.seq,rootSequence:record.agent.session.seq, ...position, ...value });
     if (record.bot && event.type === 'user/message' && data.id === 'worldlinebox-bot:' + record.bot.eventId) record.bot.inputContextCommitted = true;
     switch (event.type) {
       case 'turn/start': publish({ type: 'status', stage: 'turn_start', summary: '开始处理任务' }); break;
@@ -591,7 +593,7 @@ export async function apply(ctx) {
     const response = await fetch(callback.url, { method: 'POST', signal: name === 'chat_ask_user' ? signal : AbortSignal.any([signal, AbortSignal.timeout(120000)]),
       headers: { authorization: 'Bearer ' + callback.token, 'content-type': 'application/json' },
       body: JSON.stringify({ laneId: owner.bot.laneId, eventId: owner.bot.eventId, name, args, callId,
-        ...(native?{nativeSessionId:native.nativeSessionId,nativeCallId:native.nativeCallId}:{}) }) });
+        ...(native?{nativeSessionId:native.nativeSessionId,nativeCallId:native.nativeCallId,rootSessionId:owner.id,rootSequence:owner.agent.session.seq}:{}) }) });
     if (!response.ok) throw Object.assign(new Error('Worker host rejected ' + name + ' (' + response.status + ').'), { status: response.status });
     const body = await response.json(); if (body.ok !== true) throw new Error('Worker host did not accept ' + name + '.');
     return body.result;
@@ -862,6 +864,34 @@ export async function apply(ctx) {
         const event=await botReadReceipt(input,input.eventId);
         if(!receipt&&event?.status==='complete'&&event.result?.sessionId===input.sessionId){json(response,{accepted:false});return;}
         json(response,{unknown:true});return;
+      }
+      if(request.method==='POST'&&url.pathname==='/bot/topic-title'){
+        const input=await body(request);
+        if(typeof input.laneId!=='string'||input.laneId.length>600||input.sessionId!=='wlb-bot-'+createHash('sha256').update(input.laneId).digest('hex')
+          ||typeof input.cwd!=='string'||!path.isAbsolute(input.cwd)||typeof input.title!=='string'||!input.title.trim()||input.title.length>100
+          ||!Number.isSafeInteger(input.revision)||input.revision<1)throw Error('Invalid topic title update.');
+        const operation=(topicTitleChanges.get(input.sessionId)??Promise.resolve()).catch(()=>undefined).then(async()=>{
+        const filename=path.join(input.cwd,'.worldlinebox-brain',input.sessionId+'-title.json');
+        let previous;try{previous=JSON.parse(await readFile(filename,'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+        if(previous?.revision>input.revision){json(response,{renamed:true,superseded:true});return;}
+        if(previous?.revision===input.revision&&previous.title!==input.title)throw Error('Topic title revision has different content.');
+        const record=sessions.get(input.sessionId);
+        if(record&&(!record.bot||record.bot.laneId!==input.laneId||path.resolve(record.cwd)!==path.resolve(input.cwd)))throw Error('Topic title ownership differs.');
+        // The controller resolves cold sessions into a live Agent. Own that
+        // temporary handle ourselves so rename cannot leave a second writer
+        // blocking the next normal companion attachment. Never wake old inbox
+        // work without its authenticated model/tool/callback configuration.
+        let temporary,acceptedTitle;
+        try{
+          if(!record&&!ctx.agents.get(input.sessionId))temporary=await ctx.agents.resume({resumeSessionId:input.sessionId,setup:(_scope,agent)=>{
+            if(agent.inbox.nextTurn.length||agent.inbox.nextStep.length)throw Error('Cold topic has pending native work; wait for its authenticated task attachment.');
+          }});
+          const result=await ctx.sessionController.rename({sessionId:input.sessionId,title:input.title});
+          const agent=record?.agent??temporary?.agent??ctx.agents.get(input.sessionId);if(agent)await ctx.sessions.flush(agent.session);
+          await botAtomicJson(filename,{revision:input.revision,title:input.title});acceptedTitle=result.title;
+        }finally{await temporary?.dispose();}
+        json(response,{renamed:true,title:acceptedTitle});
+        });topicTitleChanges.set(input.sessionId,operation);try{await operation;}finally{if(topicTitleChanges.get(input.sessionId)===operation)topicTitleChanges.delete(input.sessionId);}return;
       }
       if (request.method === 'POST' && url.pathname === '/bot/lanes') {
         const input = await body(request);

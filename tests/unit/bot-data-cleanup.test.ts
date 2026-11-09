@@ -44,6 +44,10 @@ it('clears the selected companion and shared room history and VCP stores, retain
   const f=await fixture(), before=new BotStore(path.join(f.root,'bot.sqlite'));
   const event=before.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string};
   const topics=new BotTopics(before),topic=topics.create(f.a.id,'old-topic','旧话题');topics.bind([before.getEvent(event.id)!],topic);
+  before.taskTransaction(sql=>{
+    sql.prepare("INSERT INTO bot_topic_title_sync(topic_id,conversation_id,native_lane_id,companion_id,revision,title,status) VALUES(?,?,?,?,1,'待同步旧话题','pending')").run(topic.id,f.a.id,'old-lane','alice');
+    sql.prepare('INSERT INTO bot_reply_parts(message_id,event_id,conversation_id,id,sequence,payload_json) VALUES(?,?,?,?,1,?)').run(before.getEvent(event.id)!.replyMessageId,event.id,f.a.id,'old-native-part',JSON.stringify({id:'old-native-part',kind:'text',sequence:1,text:'OLD_REPLY_PART'}));
+  });
   before.taskTransaction(sql=>sql.prepare("INSERT INTO bot_guidance VALUES(?,?,?,?,'pending',NULL)").run('old-guidance',event.id,f.a.id,'OLD_GUIDANCE_DATA'));
   before.setMetadata('native-continue-command:opaque-request',event.id);before.setMetadata('native-continue-command:other-request','unrelated-event');before.close();
   const request=await f.cleaner.begin('alice','single');
@@ -52,7 +56,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
   try {
     expect(store.messagesPage(f.a.id).items).toEqual([]); expect(store.messagesPage(f.group.id).items).toEqual([]);
-    for(const table of ['bot_native_topics','bot_topic_bindings','bot_topic_events','bot_guidance'])expect(store.taskTransaction(sql=>sql.prepare(`SELECT count(*) AS count FROM ${table} WHERE conversation_id=?`).get(f.a.id))).toMatchObject({count:0});
+    for(const table of ['bot_native_topics','bot_topic_bindings','bot_topic_events','bot_guidance','bot_topic_title_sync','bot_reply_parts'])expect(store.taskTransaction(sql=>sql.prepare(`SELECT count(*) AS count FROM ${table} WHERE conversation_id=?`).get(f.a.id))).toMatchObject({count:0});
     expect(store.messagesPage(f.b.id).items.some(message=>message.content.startsWith('OLD_HISTORY_'))).toBe(true);
     expect(store.getCompanion('alice')?.persona).toBe('PRIVATE_PERSONA_alice');
     expect(store.getMetadata('native-continue-command:opaque-request')).toBeUndefined();expect(store.getMetadata('native-continue-command:other-request')).toBe('unrelated-event');

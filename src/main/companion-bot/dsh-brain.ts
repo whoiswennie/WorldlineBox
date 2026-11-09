@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { AiApiFormat } from '../../shared/ai-endpoints';
 import type { NativeHostClient, NativeHostEvent } from '../dsh/native-host-client';
 import { DshHostUnavailableError, isDshHostUnavailableError } from '../dsh/host-errors';
+import type {BotNativeReplyOutput} from '../../shared/companion-bot';
 
 export interface BotDshModel {
   apiFormat: AiApiFormat; model: string; baseUrl: string; apiKey: string;
@@ -37,7 +38,7 @@ export interface BotDshRun {
   workerTools?: readonly BotDshTool[];
   onEvent?(event: NativeHostEvent): void;
 }
-export interface BotDshResult { artifacts?: Array<{ path: string; description?: string }>; text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true }
+export interface BotDshResult { artifacts?: Array<{ path: string; description?: string }>;outputs?:BotNativeReplyOutput[]; text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true }
 export interface BotDshCancelAck { accepted: boolean; result?: BotDshResult; absent?: boolean; paused?: boolean; sessionId?: string; eventId?: string; requiresAttachment?: boolean }
 export class BotDshPauseAcknowledgedError extends Error {
   readonly code = 'BOT_PAUSE_ACKNOWLEDGED';
@@ -65,11 +66,11 @@ export class BotDshDeliveryUnknownError extends Error {
 }
 export class BotDshTurnFailedError extends Error {
   readonly code = 'BOT_TERMINAL_FAILED';
-  constructor(readonly eventId: string, message: string, readonly partialText?: string, readonly inputContextCommitted?: boolean, readonly quarantined?: true) { super(message); }
+  constructor(readonly eventId: string, message: string, readonly partialText?: string, readonly inputContextCommitted?: boolean, readonly quarantined?: true, readonly result?: BotDshResult) { super(message); }
 }
 export class BotDshOutputLimitError extends Error {
   readonly code = 'BOT_OUTPUT_LIMIT';
-  constructor(readonly eventId: string, readonly sessionId: string, readonly checkpoint: number, readonly partialText: string, readonly inputContextCommitted?: boolean) {
+  constructor(readonly eventId: string, readonly sessionId: string, readonly checkpoint: number, readonly partialText: string, readonly inputContextCommitted?: boolean, readonly result?: BotDshResult) {
     super('执行器连续输出尚未完成，进展已保存；可以在原任务上继续。');
   }
 }
@@ -199,8 +200,8 @@ export class BotDshBrain {
         terminal = true;
         if (input.signal?.aborted) throw new BotDshAbortAcknowledgedError(admitted.result);
         if (admitted.result.status === 'failed') {
-          if (Number.isSafeInteger(admitted.result.outputCheckpoint) && admitted.result.outputCheckpoint! >= 0) throw new BotDshOutputLimitError(input.eventId, sessionId, admitted.result.outputCheckpoint!, admitted.result.text, admitted.result.inputContextCommitted);
-          throw new BotDshTurnFailedError(input.eventId, admitted.result.error || 'Native companion turn previously failed.', admitted.result.text, admitted.result.inputContextCommitted);
+          if (Number.isSafeInteger(admitted.result.outputCheckpoint) && admitted.result.outputCheckpoint! >= 0) throw new BotDshOutputLimitError(input.eventId, sessionId, admitted.result.outputCheckpoint!, admitted.result.text, admitted.result.inputContextCommitted, admitted.result);
+          throw new BotDshTurnFailedError(input.eventId, admitted.result.error || 'Native companion turn previously failed.', admitted.result.text, admitted.result.inputContextCommitted, undefined, admitted.result);
         }
         return admitted.result;
       }
@@ -220,13 +221,13 @@ export class BotDshBrain {
           terminal = true;
           const status = event.status ?? 'failed';
           const committed = (event as NativeHostEvent & { inputContextCommitted?: boolean }).inputContextCommitted;
-          const result = { text: event.text ?? '', sessionId, eventId: input.eventId, status, artifacts: event.artifacts,
+          const result = { text: event.text ?? '', sessionId, eventId: input.eventId, status, artifacts: event.artifacts,outputs:event.outputs,
             ...(typeof committed === 'boolean' ? { inputContextCommitted: committed } : {}) };
           if (input.signal?.aborted) throw new BotDshAbortAcknowledgedError(result);
           if (status === 'failed') {
             const checkpoint = (event as NativeHostEvent & { outputCheckpoint?: number }).outputCheckpoint;
-            if (Number.isSafeInteger(checkpoint) && checkpoint! >= 0) throw new BotDshOutputLimitError(input.eventId, sessionId, checkpoint!, event.text ?? '', committed);
-            throw new BotDshTurnFailedError(input.eventId, event.error || lastError || event.text || JSON.stringify(event.reason) || 'Native companion turn failed.', event.text, committed);
+            if (Number.isSafeInteger(checkpoint) && checkpoint! >= 0) throw new BotDshOutputLimitError(input.eventId, sessionId, checkpoint!, event.text ?? '', committed, result);
+            throw new BotDshTurnFailedError(input.eventId, event.error || lastError || event.text || JSON.stringify(event.reason) || 'Native companion turn failed.', event.text, committed, undefined, result);
           }
           return result;
         }
@@ -327,6 +328,11 @@ export class BotDshBrain {
       if(result.error)throw Object.assign(Error(result.error),{code:'BOT_COMPACTION_FAILED'});
       return result.compacted;
     });}finally{this.openingLanes.delete(sessionId);}
+  }
+  async renameTopic(laneId:string,input:{title:string;revision:number;cwd:string}):Promise<void>{
+    await this.withHost(undefined,undefined,laneId,async({client})=>{
+      await client.request('/bot/topic-title',{...input,laneId,sessionId:BotDshBrain.sessionId(laneId)});
+    });
   }
   /** Release a completed encoder/worker from RAM while retaining its native
    * log and durable receipts. Never cancels an active task. */

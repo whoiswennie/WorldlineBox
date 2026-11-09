@@ -1,6 +1,6 @@
 /** Durable bot state is independent of the retired companion cognition schema. */
 import type { BotMediaRef } from '../../shared/companion-bot-media';
-import type { BotReplyProgress, BotReplyTiming } from '../../shared/companion-bot';
+import type { BotReplyProgress, BotReplyTiming, BotReplyPart } from '../../shared/companion-bot';
 export type BotConversationKind = 'direct' | 'group' | 'world' | 'peer';
 export type BotMessageStatus = 'queued' | 'running' | 'sent' | 'failed' | 'cancelled';
 export type BotEventStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -26,6 +26,7 @@ export interface BotMessage {
   attachments?: BotMediaRef[];
   timing?: BotReplyTiming;
   progress?: BotReplyProgress;
+  parts?:BotReplyPart[];
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
 export interface BotEvent {

@@ -15,6 +15,7 @@ it('routes an explicit group message directly to native DSH without an App judge
   const room = f.service.store.createGroup({ title: '群', memberIds: ['alpha', 'beta'], participationMode: 'mentions' });
   await f.service.handle({ type: 'message.send', conversationId: room.id, content: '@Alice 请回应', requestId: 'native-group' });
   await waitNative(() => f.calls.length === 1 && f.service.store.getEvent(f.calls[0]!.eventId)?.status === 'done');
-  expect(f.calls[0]!.laneId).toBe('turn-' + f.calls[0]!.eventId);
+  const topic=(await f.service.handle({type:'state',conversationId:room.id})).snapshot!.chatRuntime!.topic!;
+  expect(f.calls[0]!.laneId).toBe('topic-'+topic.id+'-alpha');
   expect(JSON.parse(f.calls[0]!.prompt).identity.id).toBe('alpha'); expect(f.calls[0]!.role).toBe('worker');
 });

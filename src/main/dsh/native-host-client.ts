@@ -1,5 +1,6 @@
 import type { DshTaskEvent } from '../../shared/dsh-tasks';
 import type { BotBrainRequestMetrics } from '../../shared/companion-bot-context';
+import type {BotNativeReplyOutput} from '../../shared/companion-bot';
 
 export const NATIVE_HOST_PROTOCOL = 'worldlinebox-native-web-host-v1';
 export interface NativeHostEvent extends Omit<DshTaskEvent, 'taskId'> {
@@ -10,6 +11,8 @@ export interface NativeHostEvent extends Omit<DshTaskEvent, 'taskId'> {
   nativeSequence?: number;
   nativeTurn?: number;
   nativeStep?: number;
+  rootSequence?:number;
+  outputs?:BotNativeReplyOutput[];
   /** App-owned main-brain observation; native workers do not synthesize this. */
   contextMetrics?: BotBrainRequestMetrics;
 }

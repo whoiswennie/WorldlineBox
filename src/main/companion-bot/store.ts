@@ -4,7 +4,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { isBotParticipantRequest } from './participant-request';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
-import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
+import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotReplyPart, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
 import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
 import { originalBuiltinBotPersona } from '../../shared/builtin-bot-companions';
 import type { BotMemoryActivity, BotMemoryRecallReport } from '../../shared/companion-bot-memory';
@@ -76,7 +76,7 @@ const historyHasLink = (value: unknown): number => {
   }
   return 0;
 };
-export interface BotHistoryProjectionRow { projectionSequence: number; timestamp: number; message: BotMessage }
+export interface BotHistoryProjectionRow { projectionSequence: number; timestamp: number; message: BotMessage;suppressed?:boolean }
 export interface BotGroupAdminChange { conversation:BotConversation; eventIds:string[] }
 export interface BotDevelopmentDefaultCleanup {
   phase: 'retiring' | 'sql-deleted' | 'complete'; conversationIds: string[]; laneIds: string[];
@@ -97,7 +97,7 @@ export class BotStore {
     try { this.activityBudget = new BotActivityBudget(this, options.activityBudget); } catch (error) { this.db.close(); throw error; }
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('busy_timeout = 5000');
     const version = Number(this.db.pragma('user_version', { simple: true }));
-    if (version > 20) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
+    if (version > 21) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bot_companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,kind TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,direct_key TEXT UNIQUE);
@@ -117,6 +117,11 @@ export class BotStore {
       CREATE UNIQUE INDEX IF NOT EXISTS bot_topic_bindings_native ON bot_topic_bindings(native_lane_id);
       CREATE TABLE IF NOT EXISTS bot_guidance(message_id TEXT NOT NULL,event_id TEXT NOT NULL,conversation_id TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,error TEXT,PRIMARY KEY(message_id,event_id));
       CREATE INDEX IF NOT EXISTS bot_guidance_event ON bot_guidance(event_id,status,message_id);
+      CREATE TABLE IF NOT EXISTS bot_topic_title_sync(topic_id TEXT NOT NULL,conversation_id TEXT NOT NULL,native_lane_id TEXT NOT NULL,companion_id TEXT NOT NULL,revision INTEGER NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,retry_at INTEGER NOT NULL DEFAULT 0,error TEXT,PRIMARY KEY(topic_id,native_lane_id));
+      CREATE INDEX IF NOT EXISTS bot_topic_title_ready ON bot_topic_title_sync(status,retry_at);
+      CREATE TABLE IF NOT EXISTS bot_reply_parts(ordinal INTEGER PRIMARY KEY AUTOINCREMENT,message_id TEXT NOT NULL,event_id TEXT NOT NULL,conversation_id TEXT NOT NULL,id TEXT NOT NULL,sequence INTEGER NOT NULL,payload_json TEXT NOT NULL,publication_id TEXT,UNIQUE(message_id,id));
+      CREATE INDEX IF NOT EXISTS bot_reply_parts_order ON bot_reply_parts(message_id,sequence,ordinal);
+      CREATE UNIQUE INDEX IF NOT EXISTS bot_reply_parts_publication ON bot_reply_parts(publication_id) WHERE publication_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS bot_inbox_conversation_status ON bot_inbox(conversation_id,status);
       CREATE INDEX IF NOT EXISTS bot_inbox_conversation_correlation ON bot_inbox(conversation_id,correlation_id,status);
       CREATE TABLE IF NOT EXISTS bot_outbox(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,conversation_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES bot_messages(id),status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,delivered_at TEXT);
@@ -315,6 +320,14 @@ export class BotStore {
       }).immediate(); } catch (error) { this.db.close(); throw error; }
     }
     if (version < 20) this.db.pragma('user_version = 20');
+    if(version<21)this.db.transaction(()=>{
+      for(const [name,definition] of [['pinned','INTEGER NOT NULL DEFAULT 0'],['favorite','INTEGER NOT NULL DEFAULT 0'],['name_revision','INTEGER NOT NULL DEFAULT 0'],['activity_at',"TEXT NOT NULL DEFAULT ''"]]){
+        if(!this.db.prepare('PRAGMA table_info(bot_native_topics)').all().some(row=>asRow(row).name===name))this.db.exec(`ALTER TABLE bot_native_topics ADD COLUMN ${name} ${definition}`);
+      }
+      this.db.prepare("UPDATE bot_native_topics SET activity_at=updated_at WHERE activity_at=''").run();
+      this.db.exec('CREATE INDEX IF NOT EXISTS bot_topics_recent ON bot_native_topics(conversation_id,acl_revision,pinned DESC,activity_at DESC,id DESC);CREATE INDEX IF NOT EXISTS bot_topics_favorites ON bot_native_topics(conversation_id,acl_revision,favorite,pinned DESC,activity_at DESC,id DESC)');
+      this.db.pragma('user_version = 21');
+    }).immediate();
   }
 
   close(): void { this.db.close(); }
@@ -775,6 +788,7 @@ export class BotStore {
     const found = this.db.prepare(`SELECT c.id AS conversation_id,m.id,m.sequence,m.sender_name,substr(m.content,1,240) AS preview,m.created_at
       FROM bot_conversations c JOIN bot_messages m ON m.sequence=(
         SELECT latest.sequence FROM bot_messages latest WHERE latest.conversation_id=c.id AND latest.status='sent'
+          AND NOT EXISTS(SELECT 1 FROM bot_reply_parts part WHERE part.publication_id=latest.id)
           AND latest.kind='message' AND (length(latest.content)>0 OR latest.attachments_json<>'[]') ORDER BY latest.sequence DESC LIMIT 1)
       WHERE c.kind<>'world' AND (EXISTS(SELECT 1 FROM bot_members member WHERE member.conversation_id=c.id AND member.member_id='user')
         OR c.kind='peer' AND (SELECT COUNT(*) FROM bot_members member WHERE member.conversation_id=c.id)=2)
@@ -1132,6 +1146,27 @@ export class BotStore {
     if (content.length > 512000) throw new Error('回复草稿过大。');
     return !!this.db.prepare("UPDATE bot_messages SET content=? WHERE id=(SELECT reply_message_id FROM bot_inbox WHERE id=? AND lease_token=? AND status='running')").run(content, eventId, leaseToken).changes;
   }
+  /** Committed native text and actual media publications share one ordered
+   * reply. Event/log identities make transport replay a no-op. */
+  appendReplyPart(eventId:string,part:Omit<BotReplyPart,'sequence'>&{sequence?:number}):void{
+    this.db.transaction(()=>{
+      const event=this.getEvent(eventId),lane=event&&this.getLane(event.laneId),room=event&&this.getConversation(event.conversationId);
+      if(!event||!lane||!room||event.status!=='running'||room.revision!==event.aclRevision||this.getEventNativeEpoch(eventId)!==undefined&&this.getEventNativeEpoch(eventId)!==lane.epoch)throw Error('回复片段没有当前事件授权。');
+      if(!part.id||part.id.length>300||part.sequence!==undefined&&(!Number.isSafeInteger(part.sequence)||part.sequence<0))throw Error('原生回复片段身份无效。');
+      const prior=this.db.prepare('SELECT payload_json FROM bot_reply_parts WHERE message_id=? AND id=?').get(event.replyMessageId,part.id) as {payload_json:string}|undefined;
+      const sequence=prior?(JSON.parse(prior.payload_json) as BotReplyPart).sequence:part.sequence??Number((this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS value FROM bot_reply_parts WHERE message_id=?').get(event.replyMessageId) as {value:number}).value);
+      const value:BotReplyPart={...part,sequence},payload=JSON.stringify(value);
+      if(prior){if(prior.payload_json!==payload)throw Error('同一原生片段标识对应了不同内容。');return;}
+      if(part.publicationId&&!this.db.prepare('SELECT 1 FROM bot_publications WHERE event_id=? AND message_id=?').get(eventId,part.publicationId))throw Error('媒体片段缺少真实发送回执。');
+      this.db.prepare('INSERT INTO bot_reply_parts(message_id,event_id,conversation_id,id,sequence,payload_json,publication_id) VALUES(?,?,?,?,?,?,?)').run(event.replyMessageId,eventId,event.conversationId,part.id,sequence,payload,part.publicationId??null);
+      if(part.attachments?.length){
+        const message=this.getMessage(event.replyMessageId)!,refs=[...new Map([...(message.attachments??[]),...part.attachments].map(file=>[file.id,file])).values()];
+        this.db.prepare('UPDATE bot_messages SET attachments_json=? WHERE id=?').run(JSON.stringify(refs),message.id);
+        this.bindMessageAttachments({...message,attachments:refs},false,undefined,this.eventSourceIds(event.id));
+      }
+    }).immediate();
+  }
+  replyParts(messageId:string):BotReplyPart[]{return this.db.prepare('SELECT payload_json FROM bot_reply_parts WHERE message_id=? ORDER BY sequence,ordinal').all(messageId).map(row=>JSON.parse(String(asRow(row).payload_json)) as BotReplyPart);}
   markDispatched(eventId: string, leaseToken: string, dshEventId: string): boolean {
     return !!this.db.prepare("UPDATE bot_inbox SET dsh_event_id=? WHERE id=? AND lease_token=? AND status='running'").run(dshEventId, eventId, leaseToken).changes;
   }
@@ -1216,10 +1251,12 @@ export class BotStore {
   }
   private message(raw: unknown): BotMessage {
     const r = asRow(raw), attachments = JSON.parse(String(r.attachments_json ?? '[]')) as BotMediaRef[], timing = turnTiming(r.timing_json);
+    const parts=this.replyParts(String(r.id));
     return { id: String(r.id), eventId: String(r.event_id), conversationId: String(r.conversation_id), senderId: String(r.sender_id),
       senderName: String(r.sender_name), senderType: String(r.sender_type) as BotSenderType, content: String(r.content), status: String(r.status) as BotMessage['status'],
       sequence: Number(r.sequence), kind: String(r.kind) as BotMessage['kind'], correlationId: String(r.correlation_id), createdAt: String(r.created_at), error: optional(r.error), ...(attachments.length ? { attachments } : {}),
       ...(timing.elapsedMs !== undefined ? { timing: timing as BotReplyTiming } : {}),
+      ...(parts.length?{parts}:{}),
     };
   }
   publishForEvent(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }): BotMessage {
@@ -1296,6 +1333,7 @@ export class BotStore {
   recentPublishedMessages(conversationId: string, options: { throughSourceSequence: number; limit?: number; maxChars?: number; companionId?: string; publicOnly?: boolean }): BotMessage[] {
     const rows = this.db.prepare(`SELECT m.* FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id
       WHERE p.conversation_id=? AND m.sequence<=? AND m.status='sent' AND (length(m.content)>0 OR m.attachments_json<>'[]')
+      AND NOT EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id)
       ${options.publicOnly ? `AND NOT ${internalTaskMessageSql}` : ''}
       ${options.companionId ? `AND ${companionMessageVisibilitySql}` : ''} ORDER BY p.sequence DESC LIMIT ?`)
       .all(conversationId, options.throughSourceSequence, ...(options.companionId ? [options.companionId, options.companionId, options.companionId] : []), bounded(options.limit, 80, 200)).map(raw => this.message(raw));
@@ -1304,14 +1342,14 @@ export class BotStore {
     return selected.reverse();
   }
   historyProjectionPage(conversationId: string, options: { after: number; through: number; limit?: number }): BotHistoryProjectionRow[] {
-    return this.db.prepare(`SELECT m.*,p.sequence AS projection_sequence,p.timestamp AS projection_timestamp FROM bot_history_projection p
+    return this.db.prepare(`SELECT m.*,p.sequence AS projection_sequence,p.timestamp AS projection_timestamp,EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id) AS suppressed FROM bot_history_projection p
       JOIN bot_messages m ON m.id=p.message_id WHERE p.conversation_id=? AND p.sequence>? AND p.sequence<=? ORDER BY p.sequence LIMIT ?`)
       .all(conversationId, options.after, options.through, bounded(options.limit, 32, 100)).map(raw => ({ projectionSequence: Number(asRow(raw).projection_sequence),
-        timestamp: Number(asRow(raw).projection_timestamp), message: this.message(raw) }));
+        timestamp: Number(asRow(raw).projection_timestamp), message: this.message(raw),suppressed:!!asRow(raw).suppressed }));
   }
   messagesPage(conversationId: string, options: { limit?: number; before?: number } = {}): BotMessagePage {
     const limit = bounded(options.limit, 100, 200);
-    const found = this.db.prepare("SELECT * FROM bot_messages WHERE conversation_id=? AND sequence<? AND kind<>'attention' ORDER BY sequence DESC LIMIT ?")
+    const found = this.db.prepare("SELECT m.* FROM bot_messages m WHERE conversation_id=? AND sequence<? AND kind<>'attention' AND NOT EXISTS(SELECT 1 FROM bot_reply_parts p WHERE p.publication_id=m.id) ORDER BY sequence DESC LIMIT ?")
       .all(conversationId, options.before ?? Number.MAX_SAFE_INTEGER, limit + 1).map(raw => this.message(raw));
     const hasMore = found.length > limit, items = found.slice(0, limit).reverse();
     return { items, hasMore, nextBefore: hasMore ? items[0]?.sequence : undefined };
@@ -1337,6 +1375,7 @@ export class BotStore {
     const found = this.db.prepare(`SELECT m.* FROM bot_messages m ${indexed ? 'JOIN bot_message_search ON bot_message_search.rowid=m.sequence' : ''}
       WHERE m.conversation_id=? AND m.sequence<? ${indexed ? 'AND bot_message_search MATCH ?' : ''}
       AND m.kind<>'attention' AND m.status IN ('queued','running','sent','failed','cancelled') AND (length(trim(m.content))>0 OR json_array_length(m.attachments_json)>0)
+      AND NOT EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id)
       AND (?='' OR m.content LIKE ? ESCAPE '\\' OR EXISTS(SELECT 1 FROM json_each(m.attachments_json) a WHERE json_extract(a.value,'$.name') LIKE ? ESCAPE '\\'))${category} ORDER BY m.sequence DESC LIMIT ?`)
       .all(conversationId, options.before ?? Number.MAX_SAFE_INTEGER, ...(indexed ? [`"${literal.replaceAll('"', '""')}"`] : []), literal, `%${escaped}%`, `%${escaped}%`, limit + 1).map(raw => this.message(raw));
     const items = found.slice(0, limit), hasMore = found.length > limit;

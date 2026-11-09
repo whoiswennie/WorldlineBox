@@ -161,8 +161,11 @@ it('publishes a pure sticker once across unknown native delivery/restart, archiv
   const publication = resumed.store.publicationsForEvent(eventId)[0]!;
   expect(publication).toMatchObject({ content: '', status: 'sent', senderId: DEFAULT_BOT_COMPANION_ID, attachments: [sticker] });
   const bytes = Buffer.from(await (await f.media.response(new Request(sticker.url))).arrayBuffer()); expect(hash(bytes)).toBe(sticker.sha256);
-  expect(resumed.store.searchMessages(f.conversationId, { query: '' }).items.some(message => message.id === resumed.store.getEvent(eventId)!.replyMessageId)).toBe(false);
-  expect(resumed.store.historyProjectionPage(f.conversationId, { after: 0, through: resumed.store.historyProjectionHead(f.conversationId) }).map(row => row.message.id)).toContain(publication.id);
+  const replyId=resumed.store.getEvent(eventId)!.replyMessageId;
+  expect(resumed.store.searchMessages(f.conversationId, { query: '' }).items.some(message => message.id === replyId)).toBe(true);
+  expect(resumed.store.searchMessages(f.conversationId,{query:''}).items.some(message=>message.id===publication.id)).toBe(false);
+  expect(resumed.store.historyProjectionPage(f.conversationId, { after: 0, through: resumed.store.historyProjectionHead(f.conversationId) }).map(row => row.message.id)).toContain(replyId);
+  expect(resumed.store.historyProjectionPage(f.conversationId,{after:0,through:resumed.store.historyProjectionHead(f.conversationId)}).filter(row=>!row.suppressed).map(row=>row.message.id)).not.toContain(publication.id);
   expect(next.calls.filter(input => !input.laneId.startsWith('memory-encoder-'))).toHaveLength(1);
   const noFeedback = resumed.store.taskTransaction(sql => sql.prepare('SELECT COUNT(*) AS count FROM bot_inbox WHERE source_record_id=?').get(publication.id)) as { count: number };
   expect(noFeedback.count).toBe(0);

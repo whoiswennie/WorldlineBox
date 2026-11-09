@@ -1,5 +1,5 @@
 import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { zstdDecompressSync } from 'node:zlib';
+import {decodeDshZstdFrames} from '../helpers/dsh-native-journal';
 import path from 'node:path';
 
 /** Only call on a fresh fixture-owned Host root. Do not traverse reparse points.
@@ -19,7 +19,7 @@ export async function preserveBotNativeJournals(root: string, destination: strin
       const filename = path.join(directory, entry.name);
       if (entry.isDirectory()) await walk(filename);
       else if (/\.jsonl(?:\.zstd)?$/u.test(entry.name)) {
-        let bytes = await readFile(filename); if (entry.name.endsWith('.zstd')) bytes = zstdDecompressSync(bytes);
+        let bytes = await readFile(filename); if (entry.name.endsWith('.zstd')) bytes = decodeDshZstdFrames(bytes);
         const records = bytes.toString('utf8').split(/\r?\n/u).filter(Boolean).map(line => {
           try { return sanitize(JSON.parse(line)); } catch { return { incompletePhysicalRecord: redact(line) }; }
         });

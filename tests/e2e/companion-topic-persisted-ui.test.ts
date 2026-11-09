@@ -2,7 +2,7 @@ import {mkdir,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {_electron as electron,expect,test} from '@playwright/test';
-import type {WorldlineBoxBotApi} from '../../src/shared/companion-bot';
+import type {BotRequest,WorldlineBoxBotApi} from '../../src/shared/companion-bot';
 import {electronLaunchEnv,resolveElectronLaunchOptions} from './electron-test-helpers';
 // eslint-disable-next-line no-empty-pattern -- Reads the actual persisted real-model acceptance through production UI and IPC.
 test('renders compact progress and reconnectable topic links from the actual collaborative project',async({},testInfo)=>{
@@ -16,6 +16,11 @@ test('renders compact progress and reconnectable topic links from the actual col
     await page.locator('[data-application-module="companions"]').click();
     const state=await page.evaluate(()=>(Reflect.get(window,'worldlinebox') as {companionBot:WorldlineBoxBotApi}).companionBot.request({type:'state'}));
     const room=state.snapshot!.conversations.find(room=>room.id===report.groupId)!;await page.locator('.bot-sidebar .bot-conversation').filter({hasText:room.title}).first().click();
+    const request=(input:BotRequest)=>page.evaluate(input=>(Reflect.get(window,'worldlinebox') as {companionBot:WorldlineBoxBotApi}).companionBot.request(input),input);
+    // A current topic intentionally has no redundant "continue" link. Select
+    // a different persisted topic before exercising the original reply's link.
+    const topics=(await request({type:'topic.list',conversationId:room.id,mode:'all'})).topics!;
+    const other=topics.find(topic=>topic.id!==report.originalTopic.id);expect(other).toBeDefined();expect((await request({type:'topic.select',conversationId:room.id,topicId:other!.id})).ok).toBe(true);
     await expect(page.locator('.bot-message-topic').first()).toBeVisible();
     await page.locator('.bot-message-topic').filter({hasText:report.originalTopic.title}).first().click();await expect(page.locator('.bot-topic-current')).toContainText(report.originalTopic.title);
     const bubbles=page.locator('.bot-execution-toggle');expect(await bubbles.count()).toBeGreaterThan(5);

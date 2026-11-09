@@ -16,9 +16,11 @@ The chat is a frontend and deterministic router. The selected companion's native
 
 The topic bar above the composer shows where idle follow-ups go. **New topic** creates independent context. Open the topic name to search and reconnect earlier WorldlineBox topics. **Compact** invokes the selected native Session's `/compact`; follow-ups retain that Session identity. In a group, choose which companion to compact.
 
+The topic picker initially shows six recent topics, with pinned topics first and the rest ordered by latest activity. **All** and **Favorites** show twelve topics per page and support fuzzy search with gaps; separate multiple keywords with spaces. Each row's **…** menu offers pinning, favorites and renaming. Renaming also updates that topic's native DSH sessions; a clock marks pending synchronization. Favorites search is restricted to saved favorites.
+
 While work is running, new input appears in the queue above the composer. It normally starts a new topic after the task finishes, or continues another explicitly selected topic. **Steer** delivers the queued message and verified attachments to the current native task at its next input boundary. Unknown deliveries retain their stable receipt; they are never silently replayed as new work. Confirmed non-admission restores the queue.
 
-Execution bubbles start with one compact status row. Steps, thoughts and tool details expand only on request; completion collapses progress and leaves the final answer. Uploads reach DSH as verified absolute paths. Native `present` deliveries become real chat attachments for preview and saving. Stopping work does not undo completed external effects.
+Execution bubbles start with one compact status row. Steps, thoughts and tool details expand only on request; completion collapses progress. Committed answers, stickers and native file deliveries remain visible in their original order inside one reply, including important answers given before the final step. Standalone sticker exchanges remain supported. Uploads reach DSH as verified absolute paths. Native `present` deliveries become real chat attachments for preview and saving. Stopping work does not undo completed external effects.
 
 ## Memory
 

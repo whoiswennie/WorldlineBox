@@ -22,6 +22,26 @@ async function click(label: string) {
   const target = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.getAttribute('aria-label') === label || button.textContent?.trim() === label);
   expect(target, label).toBeDefined(); await act(async () => { target!.click(); await Promise.resolve(); });
 }
+it('renders native text, sticker, delivery and final text once in their source order inside one bubble',async()=>{
+  await render({...message,attachments:[sticker,textFile],content:'全部答复',execution:{status:'succeeded',steps:[]},parts:[
+    {id:'last',kind:'text',sequence:40,text:'交付完毕'},
+    {id:'first',kind:'text',sequence:10,text:'最早的关键结论'},
+    {id:'media',kind:'media',sequence:20,text:'给你一个表情',attachments:[sticker]},
+    {id:'files',kind:'media',sequence:30,attachments:[textFile]},
+  ]});
+  expect(host.querySelectorAll('.bot-message-bubble')).toHaveLength(1);
+  const pieces=[...host.querySelectorAll('[data-reply-kind]')];expect(pieces.map(piece=>piece.getAttribute('data-native-order'))).toEqual(['10','20','30','40']);
+  expect(pieces[0]?.textContent).toContain('最早的关键结论');expect(pieces[1]?.querySelector('img')).not.toBeNull();expect(pieces[2]?.textContent).toContain(textFile.name);expect(pieces[3]?.textContent).toContain('交付完毕');
+  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('false');
+});
+it('does not repeat a committed caption as a final echo or live draft',async()=>{
+  await render({...message,status:'running',attachments:[sticker],parts:[{id:'sticker',kind:'media',sequence:10,text:'收到',attachments:[sticker]},{id:'echo',kind:'text',sequence:20,text:'收到'}]},'收到');
+  expect(host.querySelectorAll('.bot-message-text')).toHaveLength(1);expect(host.querySelector('.bot-reply-draft')).toBeNull();expect(host.querySelectorAll('img')).toHaveLength(1);
+});
+it('renders an intentional sticker-only duel without an empty answer or an execution toolbar',async()=>{
+  await render({...message,content:'',attachments:[sticker],execution:{status:'succeeded',steps:[]},parts:[{id:'only-sticker',kind:'media',sequence:10,attachments:[sticker]}]});
+  expect(host.querySelector('.bot-message-text,.bot-execution-toggle')).toBeNull();expect(host.querySelectorAll('.is-sticker img')).toHaveLength(1);expect(host.querySelector('.bot-message-bubble.is-inline-media-only')).not.toBeNull();
+});
 it('keeps the actual text and default-collapsed attachment summary inside one message bubble without media reads', async () => {
   await render(); const bubble = host.querySelector('.bot-message-bubble')!;
   expect(bubble.querySelector(':scope > .bot-message-text')?.textContent).toBe(message.content);

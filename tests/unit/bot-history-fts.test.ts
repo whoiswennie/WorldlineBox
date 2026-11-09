@@ -96,7 +96,7 @@ it('atomically backfills a v13 database and successful Outbox timing without inv
   expect(store.searchMessages(direct.id, { query: '春樱计划' }).items).toHaveLength(2);
   expect(store.getMessage(done.event.replyMessageId)?.timing).toEqual({ elapsedMs: 3456 });
   expect(store.getMessage(stopped.events[0]!.replyMessageId)?.timing).toBeUndefined();
-  const version = new Database(filename, { readonly: true }); try { expect(version.pragma('user_version', { simple: true })).toBe(19); } finally { version.close(); }
+  const version = new Database(filename, { readonly: true }); try { expect(version.pragma('user_version', { simple: true })).toBe(21); } finally { version.close(); }
   store.close(); store = new BotStore(filename);
   expect(store.getMessage(done.event.replyMessageId)?.timing).toEqual({ elapsedMs: 3456 });
 });

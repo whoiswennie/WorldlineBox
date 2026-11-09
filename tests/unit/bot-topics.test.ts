@@ -54,3 +54,37 @@ it('keeps private companion collaboration in its own native topic while reconnec
   expect(f.topics.lane(first)).toBe(f.topics.lane(second));expect(f.topics.reference(first.id)?.id).not.toBe(selected.id);
   expect(()=>f.topics.select(peer.id,f.topics.reference(first.id)!.id)).toThrow('不能管理');
 });
+it('bounds the recent view, paginates the full list, pins first and searches only favorites when requested',()=>{
+  const f=fixture(),items=[];
+  for(let index=0;index<32;index++){
+    const value=f.topics.create(f.room.id,'item-'+index,index===0?'上海出行的天气资料':index===1?'上海另一份天气资料':'资料 '+index);items.push(value);
+    store.taskTransaction(sql=>sql.prepare('UPDATE bot_native_topics SET activity_at=? WHERE id=?').run(new Date(1000000+index*1000).toISOString(),value.id));
+  }
+  f.topics.flags(f.room.id,items[0]!.id,{pinned:true,favorite:true});
+  expect(f.topics.list(f.room.id).items).toHaveLength(6);expect(f.topics.list(f.room.id).items[0]?.id).toBe(items[0]!.id);
+  const first=f.topics.list(f.room.id,'',undefined,'all'),second=f.topics.list(f.room.id,'',first.next,'all');
+  expect(first.items).toHaveLength(12);expect(second.items).toHaveLength(12);expect(second.items.some(topic=>first.items.some(prior=>prior.id===topic.id))).toBe(false);
+  expect(f.topics.list(f.room.id,'上海天气',undefined,'all').items).toHaveLength(2);
+  expect(f.topics.list(f.room.id,'上海天气',undefined,'favorites').items.map(topic=>topic.id)).toEqual([items[0]!.id]);
+});
+it('retains explicit renames and newest native title jobs across replay and out-of-order acknowledgements',()=>{
+  const f=fixture(),selected=f.topics.create(f.room.id,'project'),sent=f.send('原始标题');f.topics.bind(sent.events,selected);
+  const claim=store.claim({workerId:'one'})!;store.markDispatched(claim.event.id,claim.leaseToken,claim.event.id);
+  f.topics.rename(f.room.id,selected.id,'手动标题','rename-one');const old=f.topics.titleJobs()[0]!;
+  f.topics.rename(f.room.id,selected.id,'手动标题','rename-one');expect(f.topics.titleJobs()[0]?.revision).toBe(1);
+  f.topics.rename(f.room.id,selected.id,'最终标题','rename-two');f.topics.titleResult(old);
+  const latest=f.topics.titleJobs()[0]!;expect(latest).toMatchObject({title:'最终标题',revision:2});expect(f.topics.get(selected.id,f.room.id).renamePending).toBe(true);
+  f.topics.titleResult(latest);expect(f.topics.get(selected.id,f.room.id)).toMatchObject({title:'最终标题',renamePending:false});
+  f.topics.bind(sent.events,f.topics.get(selected.id,f.room.id));expect(f.topics.get(selected.id,f.room.id).title).toBe('最终标题');
+  expect(()=>f.topics.rename(f.room.id,selected.id,'不同标题','rename-one')).toThrow('不同内容');
+});
+it('fuzzy-searches an old session beyond the recent page without importing the lifetime history',()=>{
+  const f=fixture();let original='';
+  for(let index=0;index<70;index++){
+    const sent=f.send(index===0?'归档已久的重要关键词':'普通话题 '+index),claim=store.claim({workerId:'worker'})!;if(!index)original=sent.events[0]!.id;
+    store.markDispatched(claim.event.id,claim.leaseToken,claim.event.id);store.settle({eventId:claim.event.id,leaseToken:claim.leaseToken,status:'done',content:'回答'});
+  }
+  const result=f.topics.list(f.room.id,'归档关键词');expect(result.items.map(topic=>topic.id)).toEqual(['legacy-'+original]);
+  expect(store.taskTransaction(sql=>sql.prepare('SELECT count(*) AS count FROM bot_native_topics').get())).toMatchObject({count:0});
+  f.topics.select(f.room.id,result.items[0]!.id);expect(f.topics.lane(store.getEvent(original)!)).toBe('turn-'+original);
+});

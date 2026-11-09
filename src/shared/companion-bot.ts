@@ -57,9 +57,12 @@ export interface BotMessage {
   progress?: BotReplyProgress;
   execution?: BotExecution;
   topic?: { id:string;title:string };
+  parts?:BotReplyPart[];
   taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
+export interface BotReplyPart { id:string;kind:'text'|'media';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string }
+export interface BotNativeReplyOutput {id:string;sequence:number;text?:string;files?:Array<{path:string;description?:string}>}
 export interface BotTaskProgress { phase: string; detail?: string; updatedAt?: string; toolName?: string }
 export interface BotTask { id: string; conversationId: string; companionId: string; companionName?: string; goal: string; status: string; summary?: string; summaryIsPreview?: boolean; error?: string;
   title?: string; createdAt?: string; startedAt?: string; updatedAt?: string; sessionId?: string; progress?: BotTaskProgress; cancelRequested?: boolean; stopRequestedAt?: string; continuationAvailable?: boolean;
@@ -140,7 +143,9 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
   z.strictObject({ type: z.literal('execution.continue'), messageId: id, requestId: id }),
-  z.strictObject({ type: z.literal('topic.list'), conversationId: id, query: z.string().max(200).optional(), before: z.string().max(200).optional() }),
+  z.strictObject({ type: z.literal('topic.list'), conversationId: id, query: z.string().max(200).optional(), before: z.string().max(300).optional(),mode:z.enum(['recent','all','favorites']).optional() }),
+  z.strictObject({type:z.literal('topic.flags'),conversationId:id,topicId:id,pinned:z.boolean().optional(),favorite:z.boolean().optional()}),
+  z.strictObject({type:z.literal('topic.rename'),conversationId:id,topicId:id,title:z.string().trim().min(1).max(100).refine(value=>!value.includes('\0')),requestId:id}),
   z.strictObject({ type: z.literal('topic.new'), conversationId: id, requestId: id }),
   z.strictObject({ type: z.literal('topic.select'), conversationId: id, topicId: id }),
   z.strictObject({ type: z.literal('topic.compact'), conversationId: id, topicId: id, companionId: id, requestId: id }),

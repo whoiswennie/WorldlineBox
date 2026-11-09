@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto';
-import type { BotChatRuntime, BotNativeTopic } from '../../shared/companion-bot-topics';
+import type { BotChatRuntime, BotNativeTopic, BotTopicListMode } from '../../shared/companion-bot-topics';
 import type { BotEvent } from './types';
 import type { BotStore } from './store';
 
-type TopicRow = { id: string; conversation_id: string; acl_revision: number; title: string; created_at: string; updated_at: string };
+type TopicRow = { id: string; conversation_id: string; acl_revision: number; title: string; created_at: string; updated_at: string;activity_at?:string;pinned?:number;favorite?:number;rename_pending?:number };
+export interface BotTopicTitleSync {topic_id:string;conversation_id:string;native_lane_id:string;companion_id:string;revision:number;title:string}
 export interface BotGuidance { message_id: string; event_id: string; conversation_id: string; text: string; status: string; error?: string }
-const topic = (row: TopicRow): BotNativeTopic => ({ id: row.id, conversationId: row.conversation_id, title: row.title, createdAt: row.created_at, updatedAt: row.updated_at });
+const topic = (row: TopicRow): BotNativeTopic => ({ id: row.id, conversationId: row.conversation_id, title: row.title, createdAt: row.created_at, updatedAt: row.activity_at||row.updated_at,pinned:!!row.pinned,favorite:!!row.favorite,renamePending:!!row.rename_pending });
 const short = (text: string) => Array.from(text.trim().replace(/\s+/gu, ' ')).slice(0, 60).join('') || '新话题';
 
 /** Deterministic topic routing: explicit selection and current-topic follow-ups
@@ -22,7 +23,14 @@ export class BotTopics {
   }
   private readTopic(id:string,conversationId:string):BotNativeTopic{
     const room=this.store.getConversation(conversationId);if(!room||room.dissolvedAt)throw Error('会话不存在或已经解散。');
-    const row = this.store.taskTransaction(sql => sql.prepare('SELECT * FROM bot_native_topics WHERE id=? AND conversation_id=? AND acl_revision=?').get(id, conversationId, room.revision)) as TopicRow | undefined;
+    if(id.startsWith('legacy-'))this.store.taskTransaction(sql=>{
+      const event=this.store.getEvent(id.slice(7));if(!event||event.conversationId!==room.id||event.aclRevision!==room.revision||!event.dshEventId)throw Error('旧话题不存在。');
+      const lane=this.store.getLane(event.laneId)!;if(this.store.getEventNativeEpoch(event.id)!==undefined&&this.store.getEventNativeEpoch(event.id)!==lane.epoch)throw Error('旧话题上下文已撤回。');
+      sql.prepare('INSERT OR IGNORE INTO bot_native_topics(id,conversation_id,acl_revision,title,created_at,updated_at,activity_at) VALUES(?,?,?,?,?,?,?)').run(id,room.id,room.revision,short(event.content),event.receivedAt,event.receivedAt,event.receivedAt);
+      sql.prepare('INSERT OR IGNORE INTO bot_topic_events VALUES(?,?,?)').run(event.id,room.id,id);
+      sql.prepare('INSERT OR IGNORE INTO bot_topic_bindings VALUES(?,?,?,?,?)').run(id,room.id,event.companionId,'turn-'+event.id,lane.epoch);
+    });
+    const row = this.store.taskTransaction(sql => sql.prepare("SELECT *,EXISTS(SELECT 1 FROM bot_topic_title_sync s WHERE s.topic_id=t.id AND s.status='pending') AS rename_pending FROM bot_native_topics t WHERE id=? AND conversation_id=? AND acl_revision=?").get(id, conversationId, room.revision)) as TopicRow | undefined;
     if (!row) throw Error('话题不存在，或聊天成员已经变化，请开启新话题。');
     const stale = this.store.taskTransaction(sql => sql.prepare(`SELECT 1 FROM bot_topic_bindings b JOIN bot_lanes l ON l.conversation_id=b.conversation_id AND l.companion_id=b.companion_id WHERE b.topic_id=? AND b.lane_epoch<>l.epoch LIMIT 1`).get(id));
     if (stale) throw Error('这个话题包含已清理或撤回的上下文，请开启新话题。');
@@ -37,7 +45,7 @@ export class BotTopics {
     const room = this.room(conversationId), id = 'topic-' + createHash('sha256').update(JSON.stringify([conversationId, requestId])).digest('hex');
     this.store.taskTransaction(sql => {
       const stamp = new Date().toISOString();
-      sql.prepare('INSERT OR IGNORE INTO bot_native_topics VALUES(?,?,?,?,?,?)').run(id, conversationId, room.revision, short(title), stamp, stamp);
+      sql.prepare('INSERT OR IGNORE INTO bot_native_topics(id,conversation_id,acl_revision,title,created_at,updated_at,activity_at) VALUES(?,?,?,?,?,?,?)').run(id, conversationId, room.revision, short(title), stamp, stamp,stamp);
       if (activate) this.store.setMetadata('native-topic-active:' + conversationId, id);
     });
     return this.get(id, conversationId);
@@ -45,30 +53,47 @@ export class BotTopics {
   select(conversationId: string, id: string): BotNativeTopic {
     const selected = this.get(id, conversationId); this.store.setMetadata('native-topic-active:' + conversationId, id); return selected;
   }
-  /** Import only an explicitly browsed page of WorldlineBox's older sessions.
-   * Native DSH workspaces outside this application's event journal are untouched. */
-  list(conversationId: string, query = '', before?: string): { items: BotNativeTopic[]; next?: string } {
+  /** SQL pages cover all app-owned legacy sessions without importing every old
+   * session into memory. Each fuzzy token accepts gaps and literal wildcards. */
+  list(conversationId: string, query = '', before?: string,mode:BotTopicListMode='recent'): { items: BotNativeTopic[]; next?: string } {
     const room = this.room(conversationId);
     return this.store.taskTransaction(sql => {
-      const older = sql.prepare(`SELECT i.id FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id LEFT JOIN bot_metadata epoch ON epoch.key='event-native-epoch:'||i.id WHERE i.conversation_id=? AND i.acl_revision=? AND i.source='user' AND i.dsh_event_id IS NOT NULL AND (epoch.value IS NULL OR CAST(epoch.value AS INTEGER)=l.epoch)
-        AND NOT EXISTS(SELECT 1 FROM bot_topic_events t WHERE t.event_id=i.id) ORDER BY i.sequence DESC LIMIT 40`).all(conversationId, room.revision) as Array<{ id: string }>;
-      for (const row of older) {
-        const event = this.store.getEvent(row.id)!;
-        const lane = this.store.getLane(event.laneId)!;
-        if (this.store.getEventNativeEpoch(event.id) !== undefined && this.store.getEventNativeEpoch(event.id) !== lane.epoch) continue;
-        const id = 'topic-' + createHash('sha256').update(event.id).digest('hex');
-        sql.prepare('INSERT OR IGNORE INTO bot_native_topics VALUES(?,?,?,?,?,?)').run(id, conversationId, room.revision, short(event.content), event.receivedAt, event.receivedAt);
-        sql.prepare('INSERT OR IGNORE INTO bot_topic_events VALUES(?,?,?)').run(event.id, conversationId, id);
-        sql.prepare('INSERT OR IGNORE INTO bot_topic_bindings VALUES(?,?,?,?,?)').run(id, conversationId, event.companionId, 'turn-' + event.id, lane.epoch);
-      }
-      let cursor: [string,string] | undefined;
-      if (before) { const parsed: unknown = JSON.parse(before); if (!Array.isArray(parsed) || parsed.length !== 2 || parsed.some(v => typeof v !== 'string')) throw Error('无效的话题分页位置。'); cursor = [parsed[0],parsed[1]]; }
-      const rows = sql.prepare(`SELECT * FROM bot_native_topics WHERE conversation_id=? AND acl_revision=? AND instr(lower(title),lower(?))>0
-        ${cursor ? 'AND (updated_at,id)<(?,?)' : ''} ORDER BY updated_at DESC,id DESC LIMIT 31`).all(conversationId, room.revision, query, ...(cursor ?? [])) as TopicRow[];
-      const items = rows.slice(0,30), last = items.at(-1);
-      return { items: items.map(topic), ...(rows.length>30 && last ? { next: JSON.stringify([last.updated_at,last.id]) } : {}) };
+      const patterns=query.trim().split(/\s+/u).filter(Boolean).slice(0,12).map(token=>'%'+Array.from(token).map(char=>char.replace(/[\\%_]/gu,'\\$&')).join('%')+'%');
+      let cursor:[number,string,string]|undefined;
+      if(before){const parsed:unknown=JSON.parse(before);if(!Array.isArray(parsed)||parsed.length!==3||![0,1].includes(parsed[0])||typeof parsed[1]!=='string'||typeof parsed[2]!=='string')throw Error('无效的话题分页位置。');cursor=[parsed[0],parsed[1],parsed[2]];}
+      const limit=mode==='recent'&&!patterns.length?6:12;
+      const rows=sql.prepare(`WITH candidates AS (
+        SELECT id,conversation_id,acl_revision,title,created_at,updated_at,activity_at,pinned,favorite,
+          EXISTS(SELECT 1 FROM bot_topic_title_sync s WHERE s.topic_id=t.id AND s.status='pending') AS rename_pending FROM bot_native_topics t WHERE conversation_id=? AND acl_revision=?
+        UNION ALL SELECT 'legacy-'||i.id,i.conversation_id,i.acl_revision,substr(trim(i.content),1,60),i.received_at,i.received_at,i.received_at,0,0,0
+          FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id LEFT JOIN bot_metadata epoch ON epoch.key='event-native-epoch:'||i.id
+          WHERE i.conversation_id=? AND i.acl_revision=? AND i.source='user' AND i.dsh_event_id IS NOT NULL AND (epoch.value IS NULL OR CAST(epoch.value AS INTEGER)=l.epoch)
+          AND NOT EXISTS(SELECT 1 FROM bot_topic_events t WHERE t.event_id=i.id))
+        SELECT * FROM candidates WHERE 1 ${mode==='favorites'?'AND favorite=1':''} ${patterns.map(()=>"AND title LIKE ? ESCAPE '\\'").join(' ')}
+        ${cursor?'AND (pinned,activity_at,id)<(?,?,?)':''} ORDER BY pinned DESC,activity_at DESC,id DESC LIMIT ?`)
+        .all(conversationId,room.revision,conversationId,room.revision,...patterns,...cursor??[],limit+1) as TopicRow[];
+      const items=rows.slice(0,limit),last=items.at(-1);return{items:items.map(topic),...(rows.length>limit&&last?{next:JSON.stringify([last.pinned??0,last.activity_at,last.id])}:{})};
     });
   }
+  flags(conversationId:string,id:string,flags:{pinned?:boolean;favorite?:boolean}):BotNativeTopic{
+    this.get(id,conversationId);this.store.taskTransaction(sql=>sql.prepare('UPDATE bot_native_topics SET pinned=COALESCE(?,pinned),favorite=COALESCE(?,favorite) WHERE id=?').run(flags.pinned===undefined?null:Number(flags.pinned),flags.favorite===undefined?null:Number(flags.favorite),id));return this.get(id,conversationId);
+  }
+  rename(conversationId:string,id:string,title:string,requestId:string):BotNativeTopic{
+    this.get(id,conversationId);if(!title.trim()||title.length>100||title.includes('\0'))throw Error('话题名称需要 1 至 100 个字符。');
+    this.store.taskTransaction(sql=>{
+      const key='topic-rename:'+conversationId+':'+requestId,prior=this.store.getMetadata(key);
+      if(prior){const saved=JSON.parse(prior);if(saved.id!==id||saved.title!==title)throw Error('重命名请求编号已用于不同内容。');return;}
+      sql.prepare('UPDATE bot_native_topics SET title=?,name_revision=name_revision+1,updated_at=? WHERE id=?').run(title,new Date().toISOString(),id);
+      sql.prepare(`INSERT INTO bot_topic_title_sync(topic_id,conversation_id,native_lane_id,companion_id,revision,title,status)
+        SELECT b.topic_id,b.conversation_id,b.native_lane_id,b.companion_id,t.name_revision,t.title,'pending' FROM bot_topic_bindings b JOIN bot_native_topics t ON t.id=b.topic_id WHERE b.topic_id=?
+        AND EXISTS(SELECT 1 FROM bot_topic_events e JOIN bot_inbox i ON i.id=e.event_id WHERE e.topic_id=b.topic_id AND i.companion_id=b.companion_id AND i.dsh_event_id IS NOT NULL)
+        ON CONFLICT(topic_id,native_lane_id) DO UPDATE SET revision=excluded.revision,title=excluded.title,status='pending',retry_at=0,error=NULL`).run(id);
+      this.store.setMetadata(key,JSON.stringify({id,title}));
+    });return this.get(id,conversationId);
+  }
+  titleJobs():BotTopicTitleSync[]{return this.store.taskTransaction(sql=>sql.prepare("SELECT * FROM bot_topic_title_sync WHERE status='pending' AND retry_at<=? LIMIT 8").all(Date.now())) as BotTopicTitleSync[];}
+  titleResult(job:BotTopicTitleSync,error?:string):void{this.store.taskTransaction(sql=>sql.prepare('UPDATE bot_topic_title_sync SET status=?,retry_at=?,error=? WHERE topic_id=? AND native_lane_id=? AND revision=?').run(error?'pending':'done',error?Date.now()+5000:0,error??null,job.topic_id,job.native_lane_id,job.revision));}
+  touch(event:BotEvent):void{this.store.taskTransaction(sql=>sql.prepare('UPDATE bot_native_topics SET activity_at=? WHERE id=(SELECT topic_id FROM bot_topic_events WHERE event_id=?)').run(new Date().toISOString(),event.id));}
   bind(events: readonly BotEvent[], selected: BotNativeTopic): void {
     this.store.taskTransaction(sql => {
       this.readTopic(selected.id, selected.conversationId);
@@ -78,7 +103,7 @@ export class BotTopics {
         sql.prepare('INSERT OR IGNORE INTO bot_topic_events VALUES(?,?,?)').run(event.id,event.conversationId,selected.id);
         sql.prepare('INSERT OR IGNORE INTO bot_topic_bindings VALUES(?,?,?,?,?)').run(selected.id,event.conversationId,event.companionId,`topic-${selected.id}-${event.companionId}`,epoch);
       }
-      if (events.length) sql.prepare("UPDATE bot_native_topics SET title=CASE WHEN title='新话题' THEN ? ELSE title END,updated_at=? WHERE id=?").run(short(events[0]!.content),new Date().toISOString(),selected.id);
+      if (events.length) sql.prepare("UPDATE bot_native_topics SET title=CASE WHEN title='新话题' AND name_revision=0 THEN ? ELSE title END,activity_at=? WHERE id=?").run(short(events[0]!.content),new Date().toISOString(),selected.id);
     });
   }
   lane(event: BotEvent): string {
@@ -100,7 +125,7 @@ export class BotTopics {
       if(!binding&&room?.kind==='peer'){
         const causeTopic=event.causationId?sql.prepare('SELECT topic_id FROM bot_topic_events WHERE event_id=?').get(event.causationId) as {topic_id:string}|undefined:undefined;
         const id='topic-'+createHash('sha256').update(JSON.stringify([room.id,causeTopic?.topic_id??event.correlationId])).digest('hex');
-        sql.prepare('INSERT OR IGNORE INTO bot_native_topics VALUES(?,?,?,?,?,?)').run(id,room.id,room.revision,short(event.content),event.receivedAt,event.receivedAt);
+        sql.prepare('INSERT OR IGNORE INTO bot_native_topics(id,conversation_id,acl_revision,title,created_at,updated_at,activity_at) VALUES(?,?,?,?,?,?,?)').run(id,room.id,room.revision,short(event.content),event.receivedAt,event.receivedAt,event.receivedAt);
         this.bind([event],this.readTopic(id,room.id));binding={topic_id:id};
       }
       if(binding&&event.source==='user')this.store.setMetadata('native-topic-active:'+event.conversationId,binding.topic_id);

@@ -37,7 +37,7 @@ export class BotHistoryProjector {
         // Preserve the full publication-order cursor, including pages made
         // entirely of another actor's private task notices. Those rows are
         // intentionally skipped, never copied into this companion's memory.
-        const legal = page.filter(row => !withdrawn.has(row.message.id) && store.isMessageVisibleToCompanion(row.message.id, scope.companionId));
+        const legal = page.filter(row => !row.suppressed && !withdrawn.has(row.message.id) && store.isMessageVisibleToCompanion(row.message.id, scope.companionId));
         if (legal.length) await memory.appendHistory(scope, legal.map(({ message, timestamp }) => ({
           id: message.id, role: message.senderId === scope.companionId ? 'assistant' : 'user', content: botMessageEvidence(message),
           timestamp, senderId: message.senderId, senderName: message.senderName,

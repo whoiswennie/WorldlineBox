@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import { BotService } from '../../src/main/companion-bot/service';
-import { BotDshBrain, BotDshOutputLimitError, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
+import { BotDshBrain, BotDshOutputLimitError, BotDshTurnFailedError, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { botRequestSchema } from '../../src/shared/companion-bot';
@@ -58,6 +58,18 @@ async function callback(input: BotDshRun, name: string, args: object, callId = '
   const result = await response.json() as { ok: boolean; result?: unknown; error?: string };
   if (!result.ok) throw Error(result.error); return result.result;
 }
+it('reconciles all ordered user-facing parts from a cached native receipt without duplicating delivery',async()=>{
+  const f=await fixture(),file=path.join(f.root,'receipt-output.txt');await writeFile(file,'NATIVE_FILE');
+  f.brain.execute=async()=>({text:'关键回答\n\n完成',artifacts:[{path:file}],outputs:[{id:'native-text-10',sequence:10,text:'关键回答'},{id:'native-files-20',sequence:20,files:[{path:file}]},{id:'native-text-30',sequence:30,text:'完成'}]});
+  const sent=await f.send('缓存回执重连');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='sent');
+  const message=f.service.store.getMessage(sent.replyMessageIds![0]!)!;expect(message.content).toBe('关键回答\n\n完成');expect(message.parts?.map(part=>part.sequence)).toEqual([10,20,30]);expect(message.attachments).toHaveLength(1);
+});
+it('retains early answers and delivered files when a later native step fails, including a cold receipt',async()=>{
+  const f=await fixture(),file=path.join(f.root,'partial-output.txt');await writeFile(file,'PARTIAL_NATIVE_FILE');
+  f.brain.execute=async input=>{const result:BotDshResult={eventId:input.eventId,sessionId:BotDshBrain.sessionId(input.laneId),status:'failed',text:'已确认的关键结论',artifacts:[{path:file}],outputs:[{id:'native-text-10',sequence:10,text:'已确认的关键结论'},{id:'native-files-20',sequence:20,files:[{path:file}]}]};throw new BotDshTurnFailedError(input.eventId,'后续模型步骤失败',result.text,true,undefined,result);};
+  const sent=await f.send('失败前的结果不能消失');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='failed');
+  const message=f.service.store.getMessage(sent.replyMessageIds![0]!)!;expect(message.content).toBe('已确认的关键结论');expect(message.parts?.map(part=>part.sequence)).toEqual([10,20]);expect(message.attachments).toHaveLength(1);expect(message.error).toContain('后续模型步骤失败');
+});
 it('routes a follow-up to the selected native DSH session without replaying the application transcript', async () => {
   const f = await fixture();
   const first = await f.send('第一轮的私有上下文');
