@@ -12,6 +12,8 @@ it('keeps current user input, attribution, persona and recalled evidence in a fr
   const context = buildNativeBotContext({ companion, event, conversation, companions: [companion], files: [], memories: 'VCP证据' });
   expect(context.system).toContain(companion.persona);
   expect(context.system).toContain('原生 DSH Agent');
+  expect(context.system).toContain('需要用户看到的文字统一写入最终正文');
+  expect(context.system).toContain('caption 仅是元数据，不在聊天中展示');
   const body = JSON.parse(context.prompt);
   expect(body.message).toMatchObject({ content: '当前问题', senderId: 'user' });
   expect(body.memoryEvidence).toBe('VCP证据');
