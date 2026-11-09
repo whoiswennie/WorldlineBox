@@ -32,6 +32,7 @@ import { botHandoffFile } from './task-handoff';
 import { isGroupStop } from './group-attention';
 import { BotTopics, type BotGuidance,type BotTopicTitleSync } from './topics';
 import {botReplyDisplayParts} from '../../shared/companion-bot-reply';
+import {botNativeContextSchema} from '../../shared/companion-native-context';
 
 export interface BotServiceOptions {
   root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel;
@@ -72,6 +73,7 @@ export class BotService {
   private readonly topics: BotTopics;
   private readonly guidanceRuns = new Map<string, Promise<void>>();
   private readonly titleRuns=new Map<string,Promise<void>>();
+  private readonly contextReads=new Map<string,Promise<BotResponse>>();
   private readonly loadedTombstones = new Map<string, true>();
   private readonly sourceWithdrawalRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
@@ -161,6 +163,28 @@ export class BotService {
     const execution: BotExecution = { status: 'running', steps: [], ...(previous ? JSON.parse(previous) : {}), ...patch };
     this.store.setMetadata(key, JSON.stringify(execution));
   }
+  private async topicContext(input:Extract<BotRequest,{type:'topic.context'}>):Promise<BotResponse>{
+    const {conversationId,topicId,companionId}=input,binding=this.topics.contextBinding(topicId,conversationId,companionId);
+    if(!binding)return{ok:true,topicContext:{topicId,companionId}};
+    const key=conversationId+':'+topicId+':'+companionId,prior=this.contextReads.get(key);if(prior)return prior;
+    const operation=(async():Promise<BotResponse>=>{
+      try{
+        if(!this.options.brain.topicContext)throw Error('当前 DSH 连接暂不支持原生上下文统计。');
+        const sample=await this.options.brain.topicContext(binding.laneId);
+        if(this.closed)return{ok:false,error:'伙伴服务已关闭。'};
+        const current=this.topics.contextBinding(topicId,conversationId,companionId);
+        if(current?.laneId!==binding.laneId||sample.sessionId!==BotDshBrain.sessionId(binding.laneId))throw Error('上下文统计的原生会话身份已变化。');
+        if(sample.state==='unsupported'||sample.state==='empty'&&current.sample)return{ok:true,topicContext:{topicId,companionId,sample:current.sample??sample,stale:!!current.sample,error:sample.state==='unsupported'?'此 DSH 版本尚未提供原生上下文统计。':'DSH 暂未返回此会话的统计。'}};
+        if(this.topics.rememberContext(conversationId,binding.laneId,sample))this.changed(conversationId);
+        return{ok:true,topicContext:{topicId,companionId,sample,stale:sample.state==='migration-required'}};
+      }catch(error){
+        if(this.closed)return{ok:false,error:'伙伴服务已关闭。'};
+        const current=this.topics.contextBinding(topicId,conversationId,companionId);
+        return{ok:true,topicContext:{topicId,companionId,sample:current?.sample,stale:!!current?.sample,error:errorText(error)}};
+      }
+    })();
+    this.contextReads.set(key,operation);try{return await operation;}finally{if(this.contextReads.get(key)===operation)this.contextReads.delete(key);}
+  }
   private snapshot(conversationId?: string, before?: number): BotSnapshot {
     if (conversationId) this.prewarmSelectedMemory(conversationId);
     const page = conversationId ? this.store.messagesPage(conversationId, { limit: 80, before }) : { items: [], hasMore: false };
@@ -246,6 +270,7 @@ export class BotService {
       case 'topic.rename':{const topic=this.topics.rename(input.conversationId,input.topicId,input.title,input.requestId);this.maintainSafely();this.changed(input.conversationId);return{ok:true,topic};}
       case 'topic.new': { const topic=this.topics.create(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
       case 'topic.select': { const topic=this.topics.select(input.conversationId,input.topicId);this.changed(input.conversationId);return {ok:true,topic}; }
+      case 'topic.context': return this.topicContext(input);
       case 'topic.compact': {
         const event=this.topics.topicEvent(input.topicId,input.conversationId,input.companionId);
         if(this.topics.runtime(input.conversationId).running.length)throw Error('请等待当前任务完成后压缩话题；执行中的补充可使用引导。');
@@ -257,6 +282,7 @@ export class BotService {
           model:this.options.model(),callback:await this.toolServer.start(),tools:[],workerTools:BOT_TOOLS,role:'worker',workerAccess:'full',
           audience:{conversationId:room.id,kind:room.kind,allowedConversationIds:[room.id]}},input.requestId);}
         catch(error){if((error as {code?:string})?.code==='BOT_COMPACTION_FAILED')return{ok:false,error:errorText(error),compactionSettled:true};throw error;}
+        await this.topicContext({type:'topic.context',conversationId:input.conversationId,topicId:input.topicId,companionId:input.companionId});
         this.changed(input.conversationId);return {ok:true,compacted};
       }
       case 'message.guide': { await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
@@ -659,6 +685,11 @@ export class BotService {
         workspaceTitle: companion.name, sessionTitle:this.topics.reference(event.id)?.title??Array.from(event.content).slice(0, 60).join(''),
         onEvent: update => {
           if (this.closed || signal.aborted) return;
+          if(update.type==='context'){
+            const parsed=botNativeContextSchema.safeParse(update.context);
+            if(parsed.success&&parsed.data.sessionId===BotDshBrain.sessionId(nativeLaneId)&&this.topics.rememberContext(event.conversationId,nativeLaneId,parsed.data))this.changed(event.conversationId);
+            return;
+          }
           this.store.markDispatched(event.id, claim.leaseToken, event.id);
           if (update.type === 'artifacts' && update.artifacts?.length) projectArtifacts(update.artifacts,Number.isSafeInteger(update.nativeSequence)?{id:update.nativeSessionId===BotDshBrain.sessionId(nativeLaneId)?'native-files-'+update.nativeSequence:'child-files-'+update.nativeSessionId+'-'+update.nativeSequence,sequence:update.rootSequence??update.nativeSequence!}:undefined);
           if (['text_stream','text'].includes(update.type) && typeof update.text === 'string') {

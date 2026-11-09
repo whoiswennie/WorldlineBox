@@ -1,3 +1,4 @@
+import type {BotNativeContext} from './companion-native-context';
 export interface BotNativeTopic {
   id: string; conversationId: string; title: string; createdAt: string; updatedAt: string;
   pinned?:boolean; favorite?:boolean; renamePending?:boolean;
@@ -8,6 +9,7 @@ export interface BotQueuedInput {
   state: 'queued' | 'guiding' | 'attention'; error?: string;
 }
 export interface BotChatRuntime {
+  contexts?:Record<string,BotNativeContext>;
   topic?: BotNativeTopic;
   running: Array<{ messageId: string; companionId: string; companionName: string; topicId?: string }>;
   queued: BotQueuedInput[];

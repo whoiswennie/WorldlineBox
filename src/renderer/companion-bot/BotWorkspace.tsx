@@ -121,7 +121,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const request = useCallback(async (input: BotRequest): Promise<BotResponse> => {
     if (!api) return { ok: false, error: t.unavailable };
     const origin = 'conversationId' in input ? input.conversationId ?? '' : selectedRef.current;
-    const scopedDialogRequest = input.type === 'conversation.members' || input.type === 'conversation.dissolve' || input.type === 'conversation.announcement';
+    const scopedDialogRequest = input.type === 'conversation.members' || input.type === 'conversation.dissolve' || input.type === 'conversation.announcement' || input.type === 'topic.context';
     try {
       const result = await api.request(input);
       if (!result.ok && !scopedDialogRequest && origin === selectedRef.current) setError(result.error ?? t.error);

@@ -3,6 +3,7 @@ import type { AiApiFormat } from '../../shared/ai-endpoints';
 import type { NativeHostClient, NativeHostEvent } from '../dsh/native-host-client';
 import { DshHostUnavailableError, isDshHostUnavailableError } from '../dsh/host-errors';
 import type {BotNativeReplyOutput} from '../../shared/companion-bot';
+import {botNativeContextSchema,type BotNativeContext} from '../../shared/companion-native-context';
 
 export interface BotDshModel {
   apiFormat: AiApiFormat; model: string; baseUrl: string; apiKey: string;
@@ -333,6 +334,9 @@ export class BotDshBrain {
     await this.withHost(undefined,undefined,laneId,async({client})=>{
       await client.request('/bot/topic-title',{...input,laneId,sessionId:BotDshBrain.sessionId(laneId)});
     });
+  }
+  async topicContext(laneId:string):Promise<BotNativeContext>{
+    return this.withHost(undefined,undefined,laneId,async({client})=>botNativeContextSchema.parse(await client.request('/bot/topic-context',{laneId,sessionId:BotDshBrain.sessionId(laneId)})));
   }
   /** Release a completed encoder/worker from RAM while retaining its native
    * log and durable receipts. Never cancels an active task. */

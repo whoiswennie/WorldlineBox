@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type {BotTopicContext} from './companion-native-context';
 import { botWorldCommandSchema, type BotWorldSnapshot } from './companion-bot-world';
 import type { BotTaskAttention, BotTaskPendingEffect } from './companion-bot-task';
 import type { BotMediaRef } from './companion-bot-media';
@@ -148,6 +149,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({type:z.literal('topic.rename'),conversationId:id,topicId:id,title:z.string().trim().min(1).max(100).refine(value=>!value.includes('\0')),requestId:id}),
   z.strictObject({ type: z.literal('topic.new'), conversationId: id, requestId: id }),
   z.strictObject({ type: z.literal('topic.select'), conversationId: id, topicId: id }),
+  z.strictObject({type:z.literal('topic.context'),conversationId:id,topicId:id,companionId:id}),
   z.strictObject({ type: z.literal('topic.compact'), conversationId: id, topicId: id, companionId: id, requestId: id }),
   z.strictObject({ type: z.literal('message.guide'), conversationId: id, messageId: id }),
   z.strictObject({ type: z.literal('message.dequeue'), conversationId: id, messageId: id }),
@@ -173,7 +175,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
-export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
+export interface BotResponse { topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
 export type BotEvent = { type: 'changed'; conversationId?: string }
   | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }

@@ -49,6 +49,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
     sql.prepare('INSERT INTO bot_reply_parts(message_id,event_id,conversation_id,id,sequence,payload_json) VALUES(?,?,?,?,1,?)').run(before.getEvent(event.id)!.replyMessageId,event.id,f.a.id,'old-native-part',JSON.stringify({id:'old-native-part',kind:'text',sequence:1,text:'OLD_REPLY_PART'}));
   });
   before.taskTransaction(sql=>sql.prepare("INSERT INTO bot_guidance VALUES(?,?,?,?,'pending',NULL)").run('old-guidance',event.id,f.a.id,'OLD_GUIDANCE_DATA'));
+  before.setMetadata('native-context:'+f.a.id+':session','{"tokens":123}');
   before.setMetadata('native-continue-command:opaque-request',event.id);before.setMetadata('native-continue-command:other-request','unrelated-event');before.close();
   const request=await f.cleaner.begin('alice','single');
   expect((await f.cleaner.begin('alice','single')).id).toBe(request.id);
@@ -56,6 +57,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
   try {
     expect(store.messagesPage(f.a.id).items).toEqual([]); expect(store.messagesPage(f.group.id).items).toEqual([]);
+    expect(store.getMetadata('native-context:'+f.a.id+':session')).toBeUndefined();
     for(const table of ['bot_native_topics','bot_topic_bindings','bot_topic_events','bot_guidance','bot_topic_title_sync','bot_reply_parts'])expect(store.taskTransaction(sql=>sql.prepare(`SELECT count(*) AS count FROM ${table} WHERE conversation_id=?`).get(f.a.id))).toMatchObject({count:0});
     expect(store.messagesPage(f.b.id).items.some(message=>message.content.startsWith('OLD_HISTORY_'))).toBe(true);
     expect(store.getCompanion('alice')?.persona).toBe('PRIVATE_PERSONA_alice');

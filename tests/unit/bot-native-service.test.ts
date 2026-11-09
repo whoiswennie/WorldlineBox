@@ -9,6 +9,7 @@ import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/compani
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { botRequestSchema } from '../../src/shared/companion-bot';
 import { BOT_TOOLS } from '../../src/main/companion-bot/tools';
+import type {BotNativeContext} from '../../src/shared/companion-native-context';
 
 class Memory extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw Error('No VCP process in this protocol test'); }, embedding: async () => { throw Error('No model'); } }); }
@@ -22,6 +23,9 @@ class Memory extends BotMemoryService {
 }
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
+  contextCalls:string[]=[];
+  readContext:(laneId:string)=>Promise<BotNativeContext>=async laneId=>({source:'dsh-native-projections',sessionId:BotDshBrain.sessionId(laneId),state:'ready',asOfSeq:10,sampledAt:new Date().toISOString(),pressure:{pressureTokens:10000,projectedTokens:11000,contextWindow:128000}});
+  override async topicContext(laneId:string){this.contextCalls.push(laneId);return this.readContext(laneId);}
   guidance:Array<{laneId:string;input:Parameters<BotDshBrain['send']>[1]}>=[];
   execute: (input: BotDshRun) => Promise<Partial<BotDshResult>> = async () => ({ text: '原生最终正文' });
   constructor() { super({ getHost: async () => { throw Error('Only native adapter boundary is mocked'); } }); }
@@ -58,6 +62,29 @@ async function callback(input: BotDshRun, name: string, args: object, callId = '
   const result = await response.json() as { ok: boolean; result?: unknown; error?: string };
   if (!result.ok) throw Error(result.error); return result.result;
 }
+it('reads the selected topic context without inference and retains a labelled saved reading when DSH disconnects',async()=>{
+  const f=await fixture(),sent=await f.send('项目上下文');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='sent');
+  const topic=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!.chatRuntime!.topic!;
+  const command={type:'topic.context' as const,conversationId:f.room.id,topicId:topic.id,companionId:f.service.store.getEvent(f.brain.calls[0]!.eventId)!.companionId};
+  const result=await f.service.handle(command);expect(result.topicContext?.sample?.pressure?.projectedTokens).toBe(11000);expect(f.brain.calls).toHaveLength(1);
+  f.brain.readContext=async()=>{throw Error('DSH disconnected');};const offline=await f.service.handle(command);
+  expect(offline.topicContext).toMatchObject({stale:true,error:'DSH disconnected',sample:{sessionId:result.topicContext!.sample!.sessionId,pressure:{projectedTokens:11000}}});
+  const empty=(await f.service.handle({type:'topic.new',conversationId:f.room.id,requestId:'empty-context'})).topic!,calls=f.brain.contextCalls.length;
+  expect((await f.service.handle({...command,topicId:empty.id})).topicContext?.sample).toBeUndefined();expect(f.brain.contextCalls).toHaveLength(calls);
+});
+it('projects native context pushes independently of chat output and never treats a meter frame as dispatch admission',async()=>{
+  const f=await fixture();let eventId='';
+  f.brain.execute=async input=>{eventId=input.eventId;const context=await f.brain.readContext(input.laneId);
+    input.onEvent?.({type:'context',sequence:1,receivedAt:new Date().toISOString(),context});
+    expect(f.service.store.getEvent(input.eventId)?.dshEventId).toBeUndefined();
+    input.onEvent?.({type:'context',sequence:2,receivedAt:new Date().toISOString(),context:{...context,sessionId:'another-session',asOfSeq:999,pressure:{projectedTokens:999999,contextWindow:128000}}});
+    input.onEvent?.({type:'context',sequence:3,receivedAt:new Date().toISOString(),context:{...context,pressure:{contextWindow:-1}}});
+    return{text:'正式正文'};
+  };
+  const sent=await f.send('实时统计');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='sent');
+  const snapshot=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!,sample=snapshot.chatRuntime!.contexts![f.service.store.getEvent(eventId)!.companionId]!;
+  expect(sample.pressure?.projectedTokens).toBe(11000);expect(snapshot.messages.find(message=>message.id===sent.replyMessageIds![0])?.execution?.steps.some(step=>step.type==='context')).toBe(false);
+});
 it('reconciles all ordered user-facing parts from a cached native receipt without duplicating delivery',async()=>{
   const f=await fixture(),file=path.join(f.root,'receipt-output.txt');await writeFile(file,'NATIVE_FILE');
   f.brain.execute=async()=>({text:'关键回答\n\n完成',artifacts:[{path:file}],outputs:[{id:'native-text-10',sequence:10,text:'关键回答'},{id:'native-files-20',sequence:20,files:[{path:file}]},{id:'native-text-30',sequence:30,text:'完成'}]});

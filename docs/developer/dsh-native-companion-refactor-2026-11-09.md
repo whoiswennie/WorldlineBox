@@ -65,3 +65,15 @@ WorldlineBox 保存联系人、人设、消息、媒体授权和 VCP 记忆，�
 ## 话题收藏与有序回复的真实验收
 
 `tests/e2e/companion-topic-organizer-real.test.ts` 使用相同隔离环境的真实模型，验证原生先输出正文、再发表情、写文件交付并发送最后正文；聊天只显示最后正文、表情组及附件，隐藏中途文字、媒体台词和完成统计，核对实际文件 SHA256；也测试纯表情输入、斗图、27 个新增话题、最近 6 条/全部 12 条分页、多关键词模糊搜索、收藏夹、置顶、重启后重命名及同 Session 追问。独立读取 DSH 原生日志中的 `session/title`，并验证追问能取回原交付标记。报告和截图保存在 `artifacts/companion-topic-organizer-real/`。DSH v4 日志使用多个连续 Zstandard 帧，验收解码所有帧，避免只读到会话头就误判原生事件不存在。
+
+## 原生上下文统计
+
+`topic.context` 验证当前用户、聊天成员、话题 ACL 与 epoch 后，解析该伙伴独立的 native lane；桥接器再次核验 lane 与 Session 哈希。只调用公开的 `sessionController.projections`，冷会话也只读，不激活 Agent、争用写锁或发送模型请求。取 DSH 自己的 `contextPressure`、`contextBreakdown`、`tokenUsage`，过滤为公开数字字段；不暴露提示词、工具参数或凭据。
+
+当前占用严格使用 `(projectedTokens ?? pressureTokens) / contextWindow`，与 DSH UI 一致。构成是估算，不能相加代替占用；累计用量的四个桶独立展示，也不能充当当前窗口占用。未知容量不显示虚构的 0%。原生投影变化以 100ms 合并推送，终态前补发一致快照；只读查询在详情打开时每秒、关闭时每三秒补齐恢复与冷会话。指标帧不形成执行步骤，也不视为任务已经投递。
+
+缓存键包含聊天与 native lane，同话题不同伙伴独立存储；相同 Session 的 `asOfSeq` 单调，旧推送不能覆盖新值。快照仅包含当前所选话题的伙伴统计。渲染器以聊天、话题、伙伴作为组件身份，取消旧请求的界面写入；切换时不沿用前一会话，离线明确标注保存值。清空盒子聊天时删除相应缓存，保留 DSH 原生工作区。
+
+`tests/e2e/companion-context-real.test.ts` 使用真实模型验证新话题无旧读数、独立 Session 的快速切换、原会话追问与材料输入、跨话题查看期间的原生压缩及另一会话统计隔离；也打开同一 Session 的 DSH 原生界面核对占用和构成，并检查窄窗排版。报告与界面截图保存在 `artifacts/companion-context-real/`。单元测试另覆盖迟到请求、群聊伙伴切换、离线值、公开字段过滤及清理。
+
+同文件的群聊验收只读接回已完成的真实三伙伴协作项目，依次选择大肥鱼、Claude、GPT，核对三个独立 Session 与原生读数，且 Session 身份与原项目主脑／Workers 回执一致。没有为读取统计发送新任务或构造模拟用量。

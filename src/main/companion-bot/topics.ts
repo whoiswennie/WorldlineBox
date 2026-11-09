@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { BotChatRuntime, BotNativeTopic, BotTopicListMode } from '../../shared/companion-bot-topics';
 import type { BotEvent } from './types';
 import type { BotStore } from './store';
+import {botNativeContextSchema,type BotNativeContext} from '../../shared/companion-native-context';
 
 type TopicRow = { id: string; conversation_id: string; acl_revision: number; title: string; created_at: string; updated_at: string;activity_at?:string;pinned?:number;favorite?:number;rename_pending?:number };
 export interface BotTopicTitleSync {topic_id:string;conversation_id:string;native_lane_id:string;companion_id:string;revision:number;title:string}
@@ -12,6 +13,21 @@ const short = (text: string) => Array.from(text.trim().replace(/\s+/gu, ' ')).sl
 /** Deterministic topic routing: explicit selection and current-topic follow-ups
  * choose a native Session. No application model classifies or rewrites messages. */
 export class BotTopics {
+  private cachedContext(conversationId:string,laneId:string):BotNativeContext|undefined{
+    try{const saved=this.store.getMetadata('native-context:'+conversationId+':'+laneId);if(!saved)return;const parsed=botNativeContextSchema.safeParse(JSON.parse(saved));return parsed.success?parsed.data:undefined;}catch{return;}
+  }
+  contextBinding(topicId:string,conversationId:string,companionId:string):{laneId:string;sample?:BotNativeContext}|undefined{
+    this.get(topicId,conversationId);if(!this.room(conversationId).memberIds.includes(companionId)||companionId==='user')throw Error('这位伙伴不在当前聊天中。');
+    const binding=this.store.taskTransaction(sql=>sql.prepare('SELECT native_lane_id FROM bot_topic_bindings WHERE topic_id=? AND companion_id=?').get(topicId,companionId)) as {native_lane_id:string}|undefined;
+    if(!binding)return;
+    return{laneId:binding.native_lane_id,sample:this.cachedContext(conversationId,binding.native_lane_id)};
+  }
+  rememberContext(conversationId:string,laneId:string,sample:BotNativeContext):boolean{
+    const key='native-context:'+conversationId+':'+laneId,prior=this.cachedContext(conversationId,laneId);
+    if(prior&&prior.sessionId===sample.sessionId&&prior.asOfSeq!==undefined&&(sample.asOfSeq===undefined||prior.asOfSeq>sample.asOfSeq))return false;
+    if(prior&&JSON.stringify({...prior,sampledAt:''})===JSON.stringify({...sample,sampledAt:''}))return false;
+    this.store.setMetadata(key,JSON.stringify(sample));return true;
+  }
   constructor(private readonly store: BotStore) {}
   private room(conversationId: string) {
     const room = this.store.getConversation(conversationId);
@@ -173,7 +189,9 @@ export class BotTopics {
     }
     const converted = this.store.taskTransaction(sql => sql.prepare("SELECT reply_message_id AS id FROM bot_inbox WHERE conversation_id=? AND error='converted-to-guidance' AND status='cancelled' ORDER BY sequence DESC LIMIT 160").all(conversationId)) as Array<{id:string}>;
     hiddenMessageIds.push(...converted.map(row=>row.id));
-    return {topic:this.current(conversationId),running,queued,hiddenMessageIds};
+    const selected=this.current(conversationId),contexts:Record<string,BotNativeContext>={};
+    if(selected){const bindings=this.store.taskTransaction(sql=>sql.prepare('SELECT companion_id,native_lane_id FROM bot_topic_bindings WHERE topic_id=?').all(selected.id)) as Array<{companion_id:string;native_lane_id:string}>;for(const binding of bindings){const sample=this.cachedContext(conversationId,binding.native_lane_id);if(sample)contexts[binding.companion_id]=sample;}}
+    return {topic:selected,running,queued,hiddenMessageIds,...(Object.keys(contexts).length?{contexts}:{})};
   }
   reserveGuidance(conversationId: string, messageId: string, texts: Map<string,string>): BotGuidance[] {
     this.room(conversationId);

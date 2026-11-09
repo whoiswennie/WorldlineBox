@@ -1,6 +1,8 @@
 import {afterEach,expect,it} from 'vitest';
 import {BotStore} from '../../src/main/companion-bot/store';
 import {BotTopics} from '../../src/main/companion-bot/topics';
+import {BotDshBrain} from '../../src/main/companion-bot/dsh-brain';
+import type {BotNativeContext} from '../../src/shared/companion-native-context';
 let store:BotStore;
 afterEach(()=>store?.close());
 function fixture(){store=new BotStore(':memory:');const companion=store.createCompanion({name:'伙伴',persona:'伙伴'}),room=store.openDirect(companion.id),topics=new BotTopics(store);let sequence=0;
@@ -14,6 +16,15 @@ it('reuses a selected topic, isolates new topics and restores an earlier topic a
   expect(f.topics.lane(three.events[0]!)).not.toBe(f.topics.lane(one.events[0]!));
   f.topics.select(f.room.id,first.id);expect(f.topics.current(f.room.id)?.id).toBe(first.id);
   expect(f.topics.list(f.room.id,'项目一').items).toHaveLength(1);
+});
+it('keeps context measurements independent across topics and rejects out-of-order observations within one session',()=>{
+  const f=fixture(),a=f.topics.create(f.room.id,'a'),first=f.send('项目A');f.topics.bind(first.events,a);const laneA=f.topics.lane(first.events[0]!);
+  const b=f.topics.create(f.room.id,'b'),second=f.send('项目B');f.topics.bind(second.events,b);const laneB=f.topics.lane(second.events[0]!);
+  const sample=(lane:string,seq:number,value:number):BotNativeContext=>({source:'dsh-native-projections',sessionId:BotDshBrain.sessionId(lane),state:'ready',asOfSeq:seq,sampledAt:new Date().toISOString(),pressure:{projectedTokens:value,contextWindow:128000}});
+  f.topics.rememberContext(f.room.id,laneA,sample(laneA,100,6000));f.topics.rememberContext(f.room.id,laneB,sample(laneB,1,64000));f.topics.rememberContext(f.room.id,laneA,sample(laneA,99,1234));
+  f.topics.select(f.room.id,a.id);expect(f.topics.runtime(f.room.id).contexts?.[f.companion.id]?.pressure?.projectedTokens).toBe(6000);
+  f.topics.select(f.room.id,b.id);expect(f.topics.runtime(f.room.id).contexts?.[f.companion.id]?.pressure?.projectedTokens).toBe(64000);
+  expect(()=>f.topics.contextBinding(a.id,f.room.id,'outsider')).toThrow();
 });
 it('rejects cross-room topics and contexts invalidated by memory withdrawal or ACL changes',()=>{
   const f=fixture(),selected=f.topics.create(f.room.id,'first'),one=f.send('第一条');f.topics.bind(one.events,selected);

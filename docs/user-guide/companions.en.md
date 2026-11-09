@@ -54,4 +54,8 @@ Saved messages, events, tasks and physical state recover on restart. Uncertain d
 
 DSH owns context compaction; VCP provides sourced memory and history recall. Failed summarization retains prior history. Continuous conversations do not guarantee perfect recall or constant latency.
 
+The context meter above the composer shows the selected topic's native DSH session occupancy in real time. Switching topics switches to their independent readings. In groups, select a companion to inspect its own session. A new topic displays “Pending” until native statistics are available. It never borrows the previous topic's usage.
+
+Open the meter for current usage and model capacity, estimated system/tool/message composition, latest request input and collapsible cumulative session usage. You can compact the session or start a new topic there. The readings use DSH's native projections; cumulative usage and estimated composition are separate from current occupancy. Disconnected readings are labelled as saved statistics and refresh after reconnection, conversation changes or compaction.
+
 The former independent world windows, relationship/routine simulation, calendar and life-simulation growth dashboards are retired. Memory dream candidates are available as described above. QQ/WeChat, phone gateways and broader simulation remain future work. See the [runtime guide](../developer/superagent-bot-runtime-guide.md) for implementation and verification boundaries.

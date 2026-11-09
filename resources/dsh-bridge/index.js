@@ -64,6 +64,18 @@ export function workerOutputFromEvents(events, { eventId, startMessageId, maxCha
   const text=outputs.filter(part=>part.text).map(part=>part.text).join('\n\n');
   return { text, totalChars: text.length, truncated: false, messages,outputs };
 }
+/** Public DSH meter projections only: no prompts, tools or credentials. */
+export function nativeContextSample(sessionId,result,now=new Date().toISOString()){
+  const values=result?.values??{},pick=(value,keys)=>{
+    if(!value||typeof value!=='object')return;
+    return Object.fromEntries(keys.filter(key=>Number.isSafeInteger(value[key])&&value[key]>=0).map(key=>[key,value[key]]));
+  };
+  const pressure=pick(values.contextPressure,['pressureTokens','projectedTokens','contextWindow']);if(pressure?.contextWindow===0)delete pressure.contextWindow;
+  const breakdown=pick(values.contextBreakdown,['systemTokens','toolsTokens','messageTokens']),usage=pick(values.tokenUsage,['uncachedInputTokens','outputTokens','cacheReadTokens','cacheWriteTokens']);
+  return{source:'dsh-native-projections',sessionId,state:result?.kind==='unsupported'?'unsupported':!result?'empty':result.kind==='migration-required'?'migration-required':'ready',sampledAt:now,
+    ...(Number.isSafeInteger(result?.asOfSeq)?{asOfSeq:result.asOfSeq}:{}),...(pressure?{pressure}:{}),
+    ...(breakdown&&Object.keys(breakdown).length===3?{breakdown}:{}),...(usage&&Object.keys(usage).length===4?{usage}:{})};
+}
 /** Reference data is selected from actual native registrations, never from
  * installed-package counts. Schemas are disclosed only by the detail query. */
 export function capabilityCatalogPage(tools, skills, query) {
@@ -397,6 +409,7 @@ export async function apply(ctx) {
     }, agent));
   });
   const emit = (record, event) => {
+    if(event.type==='complete'&&record.bot?.role==='worker')publishContext(record);
     const value = { sequence: record.next++, streamGeneration: record.streamGeneration ??= randomUUID(), receivedAt: new Date().toISOString(), sessionId: record.id,
       ...(record.bot?.eventId ? { eventId: record.bot.eventId } : {}), ...event };
     const owner = record.callbackOwner;
@@ -415,6 +428,21 @@ export async function apply(ctx) {
     }
   };
   const service = agent => agent.ctx.get('skills');
+  const publishContext=record=>{
+    if(closing||sessions.get(record.id)!==record||!record.agent)return;
+    clearTimeout(record.contextTimer);record.contextTimer=undefined;
+    try{
+      const registry=ctx.get('sessionProjections');if(!registry)return;
+      const snapshot=registry.snapshot(record.agent.session,['contextPressure','contextBreakdown','tokenUsage']);
+      emit(record,{type:'context',context:nativeContextSample(record.id,{kind:'sequenced',...snapshot}),nativeSessionId:record.id});
+    }catch(error){ctx.logger?.warn('WorldlineBox native context read failed: '+String(error?.message??error).slice(0,500));}
+  };
+  const projectionRegistry=ctx.get('sessionProjections');
+  if(typeof projectionRegistry?.onChanged==='function'){const dispose=projectionRegistry.onChanged((session,key)=>{
+    if(!['contextPressure','contextBreakdown','tokenUsage'].includes(key))return;
+    const record=sessions.get(String(session.id));if(!record?.bot||record.bot.role!=='worker'||record.contextTimer)return;
+    record.contextTimer=setTimeout(()=>publishContext(record),100);record.contextTimer.unref?.();
+  });ctx.effect(()=>dispose);}
   const readCapabilities = async (record, query = { kind: 'overview' }, presetState) => {
     const agent = record.agent;
     const allTools = ctx.tools.schemas(agent);
@@ -790,6 +818,13 @@ export async function apply(ctx) {
     void (async () => {
       if (!authorized(request)) { json(response, { error: 'Unauthorized' }, 401); return; }
       const url = new URL(request.url, 'http://127.0.0.1');
+      if(request.method==='POST'&&url.pathname==='/bot/topic-context'){
+        const input=await body(request);
+        if(typeof input.laneId!=='string'||!input.laneId||input.laneId.length>300||input.sessionId!=='wlb-bot-'+createHash('sha256').update(input.laneId).digest('hex'))throw Error('Invalid native context identity.');
+        const record=sessions.get(input.sessionId);if(record&&record.bot?.laneId!==input.laneId)throw Error('Native context Session ownership differs.');
+        const result=typeof ctx.sessionController.projections==='function'?await ctx.sessionController.projections({sessionId:input.sessionId},AbortSignal.timeout(15000)):{kind:'unsupported'};
+        json(response,nativeContextSample(input.sessionId,result));return;
+      }
       if (request.method === 'GET' && url.pathname === '/health') { json(response, { protocol, pid: process.pid, profile: ctx.get('profileContext')?.name, home: process.env.DSH_HOME,
         botLanes: [...sessions.values()].filter(record => record.bot).length, botCompactions: [...sessions.values()].reduce((sum, record) => sum + (record.compactions ?? 0), 0),
         botRunningJobs: ownedJobs([...new Set([...sessions.values()].filter(record => record.bot).map(record => record.id).concat([...workerOwners.keys()]))]).length }); return; }

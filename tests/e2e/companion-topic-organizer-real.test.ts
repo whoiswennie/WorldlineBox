@@ -42,10 +42,15 @@ test('real ordered replies, standalone stickers and scalable topic management su
     const parts=answer.parts??[];expect(parts.some(part=>part.text?.includes(marker))).toBe(true);expect(parts.some(part=>part.attachments?.some(media=>media.kind==='sticker'))).toBe(true);expect(parts.some(part=>part.attachments?.some(media=>media.name===path.basename(file)))).toBe(true);
     const order=parts.map(part=>part.sequence);expect(order).toEqual([...order].sort((a,b)=>a-b));expect((await readFile(file,'utf8')).trim()).toBe(marker);
     const bubble=page.locator(`[data-bot-message="${answer.id}"]`);await bubble.scrollIntoViewIfNeeded();await expect(bubble.locator('.bot-execution,.bot-message-progress')).toHaveCount(0);
-    await expect(bubble.locator('.bot-message-text')).toHaveCount(1);await expect(bubble.locator('.bot-message-text')).toHaveText('交付完毕');
+    await expect(bubble.locator('.bot-message-text')).toHaveCount(1);await expect(bubble.locator('.bot-message-text')).toHaveText(/^交付完毕[。.!！]?$/u);
     await expect(bubble).not.toContainText('给你一个表情');await expect(bubble).not.toContainText('关键结论');await expect(bubble.locator('.bot-message-inline-stickers')).toHaveCount(1);await expect(bubble.locator('.bot-attachment-card')).toHaveCount(1);
     const current=(await state()).snapshot!.messages.filter(message=>message.eventId===answer.eventId&&message.senderId!=='user');expect(current).toHaveLength(1);
     report.orderedReply={singleBubble:true,finalBodyOnly:true,mediaCaptionsHidden:true,completedExecutionChromeHidden:true,parts:parts.map(part=>({kind:part.kind,sequence:part.sequence,text:part.text,files:part.attachments?.map(media=>media.name)})),sha256:createHash('sha256').update(await readFile(file)).digest('hex')};await capture('final-answer-sticker-delivery');
+    await stage('native-context-meter');
+    await expect.poll(async()=>{const context=await request({type:'topic.context',conversationId:roomId,topicId,companionId:'builtin-dafeiyu'});report.nativeContext=context.topicContext;return context.topicContext?.sample?.pressure?.contextWindow;},{timeout:60000,intervals:[1000]}).toBeGreaterThan(0);
+    const nativeContext=(await request({type:'topic.context',conversationId:roomId,topicId,companionId:'builtin-dafeiyu'})).topicContext!;
+    expect(nativeContext.sample!.sessionId).toBe(mainSession);expect(nativeContext.sample!.source).toBe('dsh-native-projections');expect(nativeContext.sample!.pressure!.projectedTokens??nativeContext.sample!.pressure!.pressureTokens).toBeGreaterThan(0);
+    await page.locator('.bot-context-trigger').click();await expect(page.getByRole('dialog',{name:'DSH 上下文',exact:true})).toBeVisible();await expect(page.locator('.bot-context-composition')).toContainText('工具定义');await capture('native-context-meter');await page.keyboard.press('Escape');
     await stage('standalone-user-sticker-and-two-native-duel-replies');
     const sticker=parts.flatMap(part=>part.attachments??[]).find(media=>media.kind==='sticker')!;
     for(let round=0;round<2;round++){
@@ -67,6 +72,7 @@ test('real ordered replies, standalone stickers and scalable topic management su
       const title=`验收${suffix} 资料整理 ${String(index).padStart(2,'0')} ${index===3?'长远旅行规划':'项目讨论'}`;
       expect((await request({type:'topic.rename',conversationId:roomId,topicId:created.topic!.id,title,requestId:randomUUID()})).ok).toBe(true);seeded.push({id:created.topic!.id,title});
     }
+    await expect(page.locator('.bot-context-trigger')).toContainText('待统计');
     await openPicker();await expect(page.locator('.bot-topic-row')).toHaveCount(6);await page.getByRole('tab',{name:'全部',exact:true}).click();await expect(page.locator('.bot-topic-row')).toHaveCount(12);
     const pageOne=await page.locator('.bot-topic-row').evaluateAll(elements=>elements.map(element=>element.getAttribute('data-topic-id')));await page.getByRole('button',{name:'下一页',exact:true}).click();await expect(page.locator('.bot-topic-row')).toHaveCount(12);
     await expect.poll(async()=>JSON.stringify(await page.locator('.bot-topic-row').evaluateAll(elements=>elements.map(element=>element.getAttribute('data-topic-id'))))).not.toBe(JSON.stringify(pageOne));
