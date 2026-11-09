@@ -151,7 +151,20 @@ describe('hot launcher networking', () => {
     await service.save({...DEFAULT_LAUNCHER_NETWORK,npmDownloadRoute:'registry'});
     expect((await service.nodeInstallNetwork()).registry).toBe('https://registry.npmjs.org');expect(transport).toHaveBeenCalledTimes(2);
     await service.save({...DEFAULT_LAUNCHER_NETWORK,npmRegistry:'https://custom.example'});
-    expect((await service.nodeInstallNetwork()).registry).toBe('https://custom.example');expect(transport).toHaveBeenCalledTimes(2);
+    const custom = await service.nodeInstallNetwork();
+    expect(custom.registry).toBe('https://custom.example');expect(transport).toHaveBeenCalledTimes(2);
+    expect(custom.fallback).toMatchObject({ registry: 'https://registry.npmjs.org', env: { HTTPS_PROXY: 'http://127.0.0.1:7897' } });
+  });
+  it('keeps a mirror fallback when the official metadata route wins, with the fallback destination proxy', async () => {
+    const proxySession = scope();
+    proxySession.resolveProxy.mockImplementation(async (url?: string) => url?.includes('npmmirror') ? 'DIRECT' : 'PROXY 127.0.0.1:7897');
+    const service = new LauncherNetwork(await temporary(), () => undefined, () => proxySession as unknown as Session); await service.init();
+    transport.mockImplementation(async (url: string) => new Response(url.includes('npmmirror') ? 'unavailable' : '{"name":"zod","versions":{"4.0.0":{}}}', { status: url.includes('npmmirror') ? 503 : 200 }));
+    const selected = await service.nodeInstallNetwork();
+    expect(selected.registry).toBe('https://registry.npmjs.org');
+    expect(selected.env.HTTPS_PROXY).toBe('http://127.0.0.1:7897');
+    expect(selected.fallback?.registry).toBe('https://registry.npmmirror.com');
+    expect(selected.fallback?.env.HTTPS_PROXY).toBeUndefined();
   });
   it('honors DIRECT as the first PAC choice and removes stale proxy variables from children', async () => {
     const proxySession = scope(); proxySession.resolveProxy.mockResolvedValue('DIRECT; PROXY 127.0.0.1:7897');

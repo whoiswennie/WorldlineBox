@@ -6,6 +6,8 @@
 
 `RuntimeService` 保留官方发行索引、下载、npm SRI 与 SHA-256 校验、固定依赖锁、Node 版本、运行文件封存、完整性缓存、安装提交恢复和引用感知删除。版本必须同时具有官方 GitHub Release 和同版本官方 npm Web 包；安装时再次检查精确 tag。发行物缺少依赖时安装失败，不能通过修改依赖或替换版本冒充成功。唯一运行适配器为 `node-cli-web-v1`，直接运行官方 `dsh web`，与 DSH 桌面版无关。
 
+安装新版本时，生成依赖锁的 npm 元数据解析必须使用 `--prefer-offline=false --prefer-online`，备用源重试也相同，避免旧目录缓存遗漏新发布的依赖。自动模式在官方源与镜像之间提供一次故障切换；手动镜像缺包或不可用时，使用官方源及该目标的代理重试。固定依赖锁后的归档预取与 `npm ci` 继续复用经 SRI 校验的内容缓存，无需清空缓存。所有版本共用该流程，不对某个发行版打补丁，也不跳过完整性或 Node 引擎要求。
+
 截至本次验收，GitHub Release 附件是源码归档和证明文件，官方 Web 分发入口是 `@deepseek-ai/dsh`。启动器选择 Release 版本后安装对应的精确 npm 包，不把 GitHub 源码 ZIP 当成可运行的 Web 制品。移除了 Desktop EXE、ASAR、桌面安装器解析和旧包格式兼容分支。
 
 根目录是 `app.getPath('userData')/dsh`。原生实例与快照的注册文件分别为 `native-instances.json`、`native-snapshots.json`。旧目录没有迁移或 fallback 入口。
@@ -13,6 +15,8 @@
 `InstanceService` 为每个实例提供原生 `DSH_HOME`、`DSH_AGENTS_HOME`、workspace 和浏览器 partition。`instanceEnvironment` 继承真实用户环境，仅清除上一 DSH 命名空间和启动器内部能力变量，再设置当前实例的原生命名空间。用户 PATH、HOME/USERPROFILE、APPDATA、Git、Python 和包管理器配置不伪装成另一个用户。
 
 Host 启动采用参数数组执行原封不动的官方 `web --no-open --host 127.0.0.1 --port 0`。完整性检查只在 Host 启动时进行，缓存依据实际文件身份失效；任务和重复选择不触发全文件扫描。首次通过原生 CLI 生成默认 profile、安装桥接 bundle，内容 stamp 避免每次安装。
+
+运行文件的完整性扫描上限为 15 分钟，给大型 SDK 依赖树、慢速磁盘和 Windows 杀毒扫描留出时间；等待者仍可单独取消。超时单独报告为「校验未完成」，不能据此判定文件损坏。
 
 每个实例的并发 `ensureHost` 合并为一次启动，取消一个等待者不影响其他等待者。多个实例可同时运行。就绪要求：原生认证 Web URL、桥接就绪标记、协议/PID 健康检查和 Web 认证 cookie 交换全部成功。启动最多等待 120 秒，并保留真实日志。
 

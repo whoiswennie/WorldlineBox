@@ -263,7 +263,9 @@ export class LauncherNetwork {
   async nodeInstallNetwork(signal: AbortSignal = new AbortController().signal): Promise<NodeInstallNetwork> {
     await this.queue; signal.throwIfAborted();
     const automatic = this.settings.npmDownloadRoute === 'auto' && this.settings.npmRegistry === OFFICIAL_NPM_REGISTRY;
-    if (!automatic) return { env:await this.environment(),registry:this.settings.npmRegistry };
+    if (!automatic) return { env:await this.environment(),registry:this.settings.npmRegistry,
+      ...(this.settings.npmRegistry !== OFFICIAL_NPM_REGISTRY ? { fallback: { registry: OFFICIAL_NPM_REGISTRY,
+        env: await this.environment(process.env, OFFICIAL_NPM_REGISTRY) } } : {}) };
     const currentSignal = AbortSignal.any([signal,this.lifetime.signal]);
     // Concurrent installs share one short probe; cancelling one install must not cancel another.
     if(!this.metadataRoute||this.metadataRoute.revision!==this.revision||this.metadataRoute.expiresAt<Date.now()) {
@@ -281,7 +283,8 @@ export class LauncherNetwork {
     } finally { removeAbort(); }
     currentSignal.throwIfAborted();
     const env = await this.environment(process.env, route.registry);
-    const fallback = route.registry !== OFFICIAL_NPM_REGISTRY ? { registry: OFFICIAL_NPM_REGISTRY, env: await this.environment(process.env, OFFICIAL_NPM_REGISTRY) } : undefined;
+    const fallbackRegistry = route.registry === OFFICIAL_NPM_REGISTRY ? AUTOMATIC_NPM_MIRROR : OFFICIAL_NPM_REGISTRY;
+    const fallback = { registry: fallbackRegistry, env: await this.environment(process.env, fallbackRegistry) };
     currentSignal.throwIfAborted();
     const previous = this.npmSelection?.registry;
     this.npmSelection = { registry: route.registry, elapsedMs: route.elapsedMs, probed: route.probed, checkedAt: new Date().toISOString() };

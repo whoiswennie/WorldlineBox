@@ -7,6 +7,18 @@ import { OperationStore } from '../../src/main/dsh/operations';
 import { runNodeInstall } from '../../src/main/dsh/node-runtime-service';
 import { removeManaged } from '../../src/main/dsh/files';
 
+it('keeps the npm failure reason ahead of verbose peer warnings in the operation error', async () => {
+  const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-npm-error-'));
+  const installer = path.join(root, 'installer.cjs');
+  await writeFile(installer, "console.error('npm error code ETARGET\\nnpm error notarget No matching version found for @deepseek-ai/cordis@~4.1.0.'); console.error('npm warn peer dependency warning\\n'.repeat(300)); process.exitCode=1;");
+  try {
+    const { TEST_NODE_EXECUTABLE, TEST_NODE_VERSION } = await import('../helpers/node-executable');
+    await expect(runNodeInstall({ nodeExecutable: TEST_NODE_EXECUTABLE, npmCli: installer, nodeVersion: TEST_NODE_VERSION, npmVersion: 'fixture' }, [], root, process.env, {
+      id: 'npm-error', signal: AbortSignal.timeout(5000), log: async () => undefined, update: async () => undefined,
+    })).rejects.toThrow(/exit 1\)\. npm error code ETARGET\nnpm error notarget No matching version found for @deepseek-ai\/cordis@~4\.1\.0/);
+  } finally { await removeManaged(tmpdir(), root); }
+});
+
 it.skipIf(process.platform !== 'win32')('observes a cached helper exiting before the asynchronous progress journal finishes', async () => {
   const root=await mkdtemp(path.join(tmpdir(),'worldlinebox-fast-npm-'));
   const installer=path.join(root,'installer.cjs');await writeFile(installer,"console.log('cached helper finished');");

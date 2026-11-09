@@ -36,7 +36,7 @@ export interface NodeInstallNetwork {
   registry: string;
   /** Optional archive route; every archive must still match the already resolved SRI. */
   tarballMirror?: string;
-  /** A mirror failure may retry metadata once, using the fallback destination's PAC route. */
+  /** A metadata failure may retry once, using the fallback destination's PAC route. */
   fallback?: { registry: string; env: NodeJS.ProcessEnv };
   metadataRoute?: {registry:string;elapsedMs:number;probed:boolean};
 }
@@ -220,12 +220,13 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
       receivedBytes = Math.max(receivedBytes, message.bytes); operation.download?.report(receivedBytes);
     }
   });
-  let output = ''; let diagnostics = ''; let queued = Promise.resolve();
+  let output = ''; let diagnostics = ''; let errors = ''; let queued = Promise.resolve();
   const flush = (final = false) => {
     const split = final ? output.length : output.lastIndexOf('\n') + 1;
     if (!split) return;
     const lines = redact(output.slice(0, split).replace(/(https?:\/\/)[^/@\s]+@/gi, '$1[redacted]@')); output = output.slice(split);
     diagnostics = (diagnostics + lines).slice(-4096);
+    errors = (errors + lines.split('\n').filter(line => /^npm (?:error|ERR!)(?:\s|$)/.test(line)).map(line => `${line}\n`).join('')).slice(-4096);
     queued = queued.then(async () => {
       await operation.log(lines);
       for (const line of lines.split('\n')) if (line.startsWith('WORLDLINE_PREFETCH ')) {
@@ -247,7 +248,7 @@ export async function runNodeInstall(tools: NodeInstallTools, args: string[], cw
     operation.download?.report(receivedBytes);
     const code = await completion;
     flush(true); await queued; operation.signal.throwIfAborted(); await operation.download?.wait();
-    if (code !== 0) throw new Error(`Official DSH npm installation failed (exit ${code}). ${diagnostics}`);
+    if (code !== 0) throw new Error(`Official DSH npm installation failed (exit ${code}). ${errors || diagnostics}`);
   } finally {
     if (child.exitCode === null && child.signalCode === null) await terminateOwnedProcess(child);
     operation.signal.removeEventListener('abort', stop); job?.close();
@@ -343,7 +344,9 @@ export async function prepareOfficialNodeRuntime(options: {
   await operation.update('resolving official dependencies', 15);
   await operation.log(`npm registry: ${network.registry}; proxy: ${env.HTTPS_PROXY || 'DIRECT'}; reusable content cache: ${env.npm_config_cache}`);
   if (!options.prepareInstall) {
-    const resolveArgs = (registry:string) => ['install', '--package-lock-only', '--ignore-scripts', '--save-exact', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--registry', registry, tarball];
+    // Version directories change after publication. Refresh them for both the selected route and
+    // its fallback; prefetch/ci can still reuse immutable archives from the shared SRI cache.
+    const resolveArgs = (registry:string) => ['install', '--package-lock-only', '--ignore-scripts', '--save-exact', '--omit=dev', '--no-audit', '--no-fund', '--engine-strict', '--install-strategy=hoisted', '--prefer-offline=false', '--prefer-online', '--registry', registry, tarball];
     try { await runNodeInstall(tools,resolveArgs(network.registry),install,env,operation); }
     catch(error) {
       operation.signal.throwIfAborted();

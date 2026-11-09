@@ -144,7 +144,8 @@ export class RuntimeService implements RuntimeServiceLike {
             }
           }
         } catch { cache.clear(); }
-        const current = await inventoryTree(program, AbortSignal.timeout(300000), undefined, cache, observe);
+        // Large SDK trees on Windows can spend minutes in filesystem/antivirus I/O.
+        const current = await inventoryTree(program, AbortSignal.timeout(15 * 60_000), undefined, cache, observe);
         if (current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) {
           const differences = runtimeDifferences(sealed, current), labels = { added: '新增', missing: '缺失', changed: '内容变化' };
           if (!differences.added && !differences.missing && !differences.changed)
