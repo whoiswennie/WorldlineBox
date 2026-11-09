@@ -39,7 +39,14 @@ export interface BotExecution {
   phase?: string;
   status: 'running' | 'succeeded' | 'failed' | 'cancelled';
   question?: { id: string; text: string };
-  steps: Array<{ id: string; type: string; summary?: string; text?: string; toolName?: string; status?: string; at: string }>;
+  continuation?: { checkpoint: number };
+  steps: BotExecutionStep[];
+}
+export interface BotExecutionStep {
+  id: string; type: string; summary?: string; text?: string; output?: string; toolName?: string; status?: string; at: string;
+  stage?: string; sequence?: number; streamId?: string; callId?: string; nativeSessionId?: string; nativeTurn?: number; nativeStep?: number;
+  textMode?: 'delta' | 'snapshot'; outputState?: 'draft' | 'committed' | 'abandoned';
+  streamGeneration?: string; updatedAt?: string;
 }
 export interface BotMessage {
   id: string; eventId: string; conversationId: string; senderId: string; senderName: string;
@@ -129,6 +136,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
+  z.strictObject({ type: z.literal('execution.continue'), messageId: id, requestId: id }),
 
 
 

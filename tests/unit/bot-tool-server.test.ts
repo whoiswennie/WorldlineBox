@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { BotToolServer } from '../../src/main/companion-bot/tool-server';
+import {z} from 'zod';
 
 it('drains aborted asynchronous callbacks before shutdown returns and rejects new capabilities', async () => {
   let entered!: () => void, release!: () => void, drained = false, closed = false;
@@ -36,4 +37,17 @@ it('revokes in-flight callbacks before a paused task obtains a fresh callback ca
     release(); expect((await old).status).toBe(400);
     expect(publications).toBe(1);
   } finally { release(); await server.close(); }
+});
+it('keeps native callback identity out of strict tool arguments for both current and older bridge payloads',async()=>{
+  const seen:unknown[]=[];
+  const server=new BotToolServer(async call=>{seen.push(call);return z.strictObject({query:z.string()}).parse(call.args);});
+  const capability=await server.forWorker('turn-e','e');
+  const send=(extra:object,args:object)=>fetch(capability.url,{method:'POST',headers:{authorization:'Bearer '+capability.token},body:JSON.stringify({laneId:'turn-e',eventId:'e',callId:'call',name:'memory_search',args,...extra})});
+  try{
+    const current=await send({nativeSessionId:'native',nativeCallId:'raw-call'},{query:'资料'});expect(current.status).toBe(200);
+    const legacy=await send({},{query:'资料',nativeSessionId:'native',nativeCallId:'raw-call'});expect(legacy.status).toBe(200);
+    expect(seen[0]).toEqual(seen[1]);expect(seen[0]).toMatchObject({args:{query:'资料'},nativeSessionId:'native',nativeCallId:'raw-call'});
+    expect((await send({nativeSessionId:'another'},{query:'资料',nativeSessionId:'native'})).status).toBe(400);
+    expect((await send({},{query:'资料',unexpected:'still rejected'})).status).toBe(400);
+  }finally{await server.close();}
 });

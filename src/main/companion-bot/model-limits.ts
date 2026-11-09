@@ -55,3 +55,11 @@ export function resolveBotModelLimits(input: BotModelLimitInput, discovered?: un
     ...(source === 'metadata' ? { sourceUrl: botModelsMetadataUrl(input.baseUrl) } : source === 'official-default' ? { sourceUrl: documented!.sourceUrl } : {}),
     contextEstimate: 'utf8-byte-upper-bound', outputClamped: maxTokens !== requested };
 }
+
+/** Native sessions generate tool arguments and project files as well as chat.
+ * Keep explicit limits authoritative and bound the default by actual capacity. */
+export function resolveBotExecutionModelLimits(input: BotModelLimitInput, discovered?: unknown): BotModelLimits {
+  const limits = resolveBotModelLimits(input, discovered);
+  return input.maxTokens !== undefined ? limits : resolveBotModelLimits({ ...input,
+    maxTokens: Math.min(16384, Math.max(1, Math.floor(limits.window / 4))) }, discovered);
+}

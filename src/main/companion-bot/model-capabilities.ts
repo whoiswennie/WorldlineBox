@@ -1,4 +1,4 @@
-import { botModelsMetadataUrl, resolveBotModelLimits, type BotModelLimitInput, type BotModelLimits } from './model-limits';
+import { botModelsMetadataUrl, resolveBotModelLimits, resolveBotExecutionModelLimits, type BotModelLimitInput, type BotModelLimits } from './model-limits';
 
 interface Entry { expires: number; metadata?: unknown; controller?: AbortController }
 /** Only the concrete endpoint's exact model record can establish modalities. */
@@ -23,7 +23,7 @@ export class BotModelCapabilities {
   imageSupport(input: { apiFormat?: string; baseUrl: string; model: string }): 'supported' | 'unsupported' | 'unknown' {
     return botModelImageSupport(input.model, this.entries.get(JSON.stringify([input.apiFormat, input.baseUrl, input.model]))?.metadata);
   }
-  current(input: BotModelLimitInput & { apiKey?: string; apiFormat?: string }): BotModelLimits {
+  current(input: BotModelLimitInput & { apiKey?: string; apiFormat?: string }, purpose: 'chat' | 'execution' = 'chat'): BotModelLimits {
     const key = JSON.stringify([input.apiFormat, input.baseUrl, input.model]);
     let entry = this.entries.get(key);
     const now = this.options.now?.() ?? Date.now();
@@ -59,7 +59,7 @@ export class BotModelCapabilities {
         })();
       }
     }
-    return resolveBotModelLimits(input, entry.metadata);
+    return (purpose === 'execution' ? resolveBotExecutionModelLimits : resolveBotModelLimits)(input, entry.metadata);
   }
   close(): void { this.closed = true; for (const entry of this.entries.values()) entry.controller?.abort(); this.entries.clear(); }
 }

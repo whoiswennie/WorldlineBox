@@ -5118,7 +5118,7 @@ async function startApplication(): Promise<void> {
       const currentBotModel = () => {
         const config = loadAiConfig();
         const connection = { apiFormat: config.apiFormat, model: config.model, baseUrl: config.baseUrl, apiKey: config.hasKey ? getDecryptedApiKey() : '' };
-        const limits = modelCapabilities.current(connection);
+        const limits = modelCapabilities.current(connection, 'execution');
         return { connection, limits };
       };
       // VCP uses the application's bundled Node ABI. Resolving memory never

@@ -3,7 +3,8 @@ import { createServer, type Server } from 'node:http';
 import { z } from 'zod';
 
 const toolCall = z.strictObject({ laneId: z.string().min(1).max(200), eventId: z.string().min(1).max(200),
-  callId: z.string().min(1).max(300), name: z.string().min(1).max(100), args: z.record(z.string(), z.unknown()) });
+  callId: z.string().min(1).max(300), name: z.string().min(1).max(100), args: z.record(z.string(), z.unknown()),
+  nativeSessionId:z.string().min(1).max(200).optional(),nativeCallId:z.string().min(1).max(300).optional() });
 export type BotToolCall = z.infer<typeof toolCall>;
 /** Native Host receives an ephemeral capability, never a renderer-accessible server. */
 export class BotToolServer {
@@ -37,6 +38,14 @@ export class BotToolServer {
           let size = 0; const chunks: Buffer[] = [];
           for await (const chunk of request) { size += Buffer.byteLength(chunk); if (size > 256 * 1024) { response.writeHead(413).end(); return; } chunks.push(Buffer.from(chunk)); }
           const input = toolCall.parse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+          // Older bridge releases embedded these transport fields in args.
+          // Keep them outside strict business schemas without granting access
+          // from a caller-chosen session ID; lane/event capabilities gate access.
+          const {nativeSessionId,nativeCallId,...args}=input.args;
+          if(input.nativeSessionId&&nativeSessionId&&input.nativeSessionId!==nativeSessionId||input.nativeCallId&&nativeCallId&&input.nativeCallId!==nativeCallId)throw Error('Native callback identity mismatch.');
+          input.nativeSessionId??=toolCall.shape.nativeSessionId.parse(nativeSessionId);
+          input.nativeCallId??=toolCall.shape.nativeCallId.parse(nativeCallId);
+          input.args=args;
           if (scoped ? input.laneId !== scoped.laneId || input.eventId !== scoped.eventId : input.laneId.startsWith('worker-')) {
             response.writeHead(403).end(JSON.stringify({ ok: false, error: '执行器能力不属于本任务。' })); return;
           }

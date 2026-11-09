@@ -30,6 +30,8 @@ export const dshTaskEventSchema = z.object({ taskId: id, sequence: z.number().in
   stage: z.enum(['preparing', 'starting', 'session', 'turn_start', 'step_start', 'step_end', 'turn_end', 'tool_prepare', 'tool_start', 'tool_end', 'compaction_start', 'compaction_end', 'output_continuation', 'message', 'completed', 'failed']).optional(),
   contentKind: z.enum(['input', 'output', 'message']).optional(), callId: z.string().max(200).optional(),
   streamId: z.string().max(100).optional(),
+  streamGeneration: z.string().max(100).optional(),
+  textMode: z.enum(['delta', 'snapshot']).optional(),
   outputState: z.enum(['draft', 'committed', 'abandoned']).optional(),
   artifacts: z.array(dshTaskArtifactSchema).max(100).optional(),
   toolName: z.string().max(100).optional(), summary: z.string().max(1000).optional() });

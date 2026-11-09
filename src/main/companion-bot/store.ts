@@ -512,14 +512,14 @@ export class BotStore {
       return this.insertConversation(c.name, 'direct', ['user', companionId], companionId);
     }).immediate();
   }
-  createGroup(input: { title: string; memberIds: string[]; kind?: BotConversationKind; includeUser?: boolean; participationMode?: 'automatic' | 'all' | 'mentions' }): BotConversation {
+  createGroup(input: { title: string; memberIds: string[]; kind?: BotConversationKind; includeUser?: boolean; participationMode?: 'automatic' | 'all' | 'mentions'; reuseMembers?: boolean }): BotConversation {
     const kind = input.kind ?? 'group';
     if (kind === 'peer') throw new Error('伙伴私聊必须由固定双方入口创建。');
     const members = [...new Set([...(kind === 'group' || input.includeUser !== false ? ['user'] : []), ...input.memberIds])].sort();
     if (!members.some(id => id !== 'user')) throw new Error('会话至少需要一位伙伴。');
     for (const id of members) if (id !== 'user' && (!this.getCompanion(id) || this.isRetiredDevelopmentDefault(id))) throw new Error('会话成员不存在。');
     return this.db.transaction(() => {
-      if (kind === 'group') {
+      if (kind === 'group' && input.reuseMembers !== false) {
         // Reuse the full participant set. Titles and user-chosen policies of
         // existing rooms survive; history from different audiences is not merged.
         const prior = this.db.prepare(`SELECT c.id FROM bot_conversations c WHERE c.kind='group'
@@ -1040,13 +1040,16 @@ export class BotStore {
       const excluded = input.excludeLaneIds ?? [];
       const skip = (excluded.length ? ` AND i.lane_id NOT IN (${excluded.map(() => '?').join(',')})` : '')
         + (input.interactiveOnly ? " AND i.source IN ('user','task','gateway')" : '');
+      // Explicit user assignments and addressed teammate work may overlap in a
+      // room: a coordinator can await its worker. Autonomous discussion stays
+      // serialized; lane FIFO and the per-companion guard still apply to both.
       const raw = this.db.prepare(`SELECT i.* FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id
         WHERE i.status='queued' AND i.available_at<=?${skip}
         AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||i.companion_id AND disabled.value='0')
         AND NOT EXISTS(SELECT 1 FROM bot_inbox older WHERE older.lane_id=i.lane_id AND older.sequence<i.sequence AND older.status IN ('queued','running'))
         AND NOT EXISTS(SELECT 1 FROM bot_inbox active WHERE active.lane_id=i.lane_id AND active.status='running')
-        AND NOT EXISTS(SELECT 1 FROM bot_inbox room_active JOIN bot_conversations room ON room.id=room_active.conversation_id
-          WHERE room_active.conversation_id=i.conversation_id AND room.kind IN ('group','peer') AND room_active.status='running')
+        AND (i.source IN ('user','gateway') OR (i.source='companion' AND json_extract(i.payload_json,'$.directedPeer')=1) OR NOT EXISTS(SELECT 1 FROM bot_inbox room_active JOIN bot_conversations room ON room.id=room_active.conversation_id
+          WHERE room_active.conversation_id=i.conversation_id AND room.kind IN ('group','peer') AND room_active.status='running'))
         ${input.serialCompanions ? "AND NOT EXISTS(SELECT 1 FROM bot_inbox actor WHERE actor.companion_id=i.companion_id AND actor.status='running')" : ''}
         ORDER BY ${input.preferInteractive ? "CASE WHEN i.source IN ('user','task','gateway') THEN 0 ELSE 1 END," : ''}l.last_claimed_at,i.sequence LIMIT 1`).get(now, ...excluded);
       if (!raw) return;
@@ -1179,6 +1182,23 @@ export class BotStore {
       const result = this.db.prepare("UPDATE bot_inbox SET status='queued',lease_token=NULL,lease_until=NULL,available_at=? WHERE id=? AND lease_token=? AND status='running'").run(Date.now() + Math.max(0, delayMs), eventId, leaseToken);
       if (result.changes) this.db.prepare("UPDATE bot_messages SET status='queued' WHERE id=(SELECT reply_message_id FROM bot_inbox WHERE id=?)").run(eventId);
       return !!result.changes;
+    }).immediate();
+  }
+  continueNativeReply(messageId: string, requestId: string): string {
+    return this.db.transaction(() => {
+      const event=this.eventForReply(messageId),receipt='native-continue-command:'+requestId;
+      if(!event)throw Error('回复不存在。');
+      const previous=this.getMetadata(receipt);
+      if(previous){if(previous!==event.id)throw Error('继续请求编号已被使用。');return event.conversationId;}
+      const room=this.getConversation(event.conversationId),companion=this.getCompanion(event.companionId);
+      if(!room||room.kind==='peer'||!room.memberIds.includes('user')||room.revision!==event.aclRevision||!companion||companion.enabled===false)throw Error('当前会话不能继续这条回复。');
+      const raw=this.getMetadata('execution:'+messageId),execution=raw?JSON.parse(raw):undefined;
+      if(event.status!=='failed'||!Number.isSafeInteger(execution?.continuation?.checkpoint)||execution.continuation.checkpoint<0)throw Error('这条回复没有可继续的原生进展。');
+      this.setMetadata('native-output-continuation:'+event.id,JSON.stringify({checkpoint:execution.continuation.checkpoint,requestId}));
+      this.db.prepare("UPDATE bot_inbox SET status='queued',lease_token=NULL,lease_until=NULL,available_at=0,error=NULL WHERE id=? AND status='failed'").run(event.id);
+      this.db.prepare("UPDATE bot_messages SET status='queued',error=NULL WHERE id=?").run(messageId);
+      this.setMetadata('execution:'+messageId,JSON.stringify({...execution,status:'running',continuation:undefined}));
+      this.setMetadata(receipt,event.id);return event.conversationId;
     }).immediate();
   }
   private message(raw: unknown): BotMessage {

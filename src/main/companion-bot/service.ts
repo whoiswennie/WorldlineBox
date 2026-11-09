@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { z } from 'zod';
 import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution } from '../../shared/companion-bot';
+import { appendBotExecutionStep } from '../../shared/companion-bot-execution';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import { BotDshBrain, type BotDshModel } from './dsh-brain';
@@ -225,6 +226,10 @@ export class BotService {
       if (!pending || !event || pending.eventId !== event.id || event.status !== 'running') throw new Error('这个问题已结束。');
       this.questions.delete(input.questionId); pending.resolve({ text: input.text }); return { ok: true };
     }
+    if (input.type === 'execution.continue') {
+      const conversationId=this.store.continueNativeReply(input.messageId,input.requestId);
+      this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
+    }
     switch (input.type) {
       case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before) };
       case 'history.search': return { ok: true, history: this.store.searchMessages(input.conversationId, input) };
@@ -275,7 +280,7 @@ export class BotService {
         const conversation = this.store.createGroup({ title: input.title ?? `${archivedRoom.title} · 群聊`, memberIds: archivedRoom.memberIds, participationMode: 'automatic' });
         this.changed(conversation.id); return { ok: true, conversationId: conversation.id };
       }
-      case 'conversation.create': { const conversation = this.store.createGroup({ title: input.title, kind: input.kind, memberIds: input.memberIds, participationMode: input.participationMode }); this.changed(conversation.id); return { ok: true, conversationId: conversation.id }; }
+      case 'conversation.create': { const conversation = this.store.createGroup({ title: input.title, kind: input.kind, memberIds: input.memberIds, participationMode: input.participationMode, reuseMembers: false }); this.changed(conversation.id); return { ok: true, conversationId: conversation.id }; }
       case 'conversation.policy': this.store.setConversationPolicy(input.conversationId, input.participationMode); this.changed(input.conversationId); return { ok: true };
       case 'conversation.announcement': {
         this.store.setGroupAnnouncement({ ...input, actorId: 'user' }); this.changed(input.conversationId);
@@ -576,6 +581,7 @@ export class BotService {
           && (candidate.memberIds.includes('user') || candidate.kind === 'peer' && candidate.userRole === 'observer')).map(candidate => candidate.id)
         : [room.id];
       const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt,
+        continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
         model: this.options.model(), tools: [], workerTools: BOT_TOOLS, callback, signal, role: 'worker', workerAccess: 'full',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds },
         workspaceTitle: companion.name, sessionTitle: Array.from(event.content).slice(0, 60).join(''),
@@ -594,12 +600,12 @@ export class BotService {
             if (text) this.store.updateDraft(event.id, claim.leaseToken, text);
             const key = 'execution:' + event.replyMessageId;
             const execution: BotExecution = JSON.parse(this.store.getMetadata(key)!);
-            const last = execution.steps.at(-1);
             const step = { id: String(update.sequence ?? execution.steps.length), type: update.type, at: new Date().toISOString(),
-              text: update.text?.slice(0, 16000), summary: update.summary?.slice(0, 2000), toolName: update.toolName, status: update.status };
-            if (last?.type === step.type && /stream/.test(step.type)) execution.steps[execution.steps.length - 1] = step;
-            else execution.steps.push(step);
-            execution.steps = execution.steps.slice(-1000);
+              text: update.type === 'reasoning' ? update.text : update.text?.slice(0, 16000), summary: update.summary?.slice(0, 2000), toolName: update.toolName, status: update.status,
+              sequence: update.sequence, stage: update.stage, streamId: update.streamId, callId: update.callId, textMode: update.textMode,
+              outputState: update.outputState, nativeSessionId: update.nativeSessionId, nativeTurn: update.nativeTurn, nativeStep: update.nativeStep };
+            Object.assign(step,{streamGeneration:update.streamGeneration,updatedAt:update.receivedAt});
+            execution.steps = appendBotExecutionStep(execution.steps, step);
             this.updateExecution(event, execution);
             const phase = update.type === 'context_compacting' ? 'compacting-context'
               : update.type === 'tool_call' || update.type === 'tool_reconciling' ? 'using-tool'
@@ -610,7 +616,7 @@ export class BotService {
       text = result.text;
       if (result.artifacts?.length) projectArtifacts(result.artifacts);
       await artifactProjection; signal.throwIfAborted();
-      this.updateExecution(event, { status: result.status, question: undefined });
+      this.updateExecution(event, { status: result.status, question: undefined, continuation: undefined });
       this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: result.status === 'succeeded' ? 'done' : result.status === 'cancelled' ? 'cancelled' : 'failed', content: text, dshEventId: event.id,
         memoryJobs: [this.responseJob(event, prepared, text, result.status === 'succeeded'),
           { key: 'history-completed:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } },
@@ -628,9 +634,14 @@ export class BotService {
         if (code === 'BOT_DELIVERY_UNKNOWN') this.store.markDispatched(event.id, claim.leaseToken, event.id);
         this.store.requeue(event.id, claim.leaseToken, event.attempts * 1000); return;
       }
-      this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed', question: undefined });
+      const checkpoint=code==='BOT_OUTPUT_LIMIT'?(error as {checkpoint:number}).checkpoint:undefined;
+      if(checkpoint!==undefined)text=(error as {partialText?:string}).partialText||text;
+      this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed', question: undefined,
+        continuation: !signal.aborted&&Number.isSafeInteger(checkpoint)?{checkpoint:checkpoint!}:undefined });
       this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: signal.aborted ? 'cancelled' : 'failed', content: text, error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
-      if (prepared) this.store.enqueueMemoryJob(this.responseJob(event, prepared, text, false));
+      // A resumable turn still owns its prepared VCP context. Finish it once,
+      // with the final answer, instead of closing and then reusing a failed job.
+      if (prepared && checkpoint === undefined) this.store.enqueueMemoryJob(this.responseJob(event, prepared, text, false));
       if (!signal.aborted) { this.detail = errorText(error); this.options.report?.(error); }
     } finally {
       this.toolServer.releaseWorker(nativeLaneId);
@@ -646,7 +657,11 @@ export class BotService {
     if (!BOT_TOOLS.some(tool => tool.name === call.name)) throw new Error('主脑没有这项工具。');
     const key = `effect:${event.id}:${call.callId}`, fingerprint = digest(JSON.stringify([call.name, call.args]));
     const previous = this.store.getMetadata(key);
-    if (previous) { const saved = JSON.parse(previous) as { fingerprint: string; result: unknown }; if (saved.fingerprint !== fingerprint) throw new Error('工具调用标识已用于其他参数。'); return saved.result; }
+    if (previous) {
+      const saved = JSON.parse(previous) as { fingerprint: string; result: unknown };
+      const legacy=call.nativeSessionId&&call.nativeCallId?digest(JSON.stringify([call.name,{...call.args,nativeSessionId:call.nativeSessionId,nativeCallId:call.nativeCallId}])):undefined;
+      if (saved.fingerprint !== fingerprint&&saved.fingerprint!==legacy) throw new Error('工具调用标识已用于其他参数。'); return saved.result;
+    }
     const running = this.toolRuns.get(key); if (running) { if (running.fingerprint !== fingerprint) throw new Error('运行中的工具调用标识对应其他参数。'); return running.promise; }
     const operation = this.executeTool(event, call, signal).then(result => { this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return result; });
     this.toolRuns.set(key, { fingerprint, promise: operation }); try { return await operation; } finally { this.toolRuns.delete(key); }
@@ -887,7 +902,7 @@ export class BotService {
         const attachmentGrants = attachments ? this.authorizedAttachmentGrants(event, attachments.filter(ref => ref.kind !== 'sticker').map(ref => ref.id)) : [];
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         const result = this.store.tryEnqueueAutomatic({ conversationId: event.conversationId, senderId: event.companionId, source: 'companion', content,
-          attachments, attachmentGrants, sourceIds: this.store.eventSourceIds(event.id), sourceMessageId: `${event.id}:${call.callId}`, recipientIds: [target], correlationId: cause.correlationId, causationId: cause.causationId, payload: { hop: cause.hop } });
+          attachments, attachmentGrants, sourceIds: this.store.eventSourceIds(event.id), sourceMessageId: `${event.id}:${call.callId}`, recipientIds: [target], correlationId: cause.correlationId, causationId: cause.causationId, payload: { hop: cause.hop, directedPeer: true } });
         if (!result.accepted) return { sent: false, reason: result.reason };
         this.scheduler.wake(); this.changed(event.conversationId); return { sent: true, eventIds: result.events.map(item => item.id) };
       }

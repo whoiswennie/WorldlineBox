@@ -16,6 +16,33 @@ const defaultContextWindow = 100000, maxContextChars = 100000;
 const textOf = message => (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question'];
+/** One coherent observation per native model attempt. Frames are transport
+ * fragments, not Agent Loop phases; publish cumulative snapshots at a UI rate. */
+export function observeAssistantStream(record, nativeSessionId, frame, publish, now = Date.now()) {
+  record.streams ??= new Map();
+  if (frame.type === 'start') {
+    record.streams.set(nativeSessionId, { id: randomUUID(), attemptId: frame.attemptId, nativeTurn: frame.turn, nativeStep: frame.step,
+      text: '', reasoning: '', lastTextPublish: -Infinity, lastReasoningPublish: -Infinity });
+    return;
+  }
+  const stream = record.streams.get(nativeSessionId);
+  if (!stream || frame.attemptId !== undefined && stream.attemptId !== frame.attemptId) return;
+  const identity = { streamId: stream.id, nativeSessionId, nativeTurn: stream.nativeTurn, nativeStep: stream.nativeStep };
+  const reasoning = outputState => publish({ ...identity, type: 'reasoning', stage: 'message', text: stream.reasoning,
+    textMode: 'snapshot', outputState, summary: outputState === 'draft' ? '正在思考' : '思考' });
+  if (frame.type === 'chunk' && frame.chunk.type === 'reasoning-delta') {
+    stream.reasoning += frame.chunk.text;
+    if (now - stream.lastReasoningPublish >= 100) { stream.lastReasoningPublish = now; reasoning('draft'); }
+  } else if (frame.type === 'chunk' && frame.chunk.type === 'text-delta') {
+    stream.text += frame.chunk.text;
+    if (now - stream.lastTextPublish >= 100) {
+      stream.lastTextPublish = now; publish({ ...identity, type: nativeSessionId === record.id ? 'text_stream' : 'child_text_stream',
+        text: stream.text, textMode: 'snapshot', outputState: 'draft' });
+    }
+  } else if (frame.type === 'end' && stream.reasoning) {
+    reasoning(frame.outcome?.kind === 'committed' && frame.outcome.eventType === 'assistant/message' ? 'committed' : 'abandoned');
+  }
+}
 /** Only the final committed native assistant message is the user-facing answer.
  * Earlier assistant messages, reasoning and tools belong to the foldable trace. */
 export function workerOutputFromEvents(events, { eventId, startMessageId, maxChars = 128000 }) {
@@ -132,7 +159,30 @@ async function botAtomicJson(target, value) {
   const temporary = target + '.' + randomUUID() + '.tmp';
   await writeFile(temporary, JSON.stringify(value)); await rename(temporary, target);
 }
-async function botWriteReceipt(record, value) { await botAtomicJson(botReceiptPath(record, value.eventId), value); }
+async function botWriteReceipt(record, value) { await botAtomicJson(botReceiptPath(record, value.eventId),
+  { ...(record.bot?.continuedFrom !== undefined ? { continuedFrom:record.bot.continuedFrom } : {}), ...value }); }
+
+/** Explicit native continuation, bound to a durable terminal checkpoint. The
+ * original user input is never re-enqueued, and retrying a command is idempotent. */
+export async function continueBotOutput(record,input,{read,write,flush,freezeMessage}) {
+  const checkpoint=input.continueAfterSeq,receipt=await read(input.eventId);
+  if(!Number.isSafeInteger(checkpoint)||checkpoint<0)throw Error('Invalid continuation checkpoint.');
+  const same=receipt?.continuedFrom===checkpoint;
+  if(same&&receipt.status==='complete')return {accepted:true,result:receipt.result};
+  if(!same&&!(receipt?.status==='complete'&&receipt.result?.status==='failed'&&receipt.result.outputCheckpoint===checkpoint))throw Error('The native continuation checkpoint is stale or belongs to another result.');
+  if(record.status==='running'&&record.bot.eventId!==input.eventId)throw Error('Companion lane is busy.');
+  const id='worldlinebox-bot-output-continuation:'+input.eventId+':'+checkpoint;
+  record.bot.continuedFrom=checkpoint;record.bot.eventId=input.eventId;record.bot.suspended=false;
+  if(!same)await write({eventId:input.eventId,status:'continuing',continuedFrom:checkpoint});
+  const events=record.agent.session.snapshotEvents(),start=events.findIndex(event=>event.type==='user/message'&&event.data.id===id);
+  const queued=[...record.agent.inbox.nextTurn,...record.agent.inbox.nextStep].some(message=>message.id===id);
+  record.revision++;record.status='running';record.cancelled=false;record.lastError=undefined;record.reason=undefined;record.outputCheckpoint=undefined;
+  if(start<0&&!queued)record.agent.followup(freezeMessage({id,role:'user',source:{kind:'worldlinebox-bot-output-continuation',form:'notice',summary:'继续原任务',...(record.bot.audience?{worldlineboxAudience:record.bot.audience}:{})},content:[{type:'text',text:
+    '用户要求从已保存进展继续原任务。不要重放原始请求或重复已完成的工具与交付，先检查真实文件和回执；上轮输出达到单次限制，请分文件、分步骤生成内容，缩短单次工具参数，继续执行并核验后交付。'}]}));
+  else if(start>=0){const end=events.slice(start+1).findLast(event=>event.type==='turn/end');if(end)record.reason=end.data.reason;}
+  await flush(record.agent.session);await write({eventId:input.eventId,status:'accepted',continuedFrom:checkpoint});
+  return {accepted:true};
+}
 /** A normal profile plugin. Native Web owns Agents, presets, policy and persistence. */
 export async function registerCompanionPreset(ctx) {
   const id = "worldlinebox-companion-v2";
@@ -302,7 +352,7 @@ export async function apply(ctx) {
     }, agent));
   });
   const emit = (record, event) => {
-    const value = { sequence: record.next++, receivedAt: new Date().toISOString(), sessionId: record.id,
+    const value = { sequence: record.next++, streamGeneration: record.streamGeneration ??= randomUUID(), receivedAt: new Date().toISOString(), sessionId: record.id,
       ...(record.bot?.eventId ? { eventId: record.bot.eventId } : {}), ...event };
     const owner = record.callbackOwner;
     if (owner && owner !== record && owner.status === 'running') {
@@ -410,6 +460,7 @@ export async function apply(ctx) {
         // The host combines this native terminal receipt with effect proofs
         // and any explicit incomplete-business report before closing its task.
         record.status = record.cancelled ? 'cancelled' : record.reason?.kind === 'completed' ? 'succeeded' : 'failed';
+        if(record.status==='failed'&&record.reason?.kind==='max-tokens')record.outputCheckpoint=record.agent.session.seq;
         if (record.bot?.eventId) await botWriteReceipt(record, { eventId: record.bot.eventId, status: 'complete',
           result: { eventId: record.bot.eventId, sessionId: record.id, status: record.status, text: record.text, artifacts: record.artifacts,
             inputContextCommitted: record.bot.inputContextCommitted === true,
@@ -435,53 +486,68 @@ export async function apply(ctx) {
     const rootSession = record?.id === String(session.id);
     if (!record) return;
     const data = event.data;
+    const nativeSessionId = String(session.id);
+    record.positions ??= new Map();
+    const position = { ...record.positions.get(nativeSessionId),
+      ...(typeof data.turn === 'number' ? { nativeTurn: data.turn } : {}),
+      ...(typeof data.step === 'number' ? { nativeStep: data.step } : {}) };
+    if (event.type === 'turn/start') delete position.nativeStep;
+    record.positions.set(nativeSessionId, position);
+    const publish = value => emit(record, { nativeSessionId, nativeSequence: event.seq, ...position, ...value });
     if (record.bot && event.type === 'user/message' && data.id === 'worldlinebox-bot:' + record.bot.eventId) record.bot.inputContextCommitted = true;
     switch (event.type) {
-      case 'turn/start': emit(record, { type: 'status', stage: 'turn_start', summary: '开始处理任务' }); break;
-      case 'step/start': emit(record, { type: 'status', stage: 'step_start', summary: `开始第 ${data.step} 步处理` }); break;
-      case 'step/end': emit(record, { type: 'status', stage: 'step_end', summary: `第 ${data.step} 步处理结束` }); break;
-      case 'compaction/start': emit(record, { type: 'status', stage: 'compaction_start', summary: '正在整理当前会话上下文' }); break;
-      case 'compaction/end': record.compactions = (record.compactions ?? 0) + 1; emit(record, { type: 'status', stage: 'compaction_end', summary: '当前会话上下文整理完成' }); break;
-      case 'turn/end': if (rootSession) record.reason = data.reason; emit(record, { type: 'status', stage: 'turn_end', summary: '本轮处理结束' }); break;
+      case 'turn/start': publish({ type: 'status', stage: 'turn_start', summary: '开始处理任务' }); break;
+      case 'step/start': publish({ type: 'status', stage: 'step_start', summary: `开始第 ${data.step} 步处理` }); break;
+      case 'step/end': publish({ type: 'status', stage: 'step_end', summary: `第 ${data.step} 步处理结束` }); break;
+      case 'compaction/start': publish({ type: 'status', stage: 'compaction_start', summary: '正在整理当前会话上下文' }); break;
+      case 'compaction/end': record.compactions = (record.compactions ?? 0) + 1; publish({ type: 'status', stage: 'compaction_end', summary: '当前会话上下文整理完成' }); break;
+      case 'turn/end': if (rootSession) record.reason = data.reason; publish({ type: 'status', stage: 'turn_end', summary: '本轮处理结束' }); break;
       case 'approval/asked':
-        emit(record, { type: 'approval_required', stage: 'message', toolName: data.toolName, callId: data.callId,
+        publish({ type: 'approval_required', stage: 'message', toolName: data.toolName, callId: data.callId,
           text: JSON.stringify({ requestId: data.id, reason: String(data.reason ?? '').slice(0, 6000) }), contentKind: 'message',
           summary: '等待你在 DSH 中确认权限' });
         break;
       case 'approval/decided':
-        emit(record, { type: 'approval_decided', stage: 'message',
+        publish({ type: 'approval_decided', stage: 'message',
           text: JSON.stringify({ requestId: data.id, outcome: data.outcome }), contentKind: 'message',
           summary: data.outcome === 'allowed-once' ? '本次权限已确认，继续处理' : '本次权限未获准，等待执行器反馈' });
         break;
-      case 'tool/call': emit(record, { type: 'tool_call', stage: 'tool_start', toolName: data.name, callId: data.callId,
+      case 'tool/call': publish({ type: 'tool_call', stage: 'tool_start', toolName: data.name, callId: data.callId,
         text: typeof data.arguments === 'string' ? data.arguments : JSON.stringify(data.arguments), contentKind: 'input', summary: '开始调用工具' }); break;
       case 'tool/result':
-        if (event.surfaceOp === undefined || event.surfaceOp === 'append') emit(record, { type: 'tool_result', stage: 'tool_end', callId: data.message.toolCallId,
+        if (event.surfaceOp === undefined || event.surfaceOp === 'append') publish({ type: 'tool_result', stage: 'tool_end', callId: data.message.toolCallId,
           text: textOf(data.message), contentKind: 'output', summary: data.message.isError ? '工具执行失败' : '工具执行完成' });
         break;
       case 'assistant/message': {
         if (event.data.interrupted || event.surfaceOp !== undefined && event.surfaceOp !== 'append') break;
         const text = textOf(data.message);
+        const reasoning = (data.message.content ?? []).filter(block => block.type === 'reasoning' && typeof block.text === 'string').map(block => block.text).join('\n\n');
+        const stream = record.streams?.get(nativeSessionId);
+        if (stream && reasoning) stream.reasoning = reasoning;
+        if (reasoning) publish({ type: 'reasoning', stage: 'message', text: reasoning, textMode: 'snapshot',
+          streamId: stream?.id ?? `native-${event.seq}`, outputState: 'committed', summary: '思考' });
         if (rootSession) record.text = text;
-        emit(record, { type: rootSession ? 'text' : 'child_text', stage: 'message', text, contentKind: 'message', outputState: 'committed', nativeSessionId: String(session.id) });
+        publish({ type: rootSession ? 'text' : 'child_text', stage: 'message', text, streamId: stream?.id,
+          textMode: 'snapshot', contentKind: 'message', outputState: 'committed' });
         break;
       }
       case 'deliverables/presented': {
         record.artifacts = [...record.artifacts, ...data.files].filter((file, index, all) => all.findIndex(item => item.path === file.path) === index);
-        emit(record, { type: 'artifacts', artifacts: data.files, callId: data.callId, nativeSessionId: String(session.id), nativeSequence: event.seq, nativeTurn: data.turn });
+        publish({ type: 'artifacts', artifacts: data.files, callId: data.callId });
         break;
       }
 
     }
   });
-  const workerCallback = async (record, name, args, callId, signal) => {
+  const workerCallback = async (record, name, args, callId, signal, native) => {
     const owner = record.callbackOwner ?? record;
     const callback = owner.bot.callback, endpoint = new URL(callback.url);
     if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.pathname !== '/bot/tool'
       || !/^[a-f0-9]{64}$/.test(callback.token)) throw new Error('Invalid worker callback.');
     const response = await fetch(callback.url, { method: 'POST', signal: name === 'chat_ask_user' ? signal : AbortSignal.any([signal, AbortSignal.timeout(120000)]),
       headers: { authorization: 'Bearer ' + callback.token, 'content-type': 'application/json' },
-      body: JSON.stringify({ laneId: owner.bot.laneId, eventId: owner.bot.eventId, name, args, callId }) });
+      body: JSON.stringify({ laneId: owner.bot.laneId, eventId: owner.bot.eventId, name, args, callId,
+        ...(native?{nativeSessionId:native.nativeSessionId,nativeCallId:native.nativeCallId}:{}) }) });
     if (!response.ok) throw Object.assign(new Error('Worker host rejected ' + name + ' (' + response.status + ').'), { status: response.status });
     const body = await response.json(); if (body.ok !== true) throw new Error('Worker host did not accept ' + name + '.');
     return body.result;
@@ -495,26 +561,14 @@ export async function apply(ctx) {
       async execute(args, exec) {
         if (recordFor(exec.agent) !== record || exec.signal.aborted) throw new Error('The host tool is outside this worker task.');
         const ref = nativeCallRef(record.callbackOwner ?? record, exec.agent, exec.callId);
-        return { result: await workerCallback(record, schema.name, { ...args, nativeSessionId: ref.nativeSessionId, nativeCallId: ref.nativeCallId }, ref.callId, exec.signal) };
+        return { result: await workerCallback(record, schema.name, args, ref.callId, exec.signal, ref) };
       },
     }));
   };
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     const id = String(agent.session.id), record = sessions.get(id) ?? workerOwners.get(id);
     if (!record) return;
-    record.streams ??= new Map();
-    if (frame.type === 'chunk' && frame.chunk.type === 'reasoning-delta') {
-      emit(record, { type: 'reasoning', stage: 'message', text: frame.chunk.text, nativeSessionId: id, outputState: 'draft' }); return;
-    }
-    if (frame.type === 'start') record.streams.set(id, { text: '', id: randomUUID(), lastPublish: 0 });
-    else if (frame.type === 'chunk' && frame.chunk.type === 'text-delta') {
-      const stream = record.streams.get(id); if (!stream) return;
-      stream.text += frame.chunk.text;
-      if (Date.now() - stream.lastPublish > 100) {
-        stream.lastPublish = Date.now(); emit(record, { type: id === record.id ? 'text_stream' : 'child_text_stream',
-          text: stream.text, streamId: stream.id, nativeSessionId: id, outputState: 'draft' });
-      }
-    }
+    observeAssistantStream(record, id, frame, value => emit(record, value));
   });
   ctx.on('agent/error', ({ agent, error }) => {
     const record = sessions.get(String(agent.session.id));
@@ -536,7 +590,7 @@ export async function apply(ctx) {
     const ref = nativeCallRef(record.callbackOwner ?? record, execution.agent, execution.callId);
     const question = questions.map(item => item.question + (item.detail ? '\n' + item.detail : '') + (item.options?.length
       ? '\n' + item.options.map(option => typeof option === 'string' ? option : option.label + (option.description ? '：' + option.description : '')).join('\n') : '')).join('\n\n');
-    const answer = await workerCallback(record, 'chat_ask_user', { question, nativeSessionId: ref.nativeSessionId, nativeCallId: ref.nativeCallId }, ref.callId, execution.signal);
+    const answer = await workerCallback(record, 'chat_ask_user', { question }, ref.callId, execution.signal, ref);
     const text = typeof answer === 'string' ? answer : answer.text;
     const answers = questions.map(item => ({ id: item.id, selected: [], custom: text }));
     return { isError: false, value: { answers }, content: [{ type: 'text', text: JSON.stringify({ answers }) }] };
@@ -953,6 +1007,11 @@ export async function apply(ctx) {
         }
         if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > maxContextChars) throw new Error('Invalid companion message.');
         const receipt = await botReadReceipt(record, input.eventId);
+        if(input.continueAfterSeq!==undefined){
+          const {freezeMessage}=await import('@deepseek-ai/dsh-llm');record.admissions++;
+          try{json(response,await continueBotOutput(record,input,{read:eventId=>botReadReceipt(record,eventId),write:value=>botWriteReceipt(record,value),flush:session=>ctx.sessions.flush(session),freezeMessage}));}
+          finally{record.admissions--;void settle(record);}return;
+        }
         if (receipt?.status === 'complete') { json(response, { accepted: true, result: receipt.result }); return; }
         if (receipt?.status === 'not-admitted') throw new Error('The native event was cancelled before admission.');
         if (record.status === 'running') {

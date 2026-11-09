@@ -95,6 +95,19 @@ it('claims different lanes concurrently but holds later messages in the same lan
   store.settle({ eventId: first.id, leaseToken: claimedA.leaseToken, status: 'done', content: '完成A1' });
   expect(store.claim({ workerId: 'worker', now: 1001 })?.event.id).toBe(later.id);
 });
+it('runs explicitly addressed group teammates concurrently while keeping each companion in order',()=>{
+  const room=store.createGroup({title:'协作',memberIds:['alice','bob'],participationMode:'all'});
+  const ingress=store.enqueue({conversationId:room.id,senderId:'user',content:'开始项目'});
+  const coordinator=store.claim({workerId:'coordinator',serialCompanions:true})!;
+  expect(coordinator).toBeTruthy();const other=store.claim({workerId:'other-root',serialCompanions:true})!;expect(other).toBeTruthy();
+  const target=ingress.events.find(event=>event.companionId!==coordinator.event.companionId)!.companionId;
+  const work=store.enqueue({conversationId:room.id,senderId:coordinator.event.companionId,source:'companion',content:'独立实现',recipientIds:[target],payload:{directedPeer:true}});
+  expect(store.claim({workerId:'busy-teammate',serialCompanions:true})).toBeUndefined();
+  store.settle({eventId:other.event.id,leaseToken:other.leaseToken,status:'done',content:'已阅读需求'});
+  const teammate=store.claim({workerId:'teammate',serialCompanions:true})!;expect(teammate.event.id).toBe(work.events[0]!.id);
+  store.enqueue({conversationId:room.id,senderId:coordinator.event.companionId,source:'companion',content:'后续实现',recipientIds:[target],payload:{directedPeer:true}});
+  expect(store.claim({workerId:'no-second-teammate',serialCompanions:true})).toBeUndefined();
+});
 it('recovers expired leases across a cold reopen and fences late publication', () => {
   const conversation = store.openDirect('alice');
   const event = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: '恢复测试' }).events[0]!;

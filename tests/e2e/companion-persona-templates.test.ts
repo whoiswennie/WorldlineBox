@@ -27,7 +27,11 @@ test('manages saved personas through actual packaged IPC without changing anothe
     // Wait for the real application shell before testing persistence by reload.
     await expect(page.locator('[data-application-module="companions"]')).toBeVisible();
     await page.evaluate(() => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'light' })));
-    await page.reload(); await page.locator('[data-application-module="companions"]').click();
+    const openCompanions = async () => {
+      await page.locator('[data-application-module="companions"]').click();
+      await page.getByRole('button', { name: '稍后设置', exact: true }).click();
+    };
+    await page.reload(); await openCompanions();
     await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
     const otherBefore = await page.evaluate(() => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'companion.personas.get', companionId: 'gpt', id: 'default' }));
     expect(otherBefore.ok).toBe(true);
@@ -37,14 +41,14 @@ test('manages saved personas through actual packaged IPC without changing anothe
     const templates = dialog.locator('.bot-personas');
     await expect(templates.locator('.bot-personas__row')).toHaveCount(5);
     await expect(templates.getByRole('textbox', { name: '人格与相处方式', exact: true })).not.toHaveValue('');
-    await templates.getByRole('button', { name: '小女儿大肥鱼 v2', exact: true }).click();
-    await expect(templates.getByRole('textbox', { name: '人格与相处方式', exact: true })).toHaveValue(/冰糖/u);
-    await expect(templates.getByRole('button', { name: '小女儿大肥鱼 v2 · 使用中', exact: true })).toBeVisible();
+    await templates.getByRole('button', { name: '大肥鱼 · 傲娇陪伴', exact: true }).click();
+    await expect(templates.getByRole('textbox', { name: '人格与相处方式', exact: true })).toHaveValue(/这就是天幻呀/u);
+    await expect(templates.getByRole('button', { name: '大肥鱼 · 傲娇陪伴 · 使用中', exact: true })).toBeVisible();
     await templates.getByRole('textbox', { name: '模板名称', exact: true }).fill('小女儿 · 日常');
     await templates.getByRole('button', { name: '保存修改', exact: true }).click();
     await expect(templates.getByRole('button', { name: '小女儿 · 日常 · 使用中', exact: true })).toBeVisible();
     await templates.getByRole('button', { name: /恢复此内置模板|恢复原始设定/u }).click();
-    await expect(templates.getByRole('textbox', { name: '模板名称', exact: true })).toHaveValue('小女儿大肥鱼 v2');
+    await expect(templates.getByRole('textbox', { name: '模板名称', exact: true })).toHaveValue('大肥鱼 · 傲娇陪伴');
     const evidence = path.resolve('artifacts/superagent-bot-development/ui'); await mkdir(evidence, { recursive: true });
     const capture = async (name: string) => {
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
@@ -72,7 +76,7 @@ test('manages saved personas through actual packaged IPC without changing anothe
     await templates.getByRole('textbox', { name: '模板名称', exact: true }).fill('星海老友');
     await templates.getByRole('button', { name: '保存修改', exact: true }).click();
     await expect(templates.getByRole('button', { name: '星海老友 · 使用中', exact: true })).toBeVisible();
-    await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
+    await page.reload(); await openCompanions(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
     await expect(templates.getByRole('textbox', { name: '模板名称', exact: true })).toHaveValue('星海老友');
     await expect(templates.locator('.bot-personas__row')).toHaveCount(6);
     await templates.getByRole('button', { name: '删除模板', exact: true }).click(); await templates.getByRole('button', { name: '确认删除', exact: true }).click();
@@ -87,7 +91,7 @@ test('manages saved personas through actual packaged IPC without changing anothe
     for (const size of [{ width: 1440, height: 960 }, { width: 850, height: 720 }]) {
       await application.evaluate(({ BrowserWindow }, nextSize) => { const window = BrowserWindow.getAllWindows()[0]!; window.setMinimumSize(0, 0); window.setSize(nextSize.width, nextSize.height); }, size);
       await page.evaluate(() => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'dark' })));
-      await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
+      await page.reload(); await openCompanions(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
       await expect(templates.locator('.bot-personas__row')).toHaveCount(5);
       const geometry = await dialog.evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth, panel: element.getBoundingClientRect().toJSON(), footer: element.querySelector('.bot-personas__editor-footer')!.getBoundingClientRect().toJSON() }));
       expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width); expect(geometry.footer.bottom).toBeLessThanOrEqual(geometry.panel.bottom + 1);

@@ -8,8 +8,8 @@ export interface BuiltinBotPersonaTemplate {
 }
 
 /**
- * The document templates contain only the user-provided DOCX “人格设定” body,
- * preserving its paragraphs and examples. AstrBot export metadata is excluded.
+ * Variants originate from the user-provided DOCX “人格设定” bodies; authored
+ * companion adaptations live in the same catalog. Export metadata is excluded.
  * These are editable character descriptions, not host tool or permission policy.
  * Keep document IDs separate from `default` so upgrades preserve existing personas.
  */

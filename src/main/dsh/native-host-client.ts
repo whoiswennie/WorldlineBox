@@ -9,6 +9,7 @@ export interface NativeHostEvent extends Omit<DshTaskEvent, 'taskId'> {
   nativeSessionId?: string;
   nativeSequence?: number;
   nativeTurn?: number;
+  nativeStep?: number;
   /** App-owned main-brain observation; native workers do not synthesize this. */
   contextMetrics?: BotBrainRequestMetrics;
 }

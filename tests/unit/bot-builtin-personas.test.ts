@@ -8,7 +8,6 @@ import { builtinBotPersonaTemplates } from '../../src/shared/builtin-bot-persona
 // against accidentally truncating the prompts or importing export metadata.
 const documentBodies = [
   ['dafeiyu-original', 1388, '8532acbb228e9e99a25aba4c76f07d613d0a3651d1380fda65b56c1ed5a7e7fc'],
-  ['dafeiyu-daughter-v2', 2289, '4ddad6c48bc54943242a2a45d345b2883018c73829cc7671a039df9cf04a1e20'],
   ['dafeiyu-tieba', 2101, '21fc9a90b261af794979c2f606ab9477711fcfa8715219388d2b863499ff31bd'],
   ['dafeiyu-mowan', 1168, '982e4c7e4f0dcb9bed6642ff30ff5eff64d7114f7e901fac0996e3495efee628'],
 ] as const;
@@ -22,7 +21,15 @@ describe('built-in companion persona templates', () => {
     expect(template?.prompt).not.toMatch(/ASTRBOT PERSONA CARD|创建时间|更新时间|人格 ID/);
   });
 
-  it('exposes the current authored default and all four unchanged document variants', () => {
+  it('adapts the affectionate persona to a virtual companion and the corrected creator', () => {
+    const persona=builtinBotPersonaTemplates(DEFAULT_BOT_COMPANION_ID).find(item=>item.id==='dafeiyu-daughter-v2')!;
+    expect(persona.name).toBe('大肥鱼 · 傲娇陪伴');expect(persona.name).not.toMatch(/v\d/iu);
+    expect(persona.prompt).toContain('世界线盒子中的虚拟伙伴');
+    expect(persona.prompt).toContain('这就是天幻呀');expect(persona.prompt).not.toContain('冰糖');
+    expect(persona.prompt).not.toContain('群友');expect(persona.prompt).toContain('按事情需要完整回答');
+  });
+
+  it('exposes the authored default and four persona variants', () => {
     const templates = builtinBotPersonaTemplates(DEFAULT_BOT_COMPANION_ID);
     expect(templates).toHaveLength(5);
     expect(new Set(templates.map(item => item.id)).size).toBe(5);

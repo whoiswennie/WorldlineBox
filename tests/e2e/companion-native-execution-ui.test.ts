@@ -32,6 +32,10 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     });
     const running: BotExecution = { sessionId: 'native-fresh-message-session', status: 'running', phase: 'using-tool', steps: [
       { id: '1', type: 'session_created', summary: '在伙伴工作区开启新会话', at: '2026-11-09T07:00:00Z' },
+      { id: 'loop-1', type: 'status', summary: '开始第 1 步处理', at: '2026-11-09T07:00:01Z' },
+      { id: 'reason-1', type: 'reasoning', text: '先阅读', at: '2026-11-09T07:00:01Z' },
+      { id: 'reason-2', type: 'reasoning', text: '工作区里的资料，', at: '2026-11-09T07:00:01Z' },
+      { id: 'reason-3', type: 'reasoning', text: '再根据实际内容整理要点。', at: '2026-11-09T07:00:01Z' },
       { id: '2', type: 'tool_call', summary: '正在读取工作区资料', toolName: 'read_file', text: '读取：项目说明.md', at: '2026-11-09T07:00:01Z' },
     ] };
     const seed = async (execution: BotExecution, content: string, status: 'running' | 'sent') => application.evaluate(({ app }, fixture) => {
@@ -54,8 +58,12 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     };
     await seed(running, '', 'running'); await page.reload(); await open();
     const bubble = page.locator('[data-bot-message="native-ui-reply"]');
+    expect(await bubble.locator('.bot-message-bubble').evaluate(element=>element.clientWidth)).toBeGreaterThanOrEqual(378);
     await expect(bubble.locator('.bot-execution-toggle')).toHaveAttribute('aria-expanded', 'true');
     await expect(bubble.locator('.bot-execution-contents')).toContainText('read_file');
+    await expect(bubble.locator('[data-type="reasoning"]')).toHaveCount(1);
+    await expect(bubble.locator('.bot-execution-reasoning pre')).toHaveText('先阅读工作区里的资料，再根据实际内容整理要点。');
+    await expect(bubble.locator('.bot-execution-round-title')).toHaveText('第 1 步');
     await expect(page.locator('.bot-chat-tasks,.bot-chat-header .bot-context-toggle')).toHaveCount(0);
     await expect(page.locator('.bot-chat-context')).toBeVisible();
     await expect(bubble.locator('.is-sticker img')).toBeVisible();
@@ -67,8 +75,13 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     await expect(bubble.locator('.bot-message-text strong')).toHaveText('资料已经整理好了。');
     await capture('native-chat-completed.png');
     await bubble.locator('.bot-execution-toggle').click(); await expect(bubble.locator('.bot-execution-contents')).toBeVisible();
-    await bubble.getByText('内容', { exact: true }).click(); await expect(bubble.locator('pre')).toContainText('读取：项目说明.md');
+    await bubble.locator('.bot-execution-reasoning summary').click();
+    await bubble.locator('.bot-execution-tool summary').click(); await expect(bubble.locator('.bot-execution-tool pre')).toContainText('读取：项目说明.md');
     await capture('native-chat-details.png');
+    await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(1200,850));
+    expect(await bubble.locator('.bot-execution').evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
+    await capture('native-process-narrow.png');
+    await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(1760,1000));
     await page.getByRole('button', { name: '收起聊天信息', exact: true }).click();
     await expect(page.getByRole('button', { name: '展开聊天信息', exact: true })).toHaveCount(1);
     await page.getByRole('button', { name: '展开聊天信息', exact: true }).click(); await expect(page.locator('.bot-chat-context')).toBeVisible();

@@ -10,9 +10,9 @@ let root: Root | undefined, host: HTMLDivElement;
 const message: BotMessage = { id: 'reply', eventId: 'event', conversationId: 'room', senderId: 'fish', senderName: '大肥鱼', status: 'running', content: '', sequence: 2, createdAt: '2026-11-09T06:00:00Z' };
 const execution: BotExecution = { sessionId: 'fresh-dsh-session', status: 'running', steps: [{ id: '1', type: 'tool_call', summary: '正在读取资料', toolName: 'read_file', text: '原始工具调用内容', at: message.createdAt }] };
 afterEach(async () => { await act(() => root?.unmount()); root = undefined; host?.remove(); });
-async function render(item: BotMessage, answer = vi.fn(async () => ({ ok: true }))) {
+async function render(item: BotMessage, answer = vi.fn(async () => ({ ok: true })),proceed?:(requestId:string)=>Promise<{ok:boolean;error?:string}>) {
   if (!root) { host = document.createElement('div'); document.body.append(host); root = createRoot(host); }
-  await act(() => root!.render(<BotMessageBody message={item} streamedText="流式正文" statusText="正在回复" locale="zh-CN" onAnswer={answer} />));
+  await act(() => root!.render(<BotMessageBody message={item} streamedText="流式正文" statusText="正在回复" locale="zh-CN" onAnswer={answer} onContinue={proceed} />));
   return answer;
 }
 it('shows native live stages inside a pending bubble and collapses automatically on completion while preserving the final body', async () => {
@@ -33,13 +33,33 @@ it('shows native live stages inside a pending bubble and collapses automatically
   expect(host.querySelector<HTMLElement>('.bot-execution-contents')?.hidden).toBe(false);
   expect(host.querySelector('.bot-execution-contents')?.textContent).toContain('原始工具调用内容');
 });
+it('offers explicit native continuation and retries the same command without duplicating an accepted continuation',async()=>{
+  let ok=false;const proceed=vi.fn(async()=>({ok,error:ok?undefined:'暂时断开'}));
+  await render({...message,status:'failed',execution:{...execution,status:'failed',continuation:{checkpoint:77}}},undefined,proceed);
+  expect(host.querySelector('.bot-execution-status')?.textContent).toBe('等待继续');
+  const button=host.querySelector<HTMLButtonElement>('.bot-execution-continuation button')!;
+  await act(()=>button.click());expect(host.querySelector('[role=alert]')?.textContent).toBe('暂时断开');
+  ok=true;await act(()=>button.click());expect(proceed).toHaveBeenCalledTimes(2);expect(proceed.mock.calls[0]).toEqual(proceed.mock.calls[1]);expect(button.disabled).toBe(true);
+});
 it('keeps each reply session and its collapsed state separate from other messages', async () => {
   await render({ ...message, execution });
   await act(() => host.querySelector<HTMLButtonElement>('.bot-execution-toggle')!.click());
   await render({ ...message, id: 'new-reply', execution: { ...execution, sessionId: 'other-dsh-session' } });
   expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('true');
-  expect(host.querySelector('.bot-execution-session')?.textContent).toContain('other-dsh-session');
-  expect(host.querySelector('.bot-execution-session')?.textContent).not.toContain('fresh-dsh-session');
+  expect(host.querySelector('.bot-execution')?.getAttribute('data-native-session')).toBe('other-dsh-session');
+  expect(host.querySelector('.bot-execution-contents')?.textContent).not.toContain('fresh-dsh-session');
+});
+it('shows one coherent thinking section per native loop step, including legacy saved token fragments',async()=>{
+  const at=message.createdAt;
+  const steps:BotExecution['steps']=[{id:'start',type:'status',summary:'开始处理任务',at},
+    {id:'loop',type:'status',summary:'开始第 1 步处理',at},
+    ...['用户','让我','自我介绍'].map((text,index)=>({id:'reason-'+index,type:'reasoning',text,at}))];
+  await render({...message,execution:{...execution,steps}});
+  expect(host.querySelectorAll('[data-type=reasoning]')).toHaveLength(1);
+  expect(host.querySelector('.bot-execution-reasoning pre')?.textContent).toBe('用户让我自我介绍');
+  expect(host.querySelector('.bot-execution-reasoning')?.hasAttribute('open')).toBe(true);
+  expect(host.querySelector('.bot-execution-round-title')?.textContent).toBe('第 1 步');
+  expect(host.querySelector('.bot-execution-contents')?.textContent).not.toContain('开始处理任务');
 });
 it('answers the exact DSH question, preserves failed input for retry, and prevents duplicate accepted answers', async () => {
   let ok = false;

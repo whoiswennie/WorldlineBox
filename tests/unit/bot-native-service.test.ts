@@ -2,8 +2,9 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import { BotService } from '../../src/main/companion-bot/service';
-import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
+import { BotDshBrain, BotDshOutputLimitError, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { botRequestSchema } from '../../src/shared/companion-bot';
@@ -17,6 +18,7 @@ class Memory extends BotMemoryService {
     return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'native', evidence: '已核验的VCP证据', metadata: {}, events: [], status: 'ready', omittedChars: 0 };
   }
   override async finishTurn() { return { recorded: true }; }
+  override async resumePrepared(input:Parameters<BotMemoryService['resumePrepared']>[0]):Promise<BotMemoryPrepared>{return {requestId:input.requestId,scope:input.scope,messages:[],inputHash:'native',evidence:'已核验的VCP证据',metadata:{},events:[],status:'ready',omittedChars:0};}
 }
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
@@ -94,7 +96,80 @@ it('keeps a native question pending and resumes that exact session after the use
   await until(() => f.service.store.getMessage(sent.replyMessageIds![0]!)?.status === 'sent');
   expect(f.brain.calls).toHaveLength(1); expect(f.service.store.getMessage(sent.replyMessageIds![0]!)!.content).toBe('用户选择：蓝色');
 });
+it('persists native reasoning as complete loop phases rather than one row per streamed delta',async()=>{
+  const f=await fixture();
+  f.brain.execute=async input=>{
+    let sequence=0;
+    const emit=(patch:Partial<Parameters<NonNullable<BotDshRun['onEvent']>>[0]>)=>input.onEvent?.({type:'reasoning',sequence:++sequence,receivedAt:new Date().toISOString(),nativeSessionId:'root',nativeTurn:1,nativeStep:1,...patch});
+    emit({type:'status',stage:'step_start',summary:'开始第 1 步处理'});
+    for(const text of ['用户','让我','自我介绍'])emit({text,streamId:'attempt-a'});
+    emit({text:'用户让我自我介绍。',streamId:'attempt-a',textMode:'snapshot',outputState:'committed'});
+    emit({type:'status',stage:'step_start',nativeStep:2,summary:'开始第 2 步处理'});
+    emit({nativeStep:2,text:'下一步思考',streamId:'attempt-b'});
+    return {text:'最终正文'};
+  };
+  const sent=await f.send('介绍自己');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='sent');
+  const snapshot=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!;
+  const reply=snapshot.messages.find(message=>message.id===sent.replyMessageIds![0])!;
+  expect(reply.execution!.steps.filter(item=>item.type==='reasoning').map(item=>item.text)).toEqual(['用户让我自我介绍。','下一步思考']);
+  expect(reply.content).toBe('最终正文');
+});
 it('removes application task APIs and custom file delivery tools', () => {
   expect(botRequestSchema.safeParse({ type: 'task.list', conversationId: 'room' }).success).toBe(false);
   for (const name of ['dsh_task', 'dsh_plan', 'chat_send_file', 'worker_chat_send_file']) expect(BOT_TOOLS.some(tool => tool.name === name)).toBe(false);
+});
+it('continues a budget-limited reply in the exact native session and finishes its VCP response only once',async()=>{
+  const f=await fixture();
+  f.brain.execute=async input=>{
+    if(input.continueAfterSeq!==77)throw new BotDshOutputLimitError(input.eventId,BotDshBrain.sessionId(input.laneId),77,'已写入一半',true);
+    return {text:'续跑后的最终正文'};
+  };
+  const sent=await f.send('开发项目');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='failed');
+  const messageId=sent.replyMessageIds![0]!,before=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!.messages.find(item=>item.id===messageId)!;
+  expect(before.execution?.continuation).toEqual({checkpoint:77});expect(before.content).toBe('已写入一半');
+  expect(f.service.store.taskTransaction(sql=>sql.prepare("SELECT COUNT(*) n FROM bot_memory_jobs WHERE kind='response'").get())).toEqual({n:0});
+  const request={type:'execution.continue' as const,messageId,requestId:'once-only'};
+  await f.service.handle(request);await f.service.handle(request);
+  await until(()=>f.service.store.getMessage(messageId)?.status==='sent');
+  expect(f.brain.calls).toHaveLength(2);expect(f.brain.calls[1]!.laneId).toBe(f.brain.calls[0]!.laneId);expect(f.brain.calls[1]!.eventId).toBe(f.brain.calls[0]!.eventId);
+  expect(f.service.store.getMessage(messageId)!.content).toBe('续跑后的最终正文');
+  expect(f.service.store.taskTransaction(sql=>sql.prepare("SELECT COUNT(*) n FROM bot_memory_jobs WHERE kind='response'").get())).toEqual({n:1});
+});
+it('reuses historical effect receipts whose fingerprints included the old embedded native identity',async()=>{
+  const f=await fixture();f.brain.execute=async input=>{
+    const args={query:'GPT',nativeSessionId:'native-root',nativeCallId:'raw-call'},callId='legacy-call';
+    const fingerprint=createHash('sha256').update(JSON.stringify(['companion_directory',args])).digest('hex');
+    f.service.store.setMetadata(`effect:${input.eventId}:${callId}`,JSON.stringify({fingerprint,result:{historicalReceipt:true}}));
+    expect(await callback(input,'companion_directory',args,callId)).toEqual({historicalReceipt:true});return {text:'done'};
+  };
+  const sent=await f.send('继续历史调用');await until(()=>f.service.store.getMessage(sent.replyMessageIds![0]!)?.status==='sent');
+});
+it('creates separate explicitly named project groups with the same companions, preserving independent memory audiences',async()=>{
+  const f=await fixture();
+  const create=(title:string)=>f.service.handle({type:'conversation.create',kind:'group',title,memberIds:['builtin-dafeiyu','claude']});
+  const a=await create('项目甲'),b=await create('项目乙');expect(a.conversationId).not.toBe(b.conversationId);
+  const first=f.service.store.getConversation(a.conversationId!)!,second=f.service.store.getConversation(b.conversationId!)!;
+  expect(first.title).toBe('项目甲');expect(second.title).toBe('项目乙');expect(first.securityDomainId).not.toBe(second.securityDomainId);
+});
+it('runs an explicitly addressed group teammate while the coordinator is still waiting, without starting ordinary group replies',async()=>{
+  const f=await fixture();
+  const created=await f.service.handle({type:'conversation.create',kind:'group',title:'并行协作',memberIds:['builtin-dafeiyu','claude','gpt']});
+  let release=()=>undefined as void;
+  const teammateFinished=new Promise<void>(resolve=>{release=resolve;});
+  let coordinatorWaiting=false,teammateRan=false;
+  f.brain.execute=async input=>{
+    const companionId=f.service.store.getEvent(input.eventId)!.companionId;
+    if(companionId==='builtin-dafeiyu'){
+      coordinatorWaiting=true;
+      await callback(input,'message_peer',{companionId:'claude',content:'完成独立实现后回复'});
+      await teammateFinished;coordinatorWaiting=false;return {text:'协调完成'};
+    }
+    if(companionId==='claude'){
+      expect(coordinatorWaiting).toBe(true);teammateRan=true;release();return {text:'实现完成'};
+    }
+    throw Error('Ordinary unaddressed group work must stay serialized');
+  };
+  const sent=f.service.store.enqueue({conversationId:created.conversationId!,senderId:'user',content:'请大肥鱼协调开发',recipientIds:['builtin-dafeiyu'],sourceMessageId:'collaborate'});
+  try{await until(()=>f.service.store.getMessage(sent.events[0]!.replyMessageId)?.status==='sent');expect(teammateRan).toBe(true);}
+  finally{release();}
 });

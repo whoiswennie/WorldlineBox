@@ -156,6 +156,7 @@ async function eraseMetadata() {
     const ids = rows.filter(row => {
       if (metadataSetting(row.key)) return false;
       if (job.all || row.key.includes(job.companionId)) return true;
+      if (row.key.startsWith('native-continue-command:') && match.get(row.value)) return true;
       const tokens = [...(row.key.match(/(?:event-|lane-|task-|reply-)?[a-f0-9]{64}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}/g) || [])];
       return tokens.some(token => match.get(token) || match.get(token.replace(/^(event-|lane-|task-|reply-)/,'')));
     });

@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { botModelsMetadataUrl, resolveBotModelLimits } from '../../src/main/companion-bot/model-limits';
+import { botModelsMetadataUrl, resolveBotModelLimits, resolveBotExecutionModelLimits } from '../../src/main/companion-bot/model-limits';
 import { fitsNativeModelEnvelope } from '../../src/main/companion-bot/native-model-budget';
 import { DEFAULT_MODEL_CONTEXT_WINDOW } from '../../src/shared/model-budget';
 import type { BotDshModel } from '../../src/main/companion-bot/dsh-brain';
 
 const deepseek = { model: 'deepseek-flash', baseUrl: 'https://api.deepseek.com/v1' };
+it('gives native file/tool generation a bounded execution budget while preserving explicit and discovered output caps',()=>{
+  expect(resolveBotExecutionModelLimits(deepseek).maxTokens).toBe(16384);
+  expect(resolveBotExecutionModelLimits({...deepseek,maxTokens:512}).maxTokens).toBe(512);
+  expect(resolveBotExecutionModelLimits(deepseek,{id:deepseek.model,max_output_tokens:2048}).maxTokens).toBe(2048);
+  expect(resolveBotExecutionModelLimits({...deepseek,contextWindow:8192}).maxTokens).toBe(2048);
+});
 describe('model-specific context provenance and output bounds', () => {
   it('uses the documented official DeepSeek window and keeps ordinary output at 4096', () => {
     expect(resolveBotModelLimits(deepseek)).toMatchObject({ window: 1048576, maxTokens: 4096, maxOutputTokens: 393216, source: 'official-default',

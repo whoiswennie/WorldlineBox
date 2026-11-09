@@ -79,6 +79,18 @@ it('keeps exact user-edited prompt bytes and nicknames while updating restore ba
   expect(store.getPersonaTemplate('gpt', 'default')).toMatchObject({ name: '我的人格名字', prompt: exact, modified: true });
   expect(store.restorePersonaTemplates('gpt', 'default')).toMatchObject({ name: '默认人格', prompt: builtin.persona, modified: false });
 });
+it('upgrades the untouched affectionate preset and active prompt without changing its selection or custom variants',()=>{
+  const id=DEFAULT_BOT_COMPANION_ID,preset='dafeiyu-daughter-v2',old='旧版群聊人格：爸爸叫冰糖。';
+  store.activatePersonaTemplate(id,preset);
+  store.taskTransaction(sql=>{
+    sql.prepare('UPDATE bot_persona_templates SET name=?,original_name=?,prompt=?,original_prompt=? WHERE companion_id=? AND id=?').run('小女儿大肥鱼 v2','小女儿大肥鱼 v2',old,old,id,preset);
+    sql.prepare('UPDATE bot_companions SET persona=? WHERE id=?').run(old,id);
+  });
+  const filename=store.filename;store.close();store=new BotStore(filename);
+  const expected=builtinBotPersonaTemplates(id).find(item=>item.id===preset)!;
+  expect(store.getCompanion(id)).toMatchObject({activePersonaId:preset,persona:expected.prompt});
+  expect(store.getPersonaTemplate(id,preset)).toMatchObject({name:'大肥鱼 · 傲娇陪伴',prompt:expected.prompt,modified:false});
+});
 
 it('updates an inactive default without replacing an active custom template or reviving a deleted built-in', () => {
   const id = DEFAULT_BOT_COMPANION_ID, deleted = builtinBotPersonaTemplates(id)[1]!, custom = store.savePersonaTemplate(id, { name: '我的日常', prompt: '保留我选中的自建模板。', activate: true });

@@ -40,7 +40,10 @@ async function fixture() {
   return {root,a,b,group,get cleaner(){return cleaner;},create};
 }
 it('clears the selected companion and shared room history and VCP stores, retaining other private history, personas and DSH files',async()=>{
-  const f=await fixture(), request=await f.cleaner.begin('alice','single');
+  const f=await fixture(), before=new BotStore(path.join(f.root,'bot.sqlite'));
+  const event=before.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string};
+  before.setMetadata('native-continue-command:opaque-request',event.id);before.setMetadata('native-continue-command:other-request','unrelated-event');before.close();
+  const request=await f.cleaner.begin('alice','single');
   expect((await f.cleaner.begin('alice','single')).id).toBe(request.id);
   await until(async()=> (await f.cleaner.status('alice'))?.status==='completed');
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
@@ -48,6 +51,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
     expect(store.messagesPage(f.a.id).items).toEqual([]); expect(store.messagesPage(f.group.id).items).toEqual([]);
     expect(store.messagesPage(f.b.id).items.some(message=>message.content.startsWith('OLD_HISTORY_'))).toBe(true);
     expect(store.getCompanion('alice')?.persona).toBe('PRIVATE_PERSONA_alice');
+    expect(store.getMetadata('native-continue-command:opaque-request')).toBeUndefined();expect(store.getMetadata('native-continue-command:other-request')).toBe('unrelated-event');
     const scope={companionId:'alice',conversationId:f.a.id,securityDomainId:f.a.securityDomainId};
     expect(new BotMaintenanceStore(store).settings(scope).minNotes).toBe(24);
     expect(store.taskTransaction(sql=>sql.prepare('SELECT dirty,planned FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner(scope)))).toEqual({dirty:0,planned:0});
