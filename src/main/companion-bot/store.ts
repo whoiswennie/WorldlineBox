@@ -97,7 +97,7 @@ export class BotStore {
     try { this.activityBudget = new BotActivityBudget(this, options.activityBudget); } catch (error) { this.db.close(); throw error; }
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('busy_timeout = 5000');
     const version = Number(this.db.pragma('user_version', { simple: true }));
-    if (version > 19) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
+    if (version > 20) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bot_companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,kind TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,direct_key TEXT UNIQUE);
@@ -109,6 +109,14 @@ export class BotStore {
       CREATE TABLE IF NOT EXISTS bot_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,lane_id TEXT NOT NULL REFERENCES bot_lanes(id),conversation_id TEXT NOT NULL,companion_id TEXT NOT NULL,source TEXT NOT NULL,source_instance_id TEXT NOT NULL,source_message_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,sender_name TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,acl_revision INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,payload_json TEXT NOT NULL,correlation_id TEXT NOT NULL,causation_id TEXT,source_record_id TEXT NOT NULL,reply_message_id TEXT NOT NULL,status TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,occurred_at TEXT NOT NULL,received_at TEXT NOT NULL,lease_token TEXT,lease_until INTEGER,available_at INTEGER NOT NULL DEFAULT 0,dsh_event_id TEXT,error TEXT);
       CREATE INDEX IF NOT EXISTS bot_inbox_claim ON bot_inbox(status,available_at,sequence);
       CREATE INDEX IF NOT EXISTS bot_inbox_lane ON bot_inbox(lane_id,status,sequence);
+      CREATE TABLE IF NOT EXISTS bot_native_topics(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),acl_revision INTEGER NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS bot_native_topics_page ON bot_native_topics(conversation_id,updated_at DESC,id DESC);
+      CREATE TABLE IF NOT EXISTS bot_topic_events(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id) ON DELETE CASCADE,conversation_id TEXT NOT NULL,topic_id TEXT NOT NULL REFERENCES bot_native_topics(id));
+      CREATE INDEX IF NOT EXISTS bot_topic_events_topic ON bot_topic_events(topic_id,event_id);
+      CREATE TABLE IF NOT EXISTS bot_topic_bindings(topic_id TEXT NOT NULL REFERENCES bot_native_topics(id),conversation_id TEXT NOT NULL,companion_id TEXT NOT NULL,native_lane_id TEXT NOT NULL,lane_epoch INTEGER NOT NULL,PRIMARY KEY(topic_id,companion_id));
+      CREATE UNIQUE INDEX IF NOT EXISTS bot_topic_bindings_native ON bot_topic_bindings(native_lane_id);
+      CREATE TABLE IF NOT EXISTS bot_guidance(message_id TEXT NOT NULL,event_id TEXT NOT NULL,conversation_id TEXT NOT NULL,text TEXT NOT NULL,status TEXT NOT NULL,error TEXT,PRIMARY KEY(message_id,event_id));
+      CREATE INDEX IF NOT EXISTS bot_guidance_event ON bot_guidance(event_id,status,message_id);
       CREATE INDEX IF NOT EXISTS bot_inbox_conversation_status ON bot_inbox(conversation_id,status);
       CREATE INDEX IF NOT EXISTS bot_inbox_conversation_correlation ON bot_inbox(conversation_id,correlation_id,status);
       CREATE TABLE IF NOT EXISTS bot_outbox(id TEXT PRIMARY KEY,event_id TEXT NOT NULL,conversation_id TEXT NOT NULL,message_id TEXT NOT NULL REFERENCES bot_messages(id),status TEXT NOT NULL DEFAULT 'pending',created_at TEXT NOT NULL,delivered_at TEXT);
@@ -306,10 +314,15 @@ export class BotStore {
         this.db.pragma('user_version = 19');
       }).immediate(); } catch (error) { this.db.close(); throw error; }
     }
-
+    if (version < 20) this.db.pragma('user_version = 20');
   }
 
   close(): void { this.db.close(); }
+  nativeLaneCompanion(nativeLaneId:string):string|undefined{
+    if(nativeLaneId.startsWith('turn-'))return this.getEvent(nativeLaneId.slice(5))?.companionId;
+    const binding=this.db.prepare('SELECT companion_id FROM bot_topic_bindings WHERE native_lane_id=?').get(nativeLaneId) as {companion_id:string}|undefined;
+    return binding?.companion_id??this.getLane(nativeLaneId)?.companionId;
+  }
   /** Shared SQL transaction; callbacks must be synchronous and perform no native/network I/O. */
   taskTransaction<T>(operation: (sql: BotTaskSql) => T): T { return this.db.transaction(() => operation(this.db)).immediate(); }
   private bindMessageSources(messageId: string, sourceIds: readonly string[]): void {
@@ -1248,7 +1261,8 @@ export class BotStore {
     return this.db.prepare(`SELECT a.value AS ref_json,mg.grant_id,MAX(m.sequence) AS latest FROM bot_messages m,json_each(m.attachments_json) a
       JOIN bot_message_media_grants mg ON mg.message_id=m.id AND mg.media_id=json_extract(a.value,'$.id')
       WHERE m.conversation_id=? AND m.status='sent' AND m.attachments_json<>'[]'
-      AND (m.sequence<=? OR EXISTS(SELECT 1 FROM bot_publications own WHERE own.message_id=m.id AND own.event_id=? AND m.sender_id=?))
+      AND (m.sequence<=? OR EXISTS(SELECT 1 FROM bot_publications own WHERE own.message_id=m.id AND own.event_id=? AND m.sender_id=?)
+        OR EXISTS(SELECT 1 FROM bot_guidance guidance WHERE guidance.event_id=? AND guidance.message_id=m.id AND guidance.status IN ('pending','accepted')))
       AND ${companionMessageVisibilitySql}
       ${ids ? `AND json_extract(a.value,'$.id') IN(${ids.map(() => '?').join(',')})` : ''}
       AND (?='' OR json_extract(a.value,'$.name') LIKE ? ESCAPE '\\')
@@ -1258,7 +1272,7 @@ export class BotStore {
         WHERE i.companion_id=? AND (i.source_record_id=m.id OR i.reply_message_id=m.id))
       AND NOT EXISTS(SELECT 1 FROM bot_media_grant_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.grant_id=mg.grant_id)
       AND NOT EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.message_id=m.id)
-      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, publishingEvent?.id??'',scope.companionId,
+      GROUP BY json_extract(a.value,'$.id') ORDER BY latest DESC ${options.all ? '' : 'LIMIT 80'}`).all(scope.conversationId, options.throughSourceSequence ?? Number.MAX_SAFE_INTEGER, publishingEvent?.id??'',scope.companionId,publishingEvent?.id??'',
         scope.companionId, scope.companionId, scope.companionId, ...(ids ?? []), query, `%${query}%`, key, key, key, scope.companionId, key, key)
       .map(raw => ({ ref: JSON.parse(String(asRow(raw).ref_json)) as BotMediaRef, grantId: String(asRow(raw).grant_id) }));
   }

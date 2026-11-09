@@ -59,8 +59,11 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     await seed(running, '', 'running'); await page.reload(); await open();
     const bubble = page.locator('[data-bot-message="native-ui-reply"]');
     expect(await bubble.locator('.bot-message-bubble').evaluate(element=>element.clientWidth)).toBeGreaterThanOrEqual(378);
-    await expect(bubble.locator('.bot-execution-toggle')).toHaveAttribute('aria-expanded', 'true');
-    await expect(bubble.locator('.bot-execution-contents')).toContainText('read_file');
+    await expect(bubble.locator('.bot-execution-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await expect(bubble.locator('.bot-execution-contents')).toBeHidden();
+    await capture('native-chat-running-compact.png');
+    await bubble.locator('.bot-execution-toggle').click();
+    await bubble.locator('.bot-execution-round>summary').click();
     await expect(bubble.locator('[data-type="reasoning"]')).toHaveCount(1);
     await expect(bubble.locator('.bot-execution-reasoning pre')).toHaveText('先阅读工作区里的资料，再根据实际内容整理要点。');
     await expect(bubble.locator('.bot-execution-round-title')).toHaveText('第 1 步');
@@ -75,6 +78,7 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     await expect(bubble.locator('.bot-message-text strong')).toHaveText('资料已经整理好了。');
     await capture('native-chat-completed.png');
     await bubble.locator('.bot-execution-toggle').click(); await expect(bubble.locator('.bot-execution-contents')).toBeVisible();
+    await bubble.locator('.bot-execution-round>summary').click();
     await bubble.locator('.bot-execution-reasoning summary').click();
     await bubble.locator('.bot-execution-tool summary').click(); await expect(bubble.locator('.bot-execution-tool pre')).toContainText('读取：项目说明.md');
     await capture('native-chat-details.png');

@@ -74,7 +74,7 @@ import {
   setApplicationMenuCommandEnabled,
   setApplicationMenuCommandLabel,
 } from "./application-menu";
-import { applyDevAppIcon, appIconImage, withAppWindowIcon } from "./app-icon";
+import { applyDevAppIcon, applyWindowsTaskbarIcon, appIconImage, withAppWindowIcon } from "./app-icon";
 import { mcpFullAccessConfirmationCopy } from "./mcp-full-access-confirmation-copy";
 import { ArtifactPathCache } from "./artifact-path-cache";
 import { SourcePathCache, type SourcePathResolution } from "./source-path-cache";
@@ -5140,8 +5140,7 @@ async function startApplication(): Promise<void> {
         if (!launcher) throw new DshHostUnavailableError('configuration', 'DSH 启动器尚未就绪，请先配置并启动共享执行实例。');
         const isMemory = nativeLaneId?.startsWith('memory-') || nativeLaneId?.startsWith('maintenance-');
         const selected = isMemory ? await launcher.resolveBotInstance() : await selectBotWorkerInstance(launcher, botService?.store, nativeLaneId, id);
-        const event = nativeLaneId?.startsWith('turn-') ? botService?.store.getEvent(nativeLaneId.slice(5)) : undefined;
-        const ownerId = event?.companionId;
+        const ownerId = nativeLaneId ? botService?.store.nativeLaneCompanion(nativeLaneId) : undefined;
         if (ownerId && botService?.store.getCompanion(ownerId)?.enabled === false && !botService.isCompanionStopping(ownerId)) throw new Error('伙伴已关闭。');
         if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), selected.id);
         const host = await launcher.botHost(selected.id, signal, options);
@@ -8060,6 +8059,7 @@ if (!hasSingleInstanceLock) {
   app.quit();
 } else {
   app.on("browser-window-created", (_event, window) => {
+    applyWindowsTaskbarIcon(window);
     suppressWindowDuringUpdateHandoff(window);
   });
 

@@ -302,11 +302,31 @@ export class BotDshBrain {
     } finally { if (confirmed && this.pendingStops.get(sessionId) === pending) this.pendingStops.delete(sessionId); }
     } finally { release?.(); }
   }
-  async send(laneId: string, input: { messageId: string; text: string; mode: 'steer' | 'queue' }): Promise<void> {
+  async send(laneId: string, input: { eventId?: string; cwd?: string; messageId: string; text: string; mode: 'steer' | 'queue' }): Promise<void> {
     const sessionId = BotDshBrain.sessionId(laneId), active = this.active.get(sessionId);
-    if (!active) throw new Error('The native task is not attached or running.');
-    const release = active.acquireUse();
-    try { await active.client.request(`/bot/lanes/${sessionId}/input`, { ...input, eventId: active.eventId }); } finally { release(); }
+    if (active && input.eventId && active.eventId !== input.eventId) throw Error('当前话题已进入另一轮任务，不能把引导发送给另一轮。');
+    const send=async(client:NativeHostClient)=>{
+      const result=await client.request<{accepted:boolean}>(`/bot/lanes/${sessionId}/input`,{...input,eventId:input.eventId??active?.eventId});
+      if(!result.accepted)throw Object.assign(Error('原任务已经结束，引导未投递；消息仍保留等待处理。'),{code:'BOT_GUIDANCE_NOT_ACCEPTED'});
+    };
+    if(active){const release=active.acquireUse();try{await send(active.client);}finally{release();}}
+    else if(input.eventId)await this.withHost(undefined,undefined,laneId,async host=>{
+      if(input.cwd){const proof=await host.client.request<{accepted?:boolean}>('/bot/guidance/check',{...input,laneId,sessionId});
+        if(proof.accepted===true)return;if(proof.accepted===false)throw Object.assign(Error('原任务已结束，确认引导未投递。'),{code:'BOT_GUIDANCE_NOT_ACCEPTED'});}
+      await send(host.client);
+    });
+    else throw Error('原生任务尚未连接。');
+  }
+  async compact(input:Omit<BotDshRun,'prompt'|'onEvent'>,requestId:string):Promise<boolean>{
+    const sessionId=BotDshBrain.sessionId(input.laneId);
+    if(this.active.has(sessionId)||this.openingLanes.has(sessionId))throw new BotDshLaneBusyError('请等待当前会话空闲后压缩。');
+    this.openingLanes.add(sessionId);
+    try{return await this.withHost(input.instanceId,input.signal,input.laneId,async({client})=>{
+      await client.request('/bot/lanes',{...input,signal:undefined,sessionId},input.signal);
+      const result=await client.request<{compacted:boolean;error?:string}>(`/bot/lanes/${sessionId}/compact`,{eventId:input.eventId,requestId},input.signal,180000);
+      if(result.error)throw Object.assign(Error(result.error),{code:'BOT_COMPACTION_FAILED'});
+      return result.compacted;
+    });}finally{this.openingLanes.delete(sessionId);}
   }
   /** Release a completed encoder/worker from RAM while retaining its native
    * log and durable receipts. Never cancels an active task. */

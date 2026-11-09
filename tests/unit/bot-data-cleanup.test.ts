@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { BotStore } from '../../src/main/companion-bot/store';
+import { BotTopics } from '../../src/main/companion-bot/topics';
 import { BotDataCleanupService } from '../../src/main/companion-bot/data-cleanup';
 import { BotMaintenanceStore, maintenanceOwner } from '../../src/main/companion-bot/memory-maintenance-store';
 import BetterSqlite3 from 'better-sqlite3';
@@ -42,6 +43,8 @@ async function fixture() {
 it('clears the selected companion and shared room history and VCP stores, retaining other private history, personas and DSH files',async()=>{
   const f=await fixture(), before=new BotStore(path.join(f.root,'bot.sqlite'));
   const event=before.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string};
+  const topics=new BotTopics(before),topic=topics.create(f.a.id,'old-topic','旧话题');topics.bind([before.getEvent(event.id)!],topic);
+  before.taskTransaction(sql=>sql.prepare("INSERT INTO bot_guidance VALUES(?,?,?,?,'pending',NULL)").run('old-guidance',event.id,f.a.id,'OLD_GUIDANCE_DATA'));
   before.setMetadata('native-continue-command:opaque-request',event.id);before.setMetadata('native-continue-command:other-request','unrelated-event');before.close();
   const request=await f.cleaner.begin('alice','single');
   expect((await f.cleaner.begin('alice','single')).id).toBe(request.id);
@@ -49,6 +52,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
   try {
     expect(store.messagesPage(f.a.id).items).toEqual([]); expect(store.messagesPage(f.group.id).items).toEqual([]);
+    for(const table of ['bot_native_topics','bot_topic_bindings','bot_topic_events','bot_guidance'])expect(store.taskTransaction(sql=>sql.prepare(`SELECT count(*) AS count FROM ${table} WHERE conversation_id=?`).get(f.a.id))).toMatchObject({count:0});
     expect(store.messagesPage(f.b.id).items.some(message=>message.content.startsWith('OLD_HISTORY_'))).toBe(true);
     expect(store.getCompanion('alice')?.persona).toBe('PRIVATE_PERSONA_alice');
     expect(store.getMetadata('native-continue-command:opaque-request')).toBeUndefined();expect(store.getMetadata('native-continue-command:other-request')).toBe('unrelated-event');

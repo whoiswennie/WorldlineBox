@@ -120,7 +120,7 @@ Claude负责实现；完成后用message_peer给GPT转交检查任务，attachme
     await page.locator('.bot-composer textarea').fill(`@大肥鱼 请组织Claude和GPT协作完成附件中的库存看板项目。你负责协调和最终交付，先实际读取三份附件，再通过message_peer给Claude发送开发任务并附上这三份附件；Claude开发后再通过message_peer通知GPT独立测试；GPT测试后通过message_peer通知你核验和打包交付。共享项目目录是 ${project.replaceAll('\\','/')}，用户明确授权你们创建和修改这个目录。每次转交须带上必要需求、绝对目录和下一步职责。你不要代替Claude实现或代替GPT编造检查报告；最终使用原生present交付inventory-project.zip、README.md、qa-report.json。`);
     await capture('project-input-attachments');await page.locator('.bot-composer .bot-send').click();
     await stage('native-project-running');
-    await expect(page.locator('.bot-execution[data-status="running"] .bot-execution-round-title').first()).toBeVisible({timeout:180000});await capture('project-native-progress');
+    await expect(page.locator('.bot-execution[data-status="running"] .bot-execution-toggle').first()).toBeVisible({timeout:180000});await capture('project-native-progress');
     const continued=new Set<string>(),runningCaptures=new Set<string>();
     const projectDeadline=Date.now()+720000;let completed=false;
     while(Date.now()<projectDeadline){

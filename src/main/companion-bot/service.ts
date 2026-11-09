@@ -30,6 +30,7 @@ import { botMessageEvidence } from '../../shared/bot-message-content';
 import type { BotClaim, BotEvent, BotMemoryJobInput, BotAttachmentGrant } from './types';
 import { botHandoffFile } from './task-handoff';
 import { isGroupStop } from './group-attention';
+import { BotTopics, type BotGuidance } from './topics';
 
 export interface BotServiceOptions {
   root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel;
@@ -67,6 +68,8 @@ export class BotService {
   private readonly toolRuns = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
   private readonly questions = new Map<string, { eventId: string; resolve(value: unknown): void }>();
   private readonly nativeStops = new Map<string, Promise<void>>();
+  private readonly topics: BotTopics;
+  private readonly guidanceRuns = new Map<string, Promise<void>>();
   private readonly loadedTombstones = new Map<string, true>();
   private readonly sourceWithdrawalRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
@@ -85,6 +88,7 @@ export class BotService {
   private detail?: string;
   constructor(private readonly options: BotServiceOptions) {
     this.store = new BotStore(path.join(options.root, 'bot.sqlite'), { activityBudget: options.activityBudget });
+    this.topics = new BotTopics(this.store);
     this.world = new BotWorld(this.store);
     this.toolServer = new BotToolServer((call, signal) => this.tool(call, signal));
     this.memoryMaintenance = new BotMaintenanceRuntime({ store: this.store, root: options.root, brain: options.brain, memory: options.memory,
@@ -114,7 +118,8 @@ export class BotService {
   executionCapabilitiesChanged(): void { this.changed(); }
   workerInstanceStopped(instanceId: string): void {
     for (const event of this.store.taskTransaction(sql => sql.prepare("SELECT id FROM bot_inbox WHERE status IN ('running','queued')").all() as Array<{id:string}>)) {
-      if (this.store.getMetadata('native-host:turn-' + event.id) === instanceId) this.scheduler.cancel(event.id);
+      const current = this.store.getEvent(event.id)!;
+      if (this.store.getMetadata('native-host:' + this.topics.lane(current)) === instanceId) this.scheduler.cancel(event.id);
     }
   }
   private workspace(companionId: string): string { return path.join(this.options.root, 'workspaces', digest(companionId)); }
@@ -132,8 +137,10 @@ export class BotService {
       if (!event || !saved) { this.store.setMetadata('native-stop:' + eventId, ''); return; }
       try {
         const context = JSON.parse(saved) as { system: string };
-        await this.options.brain.cancelDurable({ laneId: 'turn-' + event.id, eventId: event.id,
+        const room = this.store.getConversation(event.conversationId)!;
+        await this.options.brain.cancelDurable({ laneId: this.topics.lane(event), eventId: event.id,
           cwd: this.workspace(event.companionId), system: context.system, model: this.options.model(),
+          audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
           callback: await this.toolServer.start(), tools: [], workerTools: BOT_TOOLS, role: 'worker', workerAccess: 'full',
           signal: this.maintenanceAbort.signal });
         if (!this.closed) this.store.setMetadata('native-stop:' + eventId, '');
@@ -159,9 +166,10 @@ export class BotService {
     return { companions, presence: this.store.companionPresence(companions, true), conversations: this.store.conversations(), conversationActivity: this.store.conversationActivity(),
       messages: page.items.map(message => {
         const execution = this.store.getMetadata('execution:' + message.id);
-        return { ...message, ...(execution ? { execution: JSON.parse(execution) as BotExecution } : {}),
+        return { ...message, ...(execution ? { execution: JSON.parse(execution) as BotExecution } : {}),topic:message.senderId!=='user'?this.topics.reference(message.eventId):undefined,
           ...(['queued','running'].includes(message.status) ? { progress: this.replyProgress.get(message.id) ?? { phase: 'queued' as const } } : {}) };
       }), tasks: [], hasMore: page.hasMore,
+      ...(conversationId && this.store.getConversation(conversationId)?.memberIds.includes('user') ? {chatRuntime:this.topics.runtime(conversationId)} : {}),
       runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: 'EmbeddingGemma 2 · 内置 768 维', activeLanes: this.scheduler.runningCount,
         ready: this.ready, detail: this.detail, dataRoot: this.options.root } };
   }
@@ -231,6 +239,24 @@ export class BotService {
       this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
     }
     switch (input.type) {
+      case 'topic.list': { const result=this.topics.list(input.conversationId,input.query,input.before);return {ok:true,topics:result.items,nextTopicCursor:result.next}; }
+      case 'topic.new': { const topic=this.topics.create(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
+      case 'topic.select': { const topic=this.topics.select(input.conversationId,input.topicId);this.changed(input.conversationId);return {ok:true,topic}; }
+      case 'topic.compact': {
+        const event=this.topics.topicEvent(input.topicId,input.conversationId,input.companionId);
+        if(this.topics.runtime(input.conversationId).running.length)throw Error('请等待当前任务完成后压缩话题；执行中的补充可使用引导。');
+        if(!this.options.brain.compact)throw Error('当前 DSH 连接不支持原生压缩。');
+        const saved=this.store.getMetadata('native-input:'+event.id);if(!saved)throw Error('话题的原生绑定资料不存在。');
+        const context=JSON.parse(saved) as {system:string},room=this.store.getConversation(event.conversationId)!;
+        let compacted:boolean;
+        try{compacted=await this.options.brain.compact({laneId:this.topics.lane(event),eventId:event.id,cwd:this.workspace(event.companionId),system:context.system,
+          model:this.options.model(),callback:await this.toolServer.start(),tools:[],workerTools:BOT_TOOLS,role:'worker',workerAccess:'full',
+          audience:{conversationId:room.id,kind:room.kind,allowedConversationIds:[room.id]}},input.requestId);}
+        catch(error){if((error as {code?:string})?.code==='BOT_COMPACTION_FAILED')return{ok:false,error:errorText(error),compactionSettled:true};throw error;}
+        this.changed(input.conversationId);return {ok:true,compacted};
+      }
+      case 'message.guide': { await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
+      case 'message.dequeue': this.topics.cancelQueued(input.conversationId,input.messageId);this.changed(input.conversationId);return {ok:true};
       case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before) };
       case 'history.search': return { ok: true, history: this.store.searchMessages(input.conversationId, input) };
       case 'companion.create': {
@@ -303,10 +329,20 @@ export class BotService {
         if (!this.store.getConversation(input.conversationId)?.memberIds.includes('user')) throw Error('聊天权限已变化，已停止发送。');
         if (attachments) await this.ensureConversationBindings(input.conversationId); // File I/O may outlive a group membership or binding change.
         if (input.type === 'message.send' && !this.store.ingressExists(input.conversationId, input.requestId)) for (const id of this.store.interruptGroup(input.conversationId, isGroupStop(input.content))) this.scheduler.cancel(id);
+        const running=input.type==='message.send'&&this.topics.runtime(input.conversationId).running.length>0;
+        const result = this.store.taskTransaction(()=>{
         const result = this.store.enqueue({ conversationId: input.conversationId, senderId: input.type === 'world.event' ? 'world' : 'user',
           source: input.type === 'world.event' ? 'world' : 'user', sourceMessageId: input.requestId, content: input.content,
+          payload:input.type==='message.send'?{topicId:input.topicId??null,newTopic:input.newTopic??false,delivery:input.delivery??'queue',userQueued:true}:undefined,
           attachments, kind: input.type === 'world.event' ? 'world_observation' : 'message' });
+        if(input.type==='message.send'&&!this.store.getMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId)){
+          const topic=input.topicId?this.topics.get(input.topicId,input.conversationId):(!input.newTopic&&!running?this.topics.current(input.conversationId):undefined)
+            ??this.topics.create(input.conversationId,input.requestId,input.content,!running);
+          this.topics.bind(result.events,topic);this.store.setMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId,topic.id);
+        }
+        return result;});
         if (input.type === 'message.send') for (const event of result.events) this.memoryMaintenance.userMessage(scopeFor(event), !/^(你好|谢谢|好的|嗯|hi|hello|thanks)[!！。 .]*$/iu.test(input.content.trim()));
+        if(input.type==='message.send'&&input.delivery==='steer'&&running)await this.guideQueued(input.conversationId,result.message.id);
         this.scheduler.wake(); this.changed(input.conversationId); return { ok: true, messageId: result.message.id, replyMessageIds: result.events.map(event => event.replyMessageId) };
       }
       case 'world.observe': { const world = this.world.observe(input); this.deliverWorldEvents(); return { ok: true, world }; }
@@ -524,10 +560,29 @@ export class BotService {
   private responseJob(event: BotEvent, prepared: BotMemoryPrepared, text: string, completed: boolean): BotMemoryJobInput {
     return { key: `response:${event.id}`, kind: 'response', payload: { scope: scopeFor(event), prepared, text, completed } };
   }
+  private async guideQueued(conversationId:string,messageId:string):Promise<void>{
+    const rows=this.store.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? AND source_record_id=?').all(conversationId,messageId)) as Array<{id:string}>;
+    const texts=new Map<string,string>();
+    for(const row of rows){const event=this.store.getEvent(row.id)!;texts.set(event.id,JSON.stringify({message:{id:messageId,senderId:'user',content:event.content},files:await this.verifiedAttachmentFiles(event)}));}
+    const commands=this.topics.reserveGuidance(conversationId,messageId,texts);
+    this.changed(conversationId);await Promise.all(commands.filter(command=>command.status!=='accepted').map(command=>this.flushGuidance(command)));
+  }
+  private flushGuidance(command:BotGuidance):Promise<void>{
+    const key=command.message_id+':'+command.event_id,prior=this.guidanceRuns.get(key);if(prior)return prior;
+    const operation=(async()=>{
+      const event=this.store.getEvent(command.event_id);if(!event)return;
+      try{
+        await this.options.brain.send(this.topics.lane(event),{eventId:event.id,cwd:this.workspace(event.companionId),messageId:command.message_id,text:command.text,mode:'steer'});
+        if(!this.closed)this.topics.guidanceResult(command);
+      }catch(error){if(!this.closed){if((error as {code?:string})?.code==='BOT_GUIDANCE_NOT_ACCEPTED'){this.topics.guidanceNotAccepted(command);this.scheduler.wake();}else this.topics.guidanceResult(command,errorText(error));}}
+      if(!this.closed)this.changed(command.conversation_id);
+    })().finally(()=>this.guidanceRuns.delete(key));this.guidanceRuns.set(key,operation);return operation;
+  }
   private async respond(claim: BotClaim, signal: AbortSignal): Promise<void> {
     const event = claim.event, companion = this.store.getCompanion(event.companionId);
     if (!companion || companion.enabled === false) { this.scheduler.cancel(event.id); return; }
-    const nativeLaneId = 'turn-' + event.id, cwd = this.workspace(companion.id);
+    let nativeLaneId = this.topics.lane(event);
+    const cwd = this.workspace(companion.id);
     let prepared: BotMemoryPrepared | undefined, text = '';
     let lastDraftAt = 0, firstTextRecorded = false;
     let artifactProjection = Promise.resolve();
@@ -547,12 +602,14 @@ export class BotService {
     const progress = (value: BotReplyProgress) => { if (!this.closed) { this.replyProgress.set(event.replyMessageId, value); this.changed(event.conversationId); } };
     const persistKey = 'native-input:' + event.id;
     try {
+      this.topics.started(event);nativeLaneId=this.topics.lane(event);
       await this.ensureConversationBindings(event.conversationId); signal.throwIfAborted();
       this.store.bindEventNativeEpoch(event.id, this.store.getLane(event.laneId)!.epoch);
       if (event.payload.groupAttention === true) this.store.promoteGroupReply(event.id, claim.leaseToken);
       await mkdir(cwd, { recursive: true });
       progress({ phase: 'recalling-memory' });
       await this.loadTombstones(scopeFor(event), event.id);
+      this.topics.assertCurrent(event);
       // Freeze VCP's source input independently of the chat's later publications.
       // A crash between VCP preparation and the marker can safely re-prepare the
       // exact original input; once marked, resume the authoritative VCP record.
@@ -614,6 +671,7 @@ export class BotService {
           }
         } });
       text = result.text;
+      await Promise.allSettled([...this.guidanceRuns].filter(([key])=>key.endsWith(':'+event.id)).map(([,operation])=>operation));
       if (result.artifacts?.length) projectArtifacts(result.artifacts);
       await artifactProjection; signal.throwIfAborted();
       this.updateExecution(event, { status: result.status, question: undefined, continuation: undefined });
@@ -622,7 +680,7 @@ export class BotService {
           { key: 'history-completed:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } },
           ...(result.status === 'succeeded' && ['user', 'companion', 'group', 'gateway'].includes(event.source) && this.store.getMetadata('skipCapture:' + event.id) !== 'true'
           ? [{ key: `capture:v${BOT_MEMORY_CAPTURE_POLICY}:` + event.id, kind: 'capture' as const, payload: { scope: scopeFor(event), sourceEventId: event.id, policyVersion: BOT_MEMORY_CAPTURE_POLICY,
-              messages: messages.filter(message => message.id === event.sourceMessageRecordId), answer: text, answerMessageId: event.replyMessageId,
+              messages: [...messages.filter(message => message.id === event.sourceMessageRecordId),...this.topics.guidanceMessages(event.id).flatMap(id=>{const message=this.store.getMessage(id);return message?[{id:message.id,role:'user' as const,content:botMessageEvidence(message),timestamp:Date.parse(message.createdAt),senderId:message.senderId,senderName:message.senderName}]:[];})], answer: text, answerMessageId: event.replyMessageId,
               completed: true, capturedAt: new Date().toISOString(), nativeDeliveries: result.artifacts ?? [] } }] : [])] });
       if (result.status === 'succeeded') { this.store.observeGroupReply(event.id); this.scheduler.wake(); }
       this.ready = true; this.detail = undefined;
@@ -650,7 +708,7 @@ export class BotService {
   }
   private async tool(call: BotToolCall, signal: AbortSignal): Promise<unknown> {
     const event = this.store.getEvent(call.eventId);
-    if (!event || `turn-${event.id}` !== call.laneId || event.status !== 'running') throw new Error('工具调用没有有效的运行事件。');
+    if (!event || this.topics.lane(event) !== call.laneId || event.status !== 'running') throw new Error('工具调用没有有效的运行事件。');
     const conversation = this.store.getConversation(event.conversationId);
     if (!conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)) throw new Error('会话权限已变化。');
     signal.throwIfAborted(); this.assertCurrentEvent(event);
@@ -916,6 +974,7 @@ export class BotService {
   private maintainSafely(): void { void this.maintain().catch(error => this.options.report?.(error)); }
   private async maintain(): Promise<void> {
     if (this.closed) return;
+    for(const command of this.topics.pendingGuidance())void this.flushGuidance(command);
     const stops = this.store.taskTransaction(sql => sql.prepare("SELECT value FROM bot_metadata WHERE key LIKE 'native-stop:%' AND value<>''").all() as Array<{ value: string }>);
     for (const row of stops) {
       if (this.nativeStops.size >= 2) break;

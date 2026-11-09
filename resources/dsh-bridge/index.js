@@ -150,6 +150,50 @@ export async function createBotProvider(ctx) {
 }
 
 const botReceiptPath = (record, eventId) => path.join(record.cwd, '.worldlinebox-brain', createHash('sha256').update(eventId).digest('hex') + '.json');
+/** Idempotent steering shares the native inbox/log admission semantics. A
+ * prepared receipt must be reconciled before a finished task can reject it. */
+export async function deliverBotGuidance(record,input,{read,write,flush,freezeMessage}){
+  const key=input.eventId+':guidance:'+input.messageId,prior=await read(key);
+  const fingerprint=createHash('sha256').update(input.text).digest('hex');
+  if(prior?.fingerprint&&prior.fingerprint!==fingerprint)throw Error('Task guidance ID has different content.');
+  if(prior?.mode&&prior.mode!==input.mode)throw Error('Task guidance ID has different delivery mode.');
+  if(prior?.status==='accepted')return {accepted:true};
+  const id='worldlinebox-bot:'+key;
+  const already=prior&&(record.agent.session.snapshotEvents().some(event=>event.type==='user/message'&&event.data.id===id)
+    ||[...record.agent.inbox.nextTurn,...record.agent.inbox.nextStep].some(message=>message.id===id));
+  if(!already){
+    if(record.bot.eventId!==input.eventId||record.status!=='running')return {accepted:false};
+    const message=freezeMessage({id,role:'user',content:[{type:'text',text:input.text}],source:{kind:'worldlinebox-bot-guidance',form:'relay',...(record.bot.audience?{worldlineboxAudience:record.bot.audience}:{})}});
+    await write({eventId:key,sessionId:record.id,status:'prepared',fingerprint,mode:input.mode,messageId:id});
+    if(input.mode==='steer')record.agent.steer(message);else record.agent.followup(message);
+    record.revision++;
+  }
+  await flush(record.agent.session);await write({eventId:key,sessionId:record.id,status:'accepted',fingerprint,mode:input.mode,messageId:id});
+  return {accepted:true};
+}
+/** The preset's /compact command owns its isolated native compaction service.
+ * Pair it with a stable command id so a lost HTTP response cannot compact twice. */
+export async function compactBotTopic(record,requestId,{read,write,flush,findCommand}){
+  const key='manual-compact:'+requestId,prior=await read(key);
+  if(prior?.status==='complete')return {compacted:prior.compacted,...(prior.error?{error:prior.error}:{})};
+  const commandId='cmd-worldlinebox-'+createHash('sha256').update(requestId).digest('hex').slice(0,32);
+  const events=record.agent.session.snapshotEvents(),done=events.findLast(event=>event.type==='command/done'&&event.data.commandId===commandId);
+  const save=async result=>{await flush(record.agent.session);await write({eventId:key,status:'complete',...result});return result;};
+  if(done)return save({compacted:done.data.kind==='success'&&done.data.sourceEventSeq!==undefined,...(done.data.kind==='error'?{error:done.data.text}:{} )});
+  const ended=events.findLast(event=>event.type==='compaction/end'&&event.data.sourceCommandId===commandId);
+  if(ended&&!ended.data.error){const summary=events.findLast(event=>event.type==='compaction/summary'&&event.data.sourceCommandId===commandId);
+    record.agent.session.append('command/done',{commandId,kind:'success',...(summary?{sourceEventSeq:summary.seq}:{})});return save({compacted:!!summary});}
+  if(record.status==='running'||record.admissions||record.agent.status!=='idle')throw Error('Compaction requires an idle Session.');
+  const command=findCommand(record.agent);if(!command)throw Error('The native /compact command is not enabled in this companion preset.');
+  if(events.some(event=>event.type==='compaction/start'&&event.data.sourceCommandId===commandId)&&!ended)throw Error('The previous native compaction is not settled; its durable lock is retained.');
+  await write({eventId:key,status:'prepared'});
+  if(!events.some(event=>event.type==='command/run'&&event.data.commandId===commandId))record.agent.session.append('command/run',{commandId,name:'compact',args:'',source:{kind:'user'}});
+  let result;
+  try{result=await command.handler({commandId,agent:record.agent,rawInput:'',attachments:[],signal:new AbortController().signal});}
+  catch(error){result={kind:'error',text:String(error.message??error)};}
+  record.agent.session.append('command/done',{commandId,kind:result.kind,...(result.text!==undefined?{text:result.text}:{}),...(result.kind==='success'&&result.sourceEventSeq!==undefined?{sourceEventSeq:result.sourceEventSeq}:{})});
+  return save({compacted:result.kind==='success'&&result.sourceEventSeq!==undefined,...(result.kind==='error'?{error:result.text}:{})});
+}
 async function botReadReceipt(record, eventId) {
   try { return JSON.parse(await readFile(botReceiptPath(record, eventId), 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -807,6 +851,18 @@ export async function apply(ctx) {
         json(response, { accepted: false, absent: true, sessionId: input.sessionId, eventId: input.eventId }); return;
         } finally { release(); if (botCancelChecks.get(input.sessionId) === checking) botCancelChecks.delete(input.sessionId); }
       }
+      if(request.method==='POST'&&url.pathname==='/bot/guidance/check'){
+        const input=await body(request);
+        if(typeof input.laneId!=='string'||input.laneId.length>600||input.sessionId!=='wlb-bot-'+createHash('sha256').update(input.laneId).digest('hex')
+          ||typeof input.cwd!=='string'||!path.isAbsolute(input.cwd)||typeof input.eventId!=='string'||!input.eventId.length||input.eventId.length>300
+          ||typeof input.messageId!=='string'||!input.messageId.length||input.messageId.length>300||typeof input.text!=='string'||input.text.length>maxContextChars)throw Error('Invalid guidance inspection.');
+        const receipt=await botReadReceipt(input,input.eventId+':guidance:'+input.messageId);
+        if(receipt?.fingerprint&&receipt.fingerprint!==createHash('sha256').update(input.text).digest('hex')||receipt?.sessionId&&receipt.sessionId!==input.sessionId)throw Error('Guidance receipt identity differs.');
+        if(receipt?.status==='accepted'){json(response,{accepted:true});return;}
+        const event=await botReadReceipt(input,input.eventId);
+        if(!receipt&&event?.status==='complete'&&event.result?.sessionId===input.sessionId){json(response,{accepted:false});return;}
+        json(response,{unknown:true});return;
+      }
       if (request.method === 'POST' && url.pathname === '/bot/lanes') {
         const input = await body(request);
         input.workerTools ??= [];
@@ -898,7 +954,7 @@ export async function apply(ctx) {
         json(response, { sessionId: record.id, cursor: record.next - 1,
           ...(record.workspace ? { workspace: { id: record.workspace.id, title: record.workspace.title, path: record.workspace.path, sessionIds: record.workspace.sessionIds } } : {}) }); return;
       }
-      const botMatch = /^\/bot\/lanes\/([A-Za-z0-9_-]+)\/(turn|cancel|input|archive)$/.exec(url.pathname);
+      const botMatch = /^\/bot\/lanes\/([A-Za-z0-9_-]+)\/(turn|cancel|input|archive|compact)$/.exec(url.pathname);
       if (request.method === 'POST' && botMatch) {
         if (botMatch[2] === 'turn') await botCancelChecks.get(botMatch[1]);
         const record = sessions.get(botMatch[1]), input = await body(request);
@@ -918,28 +974,16 @@ export async function apply(ctx) {
           json(response, { archived: true }); return;
         }
         if (!record?.bot || typeof input.eventId !== 'string' || !input.eventId.length || input.eventId.length > 300) throw new Error('Unknown companion lane event.');
+        if(botMatch[2]==='compact'){
+          if(typeof input.requestId!=='string'||!input.requestId.length||input.requestId.length>160)throw Error('Invalid compaction request.');
+          json(response,await compactBotTopic(record,input.requestId,{read:key=>botReadReceipt(record,key),write:value=>botWriteReceipt(record,value),flush:session=>ctx.sessions.flush(session),findCommand:agent=>agent.ctx.get('commands')?.find(agent,'compact')}));return;
+        }
         if (botMatch[2] === 'input') {
-          if (record.bot.eventId !== input.eventId || record.status !== 'running' || typeof input.messageId !== 'string'
+          if (typeof input.messageId !== 'string'
             || !input.messageId.length || input.messageId.length > 300 || typeof input.text !== 'string' || !input.text.trim()
-            || input.text.length > 16000 || !['queue', 'steer'].includes(input.mode)) throw new Error('Invalid task guidance.');
-          const key = input.eventId + ':guidance:' + input.messageId;
-          const prior = await botReadReceipt(record, key);
-          const fingerprint = createHash('sha256').update(input.text).digest('hex');
-          if (prior?.fingerprint && prior.fingerprint !== fingerprint) throw new Error('Task guidance ID has different content.');
-          if (prior?.status !== 'accepted') {
-            const { freezeMessage } = await import('@deepseek-ai/dsh-llm');
-            const message = freezeMessage({ id: 'worldlinebox-bot:' + key, role: 'user', content: [{ type: 'text', text: input.text }],
-              source: { kind: 'worldlinebox-bot-guidance', form: 'relay' } });
-            const already = prior && (record.agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.id === message.id)
-              || [...record.agent.inbox.nextTurn, ...record.agent.inbox.nextStep].some(value => value.id === message.id));
-            if (!already) {
-              await botWriteReceipt(record, { eventId: key, status: 'prepared', fingerprint, messageId: message.id });
-              if (input.mode === 'steer') record.agent.steer(message); else record.agent.followup(message);
-            }
-            record.revision++; await ctx.sessions.flush(record.agent.session);
-            await botWriteReceipt(record, { eventId: key, status: 'accepted', fingerprint, messageId: message.id });
-          }
-          json(response, { accepted: true }); return;
+            || input.text.length > maxContextChars || !['queue', 'steer'].includes(input.mode)) throw new Error('Invalid task guidance.');
+          const {freezeMessage}=await import('@deepseek-ai/dsh-llm');
+          json(response,await deliverBotGuidance(record,input,{read:key=>botReadReceipt(record,key),write:value=>botWriteReceipt(record,value),flush:session=>ctx.sessions.flush(session),freezeMessage}));return;
         }
         if (botMatch[2] === 'cancel') {
           const prior = await botReadReceipt(record, input.eventId);

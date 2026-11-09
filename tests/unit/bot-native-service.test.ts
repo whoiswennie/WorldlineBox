@@ -22,6 +22,7 @@ class Memory extends BotMemoryService {
 }
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
+  guidance:Array<{laneId:string;input:Parameters<BotDshBrain['send']>[1]}>=[];
   execute: (input: BotDshRun) => Promise<Partial<BotDshResult>> = async () => ({ text: '原生最终正文' });
   constructor() { super({ getHost: async () => { throw Error('Only native adapter boundary is mocked'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
@@ -31,6 +32,7 @@ class Brain extends BotDshBrain {
   }
   private session(input: BotDshRun) { return BotDshBrain.sessionId(input.laneId); }
   override async archive() {}
+  override async send(laneId:string,input:Parameters<BotDshBrain['send']>[1]){this.guidance.push({laneId,input});}
   override async close() {}
 }
 const cleanups: Array<() => Promise<void>> = [];
@@ -56,19 +58,41 @@ async function callback(input: BotDshRun, name: string, args: object, callId = '
   const result = await response.json() as { ok: boolean; result?: unknown; error?: string };
   if (!result.ok) throw Error(result.error); return result.result;
 }
-it('routes each message to a fresh DSH session in the same companion workspace without replaying chat history', async () => {
+it('routes a follow-up to the selected native DSH session without replaying the application transcript', async () => {
   const f = await fixture();
   const first = await f.send('第一轮的私有上下文');
   await until(() => f.service.store.getMessage(first.replyMessageIds![0]!)?.status === 'sent');
   const second = await f.send('第二轮');
   await until(() => f.service.store.getMessage(second.replyMessageIds![0]!)?.status === 'sent');
   expect(f.brain.calls).toHaveLength(2);
-  expect(f.brain.calls[0]!.laneId).not.toBe(f.brain.calls[1]!.laneId);
+  expect(f.brain.calls[0]!.laneId).toBe(f.brain.calls[1]!.laneId);
   expect(f.brain.calls[0]!.cwd).toBe(f.brain.calls[1]!.cwd);
   expect(f.brain.calls[1]!.prompt).not.toContain('第一轮的私有上下文');
   expect(f.brain.calls[1]!.prompt).toContain('已核验的VCP证据');
   expect(f.brain.calls[1]).toMatchObject({ role: 'worker', workerAccess: 'full', tools: [] });
   expect(f.service.store.getMessage(second.replyMessageIds![0]!)!.content).toBe('原生最终正文');
+});
+it('creates a new topic explicitly and reconnects earlier native history without changing the companion workspace',async()=>{
+  const f=await fixture(),first=await f.send('先前项目');await until(()=>f.service.store.getMessage(first.replyMessageIds![0]!)?.status==='sent');
+  const prior=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!.chatRuntime!.topic!;
+  await f.service.handle({type:'topic.new',conversationId:f.room.id,requestId:'manual-new'});
+  const second=await f.send('独立问题');await until(()=>f.service.store.getMessage(second.replyMessageIds![0]!)?.status==='sent');
+  await f.service.handle({type:'topic.select',conversationId:f.room.id,topicId:prior.id});
+  const third=await f.send('追问先前项目');await until(()=>f.service.store.getMessage(third.replyMessageIds![0]!)?.status==='sent');
+  expect(f.brain.calls[0]?.laneId).not.toBe(f.brain.calls[1]?.laneId);expect(f.brain.calls[2]?.laneId).toBe(f.brain.calls[0]?.laneId);
+});
+it('queues new input above the composer, steers it exactly once into the pinned task and captures the actual supplemental input',async()=>{
+  const f=await fixture();let finish!:(text:Partial<BotDshResult>)=>void;f.brain.execute=()=>new Promise(resolve=>{finish=resolve;});
+  const first=await f.send('正在执行的项目');await until(()=>!!finish);
+  const second=await f.send('包含用户新要求的补充');
+  const pending=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!.chatRuntime!;
+  expect(pending.queued[0]?.messageId).toBe(second.messageId);expect(pending.hiddenMessageIds).toContain(second.replyMessageIds![0]);
+  await f.service.handle({type:'message.guide',conversationId:f.room.id,messageId:second.messageId!});await f.service.handle({type:'message.guide',conversationId:f.room.id,messageId:second.messageId!});
+  expect(f.brain.guidance).toHaveLength(1);expect(f.brain.guidance[0]?.laneId).toBe(f.brain.calls[0]?.laneId);expect(f.brain.guidance[0]?.input.text).toContain('包含用户新要求的补充');
+  finish({text:'已按补充完成'});await until(()=>f.service.store.getMessage(first.replyMessageIds![0]!)?.status==='sent');
+  expect(f.brain.calls).toHaveLength(1);expect(f.service.store.eventForReply(second.replyMessageIds![0]!)?.status).toBe('cancelled');
+  const capture=f.service.store.taskTransaction(sql=>sql.prepare("SELECT payload_json FROM bot_memory_jobs WHERE kind='capture' ORDER BY created_at DESC LIMIT 1").get()) as {payload_json:string};
+  expect(capture.payload_json).toContain('包含用户新要求的补充');
 });
 it('projects real native deliveries onto the reply and preserves process separately from final text', async () => {
   const f = await fixture();

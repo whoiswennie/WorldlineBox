@@ -14,10 +14,10 @@ export function BotExecutionDetails({ execution, locale, onAnswer, onContinue }:
 }
 
 function ExecutionDetails({ execution, locale, onAnswer, onContinue }: { execution: BotExecution; locale: Locale; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }) {
-  const zh = locale === 'zh-CN', running = execution.status === 'running', [expanded, setExpanded] = useState(running), id = useId();
+  const zh = locale === 'zh-CN', running = execution.status === 'running', [expanded, setExpanded] = useState(false), id = useId();
   const contents=useRef<HTMLDivElement>(null),following=useRef(true);
   useLayoutEffect(()=>{if(running&&expanded&&following.current&&contents.current)contents.current.scrollTop=contents.current.scrollHeight;},[execution.steps,expanded,running]);
-  const rounds = botExecutionRounds(execution.steps);
+  const rounds = botExecutionRounds(execution.steps.filter(step=>!['session_created','session_resumed'].includes(step.type))).filter(round=>round.step!==undefined||round.steps.some(step=>step.type!=='status'));
   const latest = execution.steps.reduce<BotExecution['steps'][number] | undefined>((latest, step) => !latest || Date.parse(step.updatedAt ?? step.at) >= Date.parse(latest.updatedAt ?? latest.at) ? step : latest, undefined);
   const status = running ? execution.question ? zh ? '等待你的回复' : 'Waiting for your reply' : latest?.type === 'reasoning' ? zh ? '正在思考' : 'Thinking' : latest?.summary || execution.phase || (zh ? 'DSH 正在处理' : 'DSH is working')
     : execution.continuation ? zh ? '等待继续' : 'Ready to continue' : execution.status === 'succeeded' ? zh ? '已完成' : 'Completed' : execution.status === 'failed' ? zh ? '执行失败' : 'Execution failed' : zh ? '已停止' : 'Stopped';
@@ -29,16 +29,16 @@ function ExecutionDetails({ execution, locale, onAnswer, onContinue }: { executi
     <button className="bot-execution-toggle" type="button" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}>
       <span className="bot-execution-state-icon"><BotIcon name={running ? 'clock' : execution.status === 'succeeded' ? 'check' : 'notice'} /></span>
       <span className="bot-execution-status">{currentStage}</span>
-      <span className="bot-execution-action"><span>{expanded ? zh ? '收起过程' : 'Hide details' : zh ? '查看过程' : 'Show details'}</span><BotIcon name="chevron-down" /></span>
+      <span className="bot-execution-count">{stepCount ? zh ? `${stepCount} 步` : `${stepCount} steps` : ''}{toolCount ? zh ? ` · ${toolCount} 次工具` : ` · ${toolCount} tools` : ''}</span>
+      <span className="bot-execution-action"><span className="bot-sr-only">{expanded ? zh ? '收起过程' : 'Hide details' : zh ? '查看过程' : 'Show details'}</span><BotIcon name="chevron-down" /></span>
     </button>
     <div id={id} hidden={!expanded} className="bot-execution-contents" ref={contents} onScroll={event=>{const node=event.currentTarget;following.current=node.scrollHeight-node.scrollTop-node.clientHeight<32;}}>
-      <p className="bot-execution-overview"><span>{zh ? '执行过程' : 'Execution details'}</span><small>{stepCount ? zh ? `${stepCount} 步` : `${stepCount} steps` : ''}{stepCount && toolCount ? ' · ' : ''}{toolCount ? zh ? `${toolCount} 次工具调用` : `${toolCount} tool calls` : ''}</small></p>
-      {rounds.map(round => <div className="bot-execution-round" key={round.id}>
-        {round.step !== undefined && <h4><span className="bot-execution-round-number">{String(round.step).padStart(2, '0')}</span><span className="bot-execution-round-title">{round.sessionId && round.sessionId !== execution.sessionId ? zh ? '子会话 · ' : 'Subagent · ' : ''}{zh ? `第 ${round.step} 步` : `Step ${round.step}`}</span></h4>}
+      {rounds.map(round => <details className="bot-execution-round" key={round.id}>
+        <summary><BotIcon name="chevron-down" /><span className="bot-execution-round-title">{round.sessionId && round.sessionId !== execution.sessionId ? zh ? '子会话 · ' : 'Subagent · ' : ''}{round.step !== undefined ? zh ? `第 ${round.step} 步` : `Step ${round.step}` : zh ? '其他进展' : 'Other progress'}</span><small>{round.steps.filter(step=>step.type==='tool_call').length ? zh ? `${round.steps.filter(step=>step.type==='tool_call').length} 次工具调用` : `${round.steps.filter(step=>step.type==='tool_call').length} tool calls` : zh ? '思考' : 'Thinking'}</small></summary>
         <ol>{round.steps.map(step => <li key={step.id} data-type={step.type} data-status={step.outputState ?? step.status}>
           <ExecutionPhase step={step} running={running} locale={locale} />
         </li>)}</ol>
-      </div>)}
+      </details>)}
     </div>
     {running && execution.question && <ExecutionQuestion key={execution.question.id} question={execution.question} locale={locale} onAnswer={onAnswer} />}
     {!running && execution.continuation && <ExecutionContinuation key={execution.continuation.checkpoint} locale={locale} onContinue={onContinue} />}
@@ -60,16 +60,18 @@ function ExecutionPhase({ step, running, locale }: { step: BotExecutionStep; run
   const interrupted = step.outputState === 'abandoned', complete = step.outputState === 'committed' || step.status === 'completed' || step.output !== undefined;
   const failed = step.status === 'failed' || step.summary?.includes('工具执行失败');
   const labels: Record<string, [string, string]> = { read: ['读取文件', 'Read file'], read_file: ['读取文件', 'Read file'], write: ['写入文件', 'Write file'], edit: ['编辑文件', 'Edit file'],
-    shell: ['运行命令', 'Run command'], present: ['交付文件', 'Deliver files'], present_files: ['交付文件', 'Deliver files'],
+    shell: ['运行命令', 'Run command'], pwsh: ['运行命令', 'Run command'], bash: ['运行命令', 'Run command'], web_fetch:['读取网页','Read page'],web_search:['搜索网页','Search web'], present: ['交付文件', 'Deliver files'], present_files: ['交付文件', 'Deliver files'],
     message_peer: ['伙伴协作', 'Collaborate'], companion_contact: ['伙伴私聊', 'Contact companion'], sessions_spawn: ['启动子会话', 'Start subagent'] };
   const name = Object.keys(labels).find(name => step.toolName === name || step.toolName?.endsWith('_' + name));
   const title = thinking ? zh ? '思考' : 'Thinking' : tool ? name ? labels[name]![zh ? 0 : 1] : zh ? '调用工具' : 'Tool call'
     : step.type === 'child_text' ? zh ? '子会话回复' : 'Subagent reply' : step.type === 'artifacts' ? zh ? '文件已交付' : 'Files delivered' : step.summary || (zh ? '处理进展' : 'Progress');
   const badge = failed ? zh ? '失败' : 'Failed' : interrupted ? zh ? '已中断' : 'Interrupted' : complete ? zh ? '已完成' : 'Done' : running ? zh ? '进行中' : 'In progress' : zh ? '已记录' : 'Recorded';
   const icon = thinking ? 'sparkles' : tool ? 'settings' : step.type === 'artifacts' ? 'file' : 'clock';
-  const heading = <><span className="bot-execution-phase-icon"><BotIcon name={icon} /></span><span className="bot-execution-phase-title">{title}</span>{tool && step.toolName && <code>{step.toolName}</code>}<span className="bot-execution-phase-badge">{badge}</span></>;
+  let preview='';
+  if(tool&&step.text){try{const args=JSON.parse(step.text) as Record<string,unknown>;preview=String(args.description??args.path??args.file_path??args.url??args.query??args.command??step.toolName??'').replace(/\s+/gu,' ').slice(0,180);}catch{preview=step.toolName??'';}}
+  const heading = <><span className="bot-execution-phase-icon"><BotIcon name={icon} /></span><span className="bot-execution-phase-title">{title}</span>{preview&&<span className="bot-execution-preview">{preview}</span>}{(failed||(!complete&&running&&!thinking))&&<span className="bot-execution-phase-badge">{badge}</span>}</>;
   if (!step.text && !step.output) return <div className="bot-execution-notice">{heading}</div>;
-  return <details className={`bot-execution-phase ${thinking ? 'bot-execution-reasoning' : tool ? 'bot-execution-tool' : ''}${failed ? ' is-error' : ''}`} open={running && thinking && !interrupted}>
+  return <details className={`bot-execution-phase ${thinking ? 'bot-execution-reasoning' : tool ? 'bot-execution-tool' : ''}${failed ? ' is-error' : ''}`}>
     <summary>{heading}<BotIcon name="chevron-down" /></summary>
     <div className="bot-execution-phase-body">
       {step.text && <>{tool && <small>{zh ? '输入参数' : 'Input'}</small>}<pre>{step.text}</pre></>}

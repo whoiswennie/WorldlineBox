@@ -12,14 +12,14 @@ const copy = {
   'zh-CN': { emoji: '表情', emojiTitle: '常用表情', memory: '记忆', history: '聊天记录', message: '发送消息…', send: '发送 ↑', keyboard: 'Enter 发送，Shift + Enter 换行', world: '发布世界事件' },
   en: { emoji: 'Emoji', emojiTitle: 'Common emoji', memory: 'Memory', history: 'Chat history', message: 'Write a message…', send: 'Send ↑', keyboard: 'Enter to send, Shift + Enter for a new line', world: 'Publish world event' },
 };
-export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, cornerControl, onVoiceInputStart, onVoiceInputActivity, returnToChatOnPanel = false }: {
+export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, cornerControl, onVoiceInputStart, onVoiceInputActivity, returnToChatOnPanel = false }: {
   locale: 'zh-CN' | 'en'; draft: string; setDraft(value: string): void; disabled: boolean; busy: boolean; group: boolean; world: boolean;
   panel: 'memory' | 'history' | null; setPanel(value: 'memory' | 'history' | null): void; send(kind?: 'message' | 'world'): Promise<unknown>;
   mediaApi?: WorldlineBoxBotMediaApi; conversationId: string; attachments?: readonly BotMediaRef[]; addingFiles?: boolean;
   addFiles(): Promise<void>; removeFile(id: string): void; sendSticker(media: BotMediaRef): Promise<void>;
   mentionMembers?: readonly BotCompanion[];
   sendVoice?(media: BotMediaRef): Promise<void>;
-  extraTools?: ReactNode; status?: ReactNode; cornerControl?: ReactNode; onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; returnToChatOnPanel?: boolean;
+  extraTools?: ReactNode; status?: ReactNode; topicControls?: ReactNode; cornerControl?: ReactNode; onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; returnToChatOnPanel?: boolean;
 }) {
   const t = copy[locale], field = useRef<HTMLTextAreaElement>(null), popup = useRef<HTMLDivElement>(null);
   const [showExpressions, setShowExpressions] = useState(false), [expressionTab, setExpressionTab] = useState<'emoji' | 'stickers'>('emoji');
@@ -50,7 +50,7 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
     setDraft(draft.slice(0, start) + emoji + draft.slice(end)); setShowExpressions(false);
     requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(start + emoji.length, start + emoji.length); });
   };
-  return <div className="bot-composer-dock"><form className="bot-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
+  return <div className="bot-composer-dock">{topicControls}<form className="bot-composer" onSubmit={event => { event.preventDefault(); void send(); }}>
     {cornerControl && <span className="bot-composer-corner">{cornerControl}</span>}
     <div className="bot-compose-tools"><div className="bot-emoji-anchor bot-expression-tools" ref={popup}>
       <button type="button" disabled={disabled} aria-label={t.emoji} title={locale === 'zh-CN' ? '表情与表情包' : 'Emoji and stickers'} aria-expanded={showExpressions} onClick={() => setShowExpressions(!showExpressions)}><BotIcon name="smile" /></button>

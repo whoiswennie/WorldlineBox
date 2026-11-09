@@ -4,6 +4,7 @@ import type { BotTaskAttention, BotTaskPendingEffect } from './companion-bot-tas
 import type { BotMediaRef } from './companion-bot-media';
 import { botMemoryMaintenanceSchemas } from './companion-bot-maintenance';
 import type { BotBrainContextSummary } from './companion-bot-context';
+import type { BotChatRuntime, BotNativeTopic } from './companion-bot-topics';
 export type { BotBrainContextSummary, BotBrainRequestMetrics } from './companion-bot-context';
 
 export const BOT_CHANNEL = 'companion-bot:request';
@@ -33,7 +34,7 @@ export interface BotTaskFollowupReceipt {
   state: 'queued' | 'delivered' | 'needs-attention' | 'failed' | 'cancelled';
 }
 export interface BotConversation { id: string; title: string; kind: 'direct' | 'group' | 'world' | 'peer'; memberIds: string[]; createdAt: string; participationMode?: BotParticipationMode; peerConversation?: boolean; userRole?: 'observer'; ownerId?:'user';dissolvedAt?:string; announcement?: BotGroupAnnouncement }
-/** Native DSH execution events belong to one message and one fresh session. */
+/** Native DSH execution events belong to one reply in its selected topic Session. */
 export interface BotExecution {
   sessionId?: string;
   phase?: string;
@@ -55,6 +56,7 @@ export interface BotMessage {
   timing?: BotReplyTiming;
   progress?: BotReplyProgress;
   execution?: BotExecution;
+  topic?: { id:string;title:string };
   taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
@@ -105,6 +107,7 @@ export interface BotSnapshot {
   conversationActivity?: Record<string, BotConversationActivity>;
   brainContexts?: Record<string, BotBrainContextSummary>;
   taskSummary?: BotTaskSummary;
+  chatRuntime?: BotChatRuntime;
   hasMore: boolean; runtime: BotRuntimeStatus;
 }
 export interface BotHistoryPage { items: BotMessage[]; hasMore: boolean; nextBefore?: number }
@@ -132,11 +135,17 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('conversation.announcement'), conversationId: id, content: z.string().max(4000).refine(value => !value.includes('\0')),
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
   z.strictObject({ type: z.literal('execution.continue'), messageId: id, requestId: id }),
+  z.strictObject({ type: z.literal('topic.list'), conversationId: id, query: z.string().max(200).optional(), before: z.string().max(200).optional() }),
+  z.strictObject({ type: z.literal('topic.new'), conversationId: id, requestId: id }),
+  z.strictObject({ type: z.literal('topic.select'), conversationId: id, topicId: id }),
+  z.strictObject({ type: z.literal('topic.compact'), conversationId: id, topicId: id, companionId: id, requestId: id }),
+  z.strictObject({ type: z.literal('message.guide'), conversationId: id, messageId: id }),
+  z.strictObject({ type: z.literal('message.dequeue'), conversationId: id, messageId: id }),
 
 
 
@@ -159,7 +168,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
-export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup }
+export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
 export type BotEvent = { type: 'changed'; conversationId?: string }
   | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }

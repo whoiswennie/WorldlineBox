@@ -1,28 +1,30 @@
 .bot-message-content:has(>.bot-message-bubble .bot-execution) { min-width:min(380px,calc(100% - 56px)); }
 .bot-message-bubble:has(.bot-execution) { min-width:min(380px,100%);box-sizing:border-box; }
 .bot-execution { min-width:0;margin:0;color:var(--bot-muted,var(--ui-content-secondary));font-size:11px; }
-.bot-execution>.bot-execution-toggle { display:flex;align-items:center;gap:8px;width:100%;min-height:32px;padding:0 0 9px;border:0;border-bottom:1px solid var(--bot-edge,var(--ui-border-subtle));border-radius:0;background:transparent;color:inherit;text-align:left;font:inherit;line-height:1.5; }
+.bot-execution>.bot-execution-toggle { display:flex;align-items:center;gap:7px;width:100%;min-height:28px;padding:0 0 7px;border:0;border-bottom:1px solid var(--bot-edge,var(--ui-border-subtle));border-radius:0;background:transparent;color:inherit;text-align:left;font:inherit;line-height:1.5; }
 .bot-execution>.bot-execution-toggle:hover { background:transparent; }
-.bot-execution-state-icon { display:grid;place-items:center;flex-shrink:0;width:21px;height:21px;border-radius:50%;background:color-mix(in srgb,var(--bot-accent) 9%,transparent);color:var(--bot-accent); }
+.bot-execution-state-icon { display:grid;place-items:center;flex-shrink:0;width:17px;height:17px;color:var(--bot-accent); }
 .bot-execution-state-icon .bot-icon { width:13px;height:13px; }
 .bot-execution[data-status=succeeded] .bot-execution-state-icon { color:#438873;background:color-mix(in srgb,#438873 10%,transparent); }
 .bot-execution[data-status=failed] .bot-execution-state-icon { color:var(--ui-status-danger-content,#b43d4d);background:color-mix(in srgb,currentColor 9%,transparent); }
 .bot-execution-status { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500; }
+.bot-execution-count { color:var(--bot-muted);font-size:10px;white-space:nowrap; }
 .bot-execution-action { display:inline-flex;align-items:center;flex-shrink:0;gap:5px;padding:4px 5px;border-radius:6px;white-space:nowrap;transition:background .15s,color .15s; }
 .bot-execution-action>.bot-icon { width:13px;height:13px;transition:transform .15s; }
 .bot-execution-toggle[aria-expanded=true] .bot-execution-action>.bot-icon { transform:rotate(180deg); }
 .bot-execution-toggle:hover .bot-execution-action { background:var(--bot-panel-soft,var(--ui-surface-hover));color:var(--bot-text,var(--ui-content-primary)); }
-.bot-execution-contents { max-height:420px;padding:0 2px 3px;overflow:auto;scrollbar-width:thin; }
+.bot-execution-contents { max-height:300px;padding:6px 0 8px;overflow:auto;scrollbar-width:thin; }
 .bot-execution-contents[hidden] { display:none; }
-.bot-execution-overview { display:flex;align-items:center;justify-content:space-between;gap:16px;margin:13px 0 14px;font-size:10px; }
-.bot-execution-overview>small { font-size:10px;color:var(--bot-muted); }
-.bot-execution-round { position:relative;margin:0 0 14px; }
-.bot-execution-round>h4 { display:flex;align-items:center;gap:8px;margin:0 0 8px;font-size:11px;font-weight:550;color:var(--bot-text,var(--ui-content-primary)); }
-.bot-execution-round-number { display:grid;place-items:center;width:22px;height:22px;border:1px solid var(--bot-edge);border-radius:7px;color:var(--bot-muted);font-size:9px;font-weight:500;font-variant-numeric:tabular-nums;background:var(--bot-panel-soft); }
-.bot-execution-round>ol { display:grid;gap:7px;margin:0 0 0 10px;padding:2px 0 2px 18px;border-left:1px solid var(--bot-edge);list-style:none; }
+.bot-execution-round { position:relative;margin:0; }
+.bot-execution-round>summary { display:flex;align-items:center;gap:6px;padding:5px 0;cursor:pointer;list-style:none;font-size:11px; }
+.bot-execution-round>summary::-webkit-details-marker { display:none; }
+.bot-execution-round>summary>.bot-icon { width:11px;height:11px;transform:rotate(-90deg); }
+.bot-execution-round[open]>summary>.bot-icon { transform:none; }
+.bot-execution-round>summary>small { margin-left:auto;font-size:10px;opacity:.7; }
+.bot-execution-round>ol { display:grid;gap:1px;margin:1px 0 5px 5px;padding:0 0 0 12px;border-left:1px solid var(--bot-edge);list-style:none; }
 .bot-execution-round>ol>li { min-width:0;margin:0;padding:0; }
-.bot-execution-phase { margin:0;border:1px solid var(--bot-edge);border-radius:9px;overflow:hidden;background:color-mix(in srgb,var(--bot-panel-soft) 55%,transparent); }
-.bot-execution-phase>summary,.bot-execution-notice { display:flex;align-items:center;gap:7px;min-height:35px;padding:6px 10px;box-sizing:border-box;line-height:1.6; }
+.bot-execution-phase { margin:0;border:0;border-radius:5px;overflow:hidden;background:transparent; }
+.bot-execution-phase>summary,.bot-execution-notice { display:flex;align-items:center;gap:7px;min-height:26px;padding:3px 4px;box-sizing:border-box;line-height:1.6; }
 .bot-execution-phase>summary { cursor:pointer;list-style:none;transition:background .15s; }
 .bot-execution-phase>summary::-webkit-details-marker { display:none; }
 .bot-execution-phase>summary:hover { background:var(--bot-panel-soft); }
@@ -30,10 +32,10 @@
 .bot-execution-phase[open]>summary>.bot-icon { transform:rotate(180deg); }
 .bot-execution-phase-icon { display:flex;flex-shrink:0;color:var(--bot-accent);opacity:.8; }
 .bot-execution-phase-icon>.bot-icon { width:13px;height:13px; }
-.bot-execution-phase-title { color:var(--bot-text,var(--ui-content-primary));font-size:11px; }
+.bot-execution-phase-title { flex-shrink:0;color:var(--bot-muted,var(--ui-content-secondary));font-size:11px; }
+.bot-execution-preview { min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.7;font-size:10px; }
 .bot-execution-phase-badge { flex-shrink:0;margin-left:auto;font-size:9px;color:var(--bot-muted); }
 .bot-execution-phase.is-error .bot-execution-phase-badge { color:var(--ui-status-danger-content,#b43d4d); }
-.bot-execution-phase code { max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;color:var(--bot-muted); }
 .bot-execution-phase-body { padding:2px 12px 11px 30px; }
 .bot-execution-phase-body>small { display:block;margin-top:9px;color:var(--bot-muted);font-size:9px; }
 .bot-execution-phase pre { margin:5px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;line-height:1.85;font-family:inherit;color:var(--bot-muted); }

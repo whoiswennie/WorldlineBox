@@ -19,7 +19,7 @@ it('shows native live stages inside a pending bubble and collapses automatically
   await render({ ...message, execution });
   expect(host.querySelector('.bot-message-bubble')?.classList.contains('is-inline-media-only')).toBe(false);
   let toggle = host.querySelector<HTMLButtonElement>('.bot-execution-toggle')!;
-  expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
   expect(toggle.textContent).toContain('正在读取资料');
   expect(host.querySelector('.bot-execution-contents')?.textContent).toContain('read_file');
   expect(host.querySelector('.bot-message-text')?.textContent).toBe('流式正文');
@@ -45,7 +45,7 @@ it('keeps each reply session and its collapsed state separate from other message
   await render({ ...message, execution });
   await act(() => host.querySelector<HTMLButtonElement>('.bot-execution-toggle')!.click());
   await render({ ...message, id: 'new-reply', execution: { ...execution, sessionId: 'other-dsh-session' } });
-  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('true');
+  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('false');
   expect(host.querySelector('.bot-execution')?.getAttribute('data-native-session')).toBe('other-dsh-session');
   expect(host.querySelector('.bot-execution-contents')?.textContent).not.toContain('fresh-dsh-session');
 });
@@ -57,7 +57,8 @@ it('shows one coherent thinking section per native loop step, including legacy s
   await render({...message,execution:{...execution,steps}});
   expect(host.querySelectorAll('[data-type=reasoning]')).toHaveLength(1);
   expect(host.querySelector('.bot-execution-reasoning pre')?.textContent).toBe('用户让我自我介绍');
-  expect(host.querySelector('.bot-execution-reasoning')?.hasAttribute('open')).toBe(true);
+  expect(host.querySelector('.bot-execution-reasoning')?.hasAttribute('open')).toBe(false);
+  expect(host.querySelector('.bot-execution-round')?.hasAttribute('open')).toBe(false);
   expect(host.querySelector('.bot-execution-round-title')?.textContent).toBe('第 1 步');
   expect(host.querySelector('.bot-execution-contents')?.textContent).not.toContain('开始处理任务');
 });

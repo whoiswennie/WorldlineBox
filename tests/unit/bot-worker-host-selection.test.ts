@@ -7,6 +7,7 @@ function fixture() {
   const bindings = new Map<string, string>(); let selected = 'shared';
   const store = { getMetadata: (key: string) => bindings.get(key), getEvent: (id: string) => /^event-[ab]$/.test(id) ? { companionId: `actor-${id.slice(-1)}` } : undefined,
     getLane: (id: string) => id === 'lane-a' ? { companionId: 'actor-a' } : undefined,
+    nativeLaneCompanion:(id:string)=>id==='topic-project-actor-a'?'actor-a':undefined,
     getCompanion: (id: string) => /^actor-[ab]$/.test(id) ? { id, name: id } : undefined } as unknown as BotStore;
   const launcher = { resolveBotInstance: vi.fn(async (id?: string) => ({ id: id ?? selected }) as DshInstance) };
   return { store, launcher, bindings, select: (id: string) => { selected = id; } };
@@ -19,6 +20,11 @@ it('routes new work from different companions to the same selected Host without 
   expect(f.launcher.resolveBotInstance.mock.calls).toEqual([[], []]);
   f.select('new-shared');
   expect((await selectBotWorkerInstance(f.launcher, f.store, 'turn-event-a')).id).toBe('new-shared');
+});
+it('resolves a topic Session owner and keeps its Host pinned across follow-ups',async()=>{
+  const f=fixture();expect((await selectBotWorkerInstance(f.launcher,f.store,'topic-project-actor-a')).id).toBe('shared');
+  f.bindings.set('native-host:topic-project-actor-a','original');f.select('different');
+  expect((await selectBotWorkerInstance(f.launcher,f.store,'topic-project-actor-a')).id).toBe('original');
 });
 
 it('keeps old private and shared work on their pinned native Hosts across global selection changes', async () => {

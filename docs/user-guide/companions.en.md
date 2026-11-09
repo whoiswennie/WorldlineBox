@@ -1,22 +1,24 @@
 # Companions and continuous chat
 
-This guide covers the companion workspace rebuilt on 3 November 2026. It is a development version; model understanding and long-running behavior can still encounter problems.
+This guide covers the native DSH development branch as of 9 November 2026. See the [implementation and acceptance record](../developer/dsh-native-companion-refactor-2026-11-09.md).
 
 ## Start
 
-Install an official DSH runtime in Launcher, then select or confirm creation of one shared execution instance. Every companion uses that instance's account, API, plugins and skills; no per-character binding or login is required. Ordinary chat runs in the application and does not require the configured DSH Host to be running. In Model settings, configure an **OpenAI Chat Completions** connection for the companion Router. DSH's Web workbench manages its native configuration. Open Companions, choose a built-in companion or create your own, and send a message. Enter sends; Shift+Enter adds a line. IME composition does not send.
+Install an official DSH runtime in Launcher and choose one shared execution instance. Companions share its native configuration while keeping separate workspaces and topic Sessions. Chat requires the DSH Host. Configure the companion model in Model settings. Enter sends; Shift+Enter inserts a line.
 
 Chats, memories, task ownership, Worker sessions and task directories remain separate. Disabling one companion pauses only its tasks and leaves the shared Host available to everyone else. Existing tasks retain their original instance when the shared selection changes, including tasks from older private environments; those environments are retained without merging credentials or plugins. Upgrading the shared instance preserves its identity, home, account configuration and plugins, with a snapshot and rollback on failure.
 
 Companion data does not require an asset library. Missing model or runtime configuration produces a real error while saved messages remain readable.
 
-## Conversations and tasks
+## Conversations, topics and native tasks
 
-Direct, group and world conversations stay in the same workspace. Earlier messages load by page. Replies stream into the current conversation and can be stopped. Failed sends retain their drafts; drafts and in-flight text are isolated across conversations. Users do not manage native DSH Sessions.
+The chat is a frontend and deterministic router. The selected companion's native DSH Session is the task's main agent; contacted companions and native subagents execute its assignments. There is no additional Router Agent or application Agent Loop.
 
-A brain can contact another existing member of its current conversation. Peer exchanges have a bounded hop count. Group membership or message content does not grant access to another private conversation.
+The topic bar above the composer shows where idle follow-ups go. **New topic** creates independent context. Open the topic name to search and reconnect earlier WorldlineBox topics. **Compact** invokes the selected native Session's `/compact`; follow-ups retain that Session identity. In a group, choose which companion to compact.
 
-Research, coding and file processing can be delegated to an independent DSH worker. The Tasks panel shows goals and states, and offers cancellation; the brain can check status or send guidance. Results return to the source conversation. Submitted does not mean completed. Stop first saves a cancellation request and waits for native confirmation; work already completed can still return its real success receipt. Confirmed cancellation cannot be restarted by a late result. Tasks originating from a user's direct chat can receive full DSH tools; group, peer and world sources remain scoped. Message text cannot expand that scope. Stopping or forgetting cannot undo external changes already made.
+While work is running, new input appears in the queue above the composer. It normally starts a new topic after the task finishes, or continues another explicitly selected topic. **Steer** delivers the queued message and verified attachments to the current native task at its next input boundary. Unknown deliveries retain their stable receipt; they are never silently replayed as new work. Confirmed non-admission restores the queue.
+
+Execution bubbles start with one compact status row. Steps, thoughts and tool details expand only on request; completion collapses progress and leaves the final answer. Uploads reach DSH as verified absolute paths. Native `present` deliveries become real chat attachments for preview and saving. Stopping work does not undo completed external effects.
 
 ## Memory
 
@@ -48,6 +50,6 @@ World events go to actual co-located observers. Other companions cannot enter pr
 
 Saved messages, events, tasks and physical state recover on restart. Uncertain delivery keeps its native event ID instead of creating another execution. The application does not invent activity while closed.
 
-The application summarizes active context and uses VCP to look up earlier messages. Summarization can use a model and delay a reply; failure retains the prior records. Continuous conversations do not guarantee perfect recall or constant latency.
+DSH owns context compaction; VCP provides sourced memory and history recall. Failed summarization retains prior history. Continuous conversations do not guarantee perfect recall or constant latency.
 
 The former independent world windows, relationship/routine simulation, calendar and life-simulation growth dashboards are retired. Memory dream candidates are available as described above. QQ/WeChat, phone gateways and broader simulation remain future work. See the [runtime guide](../developer/superagent-bot-runtime-guide.md) for implementation and verification boundaries.

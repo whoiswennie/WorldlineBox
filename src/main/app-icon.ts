@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-import { app, nativeImage, type BrowserWindowConstructorOptions, type NativeImage } from "electron";
+import { app, nativeImage, type BrowserWindow, type BrowserWindowConstructorOptions, type NativeImage } from "electron";
 
 import { resolveAppIconCandidates } from "./app-icon-paths";
 
@@ -33,4 +33,14 @@ export function applyDevAppIcon(): void {
   if (process.platform === "darwin" && app.dock) {
     app.dock.setIcon(image);
   }
+}
+
+/** Windows' grouped taskbar icon uses relaunch metadata, independently of the
+ * HWND/title-bar image. Dev electron.exe otherwise supplies its stock icon. */
+export function applyWindowsTaskbarIcon(window:BrowserWindow):void {
+  if(process.platform!=='win32')return;
+  const icon=path.join(app.isPackaged?process.resourcesPath:path.join(process.cwd(),'assets','icons'),'app.ico');
+  if(!existsSync(icon))return;
+  window.setAppDetails({appId:'com.worldlinebox.app',appIconPath:icon,appIconIndex:0,relaunchDisplayName:'WorldlineBox',
+    relaunchCommand:`"${process.execPath}"${app.isPackaged?'':` "${app.getAppPath()}"`}`});
 }

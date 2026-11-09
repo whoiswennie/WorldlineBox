@@ -16,6 +16,7 @@ import { BotGroupMembers } from './BotGroupMembers';
 import { useBotConversationUpdates } from './BotConversationActivity';
 import './bot-peer-observation.css';
 import { BotComposer } from './BotComposer';
+import { BotTopicBar } from './BotTopicBar';
 import { BotIcon } from './BotIcon';
 import { BotHistoryDialog } from './BotHistoryPanel';
 import { BotReplyTiming } from './BotReplyTiming';
@@ -100,7 +101,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const [browsingHistory, setBrowsingHistory] = useState(false), [newMessages, setNewMessages] = useState(false), [loadingLatest, setLoadingLatest] = useState(false);
   const selectedRef = useRef(selected), generation = useRef(0), refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const snapshotRef = useRef(snapshot), selectionEpoch = useRef(0), opening = useRef(0), sending = useRef(false), paging = useRef(false);
-  const sendAttempts = useRef(new Map<string, { content: string; requestId: string; kind: 'message' | 'world'; attachmentIds: string[] }>());
+  const sendAttempts = useRef(new Map<string, { content: string; requestId: string; kind: 'message' | 'world'; attachmentIds: string[]; input?:BotRequest }>());
   const windowEpoch = useRef(0), historyMode = useRef(false), latestSeen = useRef(0), jumping = useRef(false), refreshAfterJump = useRef(false);
   const preserveScroll = useRef<{ messageId?: string; offset: number; top: number } | undefined>(undefined);
   const scroll = useRef<HTMLDivElement>(null);
@@ -231,7 +232,8 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const visibleConversations = matchingConversations.slice(sidebarPage * SIDEBAR_PAGE_SIZE, (sidebarPage + 1) * SIDEBAR_PAGE_SIZE);
   const visibleCompanions = matchingCompanions.slice(sidebarPage * SIDEBAR_PAGE_SIZE, (sidebarPage + 1) * SIDEBAR_PAGE_SIZE);
   const smartParticipationHint = locale === 'zh-CN' ? '伙伴按消息内容决定是否参与，可以安静、由一位回应，或由多位共同讨论。@姓名可直接点名。' : 'Companions decide when to join: stay quiet, respond individually, or discuss together. Mention someone to address them directly.';
-  const messages = snapshot?.messages.filter(item => item.conversationId === selected && item.senderId !== 'task-service' && !(item.status === 'sent' && !item.content && !item.attachments?.length && !item.execution)) ?? [];
+  const hiddenMessages=new Set(snapshot?.chatRuntime?.hiddenMessageIds??[]);
+  const messages = snapshot?.messages.filter(item => !hiddenMessages.has(item.id) && item.conversationId === selected && item.senderId !== 'task-service' && !(item.status === 'sent' && !item.content && !item.attachments?.length && !item.execution)) ?? [];
   const open = async (companionId: string) => {
     const requestNumber = ++opening.current, epoch = selectionEpoch.current;
     const result = await request({ type: 'conversation.open', companionId });
@@ -256,9 +258,11 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
     if (files.length > 16) { setError(locale === 'zh-CN' ? '每条消息最多发送16个附件，请分批发送。' : 'Send up to 16 attachments per message.'); return { ok: false }; }
     const previous = sendAttempts.current.get(conversationId);
     const requestId = override?.requestId ?? (previous?.content === content && previous.kind === kind && JSON.stringify(previous.attachmentIds) === JSON.stringify(attachmentIds) ? previous.requestId : crypto.randomUUID());
-    sendAttempts.current.set(conversationId, { content, requestId, kind, attachmentIds });
-    const input: BotRequest = kind === 'world' ? { type: 'world.event', conversationId, content, requestId }
-      : { type: 'message.send', conversationId, content, requestId, ...(attachmentIds.length ? { attachmentIds } : {}) };
+    const routing=snapshotRef.current?.chatRuntime,selectedTopicId=routing?.topic?.id;
+    const topicId=selectedTopicId&&(!routing?.running.length||routing.running.every(active=>active.topicId!==selectedTopicId))?selectedTopicId:undefined;
+    const input: BotRequest = previous?.requestId===requestId&&previous.input?previous.input:kind === 'world' ? { type: 'world.event', conversationId, content, requestId }
+      : { type: 'message.send', conversationId, content, requestId, ...(topicId?{topicId}:{}), ...(attachmentIds.length ? { attachmentIds } : {}) };
+    sendAttempts.current.set(conversationId, { content, requestId, kind, attachmentIds,input });
     let result: BotResponse = { ok: false };
     let dispatching: Promise<BotResponse> | undefined;
     // Voice retry retains this complete original action, including its native
@@ -377,6 +381,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   const callCompanion = callTarget && snapshot?.companions.find(item => item.id === callTarget.companionId);
   const renderComposer = (options?: BotCallComposerOptions) => bindingRequired ? <div className="bot-binding-blocked" role="status"><div><strong>{locale === 'zh-CN' ? bindings.loading ? '正在检查共享 DSH…' : '配置共享 DSH 后开始聊天' : bindings.loading ? 'Checking shared DSH…' : 'Set up shared DSH to chat'}</strong><p>{bindings.error || (locale === 'zh-CN' ? '所有伙伴共用账号、API、插件和技能，只需配置一次。已有聊天记录仍可查看。' : 'All companions share one account, API configuration, plugins and skills. Existing history remains available.')}</p></div><button type="button" disabled={bindings.loading} onClick={() => { showBinding(); if (!bindings.state) void bindings.refresh(); }}>{locale === 'zh-CN' ? bindings.state ? '配置 DSH' : '重新检查' : bindings.state ? 'Set up DSH' : 'Check again'}</button></div> : conversation?.kind === 'direct' && companion?.enabled === false ? <div className="bot-companion-disabled" role="status"><div><strong>{locale === 'zh-CN' ? `${companion.name}已关闭` : `${companion.name} is disabled`}</strong><p>{locale === 'zh-CN' ? '启用伙伴后可以继续聊天。已有聊天记录已保留。' : 'Enable this companion to continue chatting. Your chat history is preserved.'}</p></div><button type="button" disabled={busy} onClick={() => void request({ type: 'companion.runtime', companionId: companion.id, operation: 'start' }).then(result => { if (result.ok) void refresh(); })}>{locale === 'zh-CN' ? '启用伙伴' : 'Enable companion'}</button></div> : <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={next => { if (next && callTarget) closeCall(); setPanel(next); }} send={send}
     mediaApi={mediaApi} conversationId={selected} attachments={draftFiles[selected] ?? []} addingFiles={imports[selected]} addFiles={() => addFiles()} removeFile={id => setDraftFiles(current => ({ ...current, [selected]: (current[selected] ?? []).filter(file => file.id !== id) }))} sendSticker={async media => { await send('message', media); }} sendVoice={async media => { if (!await send('message', media)) throw Error(locale === 'zh-CN' ? '语音未发送，请重试。录音已保留。' : 'Voice message was not sent. Your recording is retained.'); }}
+    topicControls={!options&&<BotTopicBar key={selected} conversationId={selected} runtime={snapshot?.chatRuntime} members={participants} locale={locale} request={request} refresh={()=>refresh(selected)}/>}
     extraTools={options?.toolbar} cornerControl={options?.corner} status={options && <>{options.status}{error && <p className="bot-call-send-error" role="alert">{error}</p>}</>} onVoiceInputStart={options?.onVoiceInputStart} onVoiceInputActivity={options?.onVoiceInputActivity} returnToChatOnPanel={!!options} />;
   return <div className={`bot-workspace bot-atmosphere${conversation ? ` has-context${showContext ? '' : ' context-collapsed'}` : ''}${dialog || panel === 'memory' || callTarget ? ' is-modal-open' : ''}`}>
     <div className="bot-window-chrome"><span>WorldlineBox <span>/</span> {t.space}</span></div>
@@ -428,7 +433,7 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
             {snapshot.hasMore && <button className="bot-earlier" disabled={loadingLatest} onClick={() => void earlier()}>{t.more}</button>}
             {messages.map((message, index) => <Fragment key={message.id}>{messageDay(message.createdAt, locale) && (index === 0 || messageDay(message.createdAt, locale) !== messageDay(messages[index - 1]!.createdAt, locale)) && <div className="bot-chat-day"><time dateTime={message.createdAt}>{messageDay(message.createdAt, locale)}</time></div>}<article key={message.id} data-bot-message={message.id} className={`bot-message ${message.senderId === 'user' ? 'from-user' : ''}`}>
               <div className="bot-message-avatar"><BotAvatar companion={snapshot.companions.find(item => item.id === message.senderId)} name={message.senderId === 'user' ? t.user : message.senderName} /></div>
-              <div className="bot-message-content"><div className="bot-message-author">{message.senderId === 'user' ? t.user : message.senderName}<time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString(locale)}>{new Date(message.createdAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })}</time>{message.senderId !== 'user' && !['queued', 'running'].includes(message.status) && <BotReplyTiming timing={message.timing} locale={locale} />}</div>
+              <div className="bot-message-content"><div className="bot-message-author">{message.senderId === 'user' ? t.user : message.senderName}<time dateTime={message.createdAt} title={new Date(message.createdAt).toLocaleString(locale)}>{new Date(message.createdAt).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })}</time>{message.senderId !== 'user' && !['queued', 'running'].includes(message.status) && <BotReplyTiming timing={message.timing} locale={locale} />}{!observing&&message.topic&&message.topic.id!==snapshot.chatRuntime?.topic?.id&&<button className="bot-message-topic" type="button" title={`${locale==='zh-CN'?'接续这个话题':'Continue this topic'} · ${message.topic.title}`} onClick={()=>void request({type:'topic.select',conversationId:selected,topicId:message.topic!.id}).then(result=>{if(result.ok)void refresh(selected);})}><BotIcon name="history"/><span>{message.topic.title}</span></button>}</div>
               <BotMessageBody message={message} streamedText={streams[message.id]} statusText={status(message)} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} onAnswer={(questionId, text) => request({ type: 'execution.answer', messageId: message.id, questionId, text })} onContinue={observing ? undefined : requestId => request({type:'execution.continue',messageId:message.id,requestId})} />
               {message.error && <small className="bot-message-error">{message.error}</small>}
               {message.senderId !== 'user' && ['queued', 'running'].includes(message.status) && (observing ? <p role="status" className="bot-peer-observer-progress"><BotIcon name="clock" />{botReplyProgressLabel(message.status, message.progress, locale)}</p> : <BotReplyProgressIndicator message={message} locale={locale} onStop={() => void request({ type: 'reply.cancel', messageId: message.id }).then(() => refresh())} />)}
