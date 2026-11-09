@@ -86,6 +86,11 @@ export interface BotRuntimeStatus {
   ready: boolean; detail?: string; dataRoot: string;
   modelContext?: { window: number; source: 'explicit' | 'metadata' | 'official-default' | 'unknown'; estimate: 'utf8-byte-upper-bound' };
 }
+export interface BotDataCleanup {
+  id: string; companionId: string; status: 'pending' | 'running' | 'retrying' | 'completed';
+  phase: 'stopping' | 'planning' | 'memory' | 'records' | 'attachments' | 'completed';
+  removed: number; createdAt: string; completedAt?: string; error?: string;
+}
 export interface BotConversationActivity { messageId: string; sequence: number; senderName: string; preview: string; updatedAt: string }
 export interface BotSnapshot {
   companions: BotCompanion[]; conversations: BotConversation[]; messages: BotMessage[]; tasks: BotTask[];
@@ -103,6 +108,8 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('companion.create'), name: z.string().trim().min(1).max(80), persona: z.string().max(24000), workerConcurrency: botWorkerConcurrencySchema.optional() }),
   z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000).optional(), workerConcurrency: botWorkerConcurrencySchema.optional() }),
   z.strictObject({ type: z.literal('companion.runtime'), companionId: id, operation: z.enum(['start', 'stop']) }),
+  z.strictObject({ type: z.literal('companion.data.clear'), companionId: id, requestId: id }),
+  z.strictObject({ type: z.literal('companion.data.clear.status'), companionId: id }),
   z.strictObject({ type: z.literal('companion.personas.list'), companionId: id }),
   z.strictObject({ type: z.literal('companion.personas.get'), companionId: id, id }),
   z.strictObject({ type: z.literal('companion.personas.save'), companionId: id, id: id.optional(), name: z.string().trim().min(1).max(80), prompt: z.string().min(1).max(24000).refine(value => !!value.trim() && !value.includes('\0')), activate: z.boolean().optional() }),
@@ -144,8 +151,9 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
-export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate }
+export interface BotResponse { ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup }
 export type BotEvent = { type: 'changed'; conversationId?: string }
+  | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }
   | { type: 'error'; conversationId?: string; message: string };
 export interface WorldlineBoxBotApi {

@@ -5,6 +5,7 @@ import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
 import type { BotService } from './companion-bot/service';
+import type { BotDataCleanupService } from './companion-bot/data-cleanup';
 import { BOT_CHANNEL, BOT_EVENT_CHANNEL, botRequestSchema } from '../shared/companion-bot';
 import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
 import type { BotMediaService } from './companion-bot/media-service';
@@ -658,6 +659,7 @@ let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureV
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let botService: BotService | undefined;
+let botDataCleanup: BotDataCleanupService | undefined;
 let localSpeechService: LocalSpeechService | undefined;
 let disposeBotSpeechIpc: (() => void) | undefined;
 let botMediaService: Promise<BotMediaService> | undefined;
@@ -5087,13 +5089,16 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
-  const ensureBotMediaService = ():Promise<BotMediaService> => botMediaService ??= import('./companion-bot/media-service').then(async ({BotMediaService})=>new BotMediaService({
+  const ensureBotMediaService = ():Promise<BotMediaService> => {
+    if (botDataCleanup?.busy) return Promise.reject(new Error('正在后台清理伙伴聊天与记忆，请稍后重试。'));
+    return botMediaService ??= import('./companion-bot/media-service').then(async ({BotMediaService})=>new BotMediaService({
     root:path.join(app.getPath('userData'),'companion-bot-v2','media'),
     canUserAccessConversation:conversationId=>botCanInspectConversation(botService?.store.getConversation(conversationId)),
     // Resolve only the app-owned builtin location. User media still rejects links.
     builtinRoot:await realpath(app.isPackaged?path.join(process.resourcesPath,'bot-stickers'):path.join(app.getAppPath(),'resources','bot-stickers')),
-  })).catch(error=>{botMediaService=undefined;throw error;});
+  })).catch(error=>{botMediaService=undefined;throw error;}); };
   const ensureBotService = (): Promise<BotService> => {
+    if (botDataCleanup?.busy) return Promise.reject(new Error('正在后台清理伙伴聊天与记忆，请稍后重试。'));
     if (applicationClosing) return Promise.reject(new Error('应用正在关闭。'));
     if (botService) return Promise.resolve(botService);
     return creatingBotService ??= (async () => {
@@ -5186,7 +5191,7 @@ async function startApplication(): Promise<void> {
           });
         },
         model: () => { const { connection, limits } = currentBotModel(); return { ...connection, imageSupport: modelCapabilities.imageSupport(connection), contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
-        onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event); },
+        onEvent: event => { if (!botDataCleanup?.busy && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event); },
         report: error => logger?.error('companion-bot.runtime', error),
       });
       return botService;
@@ -5224,12 +5229,43 @@ async function startApplication(): Promise<void> {
       });
     } catch (error) { return { ok: false, error: error instanceof Error ? error.message : '本地语音识别失败。' }; }
   });
+  const { BotDataCleanupService } = await import('./companion-bot/data-cleanup');
+  let retiringBotRuntime: { service?: BotService; creating?: Promise<BotService>; media?: Promise<BotMediaService>; speech?: LocalSpeechService } | undefined;
+  botDataCleanup = new BotDataCleanupService({ root: path.join(app.getPath('userData'), 'companion-bot-v2'), moduleRoot: app.getAppPath(),
+    quiesce: async () => {
+      // Retain ownership across a failed close. A retry must never assume a
+      // runtime released its file handles merely because globals were cleared.
+      const { service, creating, media, speech } = retiringBotRuntime ??= { service: botService, creating: creatingBotService, media: botMediaService, speech: localSpeechService };
+      botService = undefined; creatingBotService = undefined; botMediaService = undefined;
+      localSpeechService = undefined;
+      const results = await Promise.allSettled([
+        creating ? creating.then(value => value.shutdown()) : service?.shutdown(),
+        media?.then(value => value.close()), speech?.close(),
+      ]);
+      botService = undefined; creatingBotService = undefined; botMediaService = undefined;
+      const failure = results.find(result => result.status === 'rejected');
+      if (failure?.status === 'rejected') throw failure.reason;
+    }, resume: job => {
+      retiringBotRuntime = undefined;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, { type: 'data-cleared', companionId: job.companionId });
+    },
+    changed: () => { if (!botDataCleanup?.busy && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, { type: 'changed' }); },
+    report: error => logger?.error('companion-bot.data-cleanup', error),
+  });
+  await botDataCleanup.ready();
   ipcMain.handle(BOT_CHANNEL, async (event, input: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame)
       return { ok: false, error: '无权访问伙伴服务。' };
     const parsed = botRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };
-    try { return await (await ensureBotService()).handle(parsed.data); }
+    try {
+      if (parsed.data.type === 'companion.data.clear.status') return { ok: true, cleanup: await botDataCleanup!.status(parsed.data.companionId) };
+      if (parsed.data.type === 'companion.data.clear') {
+        if (!botDataCleanup!.busy && !(await ensureBotService()).store.getCompanion(parsed.data.companionId)) throw new Error('伙伴不存在。');
+        return { ok: true, cleanup: await botDataCleanup!.begin(parsed.data.companionId, parsed.data.requestId) };
+      }
+      return await (await ensureBotService()).handle(parsed.data);
+    }
     catch (error) { logger?.error('companion-bot.request', error); return { ok: false, error: error instanceof Error ? error.message : '伙伴服务暂不可用。' }; }
   });
   ipcMain.on(BOT_MEDIA_CLIPBOARD_CHANNEL,(event,conversationId:unknown)=>{
@@ -8078,7 +8114,7 @@ if (!hasSingleInstanceLock) {
     criticalConfirmationWindowManager = undefined;
     criticalConfirmationBroker?.dispose();
     criticalConfirmationBroker = undefined;
-    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !botService && !creatingBotService && !localSpeechService && !closeGlobalNetwork)) return;
+    if (quitAfterShutdown || (!workerClient && !embeddingTestIndex && !embeddingHttpIndex && !globalEmbeddingService && !embeddingDeviceCapability && !vcpEmbeddingGateway && !browserService && !captureToolsService && !dshLauncher && !musicService && !botService && !creatingBotService && !botDataCleanup && !localSpeechService && !closeGlobalNetwork)) return;
     event.preventDefault();
     if (applicationShutdownPromise) return;
 
@@ -8093,6 +8129,7 @@ if (!hasSingleInstanceLock) {
     const mcpClose = releaseLoopbackListeners();
     // Stop model processes before app.exit(), which bypasses will-quit.
     applicationShutdownPromise = (async (): Promise<void> => {
+      await botDataCleanup?.close().catch(error => logger?.error('companion-bot.data-cleanup.shutdown', error));
       await localSpeechService?.close().catch(error => logger?.error('local-speech.shutdown', error));
       // Fence/requeue bot events and stop its streams before closing the shared DSH Host.
       try { await (creatingBotService ? creatingBotService.then(service => service.shutdown(), () => undefined) : botService?.shutdown()); }

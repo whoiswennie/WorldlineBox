@@ -161,8 +161,24 @@ export function BotWorkspace({ api, mediaApi, speechApi, launcherApi, onOpenLaun
   }, [request, selectConversation]);
   useEffect(() => { if (isActive) void refresh(selected); }, [isActive, selected, refresh]);
   useEffect(() => {
-    if (!api || !isActive) return;
+    if (!api) return;
     const unsubscribe = api.onEvent(event => {
+      if (event.type === 'data-cleared') {
+        const room = snapshotRef.current?.conversations.find(item => item.id === selectedRef.current);
+        if (event.companionId === '*' || room?.memberIds.includes(event.companionId)) {
+          // A historical viewport must not retain erased rows when a fresh
+          // state page is empty. Invalidate in-flight history responses too.
+          ++generation.current; ++windowEpoch.current;
+          historyMode.current = false; latestSeen.current = 0; paging.current = false;
+          jumping.current = false; refreshAfterJump.current = false; preserveScroll.current = undefined;
+          locateAfterRender.current = undefined; sendAttempts.current.clear();
+          setBrowsingHistory(false); setNewMessages(false); setLoadingLatest(false); setStreams({}); setError('');
+          setSnapshot(current => current ? { ...current, messages: [], hasMore: false } : current);
+          setDraftFiles(current => ({ ...current, [selectedRef.current]: [] }));
+        }
+        if (isActive) void refresh(); return;
+      }
+      if (!isActive) return;
       if (event.type === 'text') {
         if (event.conversationId !== selectedRef.current) return;
         const message = snapshotRef.current?.messages.find(item => item.id === event.messageId && item.conversationId === event.conversationId);

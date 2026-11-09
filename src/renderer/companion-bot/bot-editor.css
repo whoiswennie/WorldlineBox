@@ -68,6 +68,16 @@
 .bot-editor-basics .bot-profile-preview { margin:0 0 24px; }
 .bot-editor-basics .bot-profile-preview .bot-avatar { border-radius:50%; }
 .bot-editor-basics .bot-profile-preview p { margin:5px 0 0; }
+.bot-data-clear { margin-top:28px;padding-top:22px;border-top:1px solid var(--ui-border-subtle); }
+.bot-data-clear h3 { margin:0 0 8px;font-size:13px;font-weight:550; }
+.bot-data-clear p,.bot-data-clear-progress span { display:block;color:var(--ui-content-secondary);font-size:11px;line-height:1.8; }
+.bot-data-clear p { margin:0 0 12px; }
+.bot-modal .bot-data-clear-danger { color:var(--ui-status-danger-content,#b43d4d);border-color:color-mix(in srgb,currentColor 25%,transparent);background:transparent; }
+.bot-modal .bot-data-clear-danger:hover { background:color-mix(in srgb,var(--ui-status-danger-content,#b43d4d) 7%,transparent); }
+.bot-data-clear-confirm,.bot-data-clear-progress { padding:14px;border:1px solid var(--ui-border-subtle);border-radius:10px;background:var(--ui-surface-hover); }
+.bot-data-clear-confirm>strong,.bot-data-clear-progress>strong { display:block;margin-bottom:7px;font-size:12px;font-weight:550; }
+.bot-data-clear-confirm>div { display:flex;justify-content:flex-end;gap:8px; }
+.bot-data-clear .bot-data-clear-complete { margin-top:10px; }
 @media(max-width:1000px) { .bot-modal.bot-companion-editor.has-personas { grid-template-columns:174px minmax(0,1fr); }.bot-settings-character { padding:20px 14px 15px; }.bot-settings-character-portrait { width:104px;height:116px; }.bot-editor-tabs { padding:5px 10px 18px; }.bot-editor-basics,.bot-settings-scroll,.bot-settings-capabilities { padding:22px; } }
 @media(max-width:760px) { .bot-modal.bot-companion-editor.has-personas { grid-template-columns:145px minmax(0,1fr); }.bot-settings-character { padding:18px 10px 12px; }.bot-settings-character-eyebrow { font-size:7px;letter-spacing:.8px; }.bot-settings-character-portrait { width:87px;height:98px;margin-top:15px; }.bot-settings-character>strong { font-size:16px; }.bot-modal .bot-editor-tabs button { padding:9px;font-size:11px;gap:7px; }.bot-editor-basics footer>small { max-width:48%; } }
 @media(max-width:560px) { .bot-modal.bot-companion-editor.has-personas { grid-template-columns:1fr;grid-template-rows:auto auto minmax(0,1fr); }.bot-settings-navigation { grid-column:1;grid-row:2;overflow:visible;border-right:0; }.bot-settings-character,.bot-settings-navigation-note { display:none; }.has-personas>.bot-editor-header { grid-column:1;grid-row:1; }.has-personas>.bot-editor-tabpanel,.has-personas>.bot-editor-basics { grid-column:1;grid-row:3; }.bot-editor-tabs { flex-direction:row;overflow-x:auto;padding:6px 12px;gap:5px; }.bot-modal .bot-editor-tabs button { width:auto;min-height:34px; }.bot-editor-tabs .bot-icon,.bot-modal .bot-editor-tabs button.is-active::after { display:none; }.bot-editor-header { padding:16px; }.bot-editor-basics,.bot-settings-scroll,.bot-settings-capabilities { padding:16px; }.bot-settings-card { padding:16px; }.bot-settings-profile-card { flex-wrap:wrap; }.bot-settings-profile-card>button { margin-left:auto; }.bot-editor-basics footer { flex-wrap:wrap; }.bot-editor-basics footer>small { max-width:none;width:100%; } }

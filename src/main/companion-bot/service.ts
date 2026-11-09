@@ -79,6 +79,7 @@ export class BotService {
   private memoryWorking = false;
   private memoryRun?: Promise<void>;
   private closed = false;
+  private closing?: Promise<void>;
   private ready = false;
   private detail?: string;
   constructor(private readonly options: BotServiceOptions) {
@@ -984,14 +985,18 @@ export class BotService {
     }
     this.scheduler.wake();
   }
-  async shutdown(): Promise<void> {
+  shutdown(): Promise<void> { return this.closing ??= this.stop(); }
+  private async stop(): Promise<void> {
     if (this.closed) return; this.closed = true; clearInterval(this.maintenance);
     await this.starting.catch(() => undefined);
     this.maintenanceAbort.abort(Object.assign(new Error('应用关闭，保留原会话。'), { code: 'BOT_SUSPEND' }));
+    // Close VCP promptly: it owns the native memory file handles. No slow DSH
+    // transport or maintenance request may postpone releasing those handles.
+    const memoryClosing = this.options.memory.close(), brainClosing = this.options.brain.close();
     await this.scheduler.close(); await this.memoryMaintenance.close();
     await Promise.allSettled([...this.nativeStops.values()]);
     await Promise.allSettled([...this.companionControls.values(), ...this.memoryWarmRuns.values(), ...this.sourceWithdrawalRuns.values()]);
     await this.restoringCompanions; await this.toolServer.close();
-    await Promise.allSettled([this.options.brain.close(), this.options.memory.close(), this.memoryRun]); this.store.close();
+    await Promise.allSettled([brainClosing, memoryClosing, this.memoryRun]); this.store.close();
   }
   }

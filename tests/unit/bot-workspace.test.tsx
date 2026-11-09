@@ -334,6 +334,17 @@ it('bounds a long live conversation while preserving access to evicted messages 
   await changed(); expect(visibleIds().at(-1)).toBe('m480');
   await click('回到最新'); expect(visibleIds()).toHaveLength(80); expect(visibleIds()[0]).toBe('m481'); expect(visibleIds().at(-1)).toBe('m560');
 });
+it('drops an erased conversation from a historical viewport instead of retaining cached old messages', async () => {
+  snapshots.a = snapshot([message('m3','a',3,'旧的最近消息')],true);
+  await mount();
+  override = request => request.type === 'state' && request.before ? Promise.resolve({ok:true,snapshot:snapshot([message('m1','a',1,'旧的早期消息')])}) : undefined;
+  await click('查看更早消息');
+  expect(transcript()).toContain('旧的早期消息');
+  snapshots.a = snapshot([]);
+  await emit({type:'data-cleared',companionId:'alice'});
+  expect(host.querySelectorAll('.bot-message')).toHaveLength(0);
+  expect(transcript()).not.toContain('旧的');
+});
 it('resets to the incoming page after an inactive gap instead of joining disconnected history', async () => {
   snapshots.a = snapshot(rows(1, 80)); await mount();
   snapshots.a = snapshot(rows(801, 880), true); await changed();

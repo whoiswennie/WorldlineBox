@@ -181,6 +181,7 @@ export class BotMemoryService {
       if (!Number.isSafeInteger(embedding.dimension) || embedding.dimension < 1 || !embedding.modelSignature) throw new Error('Built-in embedding profile is unavailable');
       const home = path.resolve(this.options.root, key);
       await mkdir(home, { recursive: true });
+      await atomicJson(path.join(home, 'worldlinebox-scope.json'), scope);
       // A force-retired process may leave proper-lockfile's ten-second lease.
       // Wait for its release/staleness before starting another process; the
       // original module alone owns stale-lock recovery and exclusive acquire.

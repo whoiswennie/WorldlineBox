@@ -8,6 +8,7 @@ import { BotTextField } from './BotTextField';
 import { BotPersonaTemplates } from './BotPersonaTemplates';
 import { BotCompanionAppearance } from './BotCompanionAppearance';
 import { BotIcon } from './BotIcon';
+import { BotCompanionDataClear } from './BotCompanionDataClear';
 import './bot-editor.css';
 
 const words = {
@@ -60,6 +61,7 @@ export function BotCompanionEditor({ kind, companion, companions, locale, api, i
       {builtin && <div className="bot-profile-preview"><BotAvatar companion={companion} large /><div><strong>{companion.name}</strong><p>{builtin.summary}</p>{companion.id === DEFAULT_BOT_COMPANION_ID && <small>{t.identity}</small>}</div></div>}
       <label>{t.name}<input name="name" value={name} maxLength={80} onChange={event => { setName(event.target.value); setSaved(false); }} disabled={saving} required /></label>
       {!!references.length && <details className="bot-character-reference"><summary>{t.reference}</summary>{references.map(reference => <figure key={reference.url}><figcaption>{reference.label}</figcaption><img alt={`${companion.name} · ${reference.label}`} src={botAssetUrl(reference.url)} loading="lazy" /></figure>)}</details>}
+      <BotCompanionDataClear api={api} companionId={companion.id} name={companion.name} locale={locale} onChanged={onPersonaChanged} />
       {error && <p className="bot-error" role="alert">{error}</p>}
       {saved && <p className="bot-settings-saved" role="status">{locale === 'zh-CN' ? '资料与任务设置已保存。' : 'Profile and task settings saved.'}</p>}
       <footer><small>{locale === 'zh-CN' ? '资料与任务执行设置一起保存。' : 'Profile and task execution settings are saved together.'}</small><button type="button" onClick={onCancel}>{t.close}</button><button type="submit" className="bot-editor-primary" disabled={saving || !name.trim() || !validConcurrency}>{saving ? locale === 'zh-CN' ? '正在保存…' : 'Saving…' : t.save}</button></footer>

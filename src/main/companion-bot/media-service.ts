@@ -86,6 +86,8 @@ export async function inspectBotSticker(value:string):Promise<{mimeType:string;a
 
 /** Independent immutable media store. No asset-library or VCP dependency. */
 export class BotMediaService {
+  private closed=false;
+  async close():Promise<void>{this.closed=true;await Promise.allSettled([...this.queues.values()]);this.manifests.clear();}
   private readonly root:string;
   private readonly builtinRoot:string;
   private readonly canUserAccessConversation?:BotMediaOptions['canUserAccessConversation'];
@@ -97,9 +99,11 @@ export class BotMediaService {
   constructor(options:BotMediaOptions){this.root=path.resolve(options.root);this.builtinRoot=path.resolve(options.builtinRoot);this.canUserAccessConversation=options.canUserAccessConversation;}
   private scope(conversationId:string){if(!safeId(conversationId))throw new Error('媒体会话无效。');return hash(conversationId);}
   private async serial<T>(conversationId:string,run:(manifest:Manifest,home:string)=>Promise<T>,signal?:AbortSignal):Promise<T>{
+    if(this.closed)throw new Error('伙伴附件正在清理，请稍后重试。');
     signal?.throwIfAborted();
     const key=this.scope(conversationId),previous=this.queues.get(key)||Promise.resolve();
     const pending=previous.catch(()=>undefined).then(async()=>{
+      if(this.closed)throw new Error('伙伴附件正在清理，请稍后重试。');
       signal?.throwIfAborted();const home=path.join(this.root,'conversations',key);await ensureDirectory(path.join(home,'objects'),signal);
       let manifest=this.manifests.get(key);
       if(!manifest){try{await assertBotMediaPhysicalPath(path.join(home,'manifest.json'));manifest=this.validate(JSON.parse(await readFile(path.join(home,'manifest.json'),'utf8')),conversationId);}
