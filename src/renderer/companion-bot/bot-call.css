@@ -95,9 +95,8 @@
 body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(--ui-layer-modal-backdrop,1000) + 20); }
 .bot-call-composer-host { position:relative;z-index:4;flex-shrink:0;padding:12px 24px 0;background:var(--ui-surface-raised); }
 .bot-call-composer-host .bot-composer-dock { padding:0;max-width:1140px;margin:0 auto; }
-.bot-call-composer-host .bot-composer { display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:'followup followup' 'draft draft' 'field field' 'tools send';gap:0 12px;max-width:none;padding:10px 14px 9px;border:1px solid var(--ui-border-control);border-radius:18px;background:color-mix(in srgb,var(--ui-surface-raised) 94%,transparent);box-shadow:0 5px 24px #17233b0d;backdrop-filter:blur(16px); }
+.bot-call-composer-host .bot-composer { display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:'draft draft' 'field field' 'tools send';gap:0 12px;max-width:none;padding:10px 14px 9px;border:1px solid var(--ui-border-control);border-radius:18px;background:color-mix(in srgb,var(--ui-surface-raised) 94%,transparent);box-shadow:0 5px 24px #17233b0d;backdrop-filter:blur(16px); }
 .bot-call-composer-host .bot-composer:focus-within { border-color:var(--ui-border-focus);box-shadow:0 0 0 3px color-mix(in srgb,var(--ui-action-accent) 8%,transparent); }
-.bot-call-composer-host .bot-composer>.bot-task-followup { grid-area:followup; }
 .bot-call-composer-host .bot-draft-attachments { grid-area:draft;max-height:76px; }
 .bot-call-composer-host .bot-attachment-limit { grid-column:1/-1; }
 .bot-call-composer-host .bot-composer>textarea { grid-area:field;min-height:48px;max-height:96px;padding:3px 4px 8px;font-size:13px; }

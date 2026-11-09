@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { botWorldCommandSchema, type BotWorldSnapshot } from './companion-bot-world';
-import { botTaskAnswerSchema, botEffectResolutionSchema, type BotTaskAttention, type BotTaskPendingEffect } from './companion-bot-task';
+import type { BotTaskAttention, BotTaskPendingEffect } from './companion-bot-task';
 import type { BotMediaRef } from './companion-bot-media';
 import { botMemoryMaintenanceSchemas } from './companion-bot-maintenance';
 import type { BotBrainContextSummary } from './companion-bot-context';
@@ -33,12 +33,21 @@ export interface BotTaskFollowupReceipt {
   state: 'queued' | 'delivered' | 'needs-attention' | 'failed' | 'cancelled';
 }
 export interface BotConversation { id: string; title: string; kind: 'direct' | 'group' | 'world' | 'peer'; memberIds: string[]; createdAt: string; participationMode?: BotParticipationMode; peerConversation?: boolean; userRole?: 'observer'; ownerId?:'user';dissolvedAt?:string; announcement?: BotGroupAnnouncement }
+/** Native DSH execution events belong to one message and one fresh session. */
+export interface BotExecution {
+  sessionId?: string;
+  phase?: string;
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+  question?: { id: string; text: string };
+  steps: Array<{ id: string; type: string; summary?: string; text?: string; toolName?: string; status?: string; at: string }>;
+}
 export interface BotMessage {
   id: string; eventId: string; conversationId: string; senderId: string; senderName: string;
   content: string; sequence: number; status: 'queued' | 'running' | 'sent' | 'failed' | 'cancelled'; createdAt: string; error?: string;
   attachments?: BotMediaRef[];
   timing?: BotReplyTiming;
   progress?: BotReplyProgress;
+  execution?: BotExecution;
   taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
@@ -73,7 +82,7 @@ export interface BotCompanionPresence {
   events?: BotCompanionPresenceEvent[];
 }
 export interface BotRuntimeStatus {
-  engine: 'worldlinebox'; memory: 'vcp-memory'; embedding: string; activeLanes: number;
+  engine: 'dsh-native'; memory: 'vcp-memory'; embedding: string; activeLanes: number;
   ready: boolean; detail?: string; dataRoot: string;
   modelContext?: { window: number; source: 'explicit' | 'metadata' | 'official-default' | 'unknown'; estimate: 'utf8-byte-upper-bound' };
 }
@@ -109,15 +118,14 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('conversation.announcement'), conversationId: id, content: z.string().max(4000).refine(value => !value.includes('\0')),
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional(), replyToTaskId: id.optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
-  z.strictObject({ type: z.literal('task.list'), conversationId: id, companionId: id.optional(), filter: z.enum(['all', 'active', 'done', 'issues']).default('all'), query: z.string().max(200).optional(), page: z.number().int().min(0).max(1000000).default(0), limit: z.number().int().min(1).max(30).default(6) }),
-  z.strictObject({ type: z.literal('task.get'), conversationId: id, taskId: id }),
-  z.strictObject({ type: z.literal('task.queue.control'), conversationId: id, companionId: id.optional(), operation: z.enum(['cancel_queued', 'cancel_all', 'clear_finished']), requestId: id }),
-  z.strictObject({ type: z.literal('task.control'), conversationId: id, taskId: id, requestId: id, operation: z.enum(['cancel', 'send', 'answer', 'resume', 'continue', 'pause', 'resume_paused', 'remove']),
-    text: z.string().min(1).max(16000).optional(), questionId: id.optional(), answers: z.array(botTaskAnswerSchema).min(1).optional(),
-    effectResolutions: z.array(botEffectResolutionSchema).min(1).max(64).optional() }),
+  z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
+
+
+
+
   z.strictObject({ type: z.literal('memory.search'), conversationId: id, companionId: id, query: z.string().trim().min(1).max(4000) }),
   z.strictObject({ type: z.literal('memory.remember'), conversationId: id, companionId: id, content: z.string().trim().min(1).max(24000), requestId: id.optional(), tags: z.array(z.string().trim().min(1).max(64)).max(12).optional() }),
   z.strictObject({ type: z.literal('memory.inspect'), conversationId: id, companionId: id }),

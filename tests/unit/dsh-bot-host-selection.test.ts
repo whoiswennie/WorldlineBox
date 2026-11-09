@@ -165,14 +165,14 @@ it('preserves the binding and explains when its original instance no longer exis
 });
 it('automatically prewarms only default and does not start profiles merely selected in the launcher', async () => {
   vi.useFakeTimers();
-  const f = fixture(), discover = vi.fn(async () => undefined);
-  Reflect.set(f.launcher, 'tasks', { discover });
+  const f = fixture();
+  f.ensureHost.mockResolvedValue(new NativeHostClient(43210, 'a'.repeat(64), 123));
   const observe = Reflect.get(f.launcher, 'observeExecutionCapabilities') as () => void;
   observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
-  expect(discover).toHaveBeenCalledExactlyOnceWith('default');
+  expect(f.ensureHost).toHaveBeenCalledExactlyOnceWith('default', undefined, { automatic: true });
   f.select('old-bot'); observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
   f.select('selected'); observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
-  expect(discover).toHaveBeenCalledExactlyOnceWith('default');
+  expect(f.ensureHost).toHaveBeenCalledExactlyOnceWith('default', undefined, { automatic: true });
 });
 it('invalidates Router capability facts only when the shared execution selection or runtime changes', () => {
   vi.useFakeTimers();
@@ -185,9 +185,9 @@ it('invalidates Router capability facts only when the shared execution selection
   f.records[0]!.isDefault = false; f.records[1]!.isDefault = true; observe.call(f.launcher); expect(changed).toHaveBeenCalledTimes(2);
 });
 
-it.each(['running', 'stopped', 'failed'])('does not confuse capability-discovery errors with the current Host state (%s)', async status => {
+it.each(['running', 'stopped', 'failed'])('preserves the actual instance state when native Host prewarming fails (%s)', async status => {
   vi.useFakeTimers(); const f = fixture(); f.records[0]!.status = status;
-  Reflect.set(f.launcher, 'tasks', { discover: vi.fn(async () => { throw new Error('capability registry is unavailable'); }) });
+  f.ensureHost.mockRejectedValue(new Error('Native Host startup is temporarily unavailable'));
   const observe = Reflect.get(f.launcher, 'observeExecutionCapabilities') as () => void;
   observe.call(f.launcher); await vi.advanceTimersByTimeAsync(350);
   const readiness = Reflect.get(f.launcher, 'executionReadiness');

@@ -42,7 +42,8 @@ it('upgrades v14 lifecycle metadata atomically and refuses data from a future ta
   const LifecycleDatabase = Database as new (filename: string, options?: { readonly?: boolean }) => { exec(sql: string): void; pragma(sql: string, options?: { simple?: boolean }): unknown; close(): void };
   const conversation = store.openDirect('alice');
   const source = store.enqueue({ conversationId: conversation.id, senderId: 'user', sourceMessageId: 'before-v15', content: '迁移前来源' }).events[0]!;
-  const queued = store.createTask({ conversationId: conversation.id, companionId: 'alice', sourceEventId: source.id, goal: '保留未执行的任务', extra: { workerPrompt: '原始输入' } });
+  const queued = { id: 'archived-task', goal: 'preserved historical task', extra: { workerPrompt: 'original prompt' } };
+  store.taskTransaction(sql => sql.prepare('INSERT INTO bot_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(queued.id, conversation.id, 'alice', source.id, queued.goal, 'queued', 'historical-attempt', null, null, null, null, source.receivedAt, source.receivedAt, JSON.stringify(queued.extra)));
   const filename = store.filename; store.close();
   const legacy = new LifecycleDatabase(filename);
   legacy.exec(`DROP TABLE bot_task_presence_events; DROP TABLE bot_task_history_clear_targets;
@@ -51,63 +52,14 @@ it('upgrades v14 lifecycle metadata atomically and refuses data from a future ta
     DROP INDEX bot_tasks_presence_active_v2; DROP INDEX bot_inbox_presence_active; PRAGMA user_version=14`);
   legacy.close(); store = new BotStore(filename);
   expect(store.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toMatchObject({ user_version: 19 });
-  expect(store.getTask(queued.id)).toMatchObject({ status: 'queued', goal: queued.goal, extra: { workerPrompt: '原始输入' } });
-  expect(store.companionPresence([{ id: 'alice', updatedAt: store.getCompanion('alice')!.updatedAt }], true).alice!.counts.activeTasks).toBe(1);
+  expect(store.taskTransaction(sql => sql.prepare('SELECT status,goal,extra_json FROM bot_tasks WHERE id=?').get(queued.id))).toMatchObject({ status: 'queued', goal: queued.goal, extra_json: JSON.stringify(queued.extra) });
+  expect(store.companionPresence([{ id: 'alice', updatedAt: store.getCompanion('alice')!.updatedAt }], true).alice!.counts.activeTasks).toBe(0);
   expect(store.taskTransaction(sql => sql.prepare("SELECT name FROM sqlite_master WHERE name IN ('bot_task_presence_events','bot_task_history_clear_targets','bot_tasks_visible_scope_status')").all())).toHaveLength(3);
   const futurePath = path.join(root, 'future.sqlite'), future = new LifecycleDatabase(futurePath);
   future.pragma('user_version=20'); future.close();
   expect(() => new BotStore(futurePath)).toThrow('拒绝降级');
   const unchanged = new LifecycleDatabase(futurePath, { readonly: true });
   try { expect(unchanged.pragma('user_version', { simple: true })).toBe(20); } finally { unchanged.close(); }
-});
-it('filters task backoff before limiting and gives ready cancellations precedence without spinning native retries', () => {
-  const conversation = store.openDirect('alice');
-  const source = store.enqueue({ conversationId: conversation.id, senderId: 'user', sourceMessageId: 'task-source', content: '任务来源' }).events[0]!;
-  for (let index = 0; index < 100; index++) store.createTask({ id: `blocked-${index}`, conversationId: conversation.id, companionId: 'alice', sourceEventId: source.id,
-    goal: '旧的未知执行等待核对', extra: { retryAt: Date.now() + 60000, nativeAttempted: true } });
-  const ready = store.createTask({ id: 'ready-101', conversationId: conversation.id, companionId: 'alice', sourceEventId: source.id, goal: '现在可执行' });
-  const stopped = store.createTask({ id: 'cancel-without-admission', conversationId: conversation.id, companionId: 'alice', sourceEventId: source.id,
-    goal: '尚未执行的取消', extra: { cancelRequested: true, nativeAttempted: false, retryAt: Date.now() + 60000 } });
-  expect(store.pendingTasks(100).map(task => task.id)).toEqual([stopped.id, ready.id]);
-  store.updateTask(stopped.id, { extra: { cancelRequested: true, nativeAttempted: true, retryAt: Date.now() + 60000 } });
-  expect(store.pendingTasks(100).map(task => task.id)).toEqual([ready.id]);
-});
-it('finds every active domain task without the UI recent-100 limit or another audience', async () => {
-  const conversation = store.openDirect('alice'), other = store.createGroup({ title: '别的受众', memberIds: ['alice'] });
-  const source = store.enqueue({ conversationId: conversation.id, senderId: 'user', sourceMessageId: 'active-source', content: '来源' }).events[0]!;
-  const old = store.createTask({ id: '000-old-active', conversationId: conversation.id, companionId: 'alice', sourceEventId: source.id, goal: '旧的进行中任务' });
-  await new Promise(resolve => setTimeout(resolve, 5));
-  for (let index = 0; index < 101; index++) {
-    const task = store.createTask({ id: `zzz-recent-${String(index).padStart(3, '0')}`, conversationId: conversation.id, companionId: 'alice', sourceEventId: source.id, goal: '已结束的近任务' });
-    store.updateTask(task.id, { status: 'succeeded' });
-  }
-  const foreign = store.enqueue({ conversationId: other.id, senderId: 'user', sourceMessageId: 'other', content: '别域来源' }).events[0]!;
-  store.createTask({ conversationId: other.id, companionId: 'alice', sourceEventId: foreign.id, goal: '别域活跃任务' });
-  expect(store.listTasks(conversation.id).some(task => task.id === old.id)).toBe(false);
-  expect(store.activeDomainTasks('alice', conversation.securityDomainId).map(task => task.id)).toEqual([old.id]);
-});
-it('migrates only unresolved cancelled native admissions into an indexed durable retirement queue', () => {
-  const conversation = store.openDirect('alice');
-  const admit = (id: string) => {
-    store.enqueue({ conversationId: conversation.id, senderId: 'user', sourceMessageId: id, content: '准备原生事件' });
-    const claim = store.claim({ workerId: 'fixture' })!;
-    store.bindEventNativeEpoch(claim.event.id, 1);
-    store.trackNativeAdmission({ eventId: claim.event.id, epoch: 1, nativeLaneId: claim.event.laneId, system: 'identity', cwd: root, inputBytes: 40 });
-    store.markDispatched(claim.event.id, claim.leaseToken, claim.event.id); store.cancelEvent(claim.event.id); return claim.event;
-  };
-  const unresolved = admit('unresolved'), resolved = admit('resolved');
-  expect(store.resolveCancelledNativeAdmission({ eventId: resolved.id, epoch: 1, absent: true })).toBe(true);
-  const unsent = store.enqueue({ conversationId: conversation.id, senderId: 'user', sourceMessageId: 'unsent', content: '从未投递' }).events[0]!;
-  store.cancelEvent(unsent.id);
-  const filename = store.filename; store.close();
-  const LegacyDatabase = Database as new (filename: string) => { exec(sql: string): void; close(): void };
-  const legacy = new LegacyDatabase(filename); legacy.exec('DROP TABLE bot_native_retirements; PRAGMA user_version=3'); legacy.close();
-  store = new BotStore(filename);
-  expect(store.pendingCancelledNativeAdmissions(unresolved.laneId).map(item => item.eventId)).toEqual([unresolved.id]);
-  expect(store.readyNativeRetirementLanes()).toEqual([unresolved.laneId]);
-  expect(store.beginNativeRetirement(unresolved.laneId)).toBe(true); expect(store.beginNativeRetirement(unresolved.laneId)).toBe(false);
-  expect(store.resolveCancelledNativeAdmission({ eventId: unresolved.id, epoch: 1, absent: true })).toBe(true);
-  expect(store.pendingCancelledNativeAdmissions(unresolved.laneId)).toEqual([]); expect(store.readyNativeRetirementLanes()).toEqual([]);
 });
 it('deduplicates one transport message and rejects reuse of its ID for different content', () => {
   const conversation = store.openDirect('alice');
@@ -189,25 +141,6 @@ it('paginates without duplicates and keeps queued, future and other-channel mess
   const history = store.recentMessages(conversation.id, { throughSequence: trigger.message.sequence, limit: 3 });
   expect(history.map(message => message.content)).toEqual(['历史3', '历史4', '当前请求']);
   expect(history.every(message => message.status === 'sent')).toBe(true);
-});
-it('binds DSH Sessions once per lane and rejects changed bindings', () => {
-  const conversation = store.openDirect('alice');
-  const event = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: '初始化会话' }).events[0]!;
-  expect(store.saveSession(event.laneId, 'session-a').sessionId).toBe('session-a');
-  expect(store.saveSession(event.laneId, 'session-a').sessionId).toBe('session-a');
-  expect(() => store.saveSession(event.laneId, 'session-b')).toThrow('已绑定');
-});
-it('binds tasks to their origin and rejects cross-lane or stale attempt receipts', () => {
-  const conversation = store.openDirect('alice');
-  const event = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: '做一项任务' }).events[0]!;
-  expect(() => store.createTask({ conversationId: conversation.id, companionId: 'bob', sourceEventId: event.id, goal: '非法' })).toThrow('不属于');
-  const task = store.createTask({ id: 'task-1', conversationId: conversation.id, companionId: 'alice', sourceEventId: event.id, goal: '生成文件' });
-  expect(() => store.updateTask(task.id, { status: 'succeeded', attemptId: 'old-attempt' })).toThrow('过期');
-  expect(store.updateTask(task.id, { status: 'running', dshTaskId: 'native-task-1' }).dshTaskId).toBe('native-task-1');
-  store.updateTask(task.id, { status: 'succeeded', summary: '完成' });
-  expect(() => store.updateTask(task.id, { status: 'running' })).toThrow('已结束');
-  expect(store.listTasks(conversation.id)).toHaveLength(1);
-  expect(store.createTask({ id: task.id, conversationId: conversation.id, companionId: 'alice', sourceEventId: event.id, goal: '生成文件' }).status).toBe('succeeded');
 });
 it('persists memory work atomically with the reply and fences late indexing acknowledgements', () => {
   const conversation = store.openDirect('alice');

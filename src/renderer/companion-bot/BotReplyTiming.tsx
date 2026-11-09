@@ -13,8 +13,8 @@ export function formatBotReplyDuration(milliseconds: number, locale: 'zh-CN' | '
 export function BotReplyTiming({ timing, locale }: { timing?: BotMessage['timing']; locale: 'zh-CN' | 'en' }) {
   if (!timing || !Number.isFinite(timing.elapsedMs) || timing.elapsedMs < 0) return null;
   const zh = locale === 'zh-CN';
-  const labels = zh ? { elapsedMs: '总计', queueMs: '首次排队', prepareMs: '上下文准备', firstTextMs: '收到消息至首字', modelMs: '主脑执行（含连接与工具）', finishMs: '收尾' }
-    : { elapsedMs: 'Total', queueMs: 'Initial queue', prepareMs: 'Context preparation', firstTextMs: 'Input to first text', modelMs: 'Brain execution (including connection and tools)', finishMs: 'Finalization' };
+  const labels = zh ? { elapsedMs: '总计', queueMs: '首次排队', prepareMs: '上下文准备', firstTextMs: '收到消息至首字', modelMs: 'DSH 执行（含连接与工具）', finishMs: '收尾' }
+    : { elapsedMs: 'Total', queueMs: 'Initial queue', prepareMs: 'Context preparation', firstTextMs: 'Input to first text', modelMs: 'DSH execution (including connection and tools)', finishMs: 'Finalization' };
   const details = (Object.keys(labels) as Array<keyof typeof labels>).flatMap(key => {
     const duration = timing[key];
     return duration !== undefined && Number.isFinite(duration) && duration >= 0 ? [`${labels[key]} ${formatBotReplyDuration(duration, locale)}`] : [];

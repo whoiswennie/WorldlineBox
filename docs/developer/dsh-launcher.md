@@ -43,27 +43,25 @@ Host 启动采用参数数组执行原封不动的官方 `web --no-open --host 1
 
 完成事件等待 Agent 空闲、子代理结束、队列与 session 序号稳定并 flush。只转发公开文本、工具输入输出、状态和交付物，不转发模型推理。事件保留有数量/字节上限；慢消费者断开，客户端遇到断流按失败处理并取消所属 Session，不会误报完成。
 
-普通任务继承原生默认预设、全部工具/技能与权限。显式工具/技能选择通过 Agent scope 的原生 registry 与工具 guard 实施，子代理继承边界；用户和其他伙伴的 registry 不变。仅思考任务使用新会话、只读权限和空工具集合。无伙伴专属模型或凭据覆盖。
+伙伴执行继承原生工具与技能，聊天、表情与 VCP 工具通过插件注入当前会话。原生子代理沿用伙伴工作区和当前能力。记忆编码与维护使用单独的原生会话，不构成另一层伙伴对话主脑。
 
-## 伙伴主脑循环
+## 每条消息的原生会话
 
-`CompanionService` 使用 `dsh` 能力接口，查询与执行由 `DshLauncher` 转交 `DshTaskBroker`。提交操作快速登记后，broker 连接所选实例 Host，准备授权工作区，创建原生 Session，再发送 prompt 并订阅事件。DSH 自己完成 Agent loop、工具调用、子代理、审批和存档。
+`BotService` 只负责持久消息、权限、记忆准备与界面投影。它通过 `BotDshBrain` 连接启动器提供的原生 Host；每条消息使用 `turn-<eventId>` 派生新 Session。同一消息重试固定原 Session，同一伙伴后续新消息创建另一个 Session。没有本地模型循环、任务中心或 `DshTaskBroker` 执行框架。
 
-Main 从伙伴状态读取 `companionName`；该字段不属于模型 TaskSpec。默认托管工作目录固定为库内 `dsh-tasks/<companionId>`，不按任务另建 cwd。桥接插件通过原生 `workspaceRegistry.create(cwd, companionName)` 登记工作区、用 `workspaceId` 创建 Session，并由原生 API 关联会话。显示名随伙伴改名更新，底层路径保持稳定；同名伙伴不合并目录。指定已有项目目录时不发送伙伴工作区标题。已存在的 Session 恢复保留原 cwd，不改写原生存档。
+伙伴工作目录固定为伙伴数据根目录下的 `workspaces/<SHA256(companionId)>`。桥接插件通过原生 workspace registry 把会话归入伙伴分组。显示名随伙伴改名更新，底层路径保持稳定；同名伙伴不合并目录。
 
-`tests/worker/dsh-companion-workspace-native.test.ts` 使用真实 RC.2 Web Host 验证并发会话归组、同名伙伴隔离、改名和重启持久化，模型请求数为零；证据写入 `artifacts/companion-workspace-native/result.json`。
+`sessions_list/read/send/wait/spawn` 使用 DSH 原生持久化、会话控制和子代理服务，在本人工作区显式发现历史、读取正文、发送消息或新建子会话。不会把全部旧会话自动放入新请求。
 
-broker 负责来源 ACL、授权证据、输入校验、恢复所有权、交付 JSON Schema 与真实产物检查。恢复固定原实例、版本、目录与策略，任意 sessionId 不能绕过任务 checkpoint；切换默认实例不影响在途任务。
+`BotStore` 保留旧数据库表与版本迁移以保护历史聊天、产物和来源授权，旧任务创建、控制、通知、调度及本地主脑保留状态 API 已删除。当前气泡保存原生执行事件和最终正文；原生 `present` 交付经过文件核验后投影为该气泡的附件。
 
-取消只发给所属 Session。传输失败仍尝试确认原生取消；无法确认时记为 interrupted，并阻止该 Session 恢复，直到终止确认。早到的补充输入等待初始 prompt 受理，再按 messageId 去重送入原生收件箱。
+取消只发给所属 Session。会话和消息的权限版本、稳定事件 ID 与原生 Host 绑定共同约束重试和回调；切换共享实例不会重新投递已绑定的消息。
 
-`DshTaskRecordStore` 保存独立的来源审计投影与按行索引，运行时环缓存不替代完整记录。DSH 的权威会话仍保存在原生 Home。启动指标分别记录连接/工作区准备与创建 Session 的耗时；端到端主脑交付时间需另行从真实用户消息计时。
+DSH 的权威会话仍保存在原生 Home。界面的过程详情是公开事件投影，不是独立的执行器或第二次模型总结。
 
 ## 插件、技能、终端和备份
 
-运行中插件变更调用同一 Host 的原生 plugin manager；停机操作使用所选运行版本的原生 CLI。原生应用失败/取消必须报告失败，不能只看命令已受理。断开安装请求会取消原生安装。插件是否热加载或需要重启由上游决定。插件市场搜索同时匹配展示名、npm 名和来源。
-
-技能安装仍有固定 Git commit、下载摘要与安全解包检查，目标为原生 agents/skills；文件变化直接供 DSH 发现。用户 Web UI 与伙伴能力查询读取同一个 registry。
+启动器不提供插件市场、技能市场、伙伴能力目录或实例插件管理 IPC。插件与技能的安装、移除和开关统一在原生 DSH 工作台完成。内部原生插件适配仍用于桥接 bundle 初始化、依赖恢复和隔离验收；它不提供另一套用户管理界面。
 
 用户终端是显式功能：ConPTY 和可选导出 dsh 命令使用相同原生 profile 与真实用户环境。它不参与伙伴任务执行，不覆盖机器上已有的官方命令。
 
@@ -73,14 +71,11 @@ broker 负责来源 ACL、授权证据、输入校验、恢复所有权、交付
 
 ```powershell
 npm run typecheck
-npx vitest run tests/unit/dsh-
-# 使用已安装版本，临时原生 Home；不请求模型
-npx vitest run tests/worker/dsh-capability-describe-native.test.ts
-# 以下显式使用已配置的真实模型，分别运行，不要并发操作同一个用户管理器
-$env:WORLDLINEBOX_DSH_ECOSYSTEM_REAL = '1'
-npx vitest run tests/worker/dsh-native-web-ecosystem.test.ts
-$env:WORLDLINEBOX_DESKTOP_TRACE_REAL = '1'
-npx vitest run tests/worker/companion-desktop-dsh-trace-real.test.ts
+node scripts/run-vitest-with-electron.mjs run tests/unit/bot-native-service.test.ts tests/unit/bot-store.test.ts
+# 真实 DSH + 内置 embedding + 脚本模型，只验证协议
+node scripts/verify-bot-real.mjs --protocol
+# 真实 DSH + 当前已配置模型，使用临时资料目录
+node scripts/verify-bot-real.mjs --real
 ```
 
-真实安装、市场入口、共享插件/技能、重启持久化、伙伴桌面任务与耗时证据见 [2026-10-25 验收](dsh-native-web-acceptance-2026-10-25.md)。历史日期文档描述当时实现，不是当前架构规范。
+当前原生会话验收证据写入 `artifacts/superagent-bot-development/real-acceptance/result.json` 与 `protocol-acceptance/result.json`。历史日期文档描述当时实现，不是当前架构规范。

@@ -123,9 +123,17 @@ it('discovers only readable recent public scopes by actual publication order wit
   const group = f.store.enqueue({ conversationId: f.group.id, senderId: 'bob', source: 'companion', recipientIds: [], content: 'GROUP_PUBLIC_BODY' });
   const peer = f.store.enqueue({ conversationId: f.peer.id, senderId: 'bob', source: 'companion', recipientIds: ['alice'], content: 'PEER_PUBLIC_BODY' });
   f.store.enqueue({ conversationId: f.group.id, senderId: 'bob', source: 'companion', kind: 'attention', recipientIds: [], content: 'PRIVATE_ATTENTION_BODY' });
-  f.store.enqueue({ conversationId: f.peer.id, senderId: 'task-service', source: 'task', kind: 'task_done', recipientIds: ['alice'], content: 'PRIVATE_TASK_DONE_BODY' });
-  f.store.enqueue({ conversationId: f.peer.id, senderId: 'task-service', source: 'task', kind: 'task_progress', recipientIds: ['alice'], content: 'PRIVATE_TASK_PROGRESS_BODY' });
-  f.store.enqueue({ conversationId: f.peer.id, senderId: 'legacy-task-source', source: 'task', kind: 'message', recipientIds: ['alice'], content: 'PRIVATE_LEGACY_TASK_BODY' });
+  // Seed retained historical rows through a neutral public fixture, then mark
+  // their persisted legacy source. Removed task APIs cannot create new work.
+  for (const [kind, senderId, content] of [
+    ['task_done', 'task-service', 'PRIVATE_TASK_DONE_BODY'], ['task_progress', 'task-service', 'PRIVATE_TASK_PROGRESS_BODY'], ['message', 'legacy-task-source', 'PRIVATE_LEGACY_TASK_BODY'],
+  ]) {
+    const legacy = f.store.enqueue({ conversationId: f.peer.id, senderId: 'bob', source: 'companion', recipientIds: ['alice'], content: content! });
+    f.store.taskTransaction(sql => {
+      sql.prepare('UPDATE bot_messages SET kind=?,sender_id=?,sender_type=? WHERE id=?').run(kind!, senderId!, 'system', legacy.message.id);
+      sql.prepare("UPDATE bot_inbox SET source='task' WHERE source_record_id=?").run(legacy.message.id);
+    });
+  }
   f.store.enqueue({ conversationId: f.otherDirect.id, senderId: 'user', content: 'OTHER_COMPANION_DIRECT_BODY' });
   // A UI placeholder exists before later messages but is published last.
   f.store.settle({ eventId: first.event.id, leaseToken: first.leaseToken, status: 'done', content: 'LATE_PUBLIC_REPLY_BODY' });

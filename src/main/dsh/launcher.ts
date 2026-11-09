@@ -3,28 +3,21 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, DSH_TASK_EVENT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance, type DshCompanionCapabilityState } from '../../shared/dsh-launcher';
+import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance, type DshCompanionCapabilityState } from '../../shared/dsh-launcher';
 import { atomicJson, copyTree, inventoryTree, readJson, redact, removeManaged } from './files';
 import { OperationStore } from './operations';
 import { RuntimeService } from './runtime-service';
 import { LauncherNetwork } from './launcher-network';
 import { OfficialVersionCatalogue } from './official-versions';
 import { resolvePortableTools, type PortableToolchain } from '../portable-tools';
-import { MarketplaceService } from './marketplace';
-import { SkillInstaller } from './skill-installer';
 import { PackDistributionService } from './pack-distribution';
 import { resolveDshWorkbenchIcon } from './workbench-icon';
 import { InstanceService, type DshHostStartupProgress } from './instance-service';
 import { DshCliTerminal } from './cli-terminal';
 import { PackService } from './packs';
 import { extractSealedArchive, writeSealedArchive } from './archive';
-import { PluginControls } from './plugin-controls';
-import { DshTaskBroker } from './task-broker';
-import { snapshotDshTaskExecution, type DshTaskExecutionOptions } from './task-execution';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import { configureWorkbenchBrowser } from './workbench-browser';
-import type { DshRecordQuery } from '../../shared/dsh-task-record';
-import { dshTaskCapabilityQuerySchema, type DshTaskCapabilities, type DshTaskCapabilityQuery } from '../../shared/dsh-task-spec';
 import type { CompanionInstanceLeaseKind } from './companion-instance-leases';
 import { restoreCompanionKeepAlive, type CompanionEnvironmentOwner } from './companion-keep-alive';
 import { DshHostUnavailableError } from './host-errors';
@@ -132,16 +125,6 @@ export class DshLauncher {
     void pending.finally(() => { if (this.botPreparations.get(id) === pending) this.botPreparations.delete(id); }).catch(() => undefined);
     return pending;
   }
-  async taskCapabilities(instanceId?: string, execution?: DshTaskExecutionOptions, query?: DshTaskCapabilityQuery): Promise<DshTaskCapabilities> {
-    await this.initialization;
-    if (this.closed) throw new Error('DSH 启动器正在关闭。');
-    const selected = instanceId ?? this.instances.list().find(instance => instance.isDefault)?.id;
-    if (selected && this.prewarming?.instanceId === selected) await this.prewarming.promise;
-    return this.tasks.discover(instanceId, snapshotDshTaskExecution({ ...execution, capabilityQuery: dshTaskCapabilityQuerySchema.parse(query ?? { kind: 'overview' }) }));
-  }
-  async taskRecordScope(recordId: string) { return (await this.tasks.recordMetadata(recordId)).scope; }
-  async readTaskRecord(query: DshRecordQuery) { return this.tasks.readRecord(query); }
-  async removeCompanionTaskRecords(owner: string, jobId: string = randomUUID()) { await this.tasks.removeCompanionRecords(owner, jobId); }
   private ready = false;
   private readonly windows = new Map<string, BrowserWindow>();
   private readonly openingWindows = new Map<string, Promise<void>>();
@@ -152,10 +135,6 @@ export class DshLauncher {
   private readonly cliTerminal: DshCliTerminal;
   private readonly network: LauncherNetwork;
   private readonly versions: OfficialVersionCatalogue;
-  private readonly marketplace: MarketplaceService;
-  private readonly skills: SkillInstaller;
-  private readonly plugins: PluginControls;
-  private readonly tasks: DshTaskBroker;
   private readonly distributions: PackDistributionService;
   private publications: NonNullable<DshLauncherState['packPublications']> = [];
   private tools?: Promise<PortableToolchain>;
@@ -212,9 +191,6 @@ export class DshLauncher {
     this.network = applicationNetwork ?? new LauncherNetwork(path.join(app.getPath('userData'), 'network'), onChanged);
     if (applicationNetwork) applicationNetwork.subscribe(onChanged);
     this.versions = new OfficialVersionCatalogue({ rootPath: this.rootPath, json: (url, signal) => this.network.json(url, signal), onChanged });
-    this.marketplace = new MarketplaceService({ rootPath: this.rootPath, network: this.network, onChanged });
-    this.skills = new SkillInstaller({ rootPath: this.rootPath, network: this.network });
-    this.plugins = new PluginControls(id => this.instances.ensureHost(id));
     this.runtimes = new RuntimeService({ rootPath: this.rootPath, onChanged, fetch: this.network.fetch,
       nodeTools: () => this.toolchain(), nodeInstallNetwork: signal => this.network.nodeInstallNetwork(signal) });
     this.instances = new InstanceService({ rootPath: this.rootPath, runtimes: this.runtimes, operations: this.operations, onChanged,
@@ -248,14 +224,6 @@ export class DshLauncher {
       if (!current) throw new Error('Create and select a DSH instance before opening its CLI terminal.');
       return this.instances.prepareCli(current.id);
     } });
-    this.tasks = new DshTaskBroker({ rootPath: this.rootPath, onChanged,
-      getHost: async (id, signal) => {
-        const selected = id ?? this.instances.list().find(value => value.isDefault)?.id;
-        if (!selected) throw new DshHostUnavailableError('configuration', '请先安装 DSH 并配置执行实例。');
-        const instance = this.instances.get(selected);
-        const client = await this.instances.ensureHost(selected, signal, { automatic: true });
-        return { instance, runtime: this.runtimes.get(instance.runtimeId), client };
-      }, onEvent: event => { const main = getMainWindow(); if (main && !main.isDestroyed()) main.webContents.send(DSH_TASK_EVENT_CHANNEL, event); } });
     this.initialization = this.init();
     // Surface startup failures through state requests without an unhandled rejection.
     void this.initialization.catch(error => { try { reportInitializationError?.(error); } catch { /* Preserve domain isolation even if diagnostics cannot be written. */ } });
@@ -263,9 +231,8 @@ export class DshLauncher {
   private toolchain(): Promise<PortableToolchain> { return this.tools ??= resolvePortableTools(); }
   private async init(): Promise<void> {
     await mkdir(this.rootPath, { recursive: true });
-    if (!this.applicationNetwork) await this.network.init(); await this.versions.init(); await this.marketplace.init();
+    if (!this.applicationNetwork) await this.network.init(); await this.versions.init();
     await this.operations.init(); await this.runtimes.init(); await this.instances.init(); await this.packs.init(); await this.cliTerminal.init();
-    await this.tasks.init();
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
     this.ready = true;
@@ -319,7 +286,7 @@ export class DshLauncher {
     const instance = this.instances.list().find(value => value.id === selected);
     const runtime = this.runtimes.list().find(value => value.id === instance?.runtimeId);
     const changes = this.operations.list().filter(operation => operation.status === 'succeeded' &&
-      ['instance.plugin', 'instance.plugin-toggle', 'skill.install', 'skill.toggle', 'skill.remove', 'instance.restore', 'backup.import', 'pack.import', 'pack.import-url'].includes(operation.kind)).map(operation => operation.id);
+      ['instance.restore', 'backup.import', 'pack.import', 'pack.import-url'].includes(operation.kind)).map(operation => operation.id);
     const mutation = changes.some(id => !this.capabilityMutations.has(id));
     for (const id of changes) this.capabilityMutations.add(id);
     const identity = JSON.stringify([selected, instance?.runtimeId, runtime?.contentSha256]);
@@ -369,9 +336,9 @@ export class DshLauncher {
     if (!instanceId || this.closed) return;
     this.prewarmTimer = setTimeout(() => {
       if (this.closed || revision !== this.prewarmRevision) return;
-      // Discovery mounts an idle native Agent and reads its real registries; no model turn is submitted.
+      // Warm the native Host without submitting a model turn.
       const promise = (async () => {
-        await this.tasks.discover(instanceId);
+        await this.instances.ensureHost(instanceId, undefined, { automatic: true });
       })().then(() => {
         if (revision === this.prewarmRevision) this.executionReadiness = { instanceId, status: 'ready', updatedAt: new Date().toISOString() };
       }, () => {
@@ -396,7 +363,7 @@ export class DshLauncher {
       runtimes: this.runtimes.list(), instances: this.instances.list(), snapshots: this.instances.snapshots(),
       packs: this.packs.list(), operations: this.operations.list(), cli: this.cliTerminal.state(),
       companionCapabilityRevisions: Object.fromEntries(this.instances.list().map(instance => [instance.id, this.companionCapabilityEpoch.get(instance.id) ?? 0])),
-      network: this.network.state(), versions: this.versions.state(), marketplace: this.marketplace.state(), packPublications: structuredClone(this.publications), tasks: this.tasks.state(), executionReadiness: this.executionReadiness };
+      network: this.network.state(), versions: this.versions.state(), packPublications: structuredClone(this.publications), executionReadiness: this.executionReadiness };
   }
   private async openWorkbench(instance: DshInstance, value: string): Promise<void> {
     const pending = this.openingWindows.get(instance.id); if (pending) return pending;
@@ -452,25 +419,11 @@ export class DshLauncher {
     const result = await dialog.showSaveDialog(parent, { title: '导出 DSH', defaultPath: `DSH.${extension}`, filters: [{ name: 'DSH package', extensions: [extension] }] });
     return result.canceled ? undefined : result.filePath;
   }
-  /** The companion service uses the same pinned task route as the validated launcher IPC. */
-  async requestTask(request: Extract<DshLauncherRequest, { type: 'task.run' | 'task.cancel' | 'task.terminate' | 'task.result' | 'task.events' | 'task.message' | 'task.record' }>, executionValue?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
-    if (executionValue && request.type !== 'task.run') throw new Error('Transient execution options can only be used to run a task.');
-    const execution = snapshotDshTaskExecution(executionValue);
-    await this.initialization;
-    if (this.closed) throw new Error('DSH 启动器正在关闭。');
-    return this.handle(request, execution);
-  }
-  private async handle(request: DshLauncherRequest, execution?: DshTaskExecutionOptions): Promise<DshLauncherResponse> {
+  private async handle(request: DshLauncherRequest): Promise<DshLauncherResponse> {
     if (request.type === 'state') return { ok: true, state: this.state() };
-    if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel', 'task.events', 'task.result', 'task.cancel', 'task.terminate'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
+    if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
     switch (request.type) {
-      case 'companion.environment.capabilities': {
-        const instance = await this.resolveCompanionInstance(request.companionId, request.name);
-        const release = this.acquireCompanionLease(instance.id, 'discovery');
-        try { return { ok: true, taskCapabilities: await this.taskCapabilities(instance.id, { companionCapabilities: true }, request.query ?? { kind: 'summary' }) }; }
-        finally { release(); }
-      }
       case 'companion.environment.create': case 'companion.environment.bind': {
         this.validateCompanion?.(request.companionId);
         this.companionProvisioning++;
@@ -510,25 +463,13 @@ export class DshLauncher {
       }
       case 'operation.cancel': this.operations.cancel(request.operationId); return { ok: true };
       case 'operation.clear-finished': return { ok: true, removedOperations: await this.operations.clearFinished(), state: this.state() };
-      case 'task.run': {
-        const continuedInstance = execution?.resume?.instanceId ?? (execution?.task?.session?.mode === 'resume'
-          ? this.tasks.state().find(record => record.id === execution.task!.session!.taskId)?.instanceId : undefined);
-        const instanceId = continuedInstance ?? request.instanceId ?? this.instances.list().find(value => value.isDefault)?.id;
-        if (!instanceId) throw new Error('Create and select a DSH execution instance first.');
-        return { ok: true, operationId: await this.operations.run(request.type, redact(request.title ?? 'DSH 执行任务'), instanceId, async op => {
-          await this.tasks.execute({ prompt: request.prompt, instanceId, sessionId: request.sessionId, title: request.title,
-            timeoutMs: request.timeoutMs, maxOutputBytes: request.maxOutputBytes }, op, execution);
-        }) };
-      }
-      case 'task.cancel': this.tasks.cancel(request.taskId); this.operations.cancel(request.taskId); return { ok: true };
-      case 'task.terminate': {
-        if (this.operations.list().some(operation => operation.id === request.taskId && ['queued', 'running', 'paused'].includes(operation.status))) this.operations.cancel(request.taskId);
-        await this.tasks.terminate(request.taskId); return { ok: true };
-      }
-      case 'task.result': return { ok: true, taskResult: this.tasks.result(request.taskId) };
-      case 'task.record': return { ok: true, taskRecord: await this.tasks.readRecord(request.query) };
-      case 'task.events': return { ok: true, ...await this.tasks.readEvents(request.taskId, request.after) };
-      case 'task.message': await this.tasks.sendInput(request.taskId, request.content, request.mode, request.messageId); return { ok: true };
+
+
+
+
+
+
+
       case 'cli.select': case 'instance.default': {
         // Terminal selection is separate from the shared execution default.
         this.instances.get(request.instanceId);
@@ -563,29 +504,6 @@ export class DshLauncher {
       case 'network.test': { const text = await this.network.test(); return { ok: true, text, state: this.state() }; }
       case 'versions.refresh': return { ok: true, operationId: await this.operations.run(request.type, '同步官方 DSH 发行版', undefined, op => this.versions.refresh(op.signal)) };
       case 'runtime.install': return { ok: true, operationId: await this.operations.run(request.type, `安装 DSH ${request.version} WebUI`, undefined, async op => { await this.runtimes.installNode(await this.versions.release(request.version, op.signal), op); }, request) };
-      case 'market.search': return { ok: true, marketPage: await this.marketplace.search(request) };
-      case 'market.plugin.install': {
-        const spec = await this.marketplace.pluginInstallSpec(request.entryId);
-        return this.instances.handle({ type: 'instance.plugin', instanceId: request.instanceId, action: 'add', spec });
-      }
-      case 'skill.inspect': return { ok: true, skillInspection: await this.skills.inspectSkill(request.repository, request.revision) };
-      case 'instance.plugins': return { ok: true, installedPlugins: await this.plugins.listPlugins(this.instances.get(request.instanceId)) };
-      case 'instance.plugin-toggle': return { ok: true, operationId: await this.operations.run(request.type, '启用或停用实例插件', request.instanceId, async op => {
-        const result = await this.plugins.setPluginEnabled(this.instances.get(request.instanceId), request.name, request.enabled, op.signal);
-        await this.instances.recordPluginChange(request.instanceId, result); await op.log(JSON.stringify(result));
-      }) };
-      case 'skill.list': {
-        const instance = this.instances.list().find(value => value.id === request.instanceId); if (!instance) throw new Error('Instance unavailable.');
-        return { ok: true, installedSkills: await this.skills.listSkills(instance) };
-      }
-      case 'skill.install': case 'skill.toggle': case 'skill.remove': return { ok: true, operationId: await this.operations.run(request.type, '管理实例技能', request.instanceId, async op => {
-        {
-          const instance = this.instances.list().find(value => value.id === request.instanceId)!;
-          if (request.type === 'skill.install') await this.skills.installSkill(instance, request.target, op);
-          else if (request.type === 'skill.toggle') await this.skills.setSkillEnabled(instance, request.name, request.enabled);
-          else await this.skills.removeSkill(instance, request.name);
-        }
-      }) };
       case 'runtime.import': {
         const source = await this.pick(request.sourceKind); if (!source) return { ok: true, cancelled: true };
         return { ok: true, operationId: await this.operations.run(request.type, '导入 DSH 运行版本', undefined, async op => { await this.runtimes.import(source, request.sourceKind, 'local-import', op); }) };
@@ -686,7 +604,6 @@ export class DshLauncher {
     clearTimeout(this.prewarmTimer); this.prewarmRevision++;
     clearTimeout(this.capabilityChangeTimer); for (const watcher of this.capabilityWatchers.splice(0)) watcher.close();
     await this.initialization.catch(() => undefined);
-    await this.tasks.shutdown();
     await this.cliTerminal.shutdown();
     await this.operations.shutdown();
     await this.instances.shutdown();

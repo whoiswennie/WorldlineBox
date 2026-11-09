@@ -6,7 +6,6 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import type { BotEvent } from '../../src/main/companion-bot/types';
-import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 
 class Memory extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw Error('fixture boundary'); }, embedding: async () => { throw Error('fixture boundary'); } }); }
@@ -22,8 +21,7 @@ class Brain extends BotDshBrain {
   handler: (input: BotDshRun) => Promise<string> = async () => '已收到';
   constructor() { super({ getHost: async () => { throw Error('fixture boundary'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
-    const text = input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : input.role === 'worker' ? '已核验任务' : await this.handler(input);
-    if (input.role === 'worker') await reportWorkerOutcome(input, { state: 'ready', summary: text, verification: ['受控脚本已完成并核验本轮目标。'] });
+    const text = input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.handler(input);
     return { text, status: 'succeeded', eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId) };
   }
   override async archive() {}
@@ -55,28 +53,6 @@ async function tool(input: BotDshRun, name: string, args: object) {
 }
 async function initial(service: BotService) { const state = (await service.handle({ type: 'state' })).snapshot!; return { conversationId: state.conversations[0]!.id, companionId: state.companions[0]!.id }; }
 const send = (service: BotService, conversationId: string, requestId: string, content = '你好') => service.handle({ type: 'message.send', conversationId, requestId, content });
-
-it('refuses task-result authorization for new work while preserving status control and admits fresh explicit user work', async () => {
-  const f = await fixture(), origin = await initial(f.service), events: BotEvent[] = []; let blocked = 0, inspected = 0;
-  f.brain.handler = async input => {
-    const event = f.service.store.getEvent(input.eventId)!; events.push(event);
-    const response = await fetch(input.callback.url, { method: 'POST', headers: { authorization: `Bearer ${input.callback.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'attempt-new-work', name: 'dsh_task', args: { goal: '验证一个有限任务' } }) });
-    const result = await response.json() as { ok: boolean; result?: { allowed: boolean; reason: string }; error?: string };
-    if (event.source === 'task') {
-      expect(response.status).toBe(200); expect(result.ok).toBe(true); expect(result.result).toMatchObject({ allowed: false }); expect(result.result?.reason).toContain('授权'); blocked++;
-      expect((await tool(input, 'dsh_task_control', { operation: 'status', taskId: event.payload.taskId })).status).toBe('succeeded'); inspected++;
-    } else { expect(response.status).toBe(200); expect(result.ok).toBe(true); }
-    return '本轮处理完成';
-  };
-  await send(f.service, origin.conversationId, 'root-1'); await waitFor(() => blocked === 1 && inspected === 1);
-  expect(f.service.store.listTasks()).toHaveLength(1);
-  expect(events.map(event => Number(event.payload.hop ?? 0))).toEqual([0, 1]);
-  expect(new Set(events.map(event => event.correlationId)).size).toBe(1);
-  await send(f.service, origin.conversationId, 'root-2'); await waitFor(() => blocked === 2 && inspected === 2);
-  expect(f.service.store.listTasks()).toHaveLength(2); expect(inspected).toBe(2);
-  expect(events[2]!.source).toBe('user'); expect(events[2]!.correlationId).not.toBe(events[0]!.correlationId);
-});
 
 it('bounds world-action feedback separately for two actors without copying private trigger content into world events', async () => {
   const f = await fixture(), origin = await initial(f.service), blocked = new Map<string, number>(), events: BotEvent[] = [];

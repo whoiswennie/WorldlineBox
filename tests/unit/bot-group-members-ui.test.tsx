@@ -98,7 +98,7 @@ it('shows real member presence without changing the owner or member management r
     activity: { taskId: 'private-task', conversationId: 'private-chat', title: '不应显示的私人任务正文', phase: 'using-tool', updatedAt: '2026-11-04T10:00:00Z' } } } });
   const fish = [...document.querySelectorAll('.bot-group-member')].find(row => row.querySelector('strong')?.textContent === '大肥鱼')!;
   expect(fish.querySelector('.bot-presence-dot')?.getAttribute('data-presence')).toBe('working');
-  expect(fish.querySelector('.bot-presence-text')?.textContent).toBe('执行任务 · 2 项任务');
+  expect(fish.querySelector('.bot-presence-text')?.textContent).toBe('执行任务');
   expect(document.querySelector('.is-owner .bot-presence-dot')).toBeNull(); expect(button('保存成员').disabled).toBe(true);
   expect(document.body.textContent).not.toContain('不应显示的私人任务正文');
   expect([...document.querySelectorAll('.bot-group-member')].find(row => row.querySelector('strong')?.textContent === 'GPT')?.querySelector('small')?.textContent).toBe('群聊成员');

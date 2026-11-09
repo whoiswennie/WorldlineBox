@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { botModelsMetadataUrl, resolveBotModelLimits } from '../../src/main/companion-bot/model-limits';
-import { appBrainRequest, fitsAppBrainRequest } from '../../src/main/companion-bot/app-brain-budget';
+import { fitsNativeModelEnvelope } from '../../src/main/companion-bot/native-model-budget';
 import { DEFAULT_MODEL_CONTEXT_WINDOW } from '../../src/shared/model-budget';
 import type { BotDshModel } from '../../src/main/companion-bot/dsh-brain';
 
@@ -55,29 +55,27 @@ describe('model-specific context provenance and output bounds', () => {
   });
 });
 
-it('allows a real million-token model beyond the old 100k character ceiling while retaining explicit stress-test limits', () => {
+it('admits large native envelopes according to the selected model capacity', () => {
   const model: BotDshModel = { ...deepseek, apiFormat: 'openai_chat', apiKey: 'fixture-no-billing' };
-  const body = appBrainRequest(model, '系统', [{ role: 'user', content: '中文'.repeat(60000) }], [], true);
-  expect(body.max_tokens).toBe(4096);
-  expect(fitsAppBrainRequest(body, model)).toBe(true);
-  expect(fitsAppBrainRequest(body, model, 100000)).toBe(false);
-  expect(fitsAppBrainRequest(body, { ...model, contextWindow: 32768 })).toBe(false);
+  const prompt = 'Chinese input '.repeat(30000);
+  expect(fitsNativeModelEnvelope(model, 'system', prompt)).toBe(true);
+  expect(fitsNativeModelEnvelope({ ...model, contextWindow: 32768 }, 'system', prompt)).toBe(false);
 });
 
-it('includes UTF8 input, output reservation and framing headroom in the hard request gate', () => {
+it('reserves output and framing headroom before a native request', () => {
   const model: BotDshModel = { model: 'fixture', baseUrl: 'https://fixture.invalid', apiFormat: 'openai_chat', apiKey: 'fixture', contextWindow: 4096, maxTokens: 256 };
-  const body = appBrainRequest(model, '', [{ role: 'user', content: '中'.repeat(1500) }], [], true);
-  expect(JSON.stringify(body).length).toBeLessThan(4096);
-  expect(fitsAppBrainRequest(body, model)).toBe(false);
+  const prompt = String.fromCodePoint(0x4e2d).repeat(1500);
+  expect(prompt.length).toBeLessThan(4096);
+  expect(fitsNativeModelEnvelope(model, '', prompt)).toBe(false);
 });
 
-
-it('uses the 100k default template while preserving a smaller advertised model window', () => {
+it('uses the default template while respecting a smaller discovered window', () => {
   const model: BotDshModel = { model: 'local-template', baseUrl: 'https://fixture.invalid', apiFormat: 'openai_chat', apiKey: 'fixture' };
   expect(resolveBotModelLimits(model)).toMatchObject({ window: 100000, maxTokens: 4096, source: 'unknown' });
   const discovered = resolveBotModelLimits(model, { id: model.model, context_window: 8192, max_output_tokens: 2048 });
   expect(discovered).toMatchObject({ window: 8192, maxTokens: 2048, source: 'metadata' });
   const limited = { ...model, contextWindow: discovered.window, maxTokens: discovered.maxTokens };
-  expect(fitsAppBrainRequest(appBrainRequest(limited, '系统', [{ role: 'user', content: '中'.repeat(3000) }], [], true), limited)).toBe(false);
-  expect(fitsAppBrainRequest(appBrainRequest(model, '系统', [{ role: 'user', content: '中'.repeat(3000) }], [], true), model)).toBe(true);
+  const prompt = String.fromCodePoint(0x4e2d).repeat(3000);
+  expect(fitsNativeModelEnvelope(limited, 'system', prompt)).toBe(false);
+  expect(fitsNativeModelEnvelope(model, 'system', prompt)).toBe(true);
 });

@@ -19,24 +19,19 @@ import { initialOperationNotifications, operationNotificationsReducer } from './
 import { LauncherNotification } from './LauncherNotification';
 import { OfficialVersionPicker } from './OfficialVersionPicker';
 import { LauncherOperationsPage } from './LauncherOperationsPage';
-import { LauncherMarketplace } from './LauncherMarketplace';
 import { PackSharing, PackUrlImport } from './PackSharing';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
-import type { WorldlineBoxBotApi } from '../../shared/companion-bot';
-import { CompanionCapabilitiesPage } from './CompanionCapabilities';
 import './launcher.css';
 
 export type LauncherRunRequest = (request: DshLauncherRequest) => Promise<DshLauncherResponse>;
-type LauncherPage = 'instances' | 'runtimes' | 'packs' | 'operations' | 'plugin-market' | 'skill-market' | 'companion-capabilities';
+type LauncherPage = 'instances' | 'runtimes' | 'packs' | 'operations';
 const navigation: readonly { page: LauncherPage; label: string; icon: IconName }[] = [
   { page: 'instances', label: 'instances', icon: 'box' }, { page: 'runtimes', label: 'runtimes', icon: 'download' },
-  { page: 'packs', label: 'packs', icon: 'archive' }, { page: 'plugin-market', label: 'pluginMarket', icon: 'grid' },
-  { page: 'skill-market', label: 'skillMarket', icon: 'smart' },
-  { page: 'companion-capabilities', label: 'companionCapabilities', icon: 'users' },
+  { page: 'packs', label: 'packs', icon: 'archive' },
   { page: 'operations', label: 'operations', icon: 'activity' },
 ];
 
-export function DshLauncher({ api, botApi }: { readonly api?: WorldlineBoxDshLauncherApi; readonly botApi?: WorldlineBoxBotApi }): ReactNode {
+export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi }): ReactNode {
   const t = useT();
   const [state, setState] = useState<DshLauncherState | null>(null);
   const [page, setPage] = useState<LauncherPage>('instances');
@@ -135,14 +130,10 @@ export function DshLauncher({ api, botApi }: { readonly api?: WorldlineBoxDshLau
         setError(message); return { ok: false, error: message };
       }
     }
-    if (['market.search', 'skill.list', 'skill.inspect', 'pack.inspect-url', 'instance.plugins', 'instance.open'].includes(request.type)) {
+    if (['pack.inspect-url', 'instance.open'].includes(request.type)) {
       try {
         const result = await api.request(request);
         if (!result.ok) setError(result.error);
-        else if (request.type === 'market.search' && result.marketPage) {
-          const marketPage = result.marketPage;
-          setState(previous => previous ? { ...previous, marketplace: { ...previous.marketplace, [request.kind === 'plugin' ? 'plugins' : 'skills']: marketPage } } : previous);
-        }
         return result;
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : t('launcher.errorFallback');
@@ -209,7 +200,7 @@ export function DshLauncher({ api, botApi }: { readonly api?: WorldlineBoxDshLau
         </aside>
         <main className="launcher-main">
           {!api || !connected ? <EmptyState icon="box" title={api && !error ? t('launcher.loading') : t('launcher.unavailable')} /> : !state?.supported ? <EmptyState icon="info" title={t('launcher.unsupported')} /> : <>
-            {page === 'companion-capabilities' ? <CompanionCapabilitiesPage api={api} botApi={botApi} onOpenLauncher={() => setPage('runtimes')} /> : page === 'runtimes' ? <RuntimePage state={state} disabled={requesting} run={run} onDelete={(runtime) => setDialog({ kind: 'delete-runtime', runtime })} /> : page === 'plugin-market' || page === 'skill-market' ? <LauncherMarketplace kind={page === 'plugin-market' ? 'plugin' : 'skill'} state={state} run={run} disabled={requesting} /> : page === 'packs' ? <PackPage state={state} disabled={requesting} onDialog={setDialog} run={run} /> : page === 'operations' ? <LauncherOperationsPage state={state} disabled={requesting} run={run} /> : selected ? <InstanceDetails api={api} busy={selectedBusy} instance={selected} key={selected.id} onDialog={setDialog} onError={setError} preparingStart={queuedStart === selected.id} run={run} state={state} /> : <EmptyState icon="box" title={t('launcher.noInstances')} description={t('launcher.noInstancesDescription')}><Button iconName={state.runtimes.length ? 'plus' : 'download'} onClick={state.runtimes.length ? openCreate : () => setPage('runtimes')} variant="primary">{t(state.runtimes.length ? 'launcher.create' : 'launcher.getRuntime')}</Button></EmptyState>}
+            {page === 'runtimes' ? <RuntimePage state={state} disabled={requesting} run={run} onDelete={(runtime) => setDialog({ kind: 'delete-runtime', runtime })} /> : page === 'packs' ? <PackPage state={state} disabled={requesting} onDialog={setDialog} run={run} /> : page === 'operations' ? <LauncherOperationsPage state={state} disabled={requesting} run={run} /> : selected ? <InstanceDetails api={api} busy={selectedBusy} instance={selected} key={selected.id} onDialog={setDialog} onError={setError} preparingStart={queuedStart === selected.id} run={run} state={state} /> : <EmptyState icon="box" title={t('launcher.noInstances')} description={t('launcher.noInstancesDescription')}><Button iconName={state.runtimes.length ? 'plus' : 'download'} onClick={state.runtimes.length ? openCreate : () => setPage('runtimes')} variant="primary">{t(state.runtimes.length ? 'launcher.create' : 'launcher.getRuntime')}</Button></EmptyState>}
           </>}
         </main>
       </div>

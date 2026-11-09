@@ -12,7 +12,7 @@ async function removeProfile(root: string, parent: string) {
   await rm(resolved, { recursive: true, force: true });
 }
 
-test('terminal navigation is removed, background selection stays responsive, workflows do not reflow, and the LLM store is global', async () => {
+test('terminal navigation is removed, background selection stays responsive, launcher navigation stays focused, and the LLM store is global', async () => {
   test.setTimeout(120_000);
   const parent = await realpath(tmpdir());
   const root = await mkdtemp(path.join(parent, 'worldlinebox-feedback-ui-'));
@@ -32,9 +32,7 @@ test('terminal navigation is removed, background selection stays responsive, wor
     // below go through the real Main handlers, with no open asset library.
     const fixture: DshLauncherState = { supported: true, rootPath: path.join(userData, 'dsh'), runtimes: [{ id: 'runtime-a', version: '0.2.1-alpha.2', adapter: 'node-cli-web-v1', nodeVersion: '24.15.0', platform: 'win32-x64', source: 'official', sourceSha256: 'a'.repeat(64), contentSha256: 'b'.repeat(64), fileCount: 1, byteLength: 1, installedAt: '' }],
       instances: ['a', 'b'].map(id => ({ id: `instance-${id}`, name: `环境 ${id.toUpperCase()}`, runtimeId: 'runtime-a', profile: 'web', status: 'stopped', createdAt: '', updatedAt: '', isDefault: id === 'a', homePath: '', agentsPath: '', workspacePath: '', browserPartition: `persist:fixture-${id}` })), snapshots: [], packs: [], operations: [],
-      cli: { selectedInstanceId: 'instance-a', activeTerminalId: 'terminal-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: ['a', 'b'].map(id => ({ id: `terminal-${id}`, instanceId: `instance-${id}`, runtimeVersion: '0.2.1-alpha.2', status: 'running', transport: 'conpty', cwd: 'C:\\fixture', cols: 80, rows: 24, output: 'PS> ', outputOffset: 0, outputRevision: 0 })) },
-      marketplace: { skills: { kind: 'skill', query: '', page: 1, pageSize: 24, total: 2, fetchedAt: new Date().toISOString(), stale: false,
-        entries: ['find-skills', 'pdf'].map(id => ({ kind: 'skill', id, name: id, repository: 'fixture-owner/skills', sourceUrl: 'https://github.com/fixture-owner/skills', description: 'UI acceptance fixture', category: 'skill', stars: 0, downloads: 1, riskLabels: [] })) } } };
+      cli: { selectedInstanceId: 'instance-a', activeTerminalId: 'terminal-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: ['a', 'b'].map(id => ({ id: `terminal-${id}`, instanceId: `instance-${id}`, runtimeVersion: '0.2.1-alpha.2', status: 'running', transport: 'conpty', cwd: 'C:\\fixture', cols: 80, rows: 24, output: 'PS> ', outputOffset: 0, outputRevision: 0 })) } };
     await application.evaluate(({ ipcMain, BrowserWindow }, value) => {
       const runtime = { state: value, calls: [] as DshLauncherRequest[] };
       (globalThis as typeof globalThis & { feedbackFixture?: typeof runtime }).feedbackFixture = runtime;
@@ -47,9 +45,6 @@ test('terminal navigation is removed, background selection stays responsive, wor
       ipcMain.handle('worldlinebox:dsh-launcher', async (_event, input: DshLauncherRequest) => {
         runtime.calls.push(input);
         if (input.type === 'cli.select') { await new Promise(resolve => setTimeout(resolve, 900)); runtime.state.cli!.selectedInstanceId = input.instanceId; emit(); }
-        if (input.type === 'market.search') return { ok: true, marketPage: runtime.state.marketplace!.skills };
-        if (input.type === 'skill.list') return { ok: true, installedSkills: [] };
-        if (input.type === 'skill.inspect') { await new Promise(resolve => setTimeout(resolve, 700)); return { ok: true, skillInspection: { repository: 'fixture-owner/skills', commit: 'a'.repeat(40), archiveUrl: 'https://example.com/archive.zip', archiveSha256: 'b'.repeat(64), targets: [{ name: 'pdf', description: 'Read PDFs', repository: 'fixture-owner/skills', commit: 'a'.repeat(40), archiveUrl: 'https://example.com/archive.zip', archiveSha256: 'b'.repeat(64), sourcePath: 'skills/pdf' }] } }; }
         if (input.type === 'terminal.close') { const terminal = runtime.state.cli!.terminals!.find(item => item.id === input.terminalId)!; terminal.status = 'stopped'; emit(); }
         if (input.type === 'terminal.remove') { runtime.state.cli!.terminals = runtime.state.cli!.terminals!.filter(item => item.id !== input.terminalId); runtime.state.cli!.activeTerminalId = runtime.state.cli!.terminals[0]?.id; emit(); }
         return { ok: true, state: runtime.state };
@@ -63,22 +58,7 @@ test('terminal navigation is removed, background selection stays responsive, wor
     await expect(page.getByRole('button', { name: '启动实例', exact: true })).toBeEnabled();
     await expect(page.locator('.launcher-navigation').getByRole('button', { name: '实时终端', exact: true })).toHaveCount(0);
 
-    await page.locator('.launcher-navigation').getByRole('button', { name: '技能市场', exact: true }).click();
-    const grid = page.locator('.launcher-market-grid'); await expect(grid).toBeVisible();
-    await expect(page.getByRole('combobox', { name: '安装到实例', exact: true })).toHaveValue('');
-    await page.getByRole('combobox', { name: '安装到实例', exact: true }).selectOption('instance-b');
-    await expect(page.locator('[data-management-target="instance-b"]')).toBeVisible();
-    const before = await grid.boundingBox();
-    await page.getByRole('button', { name: '查看技能', exact: true }).first().click();
-    const drawer = page.getByRole('dialog', { name: '选择仓库内的技能', exact: true });
-    await expect(drawer).toBeVisible();
-    expect(await grid.boundingBox()).toEqual(before);
-    await expect(drawer.getByRole('button', { name: '安装到「环境 B」', exact: true })).toBeVisible();
-    await expect(drawer.locator('[data-management-target="instance-b"]')).toBeVisible();
-    expect(await grid.boundingBox()).toEqual(before);
-    await page.screenshot({ path: test.info().outputPath('skill-drawer.png') });
-    await page.keyboard.press('Escape'); await expect(drawer).toHaveCount(0);
-    expect(await grid.boundingBox()).toEqual(before);
+    await expect(page.locator('.launcher-navigation button')).toHaveCount(4);
 
     const defaults = await page.evaluate(() => (window as unknown as { worldlinebox: { llm: WorldlineBoxLlmApi } }).worldlinebox.llm.getConfig());
     expect(defaults).toMatchObject({ ok: true, value: { apiFormat: 'openai_chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', hasKey: false } });

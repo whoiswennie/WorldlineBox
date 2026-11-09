@@ -1,15 +1,10 @@
 import { z } from 'zod';
-import { dshRecordQuerySchema, dshRecordPageSchema } from './dsh-task-record';
-import { dshMarketplaceStateSchema, dshMarketPageSchema, dshSkillInspectionSchema, dshSkillTargetSchema, dshInstalledSkillSchema, dshRepositorySchema, dshSkillNameSchema } from './dsh-marketplace';
-import { dshPackDistributionSchema, dshPackPublicationSchema } from './dsh-pack-distribution';
-import { dshInstalledPluginSchema } from './dsh-plugins';
-import { dshTaskInputSchema, dshTaskRecordSchema, dshTaskResultSchema, dshTaskEventSchema, type DshTaskEvent } from './dsh-tasks';
-import { dshTaskCapabilitiesSchema, dshTaskCapabilityQuerySchema } from './dsh-task-spec';
+import { dshPackDistributionSchema, dshPackPublicationSchema, dshRepositorySchema } from './dsh-pack-distribution';
+import { dshTaskCapabilitiesSchema } from './dsh-task-spec';
 
 export const DSH_LAUNCHER_CHANNEL = 'worldlinebox:dsh-launcher';
 export const DSH_LAUNCHER_CHANGED_CHANNEL = 'worldlinebox:dsh-launcher:changed';
 export const DSH_TERMINAL_OUTPUT_CHANNEL = 'worldlinebox:dsh-launcher:terminal-output';
-export const DSH_TASK_EVENT_CHANNEL = 'worldlinebox:dsh-launcher:task-event';
 
 const id = z.string().regex(/^[a-z0-9-]{1,80}$/);
 const name = z.string().trim().min(1).max(100);
@@ -135,9 +130,7 @@ export const dshLauncherStateSchema = z.object({
   operations: z.array(dshOperationSchema),
   cli: dshCliStateSchema.optional(),
   network: dshNetworkStateSchema.optional(), versions: dshVersionsStateSchema.optional(),
-  marketplace: dshMarketplaceStateSchema.optional(),
   packPublications: z.array(dshPackPublicationRecordSchema).optional(),
-  tasks: z.array(dshTaskRecordSchema).optional(),
   companionCapabilityRevisions: z.record(z.string(), z.number().int().nonnegative()).optional(),
   executionReadiness: z.object({ instanceId: id, status: z.enum(['warming', 'ready', 'cold', 'failed']), updatedAt: z.string() }).optional(),
 });
@@ -150,8 +143,6 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('companion.environment.bind'), companionId: z.string().min(1).max(160), name, instanceId: id }),
   z.strictObject({ type: z.literal('companion.environment.ensure'), companionId: z.string().min(1).max(160), name }),
   z.strictObject({ type: z.literal('companion.environment.open'), companionId: z.string().min(1).max(160), name }),
-  z.strictObject({ type: z.literal('companion.environment.capabilities'), companionId: z.string().min(1).max(160), name,
-    query: dshTaskCapabilityQuerySchema.optional() }),
   z.strictObject({ type: z.literal('companion.environment.configure'), companionId: z.string().min(1).max(160), name, keepAlive: z.boolean() }),
   z.strictObject({ type: z.literal('companion.environment.refresh'), companionId: z.string().min(1).max(160), name }),
   z.strictObject({ type: z.literal('companion.environment.upgrade'), companionId: z.string().min(1).max(160), name, runtimeId: id }),
@@ -168,13 +159,13 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('runtime.delete'), runtimeId: id }),
   z.strictObject({ type: z.literal('operation.cancel'), operationId: id }),
   z.strictObject({ type: z.literal('operation.clear-finished') }),
-  dshTaskInputSchema.extend({ type: z.literal('task.run') }),
-  z.strictObject({ type: z.literal('task.cancel'), taskId: id }),
-  z.strictObject({ type: z.literal('task.terminate'), taskId: id }),
-  z.strictObject({ type: z.literal('task.result'), taskId: id }),
-  z.strictObject({ type: z.literal('task.record'), query: dshRecordQuerySchema }),
-  z.strictObject({ type: z.literal('task.events'), taskId: id, after: z.number().int().min(-1).optional() }),
-  z.strictObject({ type: z.literal('task.message'), taskId: id, content: z.string().trim().min(1).max(16000), mode: z.enum(['steer', 'queue']), messageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional() }),
+
+
+
+
+
+
+
   z.strictObject({ type: z.literal('instance.upgrade'), instanceId: id, runtimeId: id }),
   z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id }),
   z.strictObject({ type: z.literal('instance.rename'), instanceId: id, name }),
@@ -198,18 +189,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('operation.pause'), operationId: id }),
   z.strictObject({ type: z.literal('operation.resume'), operationId: id }),
   z.strictObject({ type: z.literal('operation.retry'), operationId: id }),
-  z.strictObject({ type: z.literal('market.search'), kind: z.enum(['plugin', 'skill']), query: z.string().max(200), page: z.number().int().min(1).optional(), pageSize: z.number().int().min(1).max(100).optional(), refresh: z.boolean().optional() }),
-  z.strictObject({ type: z.literal('market.plugin.install'), instanceId: id, entryId: z.string().max(512) }),
-  z.strictObject({ type: z.literal('skill.inspect'), repository: dshRepositorySchema, revision: z.string().max(128).optional() }),
-  z.strictObject({ type: z.literal('skill.install'), instanceId: id, target: dshSkillTargetSchema }),
-  z.strictObject({ type: z.literal('skill.list'), instanceId: id }),
-  z.strictObject({ type: z.literal('skill.toggle'), instanceId: id, name: dshSkillNameSchema, enabled: z.boolean() }),
-  z.strictObject({ type: z.literal('skill.remove'), instanceId: id, name: dshSkillNameSchema }),
   z.strictObject({ type: z.literal('instance.logs'), instanceId: id }),
-  z.strictObject({ type: z.literal('instance.check'), instanceId: id }),
-  z.strictObject({ type: z.literal('instance.plugin'), instanceId: id, action: z.enum(['list', 'add', 'remove']), spec: z.string().trim().max(512).optional() }),
-  z.strictObject({ type: z.literal('instance.plugins'), instanceId: id }),
-  z.strictObject({ type: z.literal('instance.plugin-toggle'), instanceId: id, name: z.string().min(1).max(256), enabled: z.boolean() }),
   z.strictObject({ type: z.literal('snapshot.create'), instanceId: id, name }),
   z.strictObject({ type: z.literal('snapshot.restore'), snapshotId: id, name }),
   z.strictObject({ type: z.literal('snapshot.delete'), snapshotId: id }),
@@ -231,10 +211,7 @@ export const dshLauncherResponseSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), state: dshLauncherStateSchema.optional(),
     companionEnvironment: dshCompanionEnvironmentSchema.optional(),
     taskCapabilities: dshTaskCapabilitiesSchema.optional(),
-    marketPage: dshMarketPageSchema.optional(), skillInspection: dshSkillInspectionSchema.optional(), installedSkills: z.array(dshInstalledSkillSchema).optional(),
     packDistribution: dshPackDistributionSchema.optional(),
-    installedPlugins: z.array(dshInstalledPluginSchema).optional(),
-    taskResult: dshTaskResultSchema.optional(), taskEvents: z.array(dshTaskEventSchema).optional(), taskEventsHasMore: z.boolean().optional(), taskRecord: dshRecordPageSchema.optional(),
     instanceId: id.optional(), operationId: id.optional(), text: z.string().optional(), cancelled: z.boolean().optional(), removedOperations: z.number().int().min(0).optional() }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
@@ -243,5 +220,4 @@ export interface WorldlineBoxDshLauncherApi {
   request(input: DshLauncherRequest): Promise<DshLauncherResponse>;
   onChanged(listener: (state: DshLauncherState) => void): () => void;
   onTerminalOutput?(listener: (output: DshTerminalOutput) => void): () => void;
-  onTaskEvent?(listener: (event: DshTaskEvent) => void): () => void;
 }

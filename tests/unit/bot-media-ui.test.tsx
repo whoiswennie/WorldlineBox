@@ -16,7 +16,7 @@ const file: BotMediaRef = { id: 'owned-file', name: '任务说明.txt', mimeType
 const sticker: BotMediaRef = { id: 'builtin-sticker', name: '辉夜 你真棒', mimeType: 'image/webp', size: 1024, sha256: 'e'.repeat(64), url: 'worldlinebox://bot-media/public/animated', kind: 'sticker', packId: 'kaguya', animated: true };
 const base: BotSnapshot = { companions: [{ id: 'alice', name: 'Alice', persona: '认真', createdAt: at }, { id: 'bob', name: 'Bob', persona: '活泼', createdAt: at }],
   conversations: [{ id: 'a', title: '私聊甲', kind: 'direct', memberIds: ['user', 'alice'], createdAt: at }, { id: 'b', title: '私聊乙', kind: 'direct', memberIds: ['user', 'bob'], createdAt: at }],
-  messages: [], tasks: [], hasMore: false, runtime: { engine: 'worldlinebox', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 0, ready: true, dataRoot: 'fixture' } };
+  messages: [], tasks: [], hasMore: false, runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 0, ready: true, dataRoot: 'fixture' } };
 function deferred<T>() { let resolve!: (value: T) => void; return { promise: new Promise<T>(done => { resolve = done; }), resolve: (value: T) => resolve(value) }; }
 async function mount(mediaHandler: (request: BotMediaRequest) => Promise<BotMediaResponse>, sendHandler: (request: BotRequest) => Promise<BotResponse> = async () => ({ ok: true }), snapshot = base, mediaOptions:Partial<WorldlineBoxBotMediaApi>={}) {
   const requests: BotRequest[] = [], mediaRequests: BotMediaRequest[] = [];

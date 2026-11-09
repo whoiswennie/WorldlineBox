@@ -3,20 +3,26 @@ import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import type { ReadableStream as WebReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
-import { dshPackDistributionSchema, type DshPackDistribution, type DshPackPublication } from '../../shared/dsh-pack-distribution';
-import { dshRepositorySchema } from '../../shared/dsh-marketplace';
+import { dshPackDistributionSchema, dshRepositorySchema, type DshPackDistribution, type DshPackPublication } from '../../shared/dsh-pack-distribution';
 import { extractSealedArchive, parseSealedManifest } from './archive';
 import { createReadStream, createWriteStream, lstat, mkdir, writeFile } from './disk';
 import { atomicJson, contained, hashFile, removeManaged, safeRelative } from './files';
 import { fetchHttpsDownload, httpsDownloadUrl } from './https-download';
-import type { DshMarketplaceNetwork } from './marketplace';
+import type { HttpsDownloadFetch } from './https-download';
+
+export interface DshPackNetwork {
+  fetch: HttpsDownloadFetch;
+  json(url: string, signal: AbortSignal): Promise<unknown>;
+  githubCandidates(url: string): string[];
+  environment?(base: NodeJS.ProcessEnv): Promise<NodeJS.ProcessEnv>;
+}
 import type { OperationContext } from './operations';
 
 export interface PackPublishRequest {
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE'; headers?: Record<string, string>; body?: string | Uint8Array | Readable; signal: AbortSignal;
 }
 export interface PackDistributionOptions {
-  rootPath: string; network: DshMarketplaceNetwork;
+  rootPath: string; network: DshPackNetwork;
   exportArchive(packId: string, file: string, signal: AbortSignal): Promise<unknown>;
   importArchive?(file: string, operation: OperationContext): Promise<unknown>;
   request?(url: string, input: PackPublishRequest): Promise<Response>;
@@ -64,7 +70,7 @@ export class PackDistributionService {
     if (!this.options.importArchive) throw new Error('Pack import is unavailable.');
     await operation.update('Loading the public pack manifest', 5); const manifest = await this.inspectManifest(manifestUrl, operation.signal);
     if (!manifest.archive.url) throw new Error('The public manifest has no archive download URL.');
-    const staging = path.join(this.options.rootPath, 'marketplace', 'pack-staging');
+    const staging = path.join(this.options.rootPath, 'pack-downloads');
     await managedDirectory(this.options.rootPath, staging);
     const directory = contained(staging, randomUUID()); await mkdir(directory); const file = contained(directory, manifest.archive.fileName);
     try {

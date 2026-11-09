@@ -25,10 +25,9 @@ it('reads an actual peer response immediately even while the recipient event is 
 });
 it('reads both incoming and outgoing peer speech but not another companion user chat or internal Worker receipts', () => {
   const f = fixture(), request = f.say('claude', '请先把天气查好。'); f.say('fish', '已经收到你的话，正在查。');
-  const task = f.store.createTask({ id: 'fish-private-task', companionId: 'fish', conversationId: f.peer.id,
-    sourceEventId: request.events[0]!.id, goal: 'PRIVATE_WORKER_GOAL' });
-  f.store.enqueueTaskNotice({ conversationId: f.peer.id, senderId: 'task-service', source: 'task', sourceMessageId: 'private-result',
-    recipientIds: ['fish'], kind: 'task_done', content: 'PRIVATE_WEATHER_16.6', payload: { taskId: task.id } });
+  // A historical internal receipt remains in the journal but is not public peer speech.
+  f.store.taskTransaction(sql => sql.prepare('INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(
+    'legacy-private-receipt', 'legacy-task-event', f.peer.id, 'task-service', 'task-service', 'service', 'PRIVATE_WEATHER_16.6', 'sent', 'task_done', request.message.correlationId, request.message.createdAt));
   f.store.enqueue({ conversationId: f.fishDirect.id, senderId: 'user', recipientIds: [], content: 'FISH_USER_PRIVATE_SECRET' });
   const event = f.question(), value = JSON.stringify(f.reader.read(event, { operation: 'read', conversationId: f.peer.id }));
   expect(value).toContain('请先把天气查好'); expect(value).toContain('已经收到你的话');
@@ -53,7 +52,7 @@ it('paginates real publication order and reads long Unicode messages in full wit
     if (part.nextOffset === undefined) break;
     offset = part.nextOffset;
   }
-  expect(complete).toBe(text); expect(f.store.listTasks()).toEqual([]);
+  expect(complete).toBe(text);
 });
 it('retains cross-conversation source dependencies and refuses withdrawn public data while preserving the UI journal', () => {
   const f = fixture(), sent = f.say('fish', '要撤回的公开原话。'), event = f.question();

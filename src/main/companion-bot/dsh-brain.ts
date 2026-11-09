@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import type { AiApiFormat } from '../../shared/ai-endpoints';
 import type { NativeHostClient, NativeHostEvent } from '../dsh/native-host-client';
 import { DshHostUnavailableError, isDshHostUnavailableError } from '../dsh/host-errors';
-import type { BotAnsweredQuestion, BotWorkerEffectInspection, BotQuestionAnswerInspection, BotNativeCallRef } from '../../shared/companion-bot-task';
 
 export interface BotDshModel {
   apiFormat: AiApiFormat; model: string; baseUrl: string; apiKey: string;
@@ -16,7 +15,9 @@ export interface BotDshModel {
 }
 export interface BotDshTool { name: string; description: string; parameters: object }
 export interface BotDshCallback { url: string; token: string }
+export interface BotDshAudience { conversationId: string; kind: 'direct' | 'group' | 'peer' | 'world'; allowedConversationIds: string[] }
 export interface BotDshRun {
+  audience?: BotDshAudience;
   laneId: string; eventId: string; cwd: string; system: string; prompt: string;
   model: BotDshModel; tools: readonly BotDshTool[]; callback: BotDshCallback;
   role?: 'brain' | 'worker'; instanceId?: string; signal?: AbortSignal;
@@ -34,13 +35,10 @@ export interface BotDshRun {
   workerAccess?: 'scoped' | 'full';
   /** Extra controlled host tools augment the native worker catalog. */
   workerTools?: readonly BotDshTool[];
-  answeredQuestions?: BotAnsweredQuestion[];
   onEvent?(event: NativeHostEvent): void;
 }
-export interface BotDshResult { text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true }
+export interface BotDshResult { artifacts?: Array<{ path: string; description?: string }>; text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true }
 export interface BotDshCancelAck { accepted: boolean; result?: BotDshResult; absent?: boolean; paused?: boolean; sessionId?: string; eventId?: string; requiresAttachment?: boolean }
-export interface BotDshAccessInput { laneId: string; eventId: string; cwd: string; system: string; instanceId?: string; signal?: AbortSignal }
-export interface BotDshAccessAck { absent?: true; previousAccess?: 'scoped' | 'full'; workerAccess?: 'full'; sessionId: string; sameSessionId?: string; eventId: string }
 export class BotDshPauseAcknowledgedError extends Error {
   readonly code = 'BOT_PAUSE_ACKNOWLEDGED';
   constructor() { super('Native worker pause is durably confirmed; its original event and Session are retained.'); }
@@ -87,7 +85,7 @@ export class BotDshEffectUnknownError extends Error {
 type CancelInput = Omit<BotDshRun, 'prompt' | 'onEvent' | 'signal' | 'resumeHost'>;
 interface PendingStop { promise: Promise<BotDshCancelAck>; input: CancelInput; suspend: boolean }
 const cancellationInput = (input: Omit<BotDshRun, 'prompt' | 'onEvent'>): CancelInput => ({
-  laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, model: input.model,
+  laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, model: input.model, audience: input.audience,
   tools: input.tools, callback: input.callback, role: input.role, instanceId: input.instanceId,
   workerAccess: input.workerAccess, workerTools: input.workerTools, workspaceTitle: input.workspaceTitle,
   workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle,
@@ -160,11 +158,10 @@ export class BotDshBrain {
       acquireUse = () => this.options.acquireLease?.(host) ?? (() => undefined);
       attachmentStage = 'attach';
       created = await client.request('/bot/lanes', {
-        sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system,
+        sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, audience: input.audience,
         model: input.model, tools: input.tools, callback: input.callback, role: input.role ?? 'brain', workerAccess: input.workerAccess ?? 'scoped',
         workerTools: input.workerTools,
         workspaceTitle: input.workspaceTitle, workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle,
-        answeredQuestions: input.answeredQuestions,
       }, input.signal);
     } catch (error) {
       release?.();
@@ -223,7 +220,7 @@ export class BotDshBrain {
           terminal = true;
           const status = event.status ?? 'failed';
           const committed = (event as NativeHostEvent & { inputContextCommitted?: boolean }).inputContextCommitted;
-          const result = { text: event.text ?? '', sessionId, eventId: input.eventId, status,
+          const result = { text: event.text ?? '', sessionId, eventId: input.eventId, status, artifacts: event.artifacts,
             ...(typeof committed === 'boolean' ? { inputContextCommitted: committed } : {}) };
           if (input.signal?.aborted) throw new BotDshAbortAcknowledgedError(result);
           if (status === 'failed') {
@@ -285,7 +282,7 @@ export class BotDshBrain {
       // path. Network/inspection errors never become an absence assertion.
       if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw new BotDshDeliveryUnknownError(error, 'cancel');
     }
-    try { await client.request('/bot/lanes', { sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system,
+    try { await client.request('/bot/lanes', { sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, audience: input.audience,
       model: input.model, tools: input.tools, callback: input.callback, role: input.role ?? 'brain',
       workerAccess: input.workerAccess ?? 'scoped', workerTools: input.workerTools, workspaceTitle: input.workspaceTitle,
       workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle, cancelIntent: true, suspendIntent: suspend }, input.signal); }
@@ -310,35 +307,6 @@ export class BotDshBrain {
     if (!active) throw new Error('The native task is not attached or running.');
     const release = active.acquireUse();
     try { await active.client.request(`/bot/lanes/${sessionId}/input`, { ...input, eventId: active.eventId }); } finally { release(); }
-  }
-  /** Monotonic permission change only: no Agent restore, inbox delivery or turn. */
-  async upgradeWorkerAccess(input: BotDshAccessInput): Promise<BotDshAccessAck> {
-    const sessionId = BotDshBrain.sessionId(input.laneId);
-    try {
-      const result = await this.withHost(input.instanceId, input.signal, input.laneId, ({ client }) => client.request<BotDshAccessAck>(`/bot/lanes/${sessionId}/access`,
-        { laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, role: 'worker', workerAccess: 'full' }, input.signal));
-      if (result.sessionId !== sessionId || result.eventId !== input.eventId || result.absent !== true && (result.workerAccess !== 'full' || result.sameSessionId !== sessionId)) throw new BotDshDeliveryUnknownError('Native worker access upgrade was not confirmed.', 'attach');
-      return result;
-    } catch (error) {
-      if (input.signal?.aborted || isDshHostUnavailableError(error) || error instanceof BotDshDeliveryUnknownError || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
-      throw new BotDshDeliveryUnknownError(error, 'attach');
-    }
-  }
-  /** Native read-only persistence handle: no Agent restore and no synthetic
-   * interrupted-turn closers from the balanced SessionQuery projection. */
-  async inspectEffects(input: { laneId: string; eventId: string; callIds?: string[]; effects?: Array<BotNativeCallRef & { callId: string }>; instanceId?: string; signal?: AbortSignal }): Promise<BotWorkerEffectInspection[]> {
-    return this.withHost(input.instanceId, input.signal, input.laneId, ({ client }) => client.request('/bot/effects/inspect', { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, callIds: input.callIds, effects: input.effects }, input.signal));
-  }
-  async inspectQuestionAnswers(input: { laneId: string; eventId: string; questions: Array<BotNativeCallRef & { questionId: string; callId: string; answersHash: string }>; afterOffset?: number; afterOffsets?: Record<string, number>; instanceId?: string; signal?: AbortSignal }): Promise<BotQuestionAnswerInspection[]> {
-    return this.withHost(input.instanceId, input.signal, input.laneId, ({ client }) => client.request('/bot/questions/inspect', { sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, questions: input.questions, afterOffset: input.afterOffset, afterOffsets: input.afterOffsets }, input.signal));
-  }
-  async handoff(input: Omit<BotDshRun, 'prompt' | 'onEvent'>): Promise<BotDshHandoff> {
-    const sessionId = BotDshBrain.sessionId(input.laneId);
-    if (this.active.has(sessionId) || this.openingLanes.has(sessionId)) throw new Error('Handoff requires a completed native lane.');
-    return this.withHost(input.instanceId, input.signal, input.laneId, async ({ client }) => {
-      await client.request('/bot/lanes', { ...input, sessionId, role: input.role ?? 'brain', workerAccess: input.workerAccess ?? 'scoped' }, input.signal);
-      return client.request<BotDshHandoff>(`/bot/lanes/${sessionId}/handoff`, { eventId: input.eventId }, input.signal, 120000);
-    });
   }
   /** Release a completed encoder/worker from RAM while retaining its native
    * log and durable receipts. Never cancels an active task. */

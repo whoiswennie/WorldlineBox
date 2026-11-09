@@ -1,0 +1,22 @@
+.bot-execution { min-width:0;margin:0 0 13px;color:var(--bot-muted);font-size:11px; }
+.bot-execution:last-child { margin-bottom:0; }
+.bot-workspace .bot-execution-toggle { display:flex;align-items:center;gap:7px;width:100%;padding:0 0 9px;border:0;border-bottom:1px solid var(--bot-edge);border-radius:0;background:transparent;color:var(--bot-muted);text-align:left;font-size:11px; }
+.bot-execution-toggle>.bot-icon { flex-shrink:0;width:14px;height:14px; }
+.bot-execution-toggle>span:first-of-type { flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.bot-execution-toggle small { flex-shrink:0;font-size:10px;color:var(--bot-accent); }
+.bot-execution-session { margin:10px 0;overflow-wrap:anywhere;font-size:10px; }
+.bot-execution-contents { max-height:340px;overflow:auto;scrollbar-width:thin; }
+.bot-execution-contents[hidden] { display:none; }
+.bot-execution ol { margin:10px 0;padding:0;list-style:none; }
+.bot-execution li { margin:0 0 10px;padding-left:10px;border-left:2px solid var(--bot-edge); }
+.bot-execution-step { display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;line-height:1.6; }
+.bot-execution-step>span { flex:1;min-width:0;overflow-wrap:anywhere; }
+.bot-execution time { font-size:9px;font-variant-numeric:tabular-nums; }
+.bot-execution code { font-size:10px;overflow-wrap:anywhere; }
+.bot-execution details { margin-top:5px; }
+.bot-execution summary { cursor:pointer; }
+.bot-execution pre { margin:6px 0;white-space:pre-wrap;overflow-wrap:anywhere;font-size:10px;line-height:1.7; }
+.bot-execution-question { display:grid;gap:8px;margin-top:12px;color:var(--bot-text); }
+.bot-execution-question p { margin:0;white-space:pre-wrap;line-height:1.7; }
+.bot-execution-question textarea { width:100%;box-sizing:border-box;resize:vertical;min-height:60px;border:1px solid var(--bot-edge);border-radius:8px;padding:8px;color:var(--bot-text);background:var(--bot-panel-soft);font:inherit; }
+.bot-workspace .bot-execution-question button { justify-self:end;border:1px solid var(--bot-edge);border-radius:7px;padding:6px 10px;color:var(--bot-accent);background:var(--bot-panel-soft);font:inherit; }

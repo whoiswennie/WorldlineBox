@@ -6,7 +6,7 @@ import { BotStore } from '../../src/main/companion-bot/store';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService } from '../../src/main/companion-bot/memory-service';
-import { buildBotContext } from '../../src/main/companion-bot/context';
+import { buildNativeBotContext } from '../../src/main/companion-bot/context';
 import { BOT_TOOLS } from '../../src/main/companion-bot/tools';
 import type { BotRequest } from '../../src/shared/companion-bot';
 
@@ -55,10 +55,10 @@ it('contacts in the real peer channel and permits only the recipient to publish 
   expect(() => store.contactPeer(event, 'bob', 'contact-user', '请直接对用户说下午好', 'peer')).toThrow('目的地');
   expect(() => store.enqueue({ conversationId: target.id, senderId: 'alice', source: 'companion', recipientIds: ['bob'], content: '无宿主来源的越权投递' })).toThrow('发送者');
   expect(() => store.enqueue({ conversationId: target.id, senderId: 'alice', source: 'companion', recipientIds: ['bob'], content: '旧例外也不能跨入', contactSourceEventId: event.id, causationId: event.id, correlationId: event.correlationId })).toThrow('发送者');
-  const context = JSON.parse(buildBotContext({ companion: store.getCompanion('bob')!, event: delivered.events[0]!, conversation: peer,
-    participants: [store.getCompanion('alice')!, store.getCompanion('bob')!], messages: store.messagesPage(direct.id).items }).user);
-  expect(context.peerContact).toMatchObject({ responseDestination: 'user-direct', userPresent: false, privateHistoryTransferred: false });
-  expect(context.room.members).toEqual([{ id: 'alice', name: 'alice' }, { id: 'bob', name: 'bob' }]);
+  const context = JSON.parse(buildNativeBotContext({ companion: store.getCompanion('bob')!, event: delivered.events[0]!, conversation: peer,
+    companions: [store.getCompanion('alice')!, store.getCompanion('bob')!], memories: '', files: [] }).prompt);
+  expect(context.peerContact).toBeDefined();
+  expect(context.room.members).toEqual(['alice', 'bob']);
   expect(JSON.stringify(context)).not.toContain('无关私聊秘密');
   const claimed = store.claim({ workerId: 'recipient', excludeLaneIds: [event.laneId] })!;
   expect(claimed.event.id).toBe(delivered.events[0]!.id);
@@ -79,7 +79,7 @@ it('contacts in the real peer channel and permits only the recipient to publish 
 it('exposes observer history but denies all participation and control endpoints, while joining creates a distinct user-owned group', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-peer-authority-'));
   const brain = new BotDshBrain({ getHost: async () => { throw Error('Observer must not start DSH'); } });
-  const service = new BotService({ root, brain, brainRuntime: 'worldlinebox', memory: memory(path.join(root, 'memory')),
+  const service = new BotService({ root, brain, memory: memory(path.join(root, 'memory')),
     model: () => { throw Error('No provider configured'); }, onEvent: () => undefined });
   closes.push(async () => { await service.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-peer-authority-')) throw Error('Invalid owned fixture'); await rm(root, { recursive: true, force: true }); });
   await service.handle({ type: 'state' }); actors(service.store);
@@ -87,11 +87,11 @@ it('exposes observer history but denies all participation and control endpoints,
   const peer = service.store.getConversation(peerId)!;
   const message = service.store.enqueue({ conversationId: peerId, senderId: 'alice', source: 'companion', recipientIds: [], content: '双方已公开给旁观者的私聊记录' }).message;
   const queued = service.store.enqueue({ conversationId: peerId, senderId: 'alice', source: 'companion', recipientIds: ['bob'], content: 'bob稍后回答' }).events[0]!;
-  const task = service.store.createTask({ id: 'peer-task', conversationId: peerId, companionId: 'bob', sourceEventId: queued.id, goal: '不可由旁观者控制的任务', extra: { nativeAttempted: true, retryAt: Date.now() + 60000 } });
+
   const snapshot = (await service.handle({ type: 'state', conversationId: peerId })).snapshot!;
   expect(snapshot.conversations.find(room => room.id === peerId)).toMatchObject({ userRole: 'observer', memberIds: ['alice', 'bob'] });
-  expect(snapshot.messages.some(item => item.id === message.id)).toBe(true); expect(snapshot.tasks).toEqual([]);
-  expect(snapshot.brainContexts).toEqual({}); expect(snapshot.taskSummary).toBeUndefined();
+  expect(snapshot.messages.some(item => item.id === message.id)).toBe(true); expect(snapshot.tasks ?? []).toEqual([]);
+  expect(snapshot.brainContexts ?? {}).toEqual({}); expect(snapshot.taskSummary).toBeUndefined();
   expect((await service.handle({ type: 'history.search', conversationId: peerId, query: '私聊', limit: 20 })).history!.items.some(item => item.id === message.id)).toBe(true);
   const attacks = [
     { type: 'message.send', conversationId: peerId, requestId: 'user-peer-send', content: '插话' },
@@ -100,14 +100,9 @@ it('exposes observer history but denies all participation and control endpoints,
     { type: 'conversation.dissolve', conversationId: peerId },
     { type: 'memory.remember', conversationId: peerId, companionId: 'bob', content: '写入旁观资料' },
     { type: 'memory.maintenance.plan', conversationId: peerId, companionId: 'bob', kind: 'dream' },
-    { type: 'task.control', conversationId: peerId, taskId: task.id, requestId: 'cancel-peer-task', operation: 'cancel' },
-    { type: 'task.queue.control', conversationId: peerId, requestId: 'cancel-peer-queue', operation: 'cancel_all' },
   ] as BotRequest[];
   for (const attack of attacks) await expect(service.handle(attack)).rejects.toThrow('旁观');
   await expect(service.handle({ type: 'reply.cancel', messageId: queued.replyMessageId })).rejects.toThrow('旁观');
-  const status = (await service.handle({ type: 'task.get', conversationId: peerId, taskId: task.id })).task!;
-  expect(status).toMatchObject({ status: 'queued', goal: '伙伴私聊中的任务', continuationAvailable: false });
-  expect(status).not.toHaveProperty('pendingEffects'); expect(status).not.toHaveProperty('sessionId');
   const joined = (await service.handle({ type: 'conversation.peer.join', conversationId: peerId })).conversationId!;
   expect(joined).not.toBe(peerId); expect(service.store.getConversation(joined)).toMatchObject({ kind: 'group', ownerId: 'user', memberIds: ['alice', 'bob', 'user'] });
   expect(service.store.getConversation(peerId)).toEqual(peer);
@@ -167,67 +162,4 @@ it('retains the exact committed user-reply receipt across a store restart withou
   expect(store.replyPeerToUser(claimed.event, 'cold-answer', '下午好。')).toEqual(result);
   expect(() => store.peerReplyReceipt(claimed.event.id, 'cold-answer', '改成晚安')).toThrow('不匹配');
   expect(store.messagesPage(result.conversationId).items.filter(message => message.senderId === 'bob')).toHaveLength(1);
-});
-
-it('reconciles a recipient publication committed before its App tool receipt without sending another message', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-peer-answer-proof-'));
-  const service = new BotService({ root, brainRuntime: 'worldlinebox', brain: new BotDshBrain({ getHost: async () => { throw Error('No DSH'); } }),
-    memory: memory(path.join(root, 'memory')), model: () => { throw Error('No provider'); }, onEvent: () => undefined });
-  closes.push(async () => { await service.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-peer-answer-proof-')) throw Error('Invalid fixture'); await rm(root, { recursive: true, force: true }); });
-  await service.handle({ type: 'state' }); actors(service.store);
-  const { event } = source(service.store), contact = service.store.contactPeer(event, 'bob', 'contact-answer-proof', '请发消息给用户', 'user');
-  expect(contact.accepted).toBe(true); if (!contact.accepted) throw Error('Expected contact');
-  const claimed = service.store.claim({ workerId: 'reply-proof', excludeLaneIds: [event.laneId] })!;
-  service.store.bindEventNativeEpoch(claimed.event.id, 1);
-  const result = service.store.replyPeerToUser(claimed.event, 'answer-committed', '下午好。');
-  const call = { laneId: claimed.event.laneId, eventId: claimed.event.id, callId: 'answer-committed', name: 'companion_reply_user', args: { message: '下午好。' } };
-  const key = `effect:${claimed.event.id}:${call.callId}`;
-  expect(service.store.getMetadata(key)).toBeUndefined();
-  expect(await service.reconcileToolReceipt(call)).toEqual({ state: 'committed', result });
-  expect(await service.reconcileToolReceipt(call)).toEqual({ state: 'committed', result });
-  await expect(service.reconcileToolReceipt({ ...call, args: { message: '不同内容' } })).rejects.toThrow('不匹配');
-  expect(service.store.messagesPage(result.conversationId).items.filter(message => message.senderId === 'bob')).toHaveLength(1);
-});
-
-it('recovers a legacy contact receipt as its actual old group without replaying or relabeling it as a private delivery', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-peer-legacy-'));
-  const service = new BotService({ root, brainRuntime: 'worldlinebox', brain: new BotDshBrain({ getHost: async () => { throw Error('No DSH'); } }),
-    memory: memory(path.join(root, 'memory')), model: () => { throw Error('No provider'); }, onEvent: () => undefined });
-  closes.push(async () => { await service.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-peer-legacy-')) throw Error('Invalid fixture'); await rm(root, { recursive: true, force: true }); });
-  await service.handle({ type: 'state' }); actors(service.store);
-  const { event } = source(service.store), old = service.store.createGroup({ title: '旧版已投递群', memberIds: ['alice', 'bob'] });
-  const delivered = service.store.enqueue({ conversationId: old.id, source: 'companion', senderId: 'alice', recipientIds: [], content: '过去已真实发送的请求' }).message;
-  const claimed = service.store.claim({ workerId: 'legacy-receipt-fixture' }); expect(claimed?.event.id).toBe(event.id);
-  service.store.bindEventNativeEpoch(event.id, 1);
-  service.store.setMetadata(`peer-contact-receipt:${event.id}:old-contact`, JSON.stringify({ recipientId: 'bob', conversationId: old.id, messageId: delivered.id }));
-  const before = service.store.messagesPage(old.id).items.length;
-  const proof = await service.reconcileToolReceipt({ laneId: event.laneId, eventId: event.id, callId: 'old-contact', name: 'companion_contact', args: { companionId: 'bob' } });
-  expect(proof).toMatchObject({ state: 'committed', result: { sent: true, destination: 'legacy-group', conversationKind: 'group', conversationId: old.id } });
-  expect(JSON.stringify(proof)).not.toContain('目标与用户的私聊');
-  expect(await service.reconcileToolReceipt({ laneId: event.laneId, eventId: event.id, callId: 'old-contact', name: 'companion_contact', args: { companionId: 'bob' } })).toEqual(proof);
-  expect(service.store.messagesPage(old.id).items).toHaveLength(before);
-  expect(service.store.conversations().some(room => room.kind === 'peer')).toBe(false);
-});
-
-it('rejects a changed contact message after delivery committed but before the main tool receipt was saved', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-peer-fingerprint-'));
-  const service = new BotService({ root, brainRuntime: 'worldlinebox', brain: new BotDshBrain({ getHost: async () => { throw Error('No DSH'); } }),
-    memory: memory(path.join(root, 'memory')), model: () => { throw Error('No provider'); }, onEvent: () => undefined });
-  closes.push(async () => { await service.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-peer-fingerprint-')) throw Error('Invalid fixture'); await rm(root, { recursive: true, force: true }); });
-  await service.handle({ type: 'state' }); actors(service.store);
-  const { event } = source(service.store), target = service.store.openDirect('bob');
-  const claimed = service.store.claim({ workerId: 'contact-recovery-fixture' }); expect(claimed?.event.id).toBe(event.id);
-  service.store.bindEventNativeEpoch(event.id, 1);
-  const delivered = service.store.contactPeer(event, 'bob', 'contact-committed', '请向用户说下午好。', 'user');
-  expect(delivered.accepted).toBe(true);
-  const call = { laneId: event.laneId, eventId: event.id, callId: 'contact-committed', name: 'companion_contact',
-    args: { companionId: 'bob', destination: 'user', message: '  请向用户说下午好。  ' } };
-  const key = `effect:${event.id}:${call.callId}`, count = service.store.messagesPage(delivered.conversationId).items.length;
-  expect(service.store.getMetadata(key)).toBeUndefined();
-  await expect(service.reconcileToolReceipt({ ...call, args: { ...call.args, message: '改为向用户说晚安。' } })).rejects.toThrow('回执内容不匹配');
-  expect(service.store.getMetadata(key)).toBeUndefined();
-  expect(service.store.messagesPage(delivered.conversationId).items).toHaveLength(count);
-  expect(await service.reconcileToolReceipt(call)).toMatchObject({ state: 'committed', result: { sent: true, destination: 'user', conversationKind: 'peer', conversationId: delivered.conversationId } });
-  expect(service.store.messagesPage(delivered.conversationId).items).toHaveLength(count);
-  expect(service.store.messagesPage(target.id).items).toEqual([]);
 });

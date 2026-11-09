@@ -4,9 +4,9 @@ import { z } from 'zod';
 import type { BotDshCallback, BotDshModel } from './dsh-brain';
 import type { BotBrain } from './brain-router';
 import type { BotMemoryService, BotMemoryMessage, BotMemoryScope, BotMemoryWrite } from './memory-service';
-import { appBrainRequest, fitsAppBrainRequest } from './app-brain-budget';
+import { fitsNativeModelEnvelope } from './native-model-budget';
 import { resolveBotModelLimits } from './model-limits';
-import { captureCapacity, loadCapturePlan, type CapturePiece } from './memory-capture-plan';
+import { captureCapacity, freezeCaptureResult, loadCapturePlan, type CapturePiece } from './memory-capture-plan';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 
 const captureSchema = z.strictObject({ notes: z.array(z.strictObject({
@@ -34,7 +34,7 @@ const SEGMENT_CAPTURE_PROMPT = `${BOT_MEMORY_CAPTURE_PROMPT}
 // Keep policy 1 byte-for-byte for already admitted encoder receipts. A new
 // policy has separate event/plan identities and cannot replay an old model
 // result under a changed system prompt.
-export const BOT_MEMORY_CAPTURE_POLICY = 2 as const;
+export const BOT_MEMORY_CAPTURE_POLICY = 3 as const;
 export const BOT_MEMORY_CAPTURE_PROMPT_V2 = BOT_MEMORY_CAPTURE_PROMPT
   .replace('提取以后确实需要记住的明确偏好、决定、更正、承诺、关系和未决事项；普通寒暄或一次性问题返回空notes。',
     `记忆包括明确事实，也包括我们实际发生的互动经历，并非只保存永久偏好。
@@ -42,6 +42,14 @@ export const BOT_MEMORY_CAPTURE_PROMPT_V2 = BOT_MEMORY_CAPTURE_PROMPT
 例如用户询问桌面文件、追问能否交给执行器，应记录这次具体需求及尚未执行的状态；不能因为用户没有说“记住”就忽略有实质内容的互动。
 没有稳定事实时，可以用“互动经历”标签保存一条简短、带时间和状态的经历；不要推断这代表长期兴趣或人格。
 纯问候、无内容应答、重复信息或没有可追溯内容的交流才返回空notes。`);
+
+function requireIndexedReceipt(receipt: unknown, sourceEventId: string): void {
+  const value = receipt && typeof receipt === 'object' ? receipt as Record<string, unknown> : {};
+  const expectedId = createHash('sha256').update(sourceEventId).digest('hex');
+  const indexed = value.state === 'indexed' || value.indexed === true || Array.isArray(value.receipts) && value.receipts.some(row =>
+    row && typeof row === 'object' && row.id === expectedId && row.state === 'indexed');
+  if (!indexed) throw Object.assign(new Error('Memory diary is durable but its indexing receipt is not confirmed'), { code: 'MEMORY_SYNC_TIMEOUT' });
+}
 
 export interface BotMemoryCaptureInput {
   brain: Pick<BotBrain, 'run'> & Partial<Pick<BotBrain, 'archive'>>;
@@ -57,7 +65,10 @@ export interface BotMemoryCaptureInput {
   answerMessageId?: string;
   contextEpoch?: number;
   /** Omitted only for pre-policy jobs whose model receipts must remain stable. */
-  policyVersion?: 1 | 2;
+  policyVersion?: 1 | 2 | 3;
+  completed?: boolean;
+  capturedAt?: string;
+  nativeDeliveries?: readonly { path: string; description?: string }[];
   signal?: AbortSignal;
   onRemember?(input: BotMemoryWrite): void;
 }
@@ -67,7 +78,8 @@ export interface BotMemoryCaptureInput {
 export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ notes: number }> {
   input.signal?.throwIfAborted();
   const policy = input.policyVersion ?? 1;
-  if (policy !== 1 && policy !== BOT_MEMORY_CAPTURE_POLICY) throw new Error('Unsupported memory capture policy');
+  if (![1, 2, BOT_MEMORY_CAPTURE_POLICY].includes(policy)) throw new Error('Unsupported memory capture policy');
+  if (policy === 3 && input.completed !== true) throw new Error('Interaction diaries require a confirmed completed native turn');
   const capturePrompt = policy === 1 ? BOT_MEMORY_CAPTURE_PROMPT : BOT_MEMORY_CAPTURE_PROMPT_V2;
   const segmentPrompt = policy === 1 ? SEGMENT_CAPTURE_PROMPT : SEGMENT_CAPTURE_PROMPT.replace(BOT_MEMORY_CAPTURE_PROMPT, capturePrompt);
   const policySuffix = policy === 1 ? '' : `-v${policy}`;
@@ -86,7 +98,7 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
   const job = createHash('sha256').update(input.jobId).digest('hex').slice(0, 24);
   const limits = resolveBotModelLimits({ ...input.model, maxTokens: Math.min(input.model.maxTokens ?? 4096, 4096) });
   const model = { ...input.model, maxTokens: limits.maxTokens };
-  const fits = (system: string, text: string) => text.length <= DEFAULT_MODEL_CONTEXT_CHARS && fitsAppBrainRequest(appBrainRequest(model, system, [{ role: 'user', content: text }], [], true), model);
+  const fits = (system: string, text: string) => text.length <= DEFAULT_MODEL_CONTEXT_CHARS && fitsNativeModelEnvelope(model, system, text);
   const answerRecord = input.messages.find(message => message.id === input.answerMessageId && message.role === 'assistant');
   const answerSource = { messageId: input.answerMessageId ?? null, role: 'assistant', senderId: answerRecord?.senderId ?? input.scope.companionId,
     senderName: answerRecord?.senderName ?? null, occurredAt: answerRecord ? new Date(answerRecord.timestamp).toISOString() : null,
@@ -95,7 +107,7 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
     ...(input.answer ? [{ kind: 'answer' as const, index: 0, points: Array.from(input.answer) }] : [])];
   const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const sourceHash = hash({ scope: input.scope, sourceEventId: input.sourceEventId, sourceMessages, publishedAnswer: input.answer, publishedAnswerSource: answerSource,
-    ...(policy === 1 ? {} : { policyVersion: policy }) });
+    ...(policy === 1 ? {} : { policyVersion: policy }), ...(policy === 3 ? { capturedAt: input.capturedAt, nativeDeliveries: input.nativeDeliveries ?? [], completed: true } : {}) });
   const partIdentity = (pieces: CapturePiece[]) => hash({ sourceHash, pieces }).slice(0, 24);
   const ranges = (pieces: CapturePiece[]) => pieces.map(piece => { const unit = units[piece.unit]!;
     return { kind: unit.kind, messageId: unit.kind === 'message' ? sourceMessages[unit.index]!.messageId : answerSource.messageId,
@@ -110,6 +122,33 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
     }), publishedAnswer: pieces.filter(piece => units[piece.unit]!.kind === 'answer').map(piece => units[piece.unit]!.points.slice(piece.start, piece.end).join('')).join(''),
     publishedAnswerSource: answerSource });
   await mkdir(input.cwd, { recursive: true });
+  let written = 0;
+  if (policy === 3) {
+    const excerpt = (text: string, limit = 1600) => { const points = Array.from(text); return points.length <= limit ? text : points.slice(0, limit).join('') + `\n[已节选，完整正文共 ${points.length} 字，可按消息 ID 回查]`; };
+    const sourceIds = [...new Set([...sourceMessages.map(message => message.messageId), ...(input.answerMessageId ? [input.answerMessageId] : [])])];
+    const deliveries = input.nativeDeliveries ?? [];
+    const body = [
+      '互动日记：本次原生 DSH 会话已完成。此状态确认会话执行结束，不能单独证明正文所述外部操作全部发生。',
+      `来源事件：${input.sourceEventId}`, `伙伴：${input.scope.companionId}`, `会话受众：${input.scope.securityDomainId}`,
+      `原始时间：${input.capturedAt ?? sourceMessages[0]?.occurredAt ?? '未提供'}`,
+      `原始发言共 ${sourceMessages.length} 条，以下最多展示 4 条节选。`,
+      ...sourceMessages.slice(0, 4).map(message => `原始发言者：${message.senderName ?? message.senderId ?? message.role} (${message.senderId ?? message.role})\n消息 ID：${message.messageId}\n发言时间：${message.occurredAt}\n原始发言节选：${excerpt(message.content, 1200)}`),
+      `伙伴公开答复（${input.answerMessageId ?? '未提供消息 ID'}，仅记录说过的内容）：\n${excerpt(input.answer, 2400)}`,
+      deliveries.length ? `原生 present 已核验交付共 ${deliveries.length} 项（最多展示前 16 项）：\n${deliveries.slice(0, 16).map(item => `${excerpt(item.path, 256)}${item.description ? ` · ${excerpt(item.description, 160)}` : ''}`).join('\n')}` : '本次没有原生 present 交付记录。',
+      `完整交互可通过来源事件与消息 ID 回查（共 ${sourceIds.length} 条，以下最多 16 个 ID）：${sourceIds.slice(0, 16).join(',')}`,
+    ].join('\n\n');
+    const isExcerpt = sourceMessages.length > 4 || sourceIds.length > 16 || sourceMessages.some(message => Array.from(message.content).length > 1200)
+      || Array.from(input.answer).length > 2400 || deliveries.length > 16 || deliveries.some(item => Array.from(item.path).length > 256 || Array.from(item.description ?? '').length > 160) || Array.from(body).length > 11000;
+    const diary: BotMemoryWrite = {
+      sourceEventId: `${input.sourceEventId}:interaction:v3`, sourceRootEventId: input.sourceEventId, sourceMessageIds: sourceIds,
+      tags: '互动日记,原生会话已完成', waitForIndex: true,
+      content: `${excerpt(body, 11000)}\n\nisExcerpt: ${isExcerpt}`,
+    };
+    const receipt = await input.memory.remember(input.scope, diary, input.signal);
+    if (receipt && typeof receipt === 'object' && 'withdrawn' in receipt && receipt.withdrawn === true) throw Object.assign(new Error('Interaction diary sources were withdrawn'), { code: 'MEMORY_SOURCE_WITHDRAWN' });
+    requireIndexedReceipt(receipt, diary.sourceEventId);
+    input.signal?.throwIfAborted(); input.onRemember?.(diary); written++;
+  }
   const plan = await loadCapturePlan({ cwd: input.cwd, key: hash({ jobId: input.jobId, scope: input.scope, sourceEventId: input.sourceEventId,
     ...(policy === 1 ? {} : { policyVersion: policy }) }), sourceHash, epoch,
     units: units.map(unit => unit.points), legacyFits: fits(capturePrompt, prompt),
@@ -128,31 +167,39 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
   // Freeze offsets rather than silently recutting a partially written job when
   // the selected model changes. No over-capacity request or false success.
   if (fragments.some(fragment => !fits(fragment.system, fragment.prompt))) throw captureCapacity();
-  let written = 0;
   for (const fragment of fragments) {
     input.signal?.throwIfAborted();
     const laneId = `memory-encoder-${domain}-epoch-${plan.epoch}-job-${job}${policySuffix}${fragment.suffix}`;
-    const response = await input.brain.run({ role: 'brain', laneId, eventId: fragment.eventId, cwd: input.cwd, system: fragment.system, prompt: fragment.prompt,
-      model, tools: [], callback: input.callback, signal: input.signal });
-    // App receipts remain durable for replay; release this isolated encoder's
-    // transient context before any VCP write, including invalid terminal output.
-    await input.brain.archive?.(laneId); input.signal?.throwIfAborted();
-    if (response.status !== 'succeeded') throw new Error(`Memory encoder did not finish: ${response.status}`);
-    let json: unknown;
-    try { json = JSON.parse(response.text); } catch { throw new Error('Memory encoder did not return the required JSON object'); }
-    const result = captureSchema.safeParse(json);
-    if (!result.success) throw new Error(`Memory encoder returned invalid notes: ${result.error.message}`);
-    for (let index = 0; index < result.data.notes.length; index++) {
-      input.signal?.throwIfAborted(); const note = result.data.notes[index]!;
+    const encode = async () => {
+      const response = await input.brain.run({ role: 'brain', laneId, eventId: fragment.eventId, cwd: input.cwd, system: fragment.system, prompt: fragment.prompt,
+        model, tools: [], callback: input.callback, signal: input.signal });
+      if (policy !== 3) await input.brain.archive?.(laneId);
+      input.signal?.throwIfAborted();
+      if (response.status !== 'succeeded') throw new Error(`Memory encoder did not finish: ${response.status}`);
+      let json: unknown;
+      try { json = JSON.parse(response.text); } catch { throw new Error('Memory encoder did not return the required JSON object'); }
+      const parsed = captureSchema.safeParse(json);
+      if (!parsed.success) throw new Error(`Memory encoder returned invalid notes: ${parsed.error.message}`);
+      return parsed.data;
+    };
+    let result: z.infer<typeof captureSchema>;
+    if (policy === 3) {
+      try { result = await freezeCaptureResult({ cwd: input.cwd, key: hash({ jobId: input.jobId, fragment: fragment.eventId, policy }), sourceHash,
+        produce: encode, validate: value => captureSchema.parse(value), signal: input.signal }); }
+      finally { await input.brain.archive?.(laneId); }
+    } else result = await encode();
+    for (let index = 0; index < result.notes.length; index++) {
+      input.signal?.throwIfAborted(); const note = result.notes[index]!;
       const write: BotMemoryWrite = { content: `${note.content}\n\n来源事件：${input.sourceEventId}\n来源消息：${fragment.sourceLabelIds.join(',')}`
         + (fragment.provenance ? `\n来源分段：${JSON.stringify(fragment.provenance)}` : ''),
       tags: note.tags.join(','), sourceEventId: `${input.sourceEventId}:capture:${policy === 1 ? '' : `v${policy}:`}${fragment.noteKey}${index}`, sourceRootEventId: input.sourceEventId,
-      sourceMessageIds: fragment.sourceIds };
+      sourceMessageIds: fragment.sourceIds, ...(policy === 3 ? { waitForIndex: true } : {}) };
       const receipt = await input.memory.remember(input.scope, write, input.signal);
       input.signal?.throwIfAborted();
       if (receipt && typeof receipt === 'object' && 'withdrawn' in receipt && receipt.withdrawn === true) {
         throw Object.assign(new Error('Memory capture sources were withdrawn; remaining fragments were not encoded.'), { code: 'MEMORY_SOURCE_WITHDRAWN' });
       }
+      if (policy === 3) requireIndexedReceipt(receipt, write.sourceEventId);
       input.onRemember?.(write); written++;
     }
   }

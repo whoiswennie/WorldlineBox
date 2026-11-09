@@ -20,6 +20,7 @@ async function fixture() {
   const memory = new class extends BotMemoryService {
     override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
     override async appendHistory() { return { appended: [] }; }
+    override async operationReceipt() { return { found: false }; }
     override async update(scope: BotMemoryScope, input: BotMemoryUpdate) { return update(scope, input); }
     override async recall(scope: BotMemoryScope, input: Parameters<BotMemoryService['recall']>[1]) { return recall(scope, input); }
     override async catalog(_scope: BotMemoryScope, input: object) { return { items: [], tags: [], received: input }; }
@@ -27,7 +28,7 @@ async function fixture() {
     override async close() {}
   }({ root, runtime: async () => { throw new Error('No fixture runtime'); }, embedding: async () => { throw new Error('No fixture model'); } });
   const host = vi.fn(async () => { throw new Error('DSH must not be used for memory management'); });
-  const service = new BotService({ root, brain: new BotDshBrain({ getHost: host }), brainRuntime: 'worldlinebox', memory,
+  const service = new BotService({ root, brain: new BotDshBrain({ getHost: host }), memory,
     model: () => ({ apiFormat: 'openai_chat', apiKey: 'no-paid-request', baseUrl: 'http://127.0.0.1:9', model: 'fixture' }), onEvent: () => undefined });
   const state = (await service.handle({ type: 'state' })).snapshot!, conversationId = state.conversations[0]!.id;
   cleanups.push(async () => { await service.shutdown(); await rm(root, { recursive: true, force: true }); });
@@ -82,22 +83,23 @@ async function recoveryFixture(operation: ManagedOperation = 'update') {
   const memory = new class extends BotMemoryService {
     override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
     override async appendHistory() { return { appended: [] }; }
-    override async operationReceipt(scope: BotMemoryScope, kind: ManagedOperation, input: ManagedInput) { return operationReceipt(scope, kind, input); }
+    override async operationReceipt(scope: BotMemoryScope, kind: ManagedOperation, input: ManagedInput, signal?: AbortSignal) { return operationReceipt(scope, kind, input, signal); }
     override async update(scope: BotMemoryScope, input: BotMemoryUpdate) { return update(scope, input); }
     override async organize(scope: BotMemoryScope, input: BotMemoryOrganize) { return organize(scope, input); }
     override async close() {}
   }({ root, runtime: async () => { throw new Error('Recovery must not start VCP or DSH'); }, embedding: async () => { throw new Error('Recovery must not call a model'); } });
   const getHost = vi.fn(async () => { throw new Error('Recovery must not open a DSH Host'); });
-  const service = new BotService({ root, brain: new BotDshBrain({ getHost }), brainRuntime: 'worldlinebox', memory,
+  const service = new BotService({ root, brain: new BotDshBrain({ getHost }), memory,
     model: () => ({ apiFormat: 'openai_chat', apiKey: '', baseUrl: 'http://127.0.0.1:9', model: 'unused' }), onEvent: () => undefined });
   cleanups.push(async () => { await service.shutdown(); await rm(root, { recursive: true, force: true }); });
+  vi.spyOn(service as unknown as { maintainSafely(): void }, 'maintainSafely').mockImplementation(() => undefined);
   const snapshot = (await service.handle({ type: 'state' })).snapshot!, conversation = snapshot.conversations[0]!;
   const admitted = service.store.enqueue({ conversationId: conversation.id, senderId: 'user', source: 'user', sourceMessageId: 'recovery-request', content: '更正已有事实，请保留真实来源。' });
   const claim = service.store.claim({ workerId: 'receipt-test-owner', leaseMs: 300000 });
   expect(claim?.event.id).toBe(admitted.events[0]?.id);
   const event = claim!.event, lane = service.store.getLane(event.laneId)!;
   service.store.bindEventNativeEpoch(event.id, lane.epoch);
-  const call: ManagedCall = { laneId: lane.epoch === 1 ? lane.id : `${lane.id}-epoch-${lane.epoch}`, eventId: event.id,
+  const call: ManagedCall = { laneId: `turn-${event.id}`, eventId: event.id,
     callId: `recover-${operation}-once`, name: `memory_${operation}`, args: { content: '单次上限更正为12分钟。', tags: ['更正', '偏好'],
       ...(operation === 'update' ? { id: 'a'.repeat(64), expectedChecksum: 'b'.repeat(32) }
         : { sources: [{ id: 'a'.repeat(64), expectedChecksum: 'b'.repeat(32) }, { id: 'c'.repeat(64), expectedChecksum: 'd'.repeat(32) }] }) } };
@@ -109,100 +111,64 @@ async function recoveryFixture(operation: ManagedOperation = 'update') {
     scope: { companionId: event.companionId, conversationId: event.conversationId, securityDomainId: event.securityDomainId } };
 }
 
+const nativeTool = (service: BotService, call: ManagedCall) => (service as unknown as { tool(call: ManagedCall, signal: AbortSignal): Promise<unknown> }).tool(call, new AbortController().signal);
 it.each([
   ['update', 'indexed'], ['update', 'pending'], ['organize', 'indexed'], ['organize', 'pending'], ['organize', 'partial'],
-] as const)('reconciles the existing %s/%s VCP receipt without a new write and durably queues only unfinished work', async (operation, state) => {
-  const f = await recoveryFixture(operation), receipt = { state, operationId: f.input.operationId, id: 'a'.repeat(64), checksum: 'e'.repeat(32),
-    indexed: state === 'indexed', ...(operation === 'organize' ? { archived: state === 'indexed' ? ['a'.repeat(64), 'c'.repeat(64)] : [] } : {}) };
-  expect(f.service.store.getMetadata(`effect:${f.event.id}:${f.call.callId}`)).toBeUndefined();
+] as const)('recovers %s/%s VCP receipts through the native callback without a duplicate write', async (operation, state) => {
+  const f = await recoveryFixture(operation), receipt = { state, operationId: f.input.operationId, id: 'a'.repeat(64), checksum: 'e'.repeat(32) };
   f.operationReceipt.mockResolvedValue({ found: true, receipt });
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({ state: 'committed', result: receipt });
-  expect(f.operationReceipt).toHaveBeenCalledExactlyOnceWith(f.scope, operation, f.input);
+  expect(await nativeTool(f.service, f.call)).toEqual(receipt);
+  expect(f.operationReceipt).toHaveBeenCalledExactlyOnceWith(f.scope, operation, f.input, expect.any(AbortSignal));
   expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled(); expect(f.getHost).not.toHaveBeenCalled();
-  // A lost second acknowledgment uses the Main effect receipt, rather than
-  // consulting or replaying a VCP write for a second time.
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({ state: 'committed', result: receipt });
-  expect(f.operationReceipt).toHaveBeenCalledTimes(1);
-  const { BotStore } = await import('../../src/main/companion-bot/store');
-  const reopened = new BotStore(path.join(f.root, 'bot.sqlite'));
-  try {
-    const jobs = reopened.listPendingMemory().filter(job => job.kind === 'mutation');
-    if (state === 'indexed') expect(jobs).toEqual([]);
-    else {
-      expect(jobs).toHaveLength(1);
-      expect(jobs[0]?.payload).toEqual({ scope: f.scope, operation, input: f.input });
-      expect(jobs[0]?.status).toBe('queued');
-    }
-    const saved = JSON.parse(reopened.getMetadata(`effect:${f.event.id}:${f.call.callId}`)!);
-    expect(saved.result).toEqual(receipt);
-  } finally { reopened.close(); }
+  expect(await nativeTool(f.service, f.call)).toEqual(receipt); expect(f.operationReceipt).toHaveBeenCalledTimes(1);
+  const saved = JSON.parse(f.service.store.getMetadata(`effect:${f.event.id}:${f.call.callId}`)!); expect(saved.result).toEqual(receipt);
+  const jobs = f.service.store.listPendingMemory().filter(job => job.kind === 'mutation');
+  expect(jobs).toHaveLength(state === 'indexed' ? 0 : 1);
+  if (state !== 'indexed') expect(jobs[0]!.payload).toEqual({ scope: f.scope, operation, input: f.input });
 });
 
-it('proves absence only from an explicit missing operation, while an unresolved admitted operation stays unknown', async () => {
-  const f = await recoveryFixture();
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({ state: 'absent' });
-  f.operationReceipt.mockResolvedValue({ found: true, receipt: { state: 'unknown', operationId: f.input.operationId } });
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({ state: 'unknown' });
-  f.operationReceipt.mockResolvedValue({ found: true });
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({ state: 'unknown' });
-  expect(f.operationReceipt).toHaveBeenCalledTimes(3);
+it('writes only after explicit receipt absence and recovers a durable mutation whose response was lost', async () => {
+  const f = await recoveryFixture(), receipt = { state: 'indexed', operationId: f.input.operationId };
+  f.operationReceipt.mockResolvedValueOnce({ found: false }).mockResolvedValue({ found: true, receipt });
+  f.update.mockRejectedValue(new Error('callback response lost'));
+  expect(await nativeTool(f.service, f.call)).toEqual(receipt); expect(f.update).toHaveBeenCalledOnce();
+  expect(await nativeTool(f.service, f.call)).toEqual(receipt); expect(f.update).toHaveBeenCalledOnce();
+});
+
+it.each([{ found: true, receipt: { state: 'unknown' } }, { found: true }, {}])('fences unresolved VCP mutation results before any replacement write: %j', async proof => {
+  const f = await recoveryFixture(); f.operationReceipt.mockResolvedValue(proof);
+  await expect(nativeTool(f.service, f.call)).rejects.toThrow('尚未确认');
+  expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled();
   expect(f.service.store.getMetadata(`effect:${f.event.id}:${f.call.callId}`)).toBeUndefined();
-  expect(f.service.store.listPendingMemory().filter(job => job.kind === 'mutation')).toEqual([]);
-  expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled(); expect(f.getHost).not.toHaveBeenCalled();
 });
 
 it.each(['foreign-lane', 'foreign-event', 'stale-epoch', 'withdrawn-source', 'changed-acl', 'removed-member'] as const)(
-  'rejects %s recovery before looking up an owner-bound VCP operation', async boundary => {
+  'rejects %s native callbacks before reading a VCP operation', async boundary => {
     const f = await recoveryFixture(); let call = f.call;
-    f.operationReceipt.mockResolvedValue({ found: true, receipt: { state: 'indexed', operationId: f.input.operationId } });
     if (boundary === 'foreign-lane') call = { ...call, laneId: 'another-private-lane' };
     else if (boundary === 'foreign-event') call = { ...call, eventId: 'another-private-event' };
     else if (boundary === 'stale-epoch') f.service.store.rotateDomain(f.scope.companionId, f.scope.securityDomainId);
     else if (boundary === 'withdrawn-source') f.service.store.withdrawSources(f.scope.companionId, f.scope.securityDomainId, [f.event.sourceMessageRecordId]);
     else if (boundary === 'changed-acl') f.service.store.taskTransaction(sql => sql.prepare('UPDATE bot_conversations SET revision=revision+1 WHERE id=?').run(f.scope.conversationId));
     else f.service.store.taskTransaction(sql => sql.prepare('DELETE FROM bot_members WHERE conversation_id=? AND member_id=?').run(f.scope.conversationId, f.scope.companionId));
-    expect(await f.service.reconcileToolReceipt(call)).toEqual({ state: 'unknown' });
-    expect(f.operationReceipt).not.toHaveBeenCalled(); expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled(); expect(f.getHost).not.toHaveBeenCalled();
+    await expect(nativeTool(f.service, call)).rejects.toThrow();
+    expect(f.operationReceipt).not.toHaveBeenCalled(); expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled();
   });
 
-it('recovers an original receipt across proven retention handoff but fences subsequent withdrawal rotations', async () => {
-  const f=await recoveryFixture();
-  f.service.store.setMetadata(`lane-retention:${f.lane.id}`,JSON.stringify({epoch:1,turns:1,bytes:1,last:{eventId:f.event.id,system:'identity',cwd:f.root,nativeLaneId:f.lane.id}}));
-  f.service.store.taskTransaction(sql=>sql.prepare("UPDATE bot_inbox SET status='done' WHERE id=?").run(f.event.id));
-  expect(f.service.store.commitLaneHandoff(f.lane.id,1,{format:'worldlinebox-bot-handoff-v1',laneId:f.lane.id,sessionId:'native',throughEventId:f.event.id,nativeCursor:1,summaryText:'已核实',summarySeq:1,compactionId:'receipt-handoff',coveredEventSeqs:[1],tail:[]})).toBe(true);
-  const receipt={state:'indexed',operationId:f.input.operationId};f.operationReceipt.mockResolvedValue({found:true,receipt});
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({state:'committed',result:receipt});
-  f.service.store.rotateDomain(f.scope.companionId,f.scope.securityDomainId);f.operationReceipt.mockClear();
-  expect(await f.service.reconcileToolReceipt({...f.call,callId:'unproven-after-withdrawal'})).toEqual({state:'unknown'});
-  expect(f.operationReceipt).not.toHaveBeenCalled();expect(f.update).not.toHaveBeenCalled();expect(f.organize).not.toHaveBeenCalled();
+it('rejects changed arguments against the native callback effect receipt without a second VCP write', async () => {
+  const f = await recoveryFixture(), receipt = { state: 'indexed', operationId: f.input.operationId };
+  f.operationReceipt.mockResolvedValue({ found: true, receipt }); expect(await nativeTool(f.service, f.call)).toEqual(receipt);
+  await expect(nativeTool(f.service, { ...f.call, args: { ...f.call.args, content: '换成另一个事实' } })).rejects.toThrow('其他参数');
+  expect(f.operationReceipt).toHaveBeenCalledTimes(1); expect(f.update).not.toHaveBeenCalled();
 });
 
-it('rejects changed arguments against a persisted Main effect fingerprint without contacting VCP or writing again', async () => {
-  const f = await recoveryFixture(), receipt = { state: 'indexed', id: 'a'.repeat(64), checksum: 'e'.repeat(32) };
-  f.operationReceipt.mockResolvedValue({ found: true, receipt });
-  expect(await f.service.reconcileToolReceipt(f.call)).toEqual({ state: 'committed', result: receipt });
-  const changed = { ...f.call, args: { ...f.call.args, content: '不能用相同callId恢复不同事实。' } };
-  await expect(f.service.reconcileToolReceipt(changed)).rejects.toThrow('回执参数不匹配');
-  expect(f.operationReceipt).toHaveBeenCalledTimes(1);
-  expect(f.update).not.toHaveBeenCalled(); expect(f.organize).not.toHaveBeenCalled(); expect(f.getHost).not.toHaveBeenCalled();
-});
-it('recovers a lost maintenance plan acknowledgement from durable admission without creating a second job or starting a model', async () => {
+it('keeps native maintenance plan admission idempotent after an accepted callback', async () => {
   const f = await recoveryFixture(), journal = new BotMaintenanceStore(f.service.store);
-  const call = { ...f.call, name: 'memory_maintenance', args: { operation: 'plan', kind: 'organize' } };
-  const result = journal.planTool(f.scope, 'organize', `${f.event.id}:${call.callId}`);
-  expect(await f.service.reconcileToolReceipt(call)).toEqual({ state: 'committed', result });
-  expect(journal.list(f.scope).items).toHaveLength(1); expect(f.getHost).not.toHaveBeenCalled(); expect(f.operationReceipt).not.toHaveBeenCalled();
-  expect(await f.service.reconcileToolReceipt({ ...call, callId: 'not-admitted' })).toEqual({ state: 'absent' });
-});
-it('preserves a deduplicated maintenance admission after the referenced job finishes, so crash recovery cannot open a second plan', async () => {
-  const f = await recoveryFixture(), journal = new BotMaintenanceStore(f.service.store), first = journal.planTool(f.scope, 'organize', 'first-request') as { job: { id: string } };
   const call = { ...f.call, name: 'memory_maintenance', args: { operation: 'plan', kind: 'dream' } };
-  const result = journal.planTool(f.scope, 'dream', `${f.event.id}:${call.callId}`); expect(result).toMatchObject({ accepted: false, job: { id: first.job.id } });
-  journal.progress(f.scope, first.job.id, 'completed', 'completed');
-  expect(await f.service.reconcileToolReceipt(call)).toEqual({ state: 'committed', result });
+  const result = await nativeTool(f.service, call); expect(await nativeTool(f.service, call)).toEqual(result);
   expect(journal.list(f.scope).items).toHaveLength(1); expect(f.getHost).not.toHaveBeenCalled();
-  await expect(f.service.reconcileToolReceipt({ ...call, args: { operation: 'plan', kind: 'organize' } })).rejects.toThrow('参数不匹配');
 });
+
 it('executes the actual actor-bound maintenance tool as plan/status only and refuses automatic-source planning', async () => {
   const f = await recoveryFixture(), journal = new BotMaintenanceStore(f.service.store);
   const internal = f.service as unknown as { maintainSafely(): void; executeTool(event: typeof f.event, call: ManagedCall, signal: AbortSignal): Promise<unknown> };

@@ -18,7 +18,7 @@ const message = (id: string, conversationId: string, sequence: number, content: 
 const snapshot = (messages: BotMessage[], hasMore = false): BotSnapshot => ({
   companions: [{ id: 'alice', name: 'Alice', persona: '温柔认真', createdAt: at }, { id: 'bob', name: 'Bob', persona: '直接简明', createdAt: at }],
   conversations: [{ id: 'a', title: '私聊甲', kind: 'direct', memberIds: ['user', 'alice'], createdAt: at }, { id: 'b', title: '私聊乙', kind: 'direct', memberIds: ['user', 'bob'], createdAt: at }],
-  messages, tasks: [], hasMore, runtime: { engine: 'worldlinebox', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 1, ready: true, dataRoot: 'test' },
+  messages, tasks: [], hasMore, runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 1, ready: true, dataRoot: 'test' },
 });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 beforeEach(() => {
@@ -137,137 +137,6 @@ const rows = (first: number, last: number) => Array.from({ length: last - first 
 });
 const visibleIds = () => [...host.querySelectorAll<HTMLElement>('[data-bot-message]')].map(element => element.dataset.botMessage);
 
-it.each(['direct', 'group'] as const)('retains %s task activity across a natural reply, later messages and conversation switches', async kind => {
-  const people = kind === 'group' ? ['alice', 'bob'] : ['alice'];
-  const notices = people.map((owner, index) => ({ ...message(`notice-${owner}`, 'a', index * 2 + 1, 'RAW EXECUTOR OUTPUT'), senderId: 'task-service', senderName: '任务回执',
-    taskNotice: { taskId: `task-${owner}`, kind: 'task_done' as const, replyMessageId: `result-${owner}`, companionId: owner, companionName: owner === 'alice' ? 'Alice' : 'Bob', title: `整理资料 · ${owner}`, status: 'succeeded' } }));
-  snapshots.a = snapshot(notices.flatMap((notice, index) => [notice, message(`result-${people[index]}`, 'a', index * 2 + 2, '', 'running')]));
-  snapshots.a.conversations[0] = { ...snapshots.a.conversations[0]!, kind, memberIds: ['user', ...people] };
-  await mount();
-  const expectedIds = notices.map(notice => notice.id);
-  const noticeIds = () => [...host.querySelectorAll<HTMLElement>('.bot-task-notice')].map(element => element.dataset.botMessage);
-  expect(noticeIds()).toEqual(expectedIds);
-  const original = host.querySelector('[data-bot-message="notice-alice"]');
-  snapshots.a.messages = snapshots.a.messages.map(entry => entry.senderId === 'task-service' ? entry : { ...entry, status: 'sent', content: '结果已整理好。' });
-  await changed();
-  expect(noticeIds()).toEqual(expectedIds); expect(host.querySelector('[data-bot-message="notice-alice"]')).toBe(original);
-  snapshots.a.messages.push(message('later-chat', 'a', 10, '新的日常对话'));
-  await changed(); expect(noticeIds()).toEqual(expectedIds); expect(transcript()).not.toContain('RAW EXECUTOR OUTPUT');
-  expect([...host.querySelectorAll('.bot-task-notice-meta strong')].map(element => element.textContent)).toEqual(people.map(owner => owner === 'alice' ? 'Alice' : 'Bob'));
-  expect(snapshots.a.tasks).toHaveLength(0); // Historical tasks need not be in the current task window.
-  await select('私聊乙'); expect(noticeIds()).toEqual([]);
-  await select('私聊甲'); expect(noticeIds()).toEqual(expectedIds);
-  expect(visibleIds()).toEqual([...snapshots.a.messages.map(entry => entry.id)]);
-});
-
-it('keeps transport receipts compact and opens the task workspace without adding a composer banner', async () => {
-  snapshots.a = snapshot([{ ...message('notice', 'a', 1, 'TASK RAW EXECUTOR OUTPUT '.repeat(100)), senderId: 'task-service', senderName: '任务回执', taskNotice: { taskId: 'task-current', kind: 'task_done' } }, message('character-result', 'a', 2, '我已经把结果整理好了。')]);
-  snapshots.a.tasks = [{ id: 'task-current', conversationId: 'a', companionId: 'alice', title: '整理目录', goal: 'Long goal', status: 'running', progress: { phase: 'using-tool', toolName: 'shell' } }];
-  override = request => request.type === 'task.list' ? Promise.resolve({ ok: true, taskPage: { items: snapshots.a!.tasks, total: 1, page: 0, limit: 6, activeCount: 1, queuedCount: 0 } })
-    : request.type === 'task.get' ? Promise.resolve({ ok: true, task: snapshots.a!.tasks[0] }) : undefined;
-  await mount();
-  expect(host.querySelector('.bot-chat-tasks')?.textContent).toContain('任务1');
-  expect(host.querySelector('.bot-active-tasks')).toBeNull();
-  expect(transcript()).not.toContain('TASK RAW EXECUTOR OUTPUT'); expect(transcript()).toContain('我已经把结果整理好了。');
-  expect(host.querySelector('[data-bot-message="notice"] .bot-avatar')).not.toBeNull();
-  expect(host.querySelector('[data-bot-message="notice"] .bot-task-notice-meta strong')?.textContent).toBe('Alice');
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-task-notice button')!.click());
-  expect(host.querySelector('[role="dialog"][aria-label="任务工作台"]')).not.toBeNull();
-  expect(host.querySelector('.bot-task-heading h4')?.textContent).toBe('整理目录');
-});
-
-function taskFollowupFixture(status = 'running') {
-  snapshots.a!.tasks = [{ id: 'task-original', conversationId: 'a', companionId: 'alice', title: '整理项目目录', goal: '只整理项目目录', status }];
-  override = request => request.type === 'task.list' ? Promise.resolve({ ok: true, taskPage: { items: snapshots.a!.tasks, total: 1, page: 0, limit: 6, activeCount: ['succeeded', 'failed', 'cancelled'].includes(status) ? 0 : 1, queuedCount: 0 } })
-    : request.type === 'task.get' ? Promise.resolve({ ok: true, task: snapshots.a!.tasks[0] }) : undefined;
-}
-async function followOriginalTask() {
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-chat-tasks')!.click()); await click('跟进这个任务');
-}
-
-it('follows an existing task through the normal chat composer without replacing its draft or exposing task IDs', async () => {
-  taskFollowupFixture(); await mount(); await input(composer(), '请保留原始文件名。'); await followOriginalTask();
-  expect(host.querySelector('[aria-label="任务工作台"]')).toBeNull(); expect(document.activeElement).toBe(composer());
-  expect(host.querySelector('.bot-task-followup')?.textContent).toContain('跟进任务 · 整理项目目录');
-  expect(host.querySelector('.bot-task-followup')?.textContent).toContain('Alice'); expect(host.querySelector('.bot-task-followup')?.textContent).not.toContain('task-original');
-  expect(composer().value).toBe('请保留原始文件名。');
-  await input(composer(), '长'.repeat(16001)); expect(composer().value).toHaveLength(16001); expect(composer().maxLength).toBe(16000);
-  expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(true); expect(host.querySelector('.bot-task-followup')?.textContent).toContain('最多16000字');
-  await input(composer(), '请保留原始文件名。');
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-send')!.click());
-  expect(sends().at(-1)).toMatchObject({ conversationId: 'a', content: '请保留原始文件名。', replyToTaskId: 'task-original' });
-  expect(requests.some(request => request.type === 'task.control' && request.operation === 'send')).toBe(false);
-  expect(host.querySelector('.bot-task-followup')).toBeNull(); expect(composer().value).toBe('');
-  await input(composer(), '普通聊天继续。'); await act(() => host.querySelector<HTMLButtonElement>('.bot-send')!.click());
-  expect(sends().at(-1)?.replyToTaskId).toBeUndefined();
-});
-
-it('keeps task follow-up targets with each chat draft and lets the user cancel only the target', async () => {
-  taskFollowupFixture(); await mount(); await input(composer(), '甲任务的补充。'); await followOriginalTask();
-  await select('私聊乙'); expect(host.querySelector('.bot-task-followup')).toBeNull(); await input(composer(), '乙的普通草稿');
-  await select('私聊甲'); expect(composer().value).toBe('甲任务的补充。'); expect(host.querySelector('.bot-task-followup')).not.toBeNull();
-  const cancel = host.querySelector<HTMLButtonElement>('[aria-label="取消任务跟进"]')!; await act(() => cancel.click());
-  expect(host.querySelector('.bot-task-followup')).toBeNull(); expect(composer().value).toBe('甲任务的补充。');
-  await select('私聊乙'); expect(composer().value).toBe('乙的普通草稿');
-  expect(sends()).toHaveLength(0);
-});
-it('shows actual follow-up delivery beside the user message and opens its original task', async () => {
-  taskFollowupFixture();
-  const sent = { ...message('guidance', 'a', 2, '请同时提供 HTML。'), senderId: 'user', taskFollowup: { taskId: 'task-original', title: '整理项目目录', state: 'queued' as const } };
-  snapshots.a!.messages = [sent]; await mount();
-  expect(host.querySelector('.bot-followup-receipt')?.textContent).toContain('正在交给原任务');
-  snapshots.a!.messages = [{ ...sent, taskFollowup: { ...sent.taskFollowup, state: 'delivered' } }]; await changed();
-  expect(host.querySelector('.bot-followup-receipt')?.textContent).toContain('已交给原任务'); expect(host.querySelector('.bot-followup-receipt')?.textContent).not.toContain('task-original');
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-followup-receipt button')!.click());
-  expect(host.querySelector('[aria-label="任务工作台"]')).not.toBeNull(); expect(requests.some(request => request.type === 'task.get' && request.taskId === 'task-original')).toBe(true);
-});
-
-it('retains a rejected task follow-up for retry and refuses to silently send it as ordinary chat after a human stop', async () => {
-  taskFollowupFixture(); const previous = override; override = request => request.type === 'message.send' ? Promise.resolve({ ok: false, error: '任务连接暂未就绪' }) : previous?.(request);
-  await mount(); await followOriginalTask(); await input(composer(), '仅分析，不修改。');
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-send')!.click()); const first = sends().at(-1)!;
-  expect(host.querySelector('.bot-task-followup')).not.toBeNull(); expect(composer().value).toBe('仅分析，不修改。');
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-send')!.click()); expect(sends().at(-1)?.requestId).toBe(first.requestId);
-  snapshots.a = { ...snapshots.a!, tasks: [{ ...snapshots.a!.tasks[0]!, status: 'cancelled', cancelRequested: true, followupAvailable: false }] }; await changed();
-  expect(host.querySelector('.bot-task-followup')?.textContent).toContain('任务当前不可跟进'); expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(true);
-  const sentCount = sends().length; await act(() => composer().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
-  expect(sends()).toHaveLength(sentCount);
-  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="取消任务跟进"]')!.click()); expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(false);
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-send')!.click()); expect(sends().at(-1)?.replyToTaskId).toBeUndefined();
-});
-
-it.each(['succeeded', 'failed'])('offers an explicitly authorized %s task continuation without waking work until the user sends', async status => {
-  taskFollowupFixture(status); snapshots.a!.tasks[0]!.followupAvailable = true; await mount();
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-chat-tasks')!.click()); await click('继续这个任务');
-  expect(host.querySelector('.bot-task-followup')?.textContent).toContain('继续任务 · 整理项目目录'); expect(sends()).toHaveLength(0);
-  expect(requests.some(request => request.type === 'task.control')).toBe(false);
-  await input(composer(), '沿原任务继续，补充核对文件数量。'); await act(() => host.querySelector<HTMLButtonElement>('.bot-send')!.click());
-  expect(sends().at(-1)).toMatchObject({ conversationId: 'a', replyToTaskId: 'task-original', content: '沿原任务继续，补充核对文件数量。' });
-  expect(host.querySelector('.bot-task-followup')).toBeNull();
-});
-
-it.each([{ status: 'succeeded', followupAvailable: false, humanStopped: true }, { status: 'failed' }, { status: 'cancelled', followupAvailable: false }, { status: 'unknown', followupAvailable: false }])('does not offer historical continuation without a current host grant: %j', async state => {
-  taskFollowupFixture(state.status); Object.assign(snapshots.a!.tasks[0]!, state); await mount();
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-chat-tasks')!.click());
-  expect(host.querySelector('.bot-task-follow-action')).toBeNull(); expect(sends()).toHaveLength(0);
-});
-
-it('keeps the draft but disables a selected historical continuation after its task record is removed', async () => {
-  taskFollowupFixture('succeeded'); snapshots.a!.tasks[0]!.followupAvailable = true;
-  const previous = override;
-  override = request => {
-    if (request.type === 'task.control' && request.operation === 'remove') { snapshots.a = { ...snapshots.a!, tasks: [] }; return Promise.resolve({ ok: true, taskRemoved: true }); }
-    if (request.type === 'task.get' && !snapshots.a!.tasks.length) return Promise.resolve({ ok: true, taskRemoved: true });
-    return previous?.(request);
-  };
-  await mount(); await act(() => host.querySelector<HTMLButtonElement>('.bot-chat-tasks')!.click()); await click('继续这个任务');
-  await input(composer(), '仍然保留的草稿。'); await act(() => host.querySelector<HTMLButtonElement>('.bot-chat-tasks')!.click()); await click('移除记录');
-  expect(host.querySelector('.bot-task-follow-action')).toBeNull();
-  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="关闭任务"]')!.click());
-  expect(composer().value).toBe('仍然保留的草稿。'); expect(host.querySelector('.bot-task-followup')?.textContent).toContain('任务当前不可跟进');
-  expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(true); expect(sends()).toHaveLength(0);
-});
-
 it('shows partner-initiated groups in the shared chat list and retains participant input', async () => {
   const peer = { id: 'peer', title: 'Alice 和 Bob', kind: 'group' as const, memberIds: ['user', 'bob', 'alice'], createdAt: at, peerConversation: true };
   snapshots.peer = snapshot([{ ...message('alice-peer', 'peer', 1, '一起核对这份清单吧。'), senderId: 'alice', senderName: 'Alice' }, { ...message('bob-peer', 'peer', 2, '好，我来检查遗漏。'), senderId: 'bob', senderName: 'Bob' }]);
@@ -281,7 +150,6 @@ it('shows partner-initiated groups in the shared chat list and retains participa
   expect(transcript()).toContain('一起核对这份清单吧。'); expect(transcript()).toContain('好，我来检查遗漏。'); expect(transcript()).not.toContain('甲的原文');
   expect(host.querySelector<HTMLTextAreaElement>('.bot-composer textarea')?.disabled).toBe(false);
   expect(host.querySelector('.bot-group-policy')).not.toBeNull();
-  expect(host.querySelector('.bot-chat-tasks')?.textContent).toBe('群任务');
   expect(host.querySelector('.bot-chat-identity .bot-peer-avatar')?.children).toHaveLength(2);
   expect([...host.querySelectorAll<HTMLElement>('.bot-chat-identity .bot-group-portrait')].map(tile => tile.dataset.companionId)).toEqual(['bob', 'alice']);
   expect(host.querySelector('.bot-group-members-trigger')?.textContent).toContain('3 位成员');
@@ -337,25 +205,6 @@ it('bounds the chat list to forty rows and searches every conversation beyond th
   expect(host.querySelectorAll('.bot-conversation')).toHaveLength(7);
 });
 
-it('shows only real current-room task summaries in the collapsible companion context', async () => {
-  snapshots.a!.tasks = [
-    { id: 'current-task', conversationId: 'a', companionId: 'alice', title: '整理资料', goal: 'DO NOT SHOW THE LONG EXECUTOR PROMPT', status: 'running', progress: { phase: 'using-tool', toolName: 'shell' } },
-    ...Array.from({ length: 5 }, (_, index) => ({ id: `more-task-${index}`, conversationId: 'a', companionId: 'alice', title: `后续任务${index}`, goal: 'long hidden prompt', status: 'queued' })),
-    { id: 'private-task', conversationId: 'b', companionId: 'bob', title: '其他私聊任务', goal: 'PRIVATE', status: 'running' },
-  ];
-  await mount();
-  const details = () => host.querySelector('.bot-chat-context');
-  expect(details()?.textContent).toContain('整理资料'); expect(details()?.textContent).not.toContain('其他私聊任务');
-  expect(details()?.querySelectorAll('.bot-context-task')).toHaveLength(5);
-  expect(details()?.textContent).toContain('还有 1 项');
-  expect(details()?.textContent).not.toContain('DO NOT SHOW'); expect(details()?.textContent).not.toMatch(/\d+%|预计.*分钟/);
-  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="收起聊天信息"]')!.click());
-  expect(details()).toBeNull();
-  expect(host.querySelector('.bot-workspace')?.classList.contains('context-collapsed')).toBe(true);
-  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="展开聊天信息"]')!.click());
-  expect(details()).not.toBeNull();
-});
-
 it('keeps concurrent conversation streams in their own transcript and retires completed overlays', async () => {
   await mount();
   await emit({ type: 'text', conversationId: 'b', messageId: 'reply-a', text: '另一会话不能覆盖' });
@@ -368,35 +217,8 @@ it('keeps concurrent conversation streams in their own transcript and retires co
   snapshots.a = snapshot([message('reply-a', 'a', 1, '', 'queued')]); await changed();
   expect(transcript()).toContain('等待处理'); expect(transcript()).not.toContain('当前真实流');
 });
-it('uses the complete active task count instead of the bounded snapshot rows in the chat header', async () => {
-  snapshots.a!.taskSummary = { activeCount: 500, queuedCount: 490, items: [] };
-  await mount(); expect(host.querySelector('.bot-chat-tasks')?.textContent).toBe('任务500');
-  await select('私聊乙'); expect(host.querySelector('.bot-chat-tasks')?.textContent).toBe('任务');
-});
-it('aggregates task updates at the header and reads only the room opened through the composer', async () => {
-  const presence: NonNullable<BotSnapshot['presence']> = { alice: { status: 'idle', updatedAt: at,
-    counts: { activeTasks: 0, queued: 0, running: 0, waiting: 0, stopping: 0, blocked: 0, replying: 0, pendingMessages: 0 }, events: [] } };
-  for (const state of Object.values(snapshots)) state.presence = presence;
-  snapshots.a!.taskSummary = { activeCount: 500, queuedCount: 490, items: [] };
-  await mount(); expect(host.querySelector('.bot-task-updates')).toBeNull();
-  const events = ['a', 'a', 'b'].map((conversationId, index) => ({ id: `update-${index}`, sequence: index + 1, kind: 'task-completed' as const,
-    taskId: `task-${index}`, title: '已完成的任务', conversationId, status: 'succeeded', occurredAt: at }));
-  for (const state of Object.values(snapshots)) state.presence = { alice: { ...presence.alice!, events } };
-  await changed();
-  expect(host.querySelectorAll('.bot-task-updates')).toHaveLength(1);
-  expect(host.querySelector('.bot-task-updates')?.getAttribute('data-count')).toBe('2');
-  expect(host.querySelector('.bot-chat-tasks')?.textContent).toContain('任务500');
-  expect(host.querySelector('.bot-presence-feedback')).toBeNull();
-  expect(host.querySelector('[role="dialog"][aria-label="任务工作台"]')).toBeNull();
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-composer [aria-label="任务"]')!.click());
-  expect(host.querySelector('[role="dialog"][aria-label="任务工作台"]')).not.toBeNull();
-  expect(host.querySelector('.bot-task-updates')).toBeNull();
-  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="关闭任务"]')!.click());
-  await changed(); expect(host.querySelector('.bot-task-updates')).toBeNull();
-  await select('私聊乙'); expect(host.querySelector('.bot-task-updates')?.getAttribute('data-count')).toBe('1');
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-chat-tasks')!.click());
-  expect(host.querySelector('.bot-task-updates')).toBeNull();
-});
+
+
 it('ignores an old snapshot that resolves after the user has switched conversations', async () => {
   await mount(); const old = deferred<BotResponse>();
   override = request => request.type === 'state' && request.conversationId === 'a' ? old.promise : undefined;
@@ -599,35 +421,7 @@ it('does not lose a successful send or refresh notification that arrives while a
   expect(composer().value).toBe(''); expect(visibleIds().at(-1)).toBe('own-latest'); expect(transcript()).toContain('跳转期间发送');
   expect(visibleIds().length).toBeLessThanOrEqual(400); expect(transcript()).not.toContain('正在读取最新消息');
 });
-it('identifies the app brain separately from the DSH task executor in runtime details', async () => {
-  await mount(); await click('任务'); await click('运行信息');
-  const runtime = host.querySelector<HTMLElement>('.bot-runtime')!;
-  expect(runtime).not.toBeNull();
-  expect(runtime.textContent).toContain('WorldlineBox 主脑 · DSH 任务执行器');
-  expect(runtime.textContent).toContain('VCP Memory 记忆');
-  expect(runtime.textContent).not.toContain('dsh · vcp-memory');
-  expect(runtime.querySelector('.bot-model-context')).toBeNull();
-});
-it('shows the actual metadata window and labels the byte estimate as a capacity check', async () => {
-  snapshots.a!.runtime.modelContext = { window: 1048576, source: 'metadata', estimate: 'utf8-byte-upper-bound' };
-  await mount(); await click('任务'); await click('运行信息');
-  const capacity = host.querySelector('.bot-model-context')!;
-  expect(capacity.textContent).toContain('模型上下文窗口：1,048,576 tokens');
-  expect(capacity.textContent).toContain('规格来源：模型元数据');
-  expect(capacity.textContent).toContain('容量检查使用 UTF-8 字节上界估算。');
-  expect(capacity.textContent).not.toContain('保守估计');
-});
-it('marks an unknown window as conservative and refreshes the source when verified specifications arrive', async () => {
-  snapshots.a!.runtime.modelContext = { window: 32768, source: 'unknown', estimate: 'utf8-byte-upper-bound' };
-  await mount(); await click('任务'); await click('运行信息');
-  expect(host.querySelector('.bot-model-context')?.textContent).toContain('模型窗口（保守估计）：32,768 tokens');
-  expect(host.querySelector('.bot-model-context')?.textContent).toContain('未发现模型元数据');
-  snapshots.a!.runtime.modelContext = { window: 1048576, source: 'official-default', estimate: 'utf8-byte-upper-bound' };
-  await changed();
-  const capacity = host.querySelector('.bot-model-context')!;
-  expect(capacity.textContent).toContain('模型上下文窗口：1,048,576 tokens'); expect(capacity.textContent).toContain('规格来源：官方默认规格');
-  expect(capacity.textContent).not.toContain('保守估计'); expect(capacity.textContent).not.toContain('未发现模型元数据');
-});
+
 it('opens the standalone memory workspace and closes it before changing audience', async () => {
   await mount();
   override = request => request.type === 'memory.catalog' ? Promise.resolve({ ok: true, memory: { items: [], tags: [], total: 0 } }) : undefined;
@@ -743,23 +537,26 @@ it('changes only the originating group policy and ignores its late completion af
   expect(host.querySelector('.bot-chat-header h2')?.textContent).toBe('私聊乙');
 });
 
-it('shows actual companion presence and opens the task in its source room rather than the current private chat', async () => {
-  const presence: NonNullable<BotSnapshot['presence']> = { alice: { status: 'working', updatedAt: at, counts: { activeTasks: 2, queued: 1, running: 1, waiting: 0, stopping: 0, blocked: 0, replying: 0, pendingMessages: 0 }, activity: { taskId: 'cross-room', conversationId: 'b', title: '整理素材', phase: 'using-tool', updatedAt: at }, events: [] } };
-  snapshots.a!.presence = presence; snapshots.b!.presence = presence;
-  for (const value of Object.values(snapshots)) value.conversations[1] = { ...value.conversations[1]!, kind: 'group', memberIds: ['user', 'alice', 'bob'] };
-  const task = { id: 'cross-room', conversationId: 'b', companionId: 'alice', goal: '完整要求', title: '整理素材', status: 'running' };
-  override = request => request.type === 'task.list' ? Promise.resolve({ ok: true, taskPage: { items: [task], total: 1, activeCount: 1, queuedCount: 0, page: 0, limit: 6 } }) : request.type === 'task.get' ? Promise.resolve({ ok: true, task }) : undefined;
+
+it('keeps only the far-right information sidebar control and projects a native run in its own bubble', async () => {
+  snapshots.a!.messages[0] = { ...snapshots.a!.messages[0]!, content: '', execution: { sessionId: 'new-session', status: 'running', steps: [{ id: '1', type: 'tool_call', summary: '正在查询', toolName: 'search', at }] } };
   await mount();
-  expect(host.querySelector('.bot-chat-identity .bot-presence-dot')?.getAttribute('data-presence')).toBe('working');
-  expect(host.querySelector('.bot-presence-summary')?.textContent).toContain('执行任务 · 2 项任务');
-  expect(host.querySelector('.bot-active-tasks')).toBeNull();
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-presence-summary')!.click());
-  expect(host.querySelector('.bot-chat-header h2')?.textContent).toBe('私聊乙');
-  expect(requests.filter(request => request.type === 'task.get').at(-1)).toMatchObject({ conversationId: 'b', taskId: 'cross-room' });
-  expect(host.querySelector('[data-bot-task]')?.getAttribute('data-bot-task')).toBe('cross-room');
+  expect(host.querySelector('.bot-chat-header .bot-context-toggle,.bot-chat-tasks')).toBeNull();
+  expect(host.querySelector('.bot-execution-toggle')?.textContent).toContain('正在查询');
+  expect(host.querySelectorAll('[aria-label="收起聊天信息"]')).toHaveLength(1);
+  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="收起聊天信息"]')!.click());
+  expect(host.querySelector('.bot-chat-context')).toBeNull();
+  expect(host.querySelectorAll('[aria-label="展开聊天信息"]')).toHaveLength(1);
+  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="展开聊天信息"]')!.click());
+  expect(host.querySelector('.bot-chat-context')).not.toBeNull();
+  snapshots.a!.messages[0] = { ...snapshots.a!.messages[0]!, status: 'sent', content: '查询完成。', execution: { ...snapshots.a!.messages[0]!.execution!, status: 'succeeded' } }; await changed();
+  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('false');
+  expect(host.querySelector('.bot-message-text')?.textContent).toBe('查询完成。');
 });
 
-it('keeps a confirmed paused task visible in the header task count', async () => {
-  snapshots.a!.tasks = [{ id: 'paused', conversationId: 'a', companionId: 'alice', title: '保留进度', goal: '任务', status: 'paused', progress: { phase: 'paused' } }];
-  await mount(); expect(host.querySelector('.bot-chat-tasks')?.textContent).toBe('任务1');
+it('routes an inline DSH answer to that exact native execution without sending a new chat message', async () => {
+  snapshots.a!.messages[0] = { ...snapshots.a!.messages[0]!, content: '', execution: { sessionId: 'session-with-question', status: 'running', steps: [], question: { id: 'question-a', text: '要保存到哪里？' } } };
+  await mount(); await input(host.querySelector<HTMLTextAreaElement>('.bot-execution-question textarea')!, '当前工作区'); await click('回复并继续');
+  expect(requests).toContainEqual({ type: 'execution.answer', messageId: 'reply-a', questionId: 'question-a', text: '当前工作区' });
+  expect(sends()).toHaveLength(0);
 });

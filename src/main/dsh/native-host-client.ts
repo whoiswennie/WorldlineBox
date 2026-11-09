@@ -6,6 +6,9 @@ export interface NativeHostEvent extends Omit<DshTaskEvent, 'taskId'> {
   status?: 'succeeded' | 'failed' | 'cancelled';
   error?: string;
   reason?: { kind: string };
+  nativeSessionId?: string;
+  nativeSequence?: number;
+  nativeTurn?: number;
   /** App-owned main-brain observation; native workers do not synthesize this. */
   contextMetrics?: BotBrainRequestMetrics;
 }

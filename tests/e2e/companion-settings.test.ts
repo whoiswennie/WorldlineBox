@@ -6,7 +6,7 @@ import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import { electronLaunchEnv, preparePackagedCompanionLaunch, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 // eslint-disable-next-line no-empty-pattern -- Electron owns the page.
-test('unifies companion persona, profile, meeting preferences, concurrency and capabilities in one character settings card', async ({}, testInfo) => {
+test('unifies companion persona, profile, meeting preferences and concurrency in one character settings card', async ({}, testInfo) => {
   test.setTimeout(180000);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-companion-settings-'));
   const application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
@@ -57,9 +57,8 @@ test('unifies companion persona, profile, meeting preferences, concurrency and c
     await expect(page.locator('.bot-chat-header').getByRole('button', { name: '能力', exact: true })).toHaveCount(0);
     await expect(page.locator('.bot-chat-header').getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '角色卡', exact: true }).click();
-    await expect(dialog).toBeVisible(); await navigation.getByRole('button', { name: '能力档案', exact: true }).click();
-    await expect(navigation.getByRole('button', { name: '能力档案' })).toHaveAttribute('aria-pressed', 'true');
-    await expect(dialog.locator('[data-companion-capabilities]')).toHaveAttribute('data-companion-capabilities', 'builtin-dafeiyu');
+    await expect(dialog).toBeVisible();
+    await expect(navigation.getByRole('button', { name: '能力档案', exact: true })).toHaveCount(0);
     await expect(page.getByRole('dialog')).toHaveCount(1);
     await navigation.getByRole('button', { name: '任务执行' }).click(); await expect(dialog.getByRole('spinbutton', { name: '同时执行的任务数' })).toHaveValue('8');
     await navigation.getByRole('button', { name: '形象与声音' }).click(); await expect(dialog.getByRole('checkbox', { name: '自动朗读伙伴回复' })).not.toBeChecked();
@@ -80,9 +79,8 @@ test('unifies companion persona, profile, meeting preferences, concurrency and c
       await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
       await expect(dialog).toBeVisible(); await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
       await expect.poll(() => dialog.locator('.bot-settings-character-portrait img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
-      for (const [section, label] of [['persona', '人格提示词'], ['profile', '基本资料'], ['appearance', '形象与声音'], ['execution', '任务执行'], ['capabilities', '能力档案']] as const) {
+      for (const [section, label] of [['persona', '人格提示词'], ['profile', '基本资料'], ['appearance', '形象与声音'], ['execution', '任务执行']] as const) {
         await navigation.getByRole('button', { name: label, exact: true }).click();
-        if (section === 'capabilities') await expect(dialog.locator('.companion-capability-error, .companion-capability-onboarding').first()).toBeVisible();
         const layout = await dialog.evaluate(element => {
           const panel = element.querySelector<HTMLElement>('.bot-editor-tabpanel:not([hidden]),.bot-editor-basics:not([hidden])')!, sidebar = element.querySelector<HTMLElement>('.bot-settings-navigation')!;
           const rect = element.getBoundingClientRect(), content = panel.getBoundingClientRect(), navigation = sidebar.getBoundingClientRect();

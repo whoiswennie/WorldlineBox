@@ -32,12 +32,6 @@
 .bot-workspace .bot-contact:hover { background:var(--ui-surface-hover); }
 .bot-workspace .bot-contact.selected { background:color-mix(in srgb,var(--ui-action-accent) 9%,transparent); }
 .bot-contact.selected strong { font-weight:600; }
-.bot-task-followup { display:flex;align-items:center;gap:9px;padding:9px 12px;margin-bottom:8px;border:1px solid var(--ui-border-control);border-radius:10px;background:var(--ui-surface-raised); }
-.bot-task-followup>.bot-icon { flex-shrink:0;color:var(--ui-action-accent);width:16px;height:16px; }
-.bot-task-followup>div { display:grid;gap:3px;flex:1;min-width:0; }
-.bot-task-followup strong { overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:550; }
-.bot-task-followup small { font-size:10px;line-height:1.6;color:var(--ui-content-secondary); }
-.bot-task-followup>button { flex-shrink:0;width:26px;height:26px;padding:0;border:0;background:transparent;color:var(--ui-content-secondary);font-size:18px; }
 .bot-contact>span:last-child { display:grid;gap:4px;min-width:0; }
 .bot-contact strong { font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .bot-contact small { color:var(--ui-content-tertiary);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.5; }
@@ -128,16 +122,6 @@
 .bot-memory-note small,.bot-memory-empty { font-size:11px;color:var(--ui-content-secondary); }
 .bot-memory-owner { display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:14px; }
 .bot-memory-owner select { flex:1; }
-.bot-task { padding:14px;border:1px solid var(--ui-border-subtle);border-radius:11px;margin-bottom:14px;background:var(--ui-surface-canvas); }
-.bot-task strong { font-size:13px;line-height:1.7; }
-.bot-task small { display:block;margin:9px 0;color:var(--ui-content-secondary);font-size:11px; }
-.bot-task p { font-size:12px;line-height:1.8;white-space:pre-wrap; }
-.bot-task-controls { display:grid;gap:9px;margin:12px 0; }
-.bot-task-controls fieldset { display:grid;gap:9px;min-width:0;border:1px solid var(--ui-border-subtle);border-radius:8px;padding:10px;font-size:12px; }
-.bot-task-controls label { display:flex;gap:8px;align-items:flex-start;line-height:1.7; }
-.bot-task-controls label small { display:block; }
-.bot-task-controls textarea { width:100%; }
-.bot-task-controls pre { white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px; }
 .bot-runtime { margin-top:26px;padding-top:18px;border-top:1px solid var(--ui-border-subtle);font-size:11px;color:var(--ui-content-tertiary);line-height:1.9; }
 .bot-runtime summary { cursor:pointer; }
 /* Dialog scrims cover live chat without a per-frame blur/compositing layer. */
@@ -153,14 +137,14 @@
 .bot-companion-editor>.bot-text-field { margin:18px 0; }
 .bot-companion-editor textarea { min-height:180px;max-height:46vh;overscroll-behavior:contain;scrollbar-gutter:stable; }
 /* Text actions have explicit states; chat's circular send and icon tools stay separate. */
-.bot-workspace :is(.bot-editor-primary,.bot-task-primary,.bot-memory-workspace button.is-primary) { min-height:36px;padding:8px 16px;border-radius:8px;border:1px solid #4658c4;background:#4658c4;color:#fff;font-weight:550;line-height:1.4;opacity:1; }
-.bot-workspace :is(.bot-editor-primary,.bot-task-primary,.bot-memory-workspace button.is-primary):hover:not(:disabled) { background:#3b4cad;border-color:#3b4cad;color:#fff; }
-.bot-workspace :is(.bot-editor-primary,.bot-task-primary,.bot-memory-workspace button.is-primary):active:not(:disabled) { background:#303f94;border-color:#303f94;color:#fff; }
-.bot-workspace :is(.bot-editor-primary,.bot-task-primary,.bot-memory-workspace button.is-primary):focus-visible { outline:2px solid var(--ui-border-focus);outline-offset:3px; }
-.bot-workspace :is(.bot-editor-primary,.bot-task-primary,.bot-memory-workspace button.is-primary):disabled { opacity:1;background:var(--ui-surface-hover);color:var(--ui-content-secondary);border-color:var(--ui-border-subtle);cursor:not-allowed; }
-.bot-workspace :is(.bot-modal footer,.bot-task-controls,.bot-memory-actions) button:not(:is(.bot-editor-primary,.bot-task-primary,.is-primary)) { min-height:36px;padding:8px 14px;border-color:var(--ui-border-control);background:var(--ui-surface-raised);color:var(--ui-content-primary); }
-.bot-workspace :is(.bot-modal footer,.bot-task-controls,.bot-memory-actions) button:not(:is(.bot-editor-primary,.bot-task-primary,.is-primary)):hover:not(:disabled) { background:var(--ui-surface-hover); }
-.bot-workspace :is(.bot-modal footer,.bot-task-controls,.bot-memory-actions,.bot-memory-pagination,.bot-memory-selection,.bot-memory-recall-controls) button:disabled { opacity:1;color:var(--ui-content-secondary);cursor:not-allowed; }
+.bot-workspace :is(.bot-editor-primary,.bot-memory-workspace button.is-primary) { min-height:36px;padding:8px 16px;border-radius:8px;border:1px solid #4658c4;background:#4658c4;color:#fff;font-weight:550;line-height:1.4;opacity:1; }
+.bot-workspace :is(.bot-editor-primary,.bot-memory-workspace button.is-primary):hover:not(:disabled) { background:#3b4cad;border-color:#3b4cad;color:#fff; }
+.bot-workspace :is(.bot-editor-primary,.bot-memory-workspace button.is-primary):active:not(:disabled) { background:#303f94;border-color:#303f94;color:#fff; }
+.bot-workspace :is(.bot-editor-primary,.bot-memory-workspace button.is-primary):focus-visible { outline:2px solid var(--ui-border-focus);outline-offset:3px; }
+.bot-workspace :is(.bot-editor-primary,.bot-memory-workspace button.is-primary):disabled { opacity:1;background:var(--ui-surface-hover);color:var(--ui-content-secondary);border-color:var(--ui-border-subtle);cursor:not-allowed; }
+.bot-workspace :is(.bot-modal footer,.bot-memory-actions) button:not(:is(.bot-editor-primary,.is-primary)) { min-height:36px;padding:8px 14px;border-color:var(--ui-border-control);background:var(--ui-surface-raised);color:var(--ui-content-primary); }
+.bot-workspace :is(.bot-modal footer,.bot-memory-actions) button:not(:is(.bot-editor-primary,.is-primary)):hover:not(:disabled) { background:var(--ui-surface-hover); }
+.bot-workspace :is(.bot-modal footer,.bot-memory-actions,.bot-memory-pagination,.bot-memory-selection,.bot-memory-recall-controls) button:disabled { opacity:1;color:var(--ui-content-secondary);cursor:not-allowed; }
 .bot-workspace .bot-memory-workspace button.is-danger { color:var(--ui-status-danger-content);border-color:var(--ui-status-danger-content);background:var(--ui-status-danger-surface); }
 .bot-workspace .bot-memory-workspace button.is-danger:hover:not(:disabled) { color:var(--ui-status-danger-content);background:color-mix(in srgb,var(--ui-status-danger-content) 12%,var(--ui-status-danger-surface)); }
 @media(prefers-reduced-transparency:reduce) { .bot-workspace.is-modal-open>:is(.bot-sidebar,.bot-main) { filter:none;will-change:auto; } }

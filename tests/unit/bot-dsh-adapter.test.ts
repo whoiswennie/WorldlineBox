@@ -20,7 +20,6 @@ it('holds a private Host lease through native work and releases it on success, a
     acquireLease: host => { expect(host.instance?.id).toBe('private'); leases++; return () => { leases--; }; } });
   await brain.run(input); expect(leases).toBe(0);
   mode = 'failure'; await expect(brain.run(input)).rejects.toThrow(); expect(leases).toBe(0);
-  await expect(brain.inspectEffects({ laneId: input.laneId, eventId: input.eventId })).rejects.toThrow(); expect(leases).toBe(0);
   await expect(brain.cancelDurable(input)).rejects.toThrow(); expect(leases).toBe(0);
 });
 
@@ -143,9 +142,6 @@ it('preserves Host unavailability before native admission and never reclassifies
     const brain = new BotDshBrain({ getHost: async () => { throw failure; } });
     await expect(brain.run(input)).rejects.toBe(failure);
     await expect(brain.cancelDurable(input)).rejects.toBe(failure);
-    await expect(brain.inspectEffects(input)).rejects.toBe(failure);
-    await expect(brain.inspectQuestionAnswers({ ...input, questions: [] })).rejects.toBe(failure);
-    await expect(brain.upgradeWorkerAccess(input)).rejects.toBe(failure);
     await expect(brain.archive(input.laneId)).rejects.toBe(failure);
   }
 });

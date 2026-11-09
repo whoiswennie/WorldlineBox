@@ -51,7 +51,8 @@ void app.whenReady().then(async () => {
       const instance = launcher.state().instances[0]; if (!instance) throw new Error('Native instance creation failed.');
       const selected = await internal.handle({ type: 'cli.select', instanceId: instance.id }); if (!selected.ok) throw new Error(selected.error);
     }
-    const capabilities = await launcher.taskCapabilities();
+    const native = await launcher.botHost();
+    const capabilities = await native.client.request('/capabilities', { sessionId: 'worldlinebox-install-catalog', cwd: native.instance.workspacePath });
     await writeFile(path.join(reportRoot, 'native-capabilities.json'), JSON.stringify(capabilities, null, 2));
     process.stdout.write('LATEST_INSTALL_OK ' + runtime.id + '\n');
   } finally { await launcher.shutdown(); }

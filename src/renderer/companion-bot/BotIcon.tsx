@@ -1,4 +1,5 @@
 const paths = {
+  check: 'M5 12l4 4L19 6',
   microphone: 'M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8',
   dictation: 'M4 4h16M12 4v16M8 20h8M4 10V8M20 10V8M3 14v5M6 12v9M18 13v7M21 15v3',
   phone: 'M7 3H3v4c0 8 6 14 14 14h4v-4l-5-2-2 2c-3-1-6-4-7-7l2-2z',

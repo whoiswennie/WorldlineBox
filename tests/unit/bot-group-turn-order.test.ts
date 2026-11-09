@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { GROUP_CANDIDATE_LIMIT, GROUP_REPLY_LIMIT } from '../../src/main/companion-bot/group-attention';
-import { buildBotContext } from '../../src/main/companion-bot/context';
+import { buildNativeBotContext } from '../../src/main/companion-bot/context';
 
 const stores: BotStore[] = [];
 afterEach(() => { for (const store of stores.splice(0)) store.close(); });
@@ -20,13 +20,13 @@ it('bounds a thousand-member automatic group before starting any brain or memory
   expect(second.events.some(event => first.events.some(prior => prior.companionId === event.companionId))).toBe(false);
   expect(store.messagesPage(room.id).items.filter(message => message.senderId !== 'user')).toEqual([]);
   const actor = store.getCompanion(first.events[0]!.companionId)!;
-  const context = JSON.parse(buildBotContext({ companion: actor, event: first.events[0]!, conversation: room, messages: [],
-    participants: store.listCompanions(), companionDirectory: store.listCompanions() }).user);
+  const context = JSON.parse(buildNativeBotContext({ companion: actor, event: first.events[0]!, conversation: room,
+    companions: store.listCompanions(), memories: '', files: [] }).prompt);
   expect(context.room.members.length).toBeLessThanOrEqual(64); expect(context.room.memberCount).toBe(1001);
-  expect(context.room.members.some((member: { id: string }) => member.id === actor.id)).toBe(true);
-  expect(context.capabilities.companionDirectory.length).toBeLessThanOrEqual(64);
+  expect(context.room.members.includes(actor.id)).toBe(true);
+  expect(context.companionDirectory.length).toBeLessThanOrEqual(64);
 });
-it('serializes group replies and gives the next speaker the actual preceding published reply', () => {
+it('serializes group replies and retains previous replies for explicit history lookup', () => {
   const { store, room } = fixture(2);
   const source = store.enqueue({ conversationId: room.id, senderId: 'user', sourceMessageId: 'each', content: '你们一人一篇作文' });
   expect(source.events.every(event => !event.payload.groupAttention)).toBe(true);
@@ -34,10 +34,10 @@ it('serializes group replies and gives the next speaker the actual preceding pub
   expect(store.claim({ workerId: 'second' })).toBeUndefined();
   store.settle({ eventId: first.event.id, leaseToken: first.leaseToken, status: 'done', content: '第一位已经交付的作文' });
   const second = store.claim({ workerId: 'second' })!;
-  const through = store.publishedWatermark(room.id);
-  const context = buildBotContext({ companion: store.getCompanion(second.event.companionId)!, conversation: room, event: second.event,
-    messages: store.recentPublishedMessages(room.id, { throughSourceSequence: through }), historyThroughSequence: through });
-  expect(context.user).toContain('第一位已经交付的作文'); expect(context.user).toContain(first.event.replyMessageId);
+  const context = buildNativeBotContext({ companion: store.getCompanion(second.event.companionId)!, conversation: room, event: second.event,
+    companions: store.listCompanions(), memories: '', files: [] });
+  expect(context.prompt).not.toContain('第一位已经交付的作文');
+  expect(store.recentPublishedMessages(room.id, { throughSourceSequence: store.publishedWatermark(room.id) }).some(message => message.id === first.event.replyMessageId && message.content === '第一位已经交付的作文')).toBe(true);
   expect(store.observeGroupReply(first.event.id)).toEqual([]);
 });
 it('ends automatic discussion on a new user message or explicit stop, preserving prior published messages', () => {

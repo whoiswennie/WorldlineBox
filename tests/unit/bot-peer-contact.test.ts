@@ -6,7 +6,7 @@ import { BotStore } from '../../src/main/companion-bot/store';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshResult, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryForget, type BotMemoryPrepared, type BotMemoryScope } from '../../src/main/companion-bot/memory-service';
-import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
@@ -42,8 +42,7 @@ it('creates an observer-visible real pair private room without expanding either 
 });
 it('allows participant-initiated contact while rejecting system notices, withdrawn requests, and changed audiences', async () => {
   const { store, direct, source } = await storeFixture();
-  const task = store.enqueue({ conversationId: direct.id, senderId: 'task-service', source: 'task', content: '联系另一伙伴', recipientIds: ['origin'] }).events[0]!;
-  expect(() => store.contactPeer(task, 'target', 'task-contact', '不能从任务创建跨域联系')).toThrow('有效的用户或伙伴请求');
+  expect(() => store.enqueue({ conversationId: direct.id, senderId: 'task-service', source: 'task', content: '旧任务入站' })).toThrow('旧任务中心消息入口已停用');
   const group = store.createGroup({ title: '普通群', memberIds: ['origin', 'third'] });
   const peer = store.enqueue({ conversationId: group.id, senderId: 'third', source: 'companion', content: '联系其他域', recipientIds: ['origin'] }).events[0]!;
   expect(store.contactPeer(peer, 'target', 'peer-contact', '请帮忙完成本次任务')).toMatchObject({accepted:true});
@@ -95,11 +94,11 @@ async function invoke(input: BotDshRun, companionId: string) {
 }
 async function serviceFixture(handler: (input: BotDshRun) => Promise<string>) {
   const root = await owned('bot-peer-service-'), brain = new BrainBoundary(handler), memory = new MemoryBoundary(root);
-  const service = new BotService({ root, brain, brainRuntime: 'worldlinebox', memory,
+  const service = new BotService({ root, brain, memory,
     model: () => ({ model: 'local-control-plane-fixture', apiFormat: 'openai_chat', baseUrl: 'http://127.0.0.1:9', apiKey: 'not-a-provider-key' }), onEvent: () => undefined });
   cleanup.push(async () => { await service.shutdown(); await rm(root, { recursive: true, force: true }); });
   const state = (await service.handle({ type: 'state' })).snapshot!;
-  const sourceCompanion = BUILTIN_BOT_COMPANIONS.find(item => item.name === 'GPT')!;
+  const sourceCompanion = service.store.createCompanion({ id: 'native-peer-source', name: 'GPT', persona: 'GPT的独立角色' });
   const direct = (await service.handle({ type: 'conversation.open', companionId: sourceCompanion.id })).conversationId!;
   const targetDirect = state.conversations.find(item => item.memberIds.includes(DEFAULT_BOT_COMPANION_ID))!.id;
   return { service, brain, memory, direct, targetDirect, sourceId: sourceCompanion.id, targetId: DEFAULT_BOT_COMPANION_ID };
@@ -111,29 +110,27 @@ it('runs the destination independently in a real peer private room, without eith
   let roomId = '', originLane = '', sourceId = '', targetId = '';
   const f = await serviceFixture(async input => {
     const context = JSON.parse(input.prompt);
-    if (context.trigger.content === '请让大肥鱼给我发晚安') {
-      expect(context.room.members).toContainEqual({ id: 'user', name: '用户' });
+    if (context.message.content === '请让大肥鱼给我发晚安') {
+      expect(context.room.members).toContain('user');
       expect(context.peerContact).toBeUndefined();
       originLane = input.laneId;
       const sent = await invoke(input, targetId); expect(await invoke(input, targetId)).toEqual(sent); roomId = sent.conversationId;
       return '我去喊她了。';
     }
-    if (context.trigger.source === 'companion') {
-      expect(context.envelope.companionId).toBe(targetId); expect(input.system).toContain('姓名：大肥鱼');
-      expect(context.room.members).toEqual(expect.arrayContaining([{ id: sourceId, name: 'GPT' }, { id: targetId, name: '大肥鱼' }]));
-      expect(context.room.members.some((member: {id:string}) => member.id === 'user')).toBe(false);
-      expect(context.room).toMatchObject({ kind: 'peer', userRole: 'observer' });
-      expect(context.peerContact).toEqual({ requestedBy: 'user', deliveredBy: sourceId, userPresent: false, workAuthorization: 'inherited-user-request',
-        responseDestination: 'peer', privateHistoryTransferred: false });
-      expect(context.trigger.senderId).toBe(sourceId); expect(context.trigger.senderType).toBe('companion');
-      expect(context.trigger.content).toBe('本次明确请求：请在双方伙伴私聊里交流晚安。');
+    if (context.message.senderId !== 'user') {
+      expect(context.identity.id).toBe(targetId); expect(input.system).toContain('大肥鱼');
+      expect(context.room.members).toEqual(expect.arrayContaining([sourceId, targetId]));
+      expect(context.room.members.includes('user')).toBe(false);
+      expect(context.room).toMatchObject({ kind: 'peer' });
+      expect(context.peerContact).toBeDefined();
+      expect(context.message.senderId).toBe(sourceId);
+      expect(context.message.content).toBe('本次明确请求：请在双方伙伴私聊里交流晚安。');
       expect(input.prompt).not.toContain('GPT私聊秘密'); expect(input.prompt).not.toContain('大肥鱼私聊秘密');
-      expect(context.capabilities.fileAccess).toBe('task-authorized-host');
       return '晚安，明天见。';
     }
-    if (context.trigger.content === '@所有人 谢谢你们') {
-      expect(context.trigger.senderId).toBe('user'); expect(context.trigger.senderType).toBe('user');
-      expect(context.room.members).toContainEqual({ id: 'user', name: '用户' }); expect(context.peerContact).toBeUndefined();
+    if (context.message.content === '@所有人 谢谢你们') {
+      expect(context.message.senderId).toBe('user');
+      expect(context.room.members).toContain('user'); expect(context.peerContact).toBeUndefined();
     }
     return context.room.kind === 'group' ? '大家都听见啦。' : '这是我们私聊里的回应。';
   });
@@ -146,8 +143,8 @@ it('runs the destination independently in a real peer private room, without eith
   await vi.waitFor(() => expect(f.service.store.messagesPage(roomId).items.some(item => item.content === '晚安，明天见。' && item.senderId === targetId)).toBe(true));
   const room = f.service.store.getConversation(roomId)!;
   expect(room.kind).toBe('peer'); expect(room.userRole).toBe('observer'); expect(room.memberIds).toEqual([sourceId, targetId].sort());
-  const target = f.brain.calls.find(input => JSON.parse(input.prompt).trigger.source === 'companion')!;
-  expect(target.laneId).not.toBe(originLane); expect(JSON.parse(target.prompt).envelope.securityDomainId).toBe(room.securityDomainId);
+  const target = f.brain.calls.find(input => JSON.parse(input.prompt).message.senderId !== 'user')!;
+  expect(target.laneId).not.toBe(originLane); expect(JSON.parse(target.prompt).room.id).toBe(room.id);
   expect(f.service.store.messagesPage(f.direct).items.some(item => item.senderId === targetId)).toBe(false);
   expect(f.service.store.messagesPage(roomId).items.filter(item => item.senderId === sourceId && item.content.includes('明确请求'))).toHaveLength(1);
   await expect(message(f.service, roomId, '谢谢你们', 'observer-cannot-speak')).rejects.toThrow('旁观');
@@ -155,14 +152,14 @@ it('runs the destination independently in a real peer private room, without eith
   expect(f.service.store.getConversation(joined)!.memberIds).toEqual(['user', sourceId, targetId].sort());
   expect(f.service.store.getConversation(roomId)!.memberIds).toEqual([sourceId, targetId].sort());
   await message(f.service, joined, '@所有人 谢谢你们', 'user-joins');
-  await vi.waitFor(() => expect(f.brain.calls.some(input => JSON.parse(input.prompt).trigger.content === '@所有人 谢谢你们')).toBe(true));
+  await vi.waitFor(() => expect(f.brain.calls.some(input => JSON.parse(input.prompt).message.content === '@所有人 谢谢你们')).toBe(true));
   expect(f.memory.preparations.filter(item => item.scope.conversationId === roomId).every(item => !JSON.stringify(item.messages).includes('私聊秘密'))).toBe(true);
 });
 it('propagates source withdrawal to both room actors, durable outboxes and an already-running target', async () => {
   let roomId = '', targetId = '', targetStarted = false, targetAborted = false;
   const f = await serviceFixture(async input => {
     const context = JSON.parse(input.prompt);
-    if (context.trigger.source === 'user') { roomId = (await invoke(input, targetId)).conversationId; return '已经联系。'; }
+    if (context.message.senderId === 'user') { roomId = (await invoke(input, targetId)).conversationId; return '已经联系。'; }
     targetStarted = true;
     await new Promise<void>((resolve, reject) => {
       if (input.signal?.aborted) { targetAborted = true; reject(input.signal.reason); return; }
@@ -186,38 +183,4 @@ it('propagates source withdrawal to both room actors, durable outboxes and an al
     await vi.waitFor(() => expect(f.memory.withdrawals.some(item => item.scope.companionId === companionId && item.scope.securityDomainId === room.securityDomainId && item.sourceMessageIds.includes(introduced.id))).toBe(true));
   }
   expect(f.service.store.messagesPage(roomId).items.some(item => item.content === '撤回后不应发布的回应' && item.status === 'sent')).toBe(false);
-});
-it('keeps a peer Worker receipt out of the other Router prompt and memory preparation until the owner shares facts', async () => {
-  const f = await serviceFixture(async () => '');
-  const room = f.service.store.openPeer(f.sourceId, f.targetId);
-  const source = f.service.store.enqueue({ conversationId: room.id, senderId: f.sourceId, source: 'companion',
-    recipientIds: [f.targetId], sourceMessageId: 'ask-weather', content: '查完后告诉我。' }).events[0]!;
-  const task = f.service.store.createTask({ id: 'peer-weather-receipt', companionId: f.targetId, conversationId: room.id,
-    sourceEventId: source.id, goal: '查询天气', attemptId: 'one', extra: {} });
-  f.service.store.updateTask(task.id, { status: 'succeeded', summary: 'PRIVATE_WEATHER_RECEIPT_16.6C' });
-  f.service.store.enqueueTaskNotice({ conversationId: room.id, senderId: 'task-service', source: 'task',
-    recipientIds: [f.targetId], sourceMessageId: 'private-weather-notice', kind: 'task_done',
-    content: 'PRIVATE_WEATHER_RECEIPT_16.6C', correlationId: source.correlationId, causationId: source.id, payload: { taskId: task.id } });
-  const notification = f.service.store.enqueue({ conversationId: room.id, senderId: f.targetId, source: 'companion',
-    recipientIds: [f.sourceId], sourceMessageId: 'weather-finished', content: '查完了，已经告诉用户。' }).events[0]!;
-  for (const event of [source, notification]) f.service.store.setMetadata(`skipCapture:${event.id}`, 'true');
-  (f.service as unknown as { scheduler: { wake(): void } }).scheduler.wake();
-  await vi.waitFor(() => expect(f.service.store.getEvent(notification.id)?.status).toBe('done'));
-  const reader = f.brain.calls.find(input => input.eventId === notification.id)!;
-  expect(reader).toBeDefined(); expect(reader.prompt).not.toContain('PRIVATE_WEATHER_RECEIPT_16.6C');
-  const context = JSON.parse(reader.prompt);
-  expect(context.room.replyAudience.recipients).toEqual([{ id: f.targetId, name: '大肥鱼' }]);
-  const memory = f.memory.preparations.find(input => input.requestId === notification.id)!;
-  expect(JSON.stringify(memory.messages)).not.toContain('PRIVATE_WEATHER_RECEIPT_16.6C');
-  expect(f.memory.withdrawals).toEqual(expect.arrayContaining([expect.objectContaining({ scope: expect.objectContaining({ companionId: f.sourceId }),
-    mode: 'isolated-task-notices', sourceMessageIds: expect.any(Array) })]));
-  // Human transcript/task cards are retained; changing model visibility must not delete history.
-  expect(f.service.store.messagesPage(room.id).items.some(item => item.content === 'PRIVATE_WEATHER_RECEIPT_16.6C')).toBe(true);
-  const shared = f.service.store.enqueue({ conversationId: room.id, senderId: f.targetId, source: 'companion',
-    recipientIds: [f.sourceId], sourceMessageId: 'weather-shared', content: '把结果也告诉你：现在17℃，记得带伞。' }).events[0]!;
-  f.service.store.setMetadata(`skipCapture:${shared.id}`, 'true');
-  (f.service as unknown as { scheduler: { wake(): void } }).scheduler.wake();
-  await vi.waitFor(() => expect(f.service.store.getEvent(shared.id)?.status).toBe('done'));
-  const sharedReader = f.brain.calls.find(input => input.eventId === shared.id)!;
-  expect(sharedReader.prompt).toContain('现在17℃'); expect(sharedReader.prompt).not.toContain('PRIVATE_WEATHER_RECEIPT_16.6C');
 });

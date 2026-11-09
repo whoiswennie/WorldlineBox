@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import { dshRepositorySchema } from './dsh-marketplace';
 import { dshNodePackRuntimeLockSchema } from './dsh-pack-runtime';
+
+export const dshRepositorySchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$/);
 
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
 const distributionShape = {

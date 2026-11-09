@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { captureBotMemory, type BotMemoryCaptureInput } from '../../src/main/companion-bot/memory-capture';
-import { appBrainRequest, fitsAppBrainRequest } from '../../src/main/companion-bot/app-brain-budget';
+import { fitsNativeModelEnvelope } from '../../src/main/companion-bot/native-model-budget';
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { await Promise.all(cleanups.splice(0).map(run => run())); });
@@ -99,7 +99,7 @@ it('segments a long answer instead of rejecting the whole interaction and preser
   expect(brain.run.mock.calls.length).toBeGreaterThan(1);
   const envelopes = brain.run.mock.calls.map(([run]) => {
     expect(run).toMatchObject({ role: 'brain', tools: [] }); expect(run.prompt.length).toBeLessThanOrEqual(60000);
-    expect(fitsAppBrainRequest(appBrainRequest(run.model, run.system, [{ role: 'user', content: run.prompt }], [], true), run.model)).toBe(true);
+    expect(fitsNativeModelEnvelope(run.model, run.system, run.prompt)).toBe(true);
     const body = JSON.parse(run.prompt); expect(body.segment.partialInteraction).toBe(true);
     expect(body.publishedAnswerSource).toMatchObject({ messageId: 'answer-original', role: 'assistant', senderId: 'c', senderName: null, occurredAt: null, localTime: null });
     return body;
@@ -120,8 +120,8 @@ it('covers every long source code point with the complete original attribution i
   const covered = new Map<string, number>();
   for (const [run] of brain.run.mock.calls) {
     const body = JSON.parse(run.prompt);
-    expect(fitsAppBrainRequest(appBrainRequest(run.model, run.system, [{ role: 'user', content: run.prompt }], [], true), run.model)).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(appBrainRequest(run.model, run.system, [{ role: 'user', content: run.prompt }], [], true))) + run.model.maxTokens! + 256).toBeLessThanOrEqual(16384);
+    expect(fitsNativeModelEnvelope(run.model, run.system, run.prompt)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify({ system: run.system, prompt: run.prompt })) + run.model.maxTokens! + 512).toBeLessThanOrEqual(16384);
     for (const fragment of body.sourceMessages as Array<{ messageId: string; senderId: string; senderName: string; occurredAt: string; localTime: string; content: string }>) {
       const original = messages.find(message => message.id === fragment.messageId)!;
       expect(fragment).toMatchObject({ senderId: original.senderId, senderName: original.senderName, occurredAt: new Date(original.timestamp).toISOString() });
@@ -244,4 +244,52 @@ it('never counts a failed later encoder fragment as a completed memory job', asy
   const archive = vi.fn(async () => undefined);
   await expect(captureBotMemory({ ...input, brain: { ...brain, archive }, model: { ...input.model, contextWindow: 16384, maxTokens: 512 }, answer: '跨多个片段的回答🐳。'.repeat(4000) })).rejects.toThrow('required JSON');
   expect(brain.run).toHaveBeenCalledTimes(2); expect(archive).toHaveBeenCalledTimes(2); expect(memory.remember).toHaveBeenCalledTimes(1);
+});
+
+it('writes a confirmed indexed interaction diary even when policy 3 extraction returns no notes', async () => {
+  const { input, brain, memory } = await fixture('{"notes":[]}'); memory.remember.mockResolvedValue({ state: 'indexed', indexed: true });
+  await expect(captureBotMemory({ ...input, policyVersion: 3, completed: true, answerMessageId: 'a1', capturedAt: '2026-11-09T08:00:00Z',
+    nativeDeliveries: [{ path: 'C:/workspace/report.pdf', description: '原生交付报告' }] })).resolves.toEqual({ notes: 1 });
+  const write = memory.remember.mock.calls[0]![1];
+  expect(write).toMatchObject({ sourceEventId: 'event-1:interaction:v3', sourceMessageIds: ['u1','a1'], waitForIndex: true });
+  expect(write.content).toContain('用户 (user)'); expect(write.content).toContain('a1'); expect(write.content).toContain('report.pdf');
+  expect(write.content).toContain('不能单独证明'); expect(write.content).toContain('isExcerpt: false'); expect(brain.run).toHaveBeenCalledOnce();
+});
+
+it('bounds long policy 3 diaries and marks excerpts while retaining complete source lineage', async () => {
+  const { input, memory } = await fixture('{"notes":[]}'); memory.remember.mockResolvedValue({ state: 'indexed' });
+  const messages = Array.from({ length: 30 }, (_, index) => ({ ...input.messages[0]!, id: 'source-' + index, content: '长正文🐳'.repeat(1000) }));
+  const deliveries = Array.from({ length: 100 }, (_, index) => ({ path: 'C:/workspace/' + index + '长路径'.repeat(200), description: '长说明'.repeat(500) }));
+  await captureBotMemory({ ...input, policyVersion: 3, completed: true, messages, nativeDeliveries: deliveries });
+  const diary = memory.remember.mock.calls[0]![1]; expect(Array.from(diary.content).length).toBeLessThan(11200);
+  expect(diary.content).toContain('isExcerpt: true'); expect(diary.content).toContain('交付共 100 项'); expect(diary.sourceMessageIds).toHaveLength(30);
+});
+
+it('freezes policy 3 extraction across a partial write failure instead of assigning new text to the same diary key', async () => {
+  const { input, brain, memory } = await fixture('{"notes":[{"content":"首次确认的事实","tags":[]}]}');
+  let fail = true; memory.remember.mockImplementation(async (_scope, write) => { if (write.sourceEventId.endsWith('v3:0') && fail) throw new Error('lost note acknowledgement'); return { state: 'indexed' }; });
+  const next = { ...input, policyVersion: 3 as const, completed: true };
+  await expect(captureBotMemory(next)).rejects.toThrow('lost note acknowledgement');
+  brain.run.mockResolvedValue({ text: '{"notes":[{"content":"不可替换成后来的文本","tags":[]}]}', status: 'succeeded', eventId: 'other', sessionId: 'other' }); fail = false;
+  await expect(captureBotMemory(next)).resolves.toEqual({ notes: 2 }); expect(brain.run).toHaveBeenCalledOnce();
+  const notes = memory.remember.mock.calls.filter(([, write]) => write.sourceEventId.endsWith('v3:0')).map(([, write]) => write.content);
+  expect(notes).toHaveLength(2); expect(notes[1]).toBe(notes[0]); expect(notes[1]).toContain('首次确认的事实');
+});
+
+it('does not count pending indexing as a completed diary or run optional extraction before confirmation', async () => {
+  const { input, brain, memory } = await fixture('{"notes":[]}'); memory.remember.mockResolvedValue({ state: 'pending', indexed: false });
+  await expect(captureBotMemory({ ...input, policyVersion: 3, completed: true })).rejects.toMatchObject({ code: 'MEMORY_SYNC_TIMEOUT' });
+  expect(brain.run).not.toHaveBeenCalled();
+  await expect(captureBotMemory({ ...input, policyVersion: 3, completed: false })).rejects.toThrow('confirmed completed');
+});
+
+it('rejects a modified frozen extraction result before reusing its semantic note identifiers', async () => {
+  const { input, brain, memory } = await fixture('{"notes":[]}'); memory.remember.mockResolvedValue({ state: 'indexed' });
+  const next = { ...input, policyVersion: 3 as const, completed: true }; await captureBotMemory(next);
+  const directory = path.join(input.cwd, 'capture-results'), file = path.join(directory, (await readdir(directory))[0]!);
+  const record = JSON.parse(await readFile(file, 'utf8')); record.value.notes = [{ content: '未经核实的新内容', tags: [] }];
+  await writeFile(file, JSON.stringify(record));
+  await expect(captureBotMemory(next)).rejects.toMatchObject({ code: 'MEMORY_CAPTURE_SOURCE_CONFLICT' });
+  expect(brain.run).toHaveBeenCalledOnce();
+  expect(memory.remember.mock.calls.every(([, write]) => write.sourceEventId === 'event-1:interaction:v3')).toBe(true);
 });

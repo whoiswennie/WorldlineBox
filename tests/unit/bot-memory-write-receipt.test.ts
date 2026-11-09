@@ -1,11 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { BotMemoryService, type BotMemoryScope, type BotMemoryWrite, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotService } from '../../src/main/companion-bot/service';
-import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
-import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 
 class DurableMemory extends BotMemoryService {
@@ -32,43 +30,35 @@ class DurableMemory extends BotMemoryService {
   }
   override async close() {}
 }
-it.each([false, true])('recovers a lost write through the real HTTP tool and retention paths; irrecoverable=%s', async irrecoverable => {
+it.each([false, true])('recovers a lost durable write through the native HTTP callback without a replacement write; unresolved=%s', async unresolved => {
   const root = await mkdtemp(path.join(tmpdir(), 'wlb-write-receipt-'));
   if (path.dirname(root) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('wlb-write-receipt-')) throw Error('Invalid fixture cleanup root');
   const memory = new DurableMemory(path.join(root, 'memory'));
-  if (irrecoverable) memory.rememberReceipt = async () => { memory.proofs++; return { found: true, receipt: { state: 'unknown' } }; };
-  const app = new BotAppBrain({ root: path.join(root, 'app-brain'), reconcileTool: (call, signal) => service.reconcileToolReceipt(call, signal),
-    fetchFn: async (url, init) => {
-      if (new URL(String(url)).hostname !== 'model.invalid') return fetch(url, init);
-      const body = JSON.parse(String(init?.body));
-      const system = String(body.messages[0].content), current = body.messages.findLast((message: { role: string }) => message.role === 'user');
-      const trigger = (() => { try { return JSON.parse(current.content).trigger?.content; } catch { return undefined; } })();
-      const firstWrite = trigger === '请记住我喜欢麦茶' && !body.messages.some((message: { role: string }) => message.role === 'tool');
-      const delta = firstWrite ? { tool_calls: [{ index: 0, id: 'memory-save', type: 'function', function: { name: 'memory_write', arguments: JSON.stringify({ content: '用户明确偏好麦茶。' }) } }] }
-        : { content: system.includes('对话记忆编码器') ? '{"notes":[]}' : '已经核实保存回执，可以继续聊天；索引由后台处理。' };
-      return new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: firstWrite ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`, { headers: { 'content-type': 'text/event-stream' } });
-    } });
-  const worker = new BotDshBrain({ getHost: async () => { throw Error('This fixture cannot launch DSH'); } });
-  const service: BotService = new BotService({ root, brain: new BotBrainRouter({ app, worker }), memory, brainRuntime: 'worldlinebox', prewarmMemory: false,
-    model: () => ({ apiFormat: 'openai_chat', model: 'local-protocol', baseUrl: 'http://model.invalid/v1', apiKey: 'fixture', contextWindow: 1000000 }), onEvent: () => undefined });
+  if (unresolved) memory.rememberReceipt = async () => { memory.proofs++; return memory.writes ? { found: true, receipt: { state: 'unknown' } } : { found: false }; };
+  const brain = new BotDshBrain({ getHost: async () => { throw Error('No real DSH process in native HTTP protocol fixture'); } });
+  vi.spyOn(brain, 'run').mockImplementation(async input => {
+    if (input.prompt.includes('请记住我喜欢麦茶')) {
+      const call = () => fetch(input.callback!.url, { method: 'POST', headers: { authorization: `Bearer ${input.callback!.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'memory-save', name: 'memory_write', args: { content: '用户明确偏好麦茶。' } }) });
+      const response = await call(), body = await response.json() as { ok: boolean; result?: unknown; error?: string };
+      expect(body.ok).toBe(!unresolved);
+      if (!unresolved) { expect(body.result).toMatchObject({ state: 'pending', durable: true }); expect(await (await call()).json()).toEqual(body); }
+      else { expect(body.error).toContain('尚未确认'); expect((await call()).ok).toBe(false); }
+      return { status: unresolved ? 'failed' : 'succeeded', text: unresolved ? '' : '已经核实保存回执。', eventId: input.eventId, sessionId: input.laneId };
+    }
+    return { status: 'succeeded', text: '可以继续聊天。', eventId: input.eventId, sessionId: input.laneId };
+  });
+  const service = new BotService({ root, brain, memory, prewarmMemory: false,
+    model: () => ({ apiFormat: 'openai_chat', model: 'native-protocol', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined });
   const until = async (check: () => boolean) => { const end = Date.now() + 5000; while (!check()) { if (Date.now() > end) throw Error('Receipt recovery did not settle'); await new Promise(resolve => setTimeout(resolve, 10)); } };
   try {
     const state = await service.handle({ type: 'state' }), room = state.snapshot!.conversations.find(conversation => conversation.kind === 'direct')!.id;
     const sent = await service.handle({ type: 'message.send', conversationId: room, requestId: 'save', content: '请记住我喜欢麦茶' });
-    if (irrecoverable) {
-      await until(() => memory.proofs > 0);
-      await service.handle({ type: 'reply.cancel', messageId: sent.replyMessageIds![0]! });
-    } else await until(() => service.store.eventForReply(sent.replyMessageIds![0]!)?.status === 'done');
-    expect(memory.writes).toBe(1); expect(memory.proofs).toBeGreaterThanOrEqual(1);
+    await until(() => ['done','failed'].includes(service.store.eventForReply(sent.replyMessageIds![0]!)?.status ?? ''));
+    expect(memory.writes).toBe(1); expect(memory.proofs).toBeGreaterThanOrEqual(2);
+    expect(service.store.eventForReply(sent.replyMessageIds![0]!)!.status).toBe(unresolved ? 'failed' : 'done');
     const next = await service.handle({ type: 'message.send', conversationId: room, requestId: 'next', content: '还能继续聊天吗' });
     await until(() => service.store.eventForReply(next.replyMessageIds![0]!)?.status === 'done');
     expect(memory.writes).toBe(1);
-    if (irrecoverable) {
-      const prior = service.store.eventForReply(sent.replyMessageIds![0]!)!;
-      expect(prior.status).toBe('cancelled'); expect(service.store.pendingCancelledNativeAdmissions(prior.laneId)).toEqual([]);
-    }
-  } finally {
-    await service.shutdown();
-    await rm(root, { recursive: true, force: true });
-  }
+  } finally { await service.shutdown(); await rm(root, { recursive: true, force: true }); }
 });

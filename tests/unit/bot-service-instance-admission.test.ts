@@ -47,7 +47,7 @@ async function fixture(options: Partial<BotServiceOptions> = {}, brain = new Bra
     if (!configured) throw Object.assign(new Error('请先配置共享 DSH 执行实例'), { code: 'BOT_EXECUTION_INSTANCE_REQUIRED' });
   });
   const memory = new Memory({ root, runtime: async () => { throw new Error('No native memory'); }, embedding: async () => { throw new Error('No embedding'); } });
-  const service = new BotService({ root, brain, memory, brainRuntime: 'worldlinebox',
+  const service = new BotService({ root, brain, memory,
     model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }),
     onEvent: () => undefined, ensureCompanionBindings: ensure, ...options });
   owned.push({ service, root });
@@ -73,7 +73,7 @@ it('allows history but requests one shared setup before new chat, world input or
   expect(transcribe).not.toHaveBeenCalled(); expect(f.brain.calls).toEqual([]); expect(f.memory.prepared).toBe(0); expect(f.memory.warmed).toBe(0);
 });
 
-it('admits chat after the shared selection without requiring a running Host for the Router', async () => {
+it('admits chat after the shared selection without requiring a running Host for native admission', async () => {
   const f = await fixture(); f.configure();
   const response = await f.send();
   await until(() => f.service.store.getMessage(response.replyMessageIds![0]!)?.status === 'sent');
@@ -81,7 +81,7 @@ it('admits chat after the shared selection without requiring a running Host for 
   expect(f.service.store.messagesPage(f.conversationId).items.map(value => value.content)).toEqual(['你好', '已收到']);
 });
 
-it('admits all group Routers after one shared setup, including a newly created companion', async () => {
+it('admits all group native agents after one shared setup, including a newly created companion', async () => {
   const f = await fixture();
   const second = await f.service.handle({ type: 'companion.create', name: 'Beta', persona: 'Beta' });
   const beta = f.service.store.getConversation(second.conversationId!)!.memberIds.find(id => id !== 'user')!;
@@ -109,13 +109,12 @@ it('settles an old inbox once when shared setup is missing without repeatedly re
   expect(f.service.store.getEvent(ingress.events[0]!.id)?.attempts).toBe(1);
 });
 
-it('contacts and delegates to a new peer without a separate instance or credential setup', async () => {
+it('contacts a new peer without a separate instance or credential setup', async () => {
   const outcomes: Awaited<ReturnType<typeof tool>>[] = []; let target = '', dispatched = false;
   const brain = new Brain(async input => {
     if (dispatched) return '协作已收到';
     dispatched = true;
     outcomes.push(await tool(input, 'companion_contact', { companionId: target, destination: 'peer', message: '请协作' }));
-    outcomes.push(await tool(input, 'companion_delegate', { companionId: target, title: '协作', goal: '仅分析当前目标' }));
     outcomes.push(await tool(input, 'message_peer', { companionId: target, content: '请参与' }));
     return '已交接';
   });
@@ -124,11 +123,11 @@ it('contacts and delegates to a new peer without a separate instance or credenti
   target = f.service.store.getConversation(second.conversationId!)!.memberIds.find(id => id !== 'user')!;
   const previousRooms = f.service.store.conversations().length;
   const sent = await f.send('开始协作测试'); await until(() => f.service.store.getMessage(sent.replyMessageIds![0]!)?.status === 'sent');
-  expect(outcomes).toHaveLength(3);
-  for (const result of outcomes.slice(0, 2)) expect(result, JSON.stringify(outcomes)).toMatchObject({ status: 200, body: { ok: true } });
+  expect(outcomes).toHaveLength(2);
+  for (const result of outcomes.slice(0, 1)) expect(result, JSON.stringify(outcomes)).toMatchObject({ status: 200, body: { ok: true } });
   // The lower-level room message tool still cannot address a non-member of
   // this direct chat; shared execution does not bypass room authorization.
-  expect(outcomes[2]).toMatchObject({ status: 400, body: { ok: false, error: '事件目标不是合法会话伙伴。' } });
+  expect(outcomes[1]).toMatchObject({ status: 400, body: { ok: false, error: '事件目标不是合法会话伙伴。' } });
   expect(f.service.store.conversations().length).toBeGreaterThan(previousRooms);
   await until(() => f.brain.calls.some(call => f.service.store.getEvent(call.eventId)?.companionId === target));
   expect(f.service.store.messagesPage(second.conversationId!).items).toHaveLength(0);
@@ -145,44 +144,10 @@ it('does not start group attention while the one shared execution selection is m
   for (const event of ingress.events) expect(f.service.store.getEvent(event.id)?.attempts).toBe(1);
 });
 
-it('pauses a task with progress intact when shared setup is absent and still permits cancellation', async () => {
-  const f = await fixture();
-  const ingress = f.service.store.enqueue({ conversationId: f.conversationId, senderId: 'user', source: 'user', sourceMessageId: 'legacy-worker', content: '继续原任务' });
-  const task = f.service.store.createTask({ conversationId: f.conversationId, companionId: DEFAULT_BOT_COMPANION_ID,
-    sourceEventId: ingress.events[0]!.id, goal: '保留旧进展', extra: { nativeAttempted: true, checkpoint: 'retained' } });
-  f.service.store.updateTask(task.id, { summary: '已保存的成果', sessionId: 'original-native-session' });
-  await until(() => f.service.store.getTask(task.id)?.status === 'paused');
-  expect(f.service.store.getTask(task.id)).toMatchObject({ summary: '已保存的成果', sessionId: 'original-native-session', extra: { checkpoint: 'retained', executorInterruptionCount: 1 } });
-  expect(f.brain.calls).toHaveLength(0);
-  await expect(f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId: task.id, operation: 'resume_paused', requestId: 'resume-blocked' }))
-    .rejects.toMatchObject({ code: 'BOT_EXECUTION_INSTANCE_REQUIRED' });
-  const stopped = await f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId: task.id, operation: 'cancel', requestId: 'cancel-allowed' });
-  expect(stopped.ok).toBe(true); expect(f.service.store.getTask(task.id)?.status).toBe('cancelled'); expect(f.brain.calls).toHaveLength(0);
-});
-
 it('does not enable a disabled character when the shared setup is unavailable', async () => {
   const start = vi.fn(), f = await fixture({ companionRuntime: start });
   f.service.store.setCompanionEnabled(DEFAULT_BOT_COMPANION_ID, false);
   await expect(f.service.handle({ type: 'companion.runtime', companionId: DEFAULT_BOT_COMPANION_ID, operation: 'start' }))
     .rejects.toMatchObject({ code: 'BOT_EXECUTION_INSTANCE_REQUIRED' });
   expect(f.service.store.getCompanion(DEFAULT_BOT_COMPANION_ID)?.enabled).toBe(false); expect(start).not.toHaveBeenCalled();
-});
-
-it('can resume a pinned legacy task even when the new shared selection is not configured', async () => {
-  const resume = vi.fn(async () => undefined), f = await fixture({ resumeTaskRuntime: resume });
-  f.configure(); const sent = await f.send();
-  await until(() => f.service.store.getMessage(sent.replyMessageIds![0]!)?.status === 'sent');
-  const source = f.service.store.eventForReply(sent.replyMessageIds![0]!)!;
-  const task = f.service.store.createTask({ conversationId: f.conversationId, companionId: DEFAULT_BOT_COMPANION_ID,
-    sourceEventId: source.id, goal: '继续原来的任务，不创建新任务', extra: { workerAccess: 'full', nativeAttempted: true } });
-  f.service.store.updateTask(task.id, { status: 'paused', sessionId: 'original-private-session', extra: { ...task.extra, executorPaused: true } });
-  f.service.store.setMetadata(`native-host:worker-${task.id}`, 'retained-old-private');
-  f.configure(false); f.ensure.mockClear();
-  const result = await f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId: task.id, operation: 'resume_paused', requestId: 'resume-original-private' });
-  expect(result.ok).toBe(true);
-  await until(() => f.brain.calls.some(call => call.laneId === `worker-${task.id}`));
-  expect(resume).toHaveBeenCalledWith(task.id, expect.any(AbortSignal));
-  expect(f.ensure).not.toHaveBeenCalled();
-  expect(f.service.store.getMetadata(`native-host:worker-${task.id}`)).toBe('retained-old-private');
-  expect(f.service.store.listTasks()).toHaveLength(1);
 });

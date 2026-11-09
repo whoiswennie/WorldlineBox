@@ -2,21 +2,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
-import type { BotDshHandoff } from './dsh-brain';
-import { botTaskRemovalFingerprint } from './task-history';
 import { isBotParticipantRequest } from './participant-request';
-import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
-import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotCompanionPresenceEvent, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
+import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
 import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
 import { originalBuiltinBotPersona } from '../../shared/builtin-bot-companions';
 import type { BotMemoryActivity, BotMemoryRecallReport } from '../../shared/companion-bot-memory';
 import { botMessageEvidence } from '../../shared/bot-message-content';
 import { BotActivityBudget, BotActivityLimitError, BotBackpressureError, isInteractiveBotSource, type BotActivityBudgetPolicy } from './activity-budget';
 import { routeGroupAttention, GROUP_CANDIDATE_LIMIT, GROUP_REPLY_LIMIT, GROUP_DISCUSSION_MS, isGroupStop, type GroupRouting } from './group-attention';
-import { botBrainRequestMetricsSchema, type BotBrainContextSummary, type BotBrainRequestMetrics } from '../../shared/companion-bot-context';
 import type { BotClaim, BotCompanion, BotConversation, BotConversationKind, BotEnqueueInput, BotEvent,
-  BotEventStatus, BotLane, BotMemoryJob, BotMemoryJobClaim, BotMemoryJobInput, BotMessage, BotMessagePage, BotSenderType, BotTask, BotTaskStatus, BotAttachmentGrant } from './types';
+  BotEventStatus, BotLane, BotMemoryJob, BotMemoryJobClaim, BotMemoryJobInput, BotMessage, BotMessagePage, BotSenderType, BotAttachmentGrant } from './types';
 
 interface Statement {
   all(...args: unknown[]): unknown[]; get(...args: unknown[]): unknown;
@@ -61,7 +57,6 @@ const personaPrompt = (value: string) => {
   return value;
 };
 const bounded = (value: number | undefined, fallback: number, max: number) => Math.min(max, Math.max(1, Number.isSafeInteger(value) ? value! : fallback));
-const taskStatuses = new Set<BotTaskStatus>(['queued', 'running', 'waiting', 'paused', 'succeeded', 'failed', 'cancelled', 'unknown']);
 const timingFields = ['elapsedMs', 'queueMs', 'prepareMs', 'firstTextMs', 'modelMs', 'finishMs'] as const;
 const validMilliseconds = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
 const turnTiming = (json: unknown): Partial<BotReplyTiming> => {
@@ -81,17 +76,8 @@ const historyHasLink = (value: unknown): number => {
   }
   return 0;
 };
-export const botLaneRetentionKey = (laneId: string) => `lane-retention:${laneId}`;
-export interface BotLaneRetentionState {
-  epoch: number; turns: number; bytes: number;
-  last?: { eventId: string; system: string; cwd: string; nativeLaneId: string };
-  handoff?: BotDshHandoff; handoffEventId?: string;
-}
-export interface BotNativeAdmission {
-  eventId: string; epoch: number; nativeLaneId: string; system: string; cwd: string; inputBytes: number;
-}
 export interface BotHistoryProjectionRow { projectionSequence: number; timestamp: number; message: BotMessage }
-export interface BotGroupAdminChange { conversation:BotConversation; eventIds:string[]; taskIds:string[] }
+export interface BotGroupAdminChange { conversation:BotConversation; eventIds:string[] }
 export interface BotDevelopmentDefaultCleanup {
   phase: 'retiring' | 'sql-deleted' | 'complete'; conversationIds: string[]; laneIds: string[];
   scopes: Array<{ companionId: string; conversationId: string; securityDomainId: string }>;
@@ -103,8 +89,6 @@ const developmentDefault = 'default-companion', defaultCleanupKey = 'development
 export class BotStore {
   private readonly db: Connection;
   private readonly activityBudget: BotActivityBudget;
-  private taskBudgetAuthority?: (taskId: string) => boolean;
-  setTaskBudgetAuthority(authorize: (taskId: string) => boolean): void { this.taskBudgetAuthority = authorize; }
   constructor(readonly filename: string, options: { activityBudget?: Partial<BotActivityBudgetPolicy> } = {}) {
     if (filename !== ':memory:') mkdirSync(path.dirname(path.resolve(filename)), { recursive: true });
     const Database = BetterSqlite3 as { new(filename: string): Connection };
@@ -223,8 +207,7 @@ export class BotStore {
         this.bindMessageAttachments(message, true, undefined, events);
       }
       for (const raw of this.db.prepare("SELECT * FROM bot_tasks WHERE json_array_length(extra_json,'$.attachmentIds')>0").all()) {
-        const task = this.task(raw), source = this.getEvent(task.sourceEventId); if (!source) continue;
-        if (['queued', 'running', 'waiting', 'paused', 'unknown'].includes(task.status)) this.updateTask(task.id, { extra: { ...task.extra, cancelRequested: true, retryAt: 0 } });
+        const row = asRow(raw), task = { id: String(row.id), companionId: String(row.companion_id) }, source = this.getEvent(String(row.source_event_id)); if (!source) continue;
         for (const notice of this.db.prepare("SELECT DISTINCT source_record_id FROM bot_inbox WHERE companion_id=? AND domain_id=? AND source='task' AND json_extract(payload_json,'$.taskId')=?").all(task.companionId, source.securityDomainId, task.id)) this.bindMessageSources(String(asRow(notice).source_record_id), [task.id]);
         this.withdrawSources(task.companionId, source.securityDomainId, [task.id]);
       }
@@ -323,37 +306,11 @@ export class BotStore {
         this.db.pragma('user_version = 19');
       }).immediate(); } catch (error) { this.db.close(); throw error; }
     }
-    // Older releases exposed executor acknowledgement as an active task.
-    // The user's control is authoritative locally; receipt collection is a
-    // separate bounded background operation and cannot keep a task running.
-    this.db.transaction(() => {
-      for (const raw of this.db.prepare(`SELECT * FROM bot_tasks WHERE status IN ('queued','running','waiting','paused','unknown')
-        AND (json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1
-          OR json_extract(extra_json,'$.progress.phase') IN ('stopping','stop-requesting','stop-unconfirmed','stop-request-unknown','pausing','pause-unconfirmed','pause-request-unknown'))`).all()) {
-        const task = this.task(raw);
-        const progress = task.extra.progress as { phase?: string; updatedAt?: string } | undefined;
-        if (progress?.phase?.startsWith('stop')) { task.extra.cancelRequested = true; task.extra.cancelRequestedAt ??= progress.updatedAt ?? task.updatedAt; }
-        else if (progress?.phase?.startsWith('paus')) { task.extra.pauseRequested = true; task.extra.pauseRequestedAt ??= progress.updatedAt ?? task.updatedAt; }
-        this.updateTask(task.id, { extra: task.extra });
-      }
-    }).immediate();
-    this.suspendTaskTimers(true);
+
   }
 
   close(): void { this.db.close(); }
-  /** Closing/reopening an application is not executor time. On crash recovery
-   * only the last durable observation can bound the previous live slice. */
-  suspendTaskTimers(restarting = false): void {
-    this.db.transaction(() => {
-      for (const raw of this.db.prepare("SELECT * FROM bot_tasks WHERE status='running'").all()) {
-        const task = this.task(raw), start = Date.parse(String(task.extra.timerStartedAt ?? (validMilliseconds(task.extra.elapsedMs) ? '' : task.extra.presenceStartedAt ?? task.createdAt)));
-        const end = restarting ? Math.min(Date.now(), Date.parse(task.updatedAt)) : Date.now();
-        const elapsed = (validMilliseconds(task.extra.elapsedMs) ? task.extra.elapsedMs : 0) + (Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : 0);
-        this.db.prepare('UPDATE bot_tasks SET extra_json=? WHERE id=?').run(JSON.stringify({ ...task.extra, elapsedMs: elapsed, timerStartedAt: undefined }), task.id);
-      }
-    }).immediate();
-  }
-  /** Internal task domain transactions; callbacks must be synchronous and do no native/network I/O. */
+  /** Shared SQL transaction; callbacks must be synchronous and perform no native/network I/O. */
   taskTransaction<T>(operation: (sql: BotTaskSql) => T): T { return this.db.transaction(() => operation(this.db)).immediate(); }
   private bindMessageSources(messageId: string, sourceIds: readonly string[]): void {
     for (const id of new Set(sourceIds)) this.db.prepare('INSERT OR IGNORE INTO bot_message_sources VALUES(?,?)').run(messageId, id);
@@ -396,34 +353,6 @@ export class BotStore {
     }
     this.bindMessageSources(message.id, [...allSources]);
   }
-  private taskSourceScope(taskId: string): { companionId: string; conversationId: string; securityDomainId: string; sourceEventId: string; sourceMessageRecordId: string; attachmentIds: string[];aclRevision:number } | undefined {
-    // Source authorization does not require a task's report or frozen prompt.
-    const raw = this.db.prepare(`SELECT t.companion_id,t.conversation_id,t.source_event_id,i.domain_id,i.source_record_id,i.acl_revision,
-      CASE WHEN json_type(t.extra_json,'$.attachmentIds')='array' THEN json_extract(t.extra_json,'$.attachmentIds') ELSE '[]' END AS attachment_ids
-      FROM bot_tasks t JOIN bot_inbox i ON i.id=t.source_event_id AND i.companion_id=t.companion_id AND i.conversation_id=t.conversation_id WHERE t.id=?`).get(taskId);
-    if (!raw) return;
-    const value = asRow(raw), attachments: unknown = value.attachment_ids ? JSON.parse(String(value.attachment_ids)) : [];
-    return { companionId: String(value.companion_id), conversationId: String(value.conversation_id), securityDomainId: String(value.domain_id),
-      sourceEventId: String(value.source_event_id), sourceMessageRecordId: String(value.source_record_id), attachmentIds: Array.isArray(attachments) ? attachments as string[] : [],aclRevision:Number(value.acl_revision) };
-  }
-  taskSourceIds(taskId: string): string[] {
-    const source = this.taskSourceScope(taskId); if (!source) return [];
-    const pinned = this.db.prepare('SELECT DISTINCT s.source_id FROM bot_task_media_grants t JOIN bot_media_grant_sources s ON s.grant_id=t.grant_id WHERE t.task_id=?').all(taskId).map(raw => String(asRow(raw).source_id));
-    const raw = asRow(this.db.prepare("SELECT json_extract(extra_json,'$.handoffSourceIds') AS ids FROM bot_tasks WHERE id=?").get(taskId));
-    const saved: unknown = raw.ids ? JSON.parse(String(raw.ids)) : [];
-    const context = Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : [];
-    return [...new Set([source.sourceEventId, source.sourceMessageRecordId, ...this.messageSources(source.sourceMessageRecordId), ...pinned, ...context,
-      ...context.flatMap(id => this.messageSources(id))])];
-  }
-  taskSourcesWithdrawn(taskId: string): boolean {
-    const source = this.taskSourceScope(taskId); if (!source) return true;
-    const room=this.getConversation(source.conversationId);
-    if(!room||room.dissolvedAt||room.revision!==source.aclRevision||!room.memberIds.includes(source.companionId))return true;
-    const expected = new Set(source.attachmentIds);
-    const pins = this.db.prepare('SELECT media_id,grant_id FROM bot_task_media_grants WHERE task_id=?').all(taskId).map(raw => ({ mediaId: String(asRow(raw).media_id), grantId: String(asRow(raw).grant_id) }));
-    if (pins.length !== expected.size || pins.some(pin => !expected.has(pin.mediaId) || !this.grantValid(source, pin))) return true;
-    return this.withdrawnIn(source.companionId, source.securityDomainId, this.taskSourceIds(taskId)).size > 0;
-  }
   createCompanion(input: { id?: string; name: string; persona: string; workerConcurrency?: number }): BotCompanion {
     const id = input.id ? text(input.id, '伙伴标识', 200) : randomUUID(), stamp = nowIso();
     const name = text(input.name, '伙伴名称', 100), persona = personaPrompt(input.persona);
@@ -449,77 +378,6 @@ export class BotStore {
   isRetiredDevelopmentDefault(id: string): boolean { return id === developmentDefault && !!this.getMetadata(defaultCleanupKey); }
   developmentDefaultCleanup(): BotDevelopmentDefaultCleanup | undefined {
     const saved = this.getMetadata(defaultCleanupKey); return saved ? JSON.parse(saved) as BotDevelopmentDefaultCleanup : undefined;
-  }
-  /** A one-time development identity replacement, never a general-purpose
-   * account deletion API. Fence dispatch before touching native/filesystem I/O. */
-  beginDevelopmentDefaultCleanup(): BotDevelopmentDefaultCleanup | undefined {
-    return this.db.transaction(() => {
-      let plan = this.developmentDefaultCleanup();
-      if (!plan) {
-        if (!this.getCompanion(developmentDefault)) return;
-        const scopes = this.db.prepare(`SELECT DISTINCT c.id,c.domain_id FROM bot_conversations c WHERE
-          EXISTS(SELECT 1 FROM bot_members m WHERE m.conversation_id=c.id AND m.member_id=?)
-          OR EXISTS(SELECT 1 FROM bot_lanes l WHERE l.conversation_id=c.id AND l.companion_id=?)`).all(developmentDefault, developmentDefault)
-          .map(raw => ({ companionId: developmentDefault, conversationId: String(asRow(raw).id), securityDomainId: String(asRow(raw).domain_id) }));
-        const conversationIds = this.db.prepare(`SELECT c.id FROM bot_conversations c WHERE EXISTS(SELECT 1 FROM bot_members m WHERE m.conversation_id=c.id AND m.member_id=?)
-          AND NOT EXISTS(SELECT 1 FROM bot_members m WHERE m.conversation_id=c.id AND m.member_id NOT IN ('user',?))`).all(developmentDefault, developmentDefault).map(raw => String(asRow(raw).id));
-        plan = { phase: 'retiring', scopes, conversationIds,
-          laneIds: this.db.prepare('SELECT id FROM bot_lanes WHERE companion_id=?').all(developmentDefault).map(raw => String(asRow(raw).id)),
-          taskWorkspaces: this.db.prepare('SELECT t.id,i.domain_id FROM bot_tasks t JOIN bot_inbox i ON i.id=t.source_event_id WHERE t.companion_id=?').all(developmentDefault)
-            .map(raw => ({ taskId: String(asRow(raw).id), securityDomainId: String(asRow(raw).domain_id) })) };
-        this.setMetadata(defaultCleanupKey, JSON.stringify(plan));
-      }
-      if (plan.phase !== 'retiring') return plan;
-      for (const raw of this.db.prepare("SELECT id FROM bot_inbox WHERE companion_id=? AND status IN ('queued','running','cancelled')").all(developmentDefault)) this.cancelEvent(String(asRow(raw).id), true);
-      for (const raw of this.db.prepare("SELECT * FROM bot_tasks WHERE companion_id=? AND status IN ('queued','running','waiting','paused','unknown')").all(developmentDefault)) {
-        const task = this.task(raw); this.updateTask(task.id, { extra: { ...task.extra, cancelRequested: true, retryAt: 0 } });
-      }
-      // Removing only the retired actor preserves remaining group task ACLs.
-      this.db.prepare('DELETE FROM bot_members WHERE member_id=?').run(developmentDefault);
-      this.db.prepare("DELETE FROM bot_memory_jobs WHERE json_extract(payload_json,'$.scope.companionId')=?").run(developmentDefault);
-      this.db.prepare("DELETE FROM bot_deferred_task_notices WHERE json_extract(payload_json,'$.recipientIds[0]')=?").run(developmentDefault);
-      return plan;
-    }).immediate();
-  }
-  commitDevelopmentDefaultCleanup(): BotDevelopmentDefaultCleanup | undefined {
-    return this.db.transaction(() => {
-      const plan = this.developmentDefaultCleanup(); if (!plan || plan.phase !== 'retiring') return plan;
-      const activeTask = this.db.prepare("SELECT 1 FROM bot_tasks WHERE companion_id=? AND status IN ('queued','running','waiting','paused','unknown') LIMIT 1").get(developmentDefault);
-      const retiring = this.db.prepare('SELECT 1 FROM bot_native_retirements r JOIN bot_inbox i ON i.id=r.event_id WHERE i.companion_id=? LIMIT 1').get(developmentDefault);
-      if (activeTask || retiring) return plan;
-      for (const laneId of plan.laneIds) for (const key of [botLaneRetentionKey(laneId), `delivered:${laneId}`]) this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(key);
-      for (const raw of this.db.prepare('SELECT id FROM bot_inbox WHERE companion_id=?').all(developmentDefault)) {
-        const eventId = String(asRow(raw).id);
-        for (const key of [`native-input:${eventId}`, `native-admission:${eventId}`, `native-terminal-counted:${eventId}`, `event-native-epoch:${eventId}`, `skipCapture:${eventId}`]) this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(key);
-        this.db.prepare("DELETE FROM bot_metadata WHERE key LIKE ? OR key LIKE ?").run(`effect:${eventId}:%`, `memory-forget-receipt:${eventId}:%`);
-      }
-      for (const workspace of plan.taskWorkspaces) {
-        this.db.prepare('DELETE FROM bot_metadata WHERE key=? OR key LIKE ? OR key LIKE ?').run(`task-answer-cursor:${workspace.taskId}`, `task-answer-cursor:${workspace.taskId}:%`, `task-control:${workspace.taskId}:%`);
-      }
-      for (const scope of plan.scopes) this.db.prepare('DELETE FROM bot_withdrawn_sources WHERE domain_key=?').run(hash([developmentDefault, scope.securityDomainId]));
-      this.db.prepare(`DELETE FROM bot_deferred_task_notices WHERE json_extract(payload_json,'$.recipientIds[0]')=?`).run(developmentDefault);
-      this.db.prepare('DELETE FROM bot_outbox WHERE event_id IN(SELECT id FROM bot_inbox WHERE companion_id=?)').run(developmentDefault);
-      for (const table of ['bot_task_answer_receipts', 'bot_task_questions', 'bot_task_effects', 'bot_task_controls']) this.db.prepare(`DELETE FROM ${table} WHERE task_id IN(SELECT id FROM bot_tasks WHERE companion_id=?)`).run(developmentDefault);
-      this.db.prepare('DELETE FROM bot_tasks WHERE companion_id=?').run(developmentDefault);
-      this.db.prepare('DELETE FROM bot_publications WHERE event_id IN(SELECT id FROM bot_inbox WHERE companion_id=?)').run(developmentDefault);
-      this.db.prepare('DELETE FROM bot_inbox WHERE companion_id=?').run(developmentDefault);
-      this.db.prepare('DELETE FROM bot_lanes WHERE companion_id=?').run(developmentDefault);
-      for (const id of plan.conversationIds) {
-        this.db.prepare('DELETE FROM bot_outbox WHERE conversation_id=?').run(id);
-        this.db.prepare('DELETE FROM bot_origins WHERE message_id IN(SELECT id FROM bot_messages WHERE conversation_id=?)').run(id);
-        this.db.prepare('DELETE FROM bot_history_projection WHERE conversation_id=?').run(id);
-        this.db.prepare('DELETE FROM bot_messages WHERE conversation_id=?').run(id);
-        this.db.prepare('DELETE FROM bot_conversations WHERE id=?').run(id);
-        this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(`conversation-participation:${id}`);
-      }
-      this.db.prepare('DELETE FROM bot_companions WHERE id=?').run(developmentDefault);
-      this.db.prepare('DELETE FROM bot_metadata WHERE key=? OR key=?').run(`world:private-lane:${developmentDefault}`, `world:causal-actor:${developmentDefault}`);
-      plan.phase = 'sql-deleted'; this.setMetadata(defaultCleanupKey, JSON.stringify(plan)); return plan;
-    }).immediate();
-  }
-  completeDevelopmentDefaultCleanup(): void {
-    const plan = this.developmentDefaultCleanup(); if (plan?.phase !== 'sql-deleted') throw new Error('开发伙伴清理尚未确认退休。');
-    this.setMetadata(defaultCleanupKey, JSON.stringify({ ...plan, phase: 'complete' }));
   }
   updateCompanion(id: string, input: { name: string; persona?: string; workerConcurrency?: number }): BotCompanion {
     if (this.isRetiredDevelopmentDefault(id)) throw new Error('旧开发伙伴已退休。');
@@ -787,7 +645,7 @@ export class BotStore {
       const companions=[...new Set(memberIds.filter(id=>id!=='user'))];
       if(!companions.length||companions.length>16||companions.some(id=>!this.getCompanion(id)||this.isRetiredDevelopmentDefault(id)))throw new Error('群聊需要 1 至 16 位有效伙伴，用户群主不能移除。');
       const next=['user',...companions].sort();
-      if(JSON.stringify([...room.memberIds].sort())===JSON.stringify(next))return{conversation:room,eventIds:[],taskIds:[]};
+      if(JSON.stringify([...room.memberIds].sort())===JSON.stringify(next))return{conversation:room,eventIds:[]};
       const revoked=this.revokeGroupCapabilities(room);
       this.db.prepare('DELETE FROM bot_members WHERE conversation_id=?').run(room.id);
       for(const id of next)this.db.prepare('INSERT INTO bot_members VALUES(?,?)').run(room.id,id);
@@ -798,7 +656,7 @@ export class BotStore {
     return this.db.transaction(()=>{
       const room=this.getConversation(conversationId);
       if(!room||room.kind!=='group'||room.ownerId!=='user')throw new Error('仅群主可以解散群聊。');
-      if(room.dissolvedAt)return{conversation:room,eventIds:[],taskIds:[]};
+      if(room.dissolvedAt)return{conversation:room,eventIds:[]};
       const revoked=this.revokeGroupCapabilities(room);
       this.setMetadata(`conversation-dissolved:${room.id}`,nowIso());
       this.db.prepare('DELETE FROM bot_members WHERE conversation_id=?').run(room.id);
@@ -827,18 +685,14 @@ export class BotStore {
     const parsed = JSON.parse(value) as { text?: unknown; updatedAt?: unknown };
     if (typeof parsed.text === 'string' && parsed.text.trim() && parsed.text.length <= 4000 && typeof parsed.updatedAt === 'string' && Number.isFinite(Date.parse(parsed.updatedAt))) return { text: parsed.text, updatedAt: parsed.updatedAt };
   }
-  private revokeGroupCapabilities(room:BotConversation):Pick<BotGroupAdminChange,'eventIds'|'taskIds'>{
-    const revision=room.revision+1;if(!Number.isSafeInteger(revision))throw new Error('会话权限版本超出范围。');
-    this.db.prepare('UPDATE bot_conversations SET revision=? WHERE id=?').run(revision,room.id);
-    this.db.prepare('UPDATE bot_lanes SET acl_revision=? WHERE conversation_id=?').run(revision,room.id);
-    const eventIds=this.db.prepare("SELECT id FROM bot_inbox WHERE conversation_id=? AND status IN ('queued','running')").all(room.id).map(raw=>String(asRow(raw).id));
-    for(const id of eventIds)this.cancelEvent(id);
-    const taskIds=this.db.prepare("SELECT id FROM bot_tasks WHERE conversation_id=? AND status IN ('queued','running','waiting','paused','unknown')").all(room.id).map(raw=>String(asRow(raw).id));
-    const stamp=nowIso();
-    for(const id of taskIds){const task=this.getTask(id)!;this.updateTask(id,{extra:{...task.extra,cancelRequested:true,cancelRequestedAt:task.extra.cancelRequestedAt??stamp,
-      cancelRecoveryPaused:false,cancelRecoveryAttempts:0,pauseRequested:false,pauseRecoveryPaused:false,retryAt:0,
-      progress:{phase:'stopping',detail:'群聊成员或权限已变化，正在核实停止旧任务。',updatedAt:stamp}}});}
-    return{eventIds,taskIds};
+  private revokeGroupCapabilities(room: BotConversation): Pick<BotGroupAdminChange, 'eventIds'> {
+    const revision = room.revision + 1;
+    if (!Number.isSafeInteger(revision)) throw new Error('会话权限版本超出范围。');
+    this.db.prepare('UPDATE bot_conversations SET revision=? WHERE id=?').run(revision, room.id);
+    this.db.prepare('UPDATE bot_lanes SET acl_revision=? WHERE conversation_id=?').run(revision, room.id);
+    const eventIds = this.db.prepare("SELECT id FROM bot_inbox WHERE conversation_id=? AND status IN ('queued','running')").all(room.id).map(raw => String(asRow(raw).id));
+    for (const id of eventIds) this.cancelEvent(id);
+    return { eventIds };
   }
   private insertConversation(title: string, kind: BotConversationKind, members: string[], directKey?: string): BotConversation {
     const id = randomUUID(), stamp = nowIso();
@@ -995,160 +849,29 @@ export class BotStore {
   }
   activeDomainEvents(companionId: string, securityDomainId: string): BotEvent[] {
     return this.db.prepare(`SELECT i.* FROM bot_inbox i WHERE i.companion_id=? AND i.domain_id=?
-      AND (i.status='running' OR (i.status='queued' AND EXISTS(SELECT 1 FROM bot_metadata m WHERE m.key='native-admission:'||i.id AND m.value<>'')))`)
+      AND (i.status='running' OR (i.status='queued' AND i.dsh_event_id IS NOT NULL))`)
       .all(companionId, securityDomainId).map(raw => this.event(raw));
   }
   rotateDomain(companionId: string, securityDomainId: string): void {
     this.db.transaction(() => this.rotateDomainState(companionId, securityDomainId)).immediate();
   }
   private rotateDomainState(companionId: string, securityDomainId: string): void {
-    const lanes = this.db.prepare('SELECT id FROM bot_lanes WHERE companion_id=? AND conversation_id IN(SELECT id FROM bot_conversations WHERE domain_id=?)').all(companionId, securityDomainId);
-    for (const raw of lanes) {
-      const lane = this.getLane(String(asRow(raw).id))!;
-      this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(botLaneRetentionKey(lane.id));
-      this.setMetadata(`native-recovery-floor:${lane.id}`, String(lane.epoch + 1));
-    }
     this.db.prepare('UPDATE bot_lanes SET epoch=epoch+1,session_id=NULL WHERE companion_id=? AND conversation_id IN(SELECT id FROM bot_conversations WHERE domain_id=?)').run(companionId, securityDomainId);
-  }
-  getLaneRetention(laneId: string): BotLaneRetentionState {
-    const lane = this.getLane(laneId); if (!lane) throw new Error('主脑通道不存在。');
-    const value = this.getMetadata(botLaneRetentionKey(laneId));
-    if (!value) return { epoch: lane.epoch, turns: 0, bytes: 0 };
-    const state = JSON.parse(value) as BotLaneRetentionState;
-    if (state.epoch !== lane.epoch || !Number.isSafeInteger(state.turns) || state.turns < 0 || !Number.isSafeInteger(state.bytes) || state.bytes < 0) throw new Error('主脑保留状态损坏。');
-    return state;
-  }
-  /** Latest numeric request evidence, fenced by the current event, ACL and lane epoch. */
-  recordBrainContext(eventId: string, epoch: number, value: BotBrainRequestMetrics): boolean {
-    const checked = botBrainRequestMetricsSchema.safeParse(value); if (!checked.success) return false;
-    const event = asRow(this.db.prepare(`SELECT i.lane_id FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id
-      JOIN bot_conversations c ON c.id=i.conversation_id WHERE i.id=? AND i.status='running' AND l.epoch=?
-      AND i.acl_revision=c.revision AND EXISTS(SELECT 1 FROM bot_members m WHERE m.conversation_id=c.id AND m.member_id=i.companion_id)
-      AND NOT EXISTS(SELECT 1 FROM bot_metadata d WHERE d.key='conversation-dissolved:'||c.id AND d.value<>'')`).get(eventId, epoch) ?? {});
-    if (!event.lane_id) return false;
-    const key = `brain-context:${event.lane_id}`, saved = this.getMetadata(key);
-    const previous = saved ? JSON.parse(saved) as { epoch: number; compactionRequests?: number; latestCompactionAt?: string; lastRequest?: BotBrainRequestMetrics } : undefined;
-    const sameEpoch = previous?.epoch === epoch, metric = checked.data;
-    // One HTTP request may report multiple usage frames; it is still one request.
-    const compactionRequests = (sameEpoch ? previous.compactionRequests ?? 0 : 0)
-      + (metric.purpose === 'compaction' && (!sameEpoch || previous.lastRequest?.requestId !== metric.requestId) ? 1 : 0);
-    this.setMetadata(key, JSON.stringify({ epoch, eventId, compactionRequests,
-      latestCompactionAt: metric.purpose === 'compaction' ? metric.measuredAt : sameEpoch ? previous.latestCompactionAt : undefined, lastRequest: metric }));
-    return true;
-  }
-  /** Indexed current-room projections only: no transcript, prompt, handoff or report is loaded. */
-  brainContextSummaries(conversationId: string, phaseForReply?: (replyId: string) => string | undefined): Record<string, BotBrainContextSummary> {
-    const room = this.getConversation(conversationId);
-    if (!room || room.dissolvedAt || !room.memberIds.includes('user')) return {};
-    const rows = this.db.prepare(`SELECT l.id,l.companion_id,l.epoch,
-      (SELECT COUNT(*) FROM bot_inbox i WHERE i.lane_id=l.id AND i.status='queued') AS queued,
-      (SELECT COUNT(*) FROM bot_inbox i WHERE i.lane_id=l.id AND i.status='running') AS running,
-      (SELECT reply_message_id FROM bot_inbox i WHERE i.lane_id=l.id AND i.status='running' ORDER BY sequence DESC LIMIT 1) AS reply_id,
-      COALESCE(json_extract(r.value,'$.turns'),0) AS turns,
-      CASE WHEN json_extract(m.value,'$.epoch')=l.epoch THEN json_extract(m.value,'$.lastRequest') ELSE NULL END AS request_json,
-      CASE WHEN json_extract(m.value,'$.epoch')=l.epoch THEN COALESCE(json_extract(m.value,'$.compactionRequests'),0) ELSE 0 END AS compactions,
-      CASE WHEN json_extract(m.value,'$.epoch')=l.epoch THEN json_extract(m.value,'$.latestCompactionAt') ELSE NULL END AS compacted_at
-      FROM bot_lanes l JOIN bot_members member ON member.conversation_id=l.conversation_id AND member.member_id=l.companion_id
-      LEFT JOIN bot_metadata r ON r.key='lane-retention:'||l.id AND json_extract(r.value,'$.epoch')=l.epoch
-      LEFT JOIN bot_metadata m ON m.key='brain-context:'||l.id WHERE l.conversation_id=? LIMIT 16`).all(conversationId).map(asRow);
-    return Object.fromEntries(rows.map(value => {
-      const lastRequest = value.request_json ? botBrainRequestMetricsSchema.safeParse(JSON.parse(String(value.request_json))) : undefined;
-      const summary: BotBrainContextSummary = { conversationId, companionId: String(value.companion_id), epoch: Number(value.epoch),
-        queuedMessages: Number(value.queued), runningMessages: Number(value.running), retention: { completedTurns: Number(value.turns) },
-        compactionRequests: Number(value.compactions), ...(value.compacted_at ? { latestCompactionAt: String(value.compacted_at) } : {}),
-        ...(lastRequest?.success ? { lastRequest: lastRequest.data } : {}),
-        phase: value.reply_id ? phaseForReply?.(String(value.reply_id)) ?? 'preparing-context' : Number(value.queued) ? 'queued' : undefined };
-      return [summary.companionId, summary];
-    }));
   }
   getEventNativeEpoch(eventId: string): number | undefined {
     const value = this.getMetadata(`event-native-epoch:${eventId}`); if (value === undefined) return;
     const epoch = Number(value); if (!Number.isSafeInteger(epoch) || epoch < 1) throw new Error('事件原生通道绑定损坏。');
     return epoch;
   }
-  trackNativeAdmission(input: BotNativeAdmission): void {
-    const event = this.getEvent(input.eventId), epoch = this.getEventNativeEpoch(input.eventId);
-    if (!event || event.status !== 'running' || epoch !== input.epoch || this.getLane(event.laneId)?.epoch !== epoch) throw new Error('原生投递上下文不属于当前事件通道。');
-    if (!input.system || input.system.length > DEFAULT_MODEL_CONTEXT_CHARS || !path.isAbsolute(input.cwd) || !Number.isSafeInteger(input.inputBytes) || input.inputBytes < 0) throw new Error('原生投递上下文无效。');
-    const key = `native-admission:${input.eventId}`, value = JSON.stringify(input), prior = this.getMetadata(key);
-    if (Buffer.byteLength(value) > 131072 || prior && prior !== value) throw new Error('原生事件投递上下文已改变或过大。');
-    this.setMetadata(key, value);
-  }
-  pendingCancelledNativeAdmissions(laneId: string): BotNativeAdmission[] {
-    return this.db.prepare('SELECT admission_json FROM bot_native_retirements WHERE lane_id=? ORDER BY source_sequence')
-      .all(laneId).map(raw => JSON.parse(String(asRow(raw).admission_json)) as BotNativeAdmission);
-  }
-  readyNativeRetirementLanes(limit = 2): string[] {
-    return this.db.prepare('SELECT lane_id FROM bot_native_retirements GROUP BY lane_id HAVING MIN(retry_at)<=? ORDER BY MIN(retry_at),MIN(source_sequence) LIMIT ?')
-      .all(Date.now(), bounded(limit, 2, 8)).map(raw => String(asRow(raw).lane_id));
-  }
-  beginNativeRetirement(laneId: string): boolean {
-    return this.db.transaction(() => {
-      const row = this.db.prepare('SELECT MAX(attempts) AS attempts,MIN(retry_at) AS retry_at FROM bot_native_retirements WHERE lane_id=?').get(laneId);
-      if (!row || asRow(row).retry_at === null || Number(asRow(row).retry_at) > Date.now()) return false;
-      const attempts = Number(asRow(row).attempts) + 1;
-      this.db.prepare('UPDATE bot_native_retirements SET attempts=?,retry_at=? WHERE lane_id=?').run(attempts, Date.now() + Math.min(30000, 1000 * 2 ** Math.min(attempts, 5)), laneId);
-      return true;
-    }).immediate();
-  }
-  /** A UI cancel fences publication before native I/O finishes. Only this
-   * separately reconciled receipt can amend retention after that lease ends. */
-  resolveCancelledNativeAdmission(input: { eventId: string; epoch: number; metadata?: { key: string; value: string }; absent?: boolean }): boolean {
-    return this.db.transaction(() => {
-      const event = this.getEvent(input.eventId), lane = event && this.getLane(event.laneId);
-      if (!event || event.status !== 'cancelled' || !lane || this.getEventNativeEpoch(event.id) !== input.epoch
-        || this.getMetadata(`native-terminal-counted:${event.id}`) !== undefined || !this.getMetadata(`native-admission:${event.id}`)) return false;
-      if (input.metadata && lane.epoch === input.epoch) {
-        const value = JSON.parse(input.metadata.value) as BotLaneRetentionState;
-        const previous = this.getLaneRetention(lane.id).last, previousEvent = previous && this.getEvent(previous.eventId);
-        if (input.metadata.key !== botLaneRetentionKey(lane.id) || value.epoch !== lane.epoch || value.last?.eventId !== event.id
-          || previousEvent && previousEvent.sequence > event.sequence || Buffer.byteLength(input.metadata.value) > 131072) return false;
-        this.setMetadata(input.metadata.key, input.metadata.value);
-      }
-      this.setMetadata(`native-terminal-counted:${event.id}`, input.absent ? 'absent' : '1');
-      this.db.prepare('DELETE FROM bot_native_retirements WHERE event_id=?').run(event.id);
-      this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(`native-admission:${event.id}`);
-      this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(`native-input:${event.id}`);
-      return true;
-    }).immediate();
-  }
-  /** Binding precedes native admission, so a crash never replays one event into another epoch. */
+  /** Callbacks are fenced by the current ACL epoch; every turn owns a fresh native Session. */
   bindEventNativeEpoch(eventId: string, expectedEpoch: number): number {
     return this.db.transaction(() => {
       const event = this.getEvent(eventId), lane = event && this.getLane(event.laneId), prior = this.getEventNativeEpoch(eventId);
-      if (!event || event.status !== 'running' || !lane || lane.epoch !== expectedEpoch || prior !== undefined && prior !== expectedEpoch) {
-        throw Object.assign(new Error('事件所属主脑通道已变化。'), { code: 'BOT_RETENTION_STALE' });
-      }
-      this.setMetadata(`event-native-epoch:${eventId}`, String(expectedEpoch));
-      const state = this.getLaneRetention(event.laneId);
-      const owner = state.handoffEventId ? this.getEvent(state.handoffEventId) : undefined;
-      const unadmittedOwnerStopped = owner && ['failed', 'cancelled'].includes(owner.status) && !owner.dshEventId;
-      if (state.handoff && (!state.handoffEventId || unadmittedOwnerStopped)) this.setMetadata(botLaneRetentionKey(event.laneId), JSON.stringify({ ...state, handoffEventId: eventId }));
+      if (!event || event.status !== 'running' || !lane || lane.epoch !== expectedEpoch || prior !== undefined && prior !== expectedEpoch)
+        throw Object.assign(new Error('原生事件所属会话权限已变化。'), { code: 'BOT_RETENTION_STALE' });
+      this.setMetadata('event-native-epoch:' + eventId, String(expectedEpoch));
       return expectedEpoch;
     }).immediate();
-  }
-  /** The source native session remains cold on disk; only the active pointer moves. */
-  commitLaneHandoff(laneId: string, expectedEpoch: number, handoff: BotDshHandoff): boolean {
-    const serialized = JSON.stringify(handoff); if (Buffer.byteLength(serialized) > DEFAULT_MODEL_CONTEXT_CHARS) throw new Error('原生主脑交接材料过大。');
-    return this.db.transaction(() => {
-      const lane = this.getLane(laneId); if (!lane || lane.epoch !== expectedEpoch) return false;
-      const state = this.getLaneRetention(laneId);
-      if (!state.last || state.last.eventId !== handoff.throughEventId || state.last.nativeLaneId !== handoff.laneId) return false;
-      const previous = this.getEvent(handoff.throughEventId);
-      if (!previous || previous.laneId !== laneId || !['done', 'failed', 'cancelled'].includes(previous.status)) return false;
-      const accepted = this.db.prepare('UPDATE bot_lanes SET epoch=epoch+1,session_id=NULL WHERE id=? AND epoch=?').run(laneId, expectedEpoch);
-      if (!accepted.changes) return false;
-      // Retention preserves receipt authority; withdrawal rotations raise this
-      // floor. Legacy epochs without that evidence remain conservatively fenced.
-      if (this.getMetadata(`native-recovery-floor:${laneId}`) === undefined) this.setMetadata(`native-recovery-floor:${laneId}`, String(expectedEpoch));
-      this.setMetadata(botLaneRetentionKey(laneId), JSON.stringify({ epoch: expectedEpoch + 1, turns: 0, bytes: 0, handoff } satisfies BotLaneRetentionState));
-      return true;
-    }).immediate();
-  }
-  saveSession(laneId: string, sessionId: string): BotLane {
-    const lane = this.getLane(laneId); if (!lane) throw new Error('主脑通道不存在。');
-    if (lane.sessionId && lane.sessionId !== sessionId) throw new Error('主脑通道已绑定其他DSH会话。');
-    this.db.prepare('UPDATE bot_lanes SET session_id=? WHERE id=?').run(text(sessionId, 'DSH会话', 300), laneId); return this.getLane(laneId)!;
   }
 
   /** Only trusted host gateways call this method; UI requests cannot select their sender or domain. */
@@ -1158,13 +881,14 @@ export class BotStore {
     const content = attachments.length ? (typeof input.content === 'string' && input.content.length <= 128000 ? input.content.trim() : text(input.content, '消息', 128000)) : text(input.content, '消息', 128000);
     const evidence = botMessageEvidence({ content, attachments }); if (evidence.length > 128000) throw new Error('消息和附件元数据超过单条容量。');
     const source = input.source ?? (input.senderId === 'user' ? 'user' : 'companion');
+    if (source === 'task') throw new Error('旧任务中心消息入口已停用。');
     const sourceInstanceId = input.sourceInstanceId ?? 'worldlinebox', sourceMessageId = input.sourceMessageId ?? randomUUID();
     const kind = input.kind ?? 'message', payloadJson = JSON.stringify(attachments.length ? { ...input.payload, attachments } : input.payload ?? {});
     if (payloadJson.length > 128000) throw new Error('事件附加数据过大。');
     const originKey = hash([sourceInstanceId, sourceMessageId, input.conversationId]);
     return this.db.transaction(() => {
       const conversation = this.getConversation(input.conversationId); if (!conversation||conversation.dissolvedAt) throw new Error('会话不存在或已经解散。');
-      const serviceSource = source === 'task' || source === 'world';
+      const serviceSource = source === 'world';
       if (!serviceSource && !conversation.memberIds.includes(input.senderId)) throw new Error('消息发送者不属于该会话。');
       if (source === 'world' && conversation.kind !== 'world') throw new Error('世界事件必须进入世界会话。');
       const sender = this.getCompanion(input.senderId);
@@ -1174,7 +898,7 @@ export class BotStore {
       const prior = this.db.prepare('SELECT * FROM bot_origins WHERE origin_key=?').get(originKey);
       const priorMessage = prior ? this.getMessage(String(asRow(prior).message_id))! : undefined;
       const priorEvents = priorMessage ? this.db.prepare('SELECT * FROM bot_inbox WHERE source_record_id=? ORDER BY sequence').all(priorMessage.id).map(raw => this.event(raw)) : undefined;
-      const routing = !priorEvents && conversation.kind === 'group' && source !== 'task' && source !== 'world'
+      const routing = !priorEvents && conversation.kind === 'group' && source !== 'world'
         ? this.routeGroup(conversation, input.senderId, content) : undefined;
       const defaultRecipients = priorEvents ? priorEvents.map(event => event.companionId)
         : routing?.targets ?? conversation.memberIds.filter(id => id !== 'user' && id !== input.senderId);
@@ -1194,7 +918,7 @@ export class BotStore {
       if (!isInteractiveBotSource(source) && recipients.length) this.activityBudget.reserve(correlationId, 'events', originKey, recipients.length);
       this.db.prepare('INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at,attachments_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
         .run(messageId, originKey, conversation.id, input.senderId, senderName, senderType, content, 'sent', kind, correlationId, stamp, attachmentsJson);
-      const sourceIds = [...new Set([...(input.sourceIds ?? []), ...(source === 'task' && typeof input.payload?.taskId === 'string' ? this.taskSourceIds(input.payload.taskId) : [])])];
+      const sourceIds = [...new Set(input.sourceIds ?? [])];
       this.bindMessageAttachments(this.getMessage(messageId)!, source === 'user' || source === 'gateway', input.attachmentGrants, sourceIds);
       this.recordHistoryProjection(messageId);
       this.db.prepare('INSERT INTO bot_origins VALUES(?,?,?)').run(originKey, fingerprint, messageId);
@@ -1286,64 +1010,15 @@ export class BotStore {
   }
   reserveAutomaticAction(eventId: string, callId: string, kind: string): void {
     this.db.transaction(() => {
-      const event = this.getEvent(eventId); if (!event || event.status !== 'running') throw Error('活动预算没有有效运行事件。');
-      const taskId = typeof event.payload.taskId === 'string' ? event.payload.taskId : undefined;
-      const authorizedWork = !!taskId && event.source === 'task' && this.getMetadata(`task-notice-authority:${event.id}`) === taskId
-        && this.taskBudgetAuthority?.(taskId) === true;
-      this.activityBudget.reserve(event.correlationId, 'actions', `${eventId}:${callId}:${kind}`, 1, Date.now(), { authorizedWork });
-    }).immediate();
-  }
-  reserveTaskAction(taskId: string, callId: string, kind: string): void {
-    this.db.transaction(() => {
-      const task = this.getTask(taskId), source = task && this.getEvent(task.sourceEventId);
-      if (!task || task.status !== 'running' || task.extra.cancelRequested || !source) throw new Error('活动预算没有有效运行任务。');
-      this.activityBudget.reserve(source.correlationId, 'actions', `task:${taskId}:${callId}:${kind}`, 1, Date.now(), { authorizedWork: this.taskBudgetAuthority?.(taskId) === true });
+      const event = this.getEvent(eventId);
+      if (!event || event.status !== 'running') throw new Error('自动活动缺少有效的原生执行事件。');
+      this.activityBudget.reserve(event.correlationId, 'actions', eventId + ':' + callId + ':' + kind, 1, Date.now());
     }).immediate();
   }
   tryEnqueueAutomatic(input: BotEnqueueInput): { accepted: true; message: BotMessage; events: BotEvent[] } | { accepted: false; reason: string } {
     if (!['world', 'companion', 'group'].includes(input.source ?? '')) throw Error('只有自动事件使用此投递接口。');
     try { return { accepted: true, ...this.enqueue(input) }; }
     catch (error) { if (error instanceof BotActivityLimitError || error instanceof BotBackpressureError) return { accepted: false, reason: error.message }; throw error; }
-  }
-  /** Lifecycle facts commit even when Inbox is full. Their exact source ID
-   * is admitted later; backpressure never discards a terminal/question notice. */
-  enqueueTaskNotice(input: BotEnqueueInput): { deferred: boolean } {
-    if (input.source !== 'task' || !input.sourceMessageId) throw Error('任务回执必须有稳定来源标识。');
-    return this.db.transaction(() => {
-      const id = hash([input.sourceInstanceId ?? 'worldlinebox', input.sourceMessageId!, input.conversationId]);
-      const room=this.getConversation(input.conversationId);
-      if(!room||room.dissolvedAt||(input.recipientIds??[]).some(member=>!room.memberIds.includes(member))){this.db.prepare('DELETE FROM bot_deferred_task_notices WHERE id=?').run(id);return{deferred:false};}
-      const fingerprint = hash([input.senderId, input.content, input.kind ?? 'message', JSON.stringify(input.payload ?? {}), JSON.stringify([...(input.recipientIds ?? [])].sort())]);
-      const prior = this.db.prepare('SELECT * FROM bot_deferred_task_notices WHERE id=?').get(id);
-      if (prior && asRow(prior).fingerprint !== fingerprint) throw Error('同一任务回执标识对应不同内容。');
-      const payload = prior ? JSON.parse(String(asRow(prior).payload_json)) as BotEnqueueInput : input;
-      try {
-        const delivered = this.enqueue(payload), task = typeof payload.payload?.taskId === 'string' ? this.getTask(payload.payload.taskId) : undefined;
-        const source = task && this.getEvent(task.sourceEventId);
-        if (task && source && payload.senderId === 'task-service' && payload.conversationId === task.conversationId
-          && payload.causationId === source.id && payload.correlationId === source.correlationId) for (const event of delivered.events) {
-          if (event.companionId === task.companionId) this.setMetadata(`task-notice-authority:${event.id}`, task.id);
-        }
-        this.db.prepare('DELETE FROM bot_deferred_task_notices WHERE id=?').run(id); return { deferred: false };
-      }
-      catch (error) {
-        if (!(error instanceof BotBackpressureError)) throw error;
-        this.db.prepare('INSERT OR IGNORE INTO bot_deferred_task_notices VALUES(?,?,?,?)').run(id, JSON.stringify(payload), fingerprint, nowIso());
-        return { deferred: true };
-      }
-    }).immediate();
-  }
-  private flushDeferredTaskNotices(): void {
-    for (const raw of this.db.prepare('SELECT * FROM bot_deferred_task_notices ORDER BY created_at,id LIMIT 32').all()) {
-      const row = asRow(raw), input = JSON.parse(String(row.payload_json)) as BotEnqueueInput;
-      const source = input.causationId ? this.getEvent(input.causationId) : undefined;
-      if (typeof input.payload?.taskId === 'string' && this.taskSourcesWithdrawn(input.payload.taskId)) { this.db.prepare('DELETE FROM bot_deferred_task_notices WHERE id=?').run(String(row.id)); continue; }
-      const recipients = input.recipientIds ?? this.getConversation(input.conversationId)?.memberIds.filter(id => id !== 'user' && id !== input.senderId) ?? [];
-      if (source && recipients.every(id => this.withdrawnIn(id, source.securityDomainId, [source.id]).has(source.id))) {
-        this.db.prepare('DELETE FROM bot_deferred_task_notices WHERE id=?').run(String(row.id)); continue;
-      }
-      if (this.enqueueTaskNotice(input).deferred) break;
-    }
   }
   getEvent(id: string): BotEvent | undefined { const raw = this.db.prepare('SELECT * FROM bot_inbox WHERE id=?').get(id); return raw ? this.event(raw) : undefined; }
   eventForReply(replyMessageId: string): BotEvent | undefined { const raw = this.db.prepare('SELECT * FROM bot_inbox WHERE reply_message_id=?').get(replyMessageId); return raw ? this.event(raw) : undefined; }
@@ -1360,7 +1035,6 @@ export class BotStore {
   claim(input: { workerId: string; leaseMs?: number; excludeLaneIds?: readonly string[]; now?: number; interactiveOnly?: boolean; preferInteractive?: boolean; serialCompanions?: boolean }): BotClaim | undefined {
     const now = input.now ?? Date.now(), leaseMs = bounded(input.leaseMs, 60000, 300000);
     return this.db.transaction(() => {
-      this.flushDeferredTaskNotices();
       this.db.prepare("UPDATE bot_messages SET status='queued' WHERE id IN(SELECT reply_message_id FROM bot_inbox WHERE status='running' AND lease_until<=?)").run(now);
       this.db.prepare("UPDATE bot_inbox SET status='queued',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
       const excluded = input.excludeLaneIds ?? [];
@@ -1425,6 +1099,19 @@ export class BotStore {
     timing.elapsedMs = Math.max(0, Date.now() - received);
     this.db.prepare('UPDATE bot_messages SET timing_json=? WHERE id=?').run(JSON.stringify(timing), messageId);
   }
+  /** Projection of verified native DSH present_files events onto the reply. */
+  appendNativeArtifacts(eventId: string, leaseToken: string, attachments: BotMediaRef[]): boolean {
+    return this.db.transaction(() => {
+      const event = this.getEvent(eventId), room = event && this.getConversation(event.conversationId);
+      if (!event || !room || event.status !== 'running' || room.revision !== event.aclRevision
+        || !this.db.prepare("SELECT 1 FROM bot_inbox WHERE id=? AND lease_token=?").get(eventId, leaseToken)) return false;
+      const message = this.getMessage(event.replyMessageId)!;
+      const refs = [...new Map([...(message.attachments ?? []), ...attachments].map(ref => [ref.id, ref])).values()];
+      this.db.prepare('UPDATE bot_messages SET attachments_json=? WHERE id=?').run(JSON.stringify(refs), message.id);
+      this.bindMessageAttachments({ ...message, attachments: refs }, false, undefined, this.eventSourceIds(event.id));
+      return true;
+    }).immediate();
+  }
   updateDraft(eventId: string, leaseToken: string, content: string): boolean {
     if (content.length > 512000) throw new Error('回复草稿过大。');
     return !!this.db.prepare("UPDATE bot_messages SET content=? WHERE id=(SELECT reply_message_id FROM bot_inbox WHERE id=? AND lease_token=? AND status='running')").run(content, eventId, leaseToken).changes;
@@ -1439,7 +1126,6 @@ export class BotStore {
       if ((input.metadata?.length ?? 0) > 64) throw new Error('原子回复元数据过多。');
       for (const entry of input.metadata ?? []) {
         if (!entry.key || entry.key.length > 500 || Buffer.byteLength(entry.value) > 131072) throw new Error('原子回复元数据过大。');
-        if (entry.key === botLaneRetentionKey(event.laneId) && (JSON.parse(entry.value) as BotLaneRetentionState).epoch !== this.getLane(event.laneId)?.epoch) return false;
       }
       const accepted = this.db.prepare("UPDATE bot_inbox SET status=?,error=?,dsh_event_id=COALESCE(?,dsh_event_id),lease_token=NULL,lease_until=NULL WHERE id=? AND lease_token=? AND status='running'")
         .run(input.status, input.error ?? null, input.dshEventId ?? null, input.eventId, input.leaseToken);
@@ -1447,7 +1133,8 @@ export class BotStore {
       this.finishReplyTiming(event);
       this.db.prepare('UPDATE bot_messages SET status=?,content=COALESCE(?,content),error=? WHERE id=?')
         .run(input.status === 'done' ? 'sent' : input.status, input.content ?? null, input.error ?? null, event.replyMessageId);
-      const visibleReply = !!this.getMessage(event.replyMessageId)?.content.trim();
+      const reply = this.getMessage(event.replyMessageId);
+      const visibleReply = !!reply?.content.trim() || !!reply?.attachments?.length;
       this.bindMessageSources(event.replyMessageId, this.eventSourceIds(event.id));
       if (input.status === 'done' && visibleReply) {
         const messages = input.memoryJobs?.filter(job => job.kind === 'projection').flatMap(job => Array.isArray(job.payload.messages) ? job.payload.messages : []) as Array<{ id?: string; timestamp?: number }> | undefined;
@@ -1467,10 +1154,6 @@ export class BotStore {
       if (result.changes) {
         this.finishReplyTiming(event);
         this.db.prepare("UPDATE bot_messages SET status='cancelled',content=CASE WHEN ? THEN '' ELSE content END WHERE id=?").run(clearContent ? 1 : 0, event.replyMessageId);
-      }
-      const admission = this.getMetadata(`native-admission:${eventId}`);
-      if (admission && this.getEvent(eventId)?.status === 'cancelled' && this.getMetadata(`native-terminal-counted:${eventId}`) === undefined) {
-        this.db.prepare('INSERT OR IGNORE INTO bot_native_retirements(event_id,lane_id,admission_json,source_sequence) VALUES(?,?,?,?)').run(eventId, event.laneId, admission, event.sequence);
       }
       return !!result.changes;
     }).immediate();
@@ -1500,77 +1183,31 @@ export class BotStore {
   }
   private message(raw: unknown): BotMessage {
     const r = asRow(raw), attachments = JSON.parse(String(r.attachments_json ?? '[]')) as BotMediaRef[], timing = turnTiming(r.timing_json);
-    const taskSource = r.sender_id === 'task-service' && ['task_done', 'task_progress'].includes(String(r.kind))
-      ? this.db.prepare("SELECT payload_json,reply_message_id FROM bot_inbox WHERE source_record_id=? AND source='task' LIMIT 1").get(r.id) : undefined;
-    const taskId = taskSource ? JSON.parse(String(asRow(taskSource).payload_json)).taskId : undefined;
-    const owner = typeof taskId === 'string' ? this.db.prepare(`SELECT t.companion_id,c.name,substr(json_extract(t.extra_json,'$.title'),1,120) AS title,t.status
-      FROM bot_tasks t LEFT JOIN bot_companions c ON c.id=t.companion_id WHERE t.id=? AND t.conversation_id=?`).get(taskId, r.conversation_id) : undefined;
     return { id: String(r.id), eventId: String(r.event_id), conversationId: String(r.conversation_id), senderId: String(r.sender_id),
       senderName: String(r.sender_name), senderType: String(r.sender_type) as BotSenderType, content: String(r.content), status: String(r.status) as BotMessage['status'],
       sequence: Number(r.sequence), kind: String(r.kind) as BotMessage['kind'], correlationId: String(r.correlation_id), createdAt: String(r.created_at), error: optional(r.error), ...(attachments.length ? { attachments } : {}),
       ...(timing.elapsedMs !== undefined ? { timing: timing as BotReplyTiming } : {}),
-      ...(typeof taskId === 'string' ? { taskNotice: { taskId, kind: String(r.kind) as 'task_done' | 'task_progress', replyMessageId: String(asRow(taskSource).reply_message_id),
-        ...(owner ? { companionId: String(asRow(owner).companion_id), companionName: optional(asRow(owner).name), title: optional(asRow(owner).title), status: String(asRow(owner).status) } : {}) } } : {}) };
+    };
   }
-  publishForEvent(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; relativePath?: string; outputTaskId?: string; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }): BotMessage {
+  publishForEvent(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }): BotMessage {
     return this.publishMedia(eventId, callId, input);
   }
-  publishForTask(taskId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; relativePath?: string; outputTaskId?: string; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }): BotMessage {
-    const task = this.getTask(taskId); if (!task) throw new Error('媒体产物任务不存在。');
-    return this.publishMedia(task.sourceEventId, `task-${hash([taskId, callId])}`, input, task);
-  }
-  private delegationProxyCanPublish(task: BotTask, event: BotEvent): boolean {
-    if (task.extra.delegationProxy !== true || task.extra.humanStopped || task.extra.removedAt || task.extra.pauseRequested
-      || !isBotParticipantRequest(event, this.getConversation(event.conversationId)!) || event.status === 'cancelled') return false;
-    // Ordinary Worker stores predate the delegation module and need no table
-    // or metadata lookup. The flag alone is never a publication capability.
-    if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_delegations'").get()) return false;
-    const raw = this.db.prepare(`SELECT record_json,fingerprint FROM bot_delegations WHERE proxy_task_id=? AND requester_id=? AND source_conversation_id=? AND source_event_id=?`)
-      .get(task.id, event.companionId, event.conversationId, event.id);
-    if (!raw) return false;
-    const row = asRow(raw), serialized = String(row.record_json);
-    if (row.fingerprint !== createHash('sha256').update(JSON.stringify(serialized)).digest('hex')) return false;
-    const ticket = JSON.parse(serialized) as Record<string, unknown>;
-    if (typeof ticket.peerConversationId !== 'string' || typeof ticket.recipientId !== 'string' || typeof ticket.contactEventId !== 'string') return false;
-    const peer = this.getConversation(ticket.peerConversationId), contact = this.getEvent(ticket.contactEventId);
-    if (!peer || peer.kind !== 'peer' || !contact || contact.aclRevision !== peer.revision || contact.companionId !== ticket.recipientId
-      || contact.conversationId !== peer.id || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([event.companionId, ticket.recipientId].sort())) return false;
-    return ticket.state === 'active' && ticket.proxyTaskId === task.id && ticket.requesterId === event.companionId && ticket.sourceConversationId === event.conversationId
-      && ticket.sourceEventId === event.id && ticket.sourceAclRevision === event.aclRevision && ticket.correlationId === event.correlationId && ticket.goal === task.goal
-      && (task.extra.delegationId === undefined || task.extra.delegationId === ticket.id)
-      && (task.extra.externalDelegationId === undefined || task.extra.externalDelegationId === ticket.id);
-  }
-  private publishMedia(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; relativePath?: string; outputTaskId?: string; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }, task?: BotTask): BotMessage {
-    const fingerprint = hash([input.content ?? '', JSON.stringify(input.attachments), input.relativePath ?? '', ...(!task && input.outputTaskId ? [input.outputTaskId] : [])]);
+  private publishMedia(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }): BotMessage {
+    // Preserve the old non-task publication fingerprint for replay after upgrading.
+    const fingerprint = hash([input.content ?? '', JSON.stringify(input.attachments), '']);
     return this.db.transaction(() => {
       const event = this.getEvent(eventId), lane = event && this.getLane(event.laneId), conversation = event && this.getConversation(event.conversationId);
-      const activeTask = task && this.getTask(task.id);
-      const delegationPublication = activeTask && event && this.delegationProxyCanPublish(activeTask, event);
-      const authorizedTask = activeTask && event && activeTask.status === 'running' && (activeTask.extra.nativeAttempted === true || delegationPublication) && !activeTask.extra.cancelRequested
-        && activeTask.companionId === event?.companionId && activeTask.conversationId === event?.conversationId && !this.taskSourcesWithdrawn(activeTask.id);
       if (!event || !lane || !conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)
-        || this.withdrawnIn(event.companionId, event.securityDomainId, [event.id]).has(event.id)
-        || (task ? !authorizedTask : event.status !== 'running' || this.getEventNativeEpoch(eventId) !== undefined && this.getEventNativeEpoch(eventId) !== lane.epoch)) throw new Error('发送媒体没有当前有效的主脑事件或任务。');
-      const outputTaskId = task?.id ?? input.outputTaskId, outputTask = outputTaskId ? this.getTask(outputTaskId) : undefined;
-      if (outputTaskId && (!outputTask || outputTask.companionId !== event.companionId || outputTask.conversationId !== event.conversationId
-        || outputTask.extra.cancelRequested || this.taskSourcesWithdrawn(outputTaskId) || task && input.outputTaskId && input.outputTaskId !== task.id)) throw new Error('文件产物任务不属于当前受众或其来源已撤回。');
+        || this.withdrawnIn(event.companionId, event.securityDomainId, [event.id]).has(event.id) || event.status !== 'running'
+        || this.getEventNativeEpoch(eventId) !== undefined && this.getEventNativeEpoch(eventId) !== lane.epoch) throw new Error('发送媒体缺少当前有效的原生事件授权。');
       if (!callId || callId.length > 300 || !input.attachments.length) throw new Error('媒体发送回执无效。');
       const previous = this.db.prepare('SELECT * FROM bot_publications WHERE event_id=? AND call_id=?').get(eventId, callId);
       if (previous) { if (asRow(previous).fingerprint !== fingerprint) throw new Error('同一媒体发送标识对应其他内容。'); return this.getMessage(String(asRow(previous).message_id))!; }
       const { message } = this.enqueue({ conversationId: event.conversationId, senderId: event.companionId, source: 'companion', sourceInstanceId: 'bot-publication-v1',
-        sourceMessageId: `${eventId}:${callId}`, content: input.content ?? '', attachments: input.attachments, attachmentGrants: input.attachmentGrants,
-        sourceIds: [...new Set([...this.eventSourceIds(event.id), ...(task ? this.taskSourceIds(task.id) : []), ...(input.sourceIds ?? [])])], recipientIds: [], correlationId: event.correlationId, causationId: event.id });
-      if (delegationPublication && activeTask) {
-        const row = this.db.prepare('SELECT record_json FROM bot_delegations WHERE proxy_task_id=?').get(activeTask.id);
-        const ticket = JSON.parse(String(asRow(row).record_json)) as { recipientId: string; peerConversationId: string; contactEventId: string };
-        const peer = this.getConversation(ticket.peerConversationId)!;
-        // Returning a file is another explicit cross-domain delivery. Its
-        // original B-side grant must be able to withdraw the derived A copy.
-        for (const sourceId of new Set([ticket.contactEventId, ...(input.sourceIds ?? [])])) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
-          .run(ticket.recipientId, peer.securityDomainId, sourceId, message.conversationId, message.id);
-      }
-      this.db.prepare('INSERT INTO bot_publications(event_id,call_id,message_id,fingerprint,task_id,relative_path) VALUES(?,?,?,?,?,?)').run(eventId, callId, message.id, fingerprint, outputTaskId ?? null, input.relativePath ?? null);
-      this.enqueueMemoryJob({ key: `history-publication:${eventId}:${callId}`, kind: 'projection', payload: { scope: { companionId: event.companionId, conversationId: event.conversationId, securityDomainId: event.securityDomainId } } });
+        sourceMessageId: eventId + ':' + callId, content: input.content ?? '', attachments: input.attachments, attachmentGrants: input.attachmentGrants,
+        sourceIds: [...new Set([...this.eventSourceIds(event.id), ...(input.sourceIds ?? [])])], recipientIds: [], correlationId: event.correlationId, causationId: event.id });
+      this.db.prepare('INSERT INTO bot_publications(event_id,call_id,message_id,fingerprint) VALUES(?,?,?,?)').run(eventId, callId, message.id, fingerprint);
+      this.enqueueMemoryJob({ key: 'history-publication:' + eventId + ':' + callId, kind: 'projection', payload: { scope: { companionId: event.companionId, conversationId: event.conversationId, securityDomainId: event.securityDomainId } } });
       this.db.prepare('INSERT OR IGNORE INTO bot_outbox(id,event_id,conversation_id,message_id,created_at) VALUES(?,?,?,?,?)').run(message.id, event.id, event.conversationId, message.id, message.createdAt);
       this.recordEmissionTiming(message.id, event);
       return this.getMessage(message.id)!;
@@ -1578,28 +1215,6 @@ export class BotStore {
   }
   publicationsForEvent(eventId: string): BotMessage[] {
     return this.db.prepare('SELECT m.* FROM bot_publications p JOIN bot_messages m ON m.id=p.message_id WHERE p.event_id=? ORDER BY m.sequence').all(eventId).map(raw => this.message(raw));
-  }
-  publicationsForTask(taskId: string): Array<{ messageId: string; attachmentIds: string[]; relativePath?: string }> {
-    const source = this.taskSourceScope(taskId); if (!source) return [];
-    const key = hash([source.companionId, source.securityDomainId]);
-    return this.db.prepare(`SELECT p.relative_path,m.id,m.attachments_json FROM bot_publications p JOIN bot_messages m ON m.id=p.message_id WHERE p.task_id=?
-      AND NOT EXISTS(SELECT 1 FROM bot_withdrawn_sources w WHERE w.domain_key=? AND (w.source_id=m.id OR w.source_id=p.event_id))
-      AND NOT EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.message_id=m.id)
-      ORDER BY m.sequence DESC LIMIT 16`).all(taskId, key, key)
-      .map(raw => { const value = asRow(raw), attachments = JSON.parse(String(value.attachments_json ?? '[]')) as Array<{ id: string }>;
-        return { messageId: String(value.id), attachmentIds: attachments.map(ref => ref.id), relativePath: optional(value.relative_path) }; }).reverse();
-  }
-  deliveredTaskOutput(event: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, taskId: string, relativePath: string, ref: BotMediaRef): BotMessage | undefined {
-    const task = this.getTask(taskId);
-    if (!task || task.companionId !== event.companionId || task.conversationId !== event.conversationId || task.extra.cancelRequested || this.taskSourcesWithdrawn(taskId)) throw new Error('不能核对其他任务或已撤回来源的文件回执。');
-    const key = hash([event.companionId, event.securityDomainId]);
-    const row = this.db.prepare(`SELECT m.* FROM bot_publications p JOIN bot_messages m ON m.id=p.message_id
-      WHERE p.task_id=? AND p.relative_path=? AND m.conversation_id=? AND m.status='sent' AND json_array_length(m.attachments_json)=1
-      AND json_extract(m.attachments_json,'$[0].id')=? AND json_extract(m.attachments_json,'$[0].sha256') IS ? AND json_extract(m.attachments_json,'$[0].size')=?
-      AND NOT EXISTS(SELECT 1 FROM bot_withdrawn_sources w WHERE w.domain_key=? AND (w.source_id=m.id OR w.source_id=p.event_id))
-      AND NOT EXISTS(SELECT 1 FROM bot_message_sources s JOIN bot_withdrawn_sources w ON w.domain_key=? AND w.source_id=s.source_id WHERE s.message_id=m.id)
-      ORDER BY m.sequence DESC LIMIT 1`).get(taskId, relativePath, event.conversationId, ref.id, ref.sha256 ?? null, ref.size, key, key);
-    return row ? this.message(row) : undefined;
   }
   modelAttachments(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[] } = {}): BotMediaRef[] { return this.modelAttachmentGrants(scope, options).map(entry => entry.ref); }
   modelAttachmentGrants(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, options: { query?: string; ids?: string[]; throughSourceSequence?: number; all?: boolean; ownPublicationsFromEventId?:string } = {}): Array<{ ref: BotMediaRef; grantId: string }> {
@@ -1706,243 +1321,16 @@ export class BotStore {
       .map(raw => { const r = asRow(raw); return { id: String(r.id), eventId: String(r.event_id), conversationId: String(r.conversation_id), messageId: String(r.message_id) }; });
   }
   acknowledgeOutbox(id: string): void { this.db.prepare("UPDATE bot_outbox SET status='delivered',delivered_at=? WHERE id=? AND status='pending'").run(nowIso(), id); }
-  createTask(input: { id?: string; conversationId: string; companionId: string; sourceEventId: string; goal: string; attemptId?: string; dshTaskId?: string; sessionId?: string; extra?: Record<string, unknown>; attachmentGrants?: BotAttachmentGrant[] }): BotTask {
-    if (this.isRetiredDevelopmentDefault(input.companionId)) throw new Error('旧开发伙伴已退休。');
-    return this.db.transaction(() => {
-    const source = this.getEvent(input.sourceEventId);
-    if (!source || source.conversationId !== input.conversationId || source.companionId !== input.companionId) throw new Error('任务来源不属于当前主脑通道。');
-    const room=this.getConversation(source.conversationId);if(!room||room.dissolvedAt||room.revision!==source.aclRevision||!room.memberIds.includes(source.companionId))throw new Error('任务来源的会话权限已变化。');
-    const id = input.id ?? randomUUID(), prior = this.getTask(id), goal = text(input.goal, '任务目标', 32000);
-    if (prior) {
-      if (typeof prior.extra.removedAt === 'string') {
-        if (prior.sourceEventId !== input.sourceEventId || prior.extra.removedFingerprint !== botTaskRemovalFingerprint({ sourceEventId: input.sourceEventId, goal, attachmentIds: input.extra?.attachmentIds, title: input.extra?.title })) throw new Error('已移除任务的标识不能用于不同请求。');
-        if (this.taskSourcesWithdrawn(prior.id)) throw new Error('任务输入的原授权来源已撤回。');
-        return prior;
-      }
-      const ids = (extra: Record<string, unknown> | undefined) => [...new Set(Array.isArray(extra?.attachmentIds) ? extra.attachmentIds as string[] : [])].sort();
-      if (prior.sourceEventId !== input.sourceEventId || prior.goal !== goal || JSON.stringify(ids(prior.extra)) !== JSON.stringify(ids(input.extra))
-        || input.extra?.title !== undefined && input.extra.title !== prior.extra.title) throw new Error('任务标识已被其他目标或附件使用。');
-      if (this.taskSourcesWithdrawn(prior.id)) throw new Error('任务输入的原授权来源已撤回。'); return prior;
-    }
-    const policy = this.activityBudget.policy;
-    const total = Number(asRow(this.db.prepare("SELECT COUNT(*) AS count FROM bot_tasks WHERE status IN ('queued','running','waiting','paused','unknown')").get()).count);
-    if (total >= policy.maxPendingTasks) throw new BotBackpressureError('执行任务队列已满，请等待已有任务结束。');
-    if (!['user', 'gateway'].includes(source.source)) {
-      const automatic = Number(asRow(this.db.prepare(`SELECT COUNT(*) AS count FROM bot_tasks t JOIN bot_inbox i ON i.id=t.source_event_id
-        WHERE t.status IN ('queued','running','waiting','paused','unknown') AND i.source NOT IN ('user','gateway')`).get()).count);
-      if (automatic >= policy.maxPendingTasks - policy.reservedInteractiveTasks) throw new BotBackpressureError('自动任务容量已满，已为用户委派保留容量。');
-    }
-    this.activityBudget.reserve(source.correlationId, 'tasks', id);
-    const stamp = nowIso(); this.db.prepare('INSERT INTO bot_tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id, input.conversationId, input.companionId, input.sourceEventId, goal,
-      'queued', input.attemptId ?? randomUUID(), input.dshTaskId ?? null, input.sessionId ?? null, null, null, stamp, stamp,
-      JSON.stringify({ ...input.extra, elapsedMs: validMilliseconds(input.extra?.elapsedMs) ? input.extra.elapsedMs : 0 }));
-    const contextIds = Array.isArray(input.extra?.handoffSourceIds) ? input.extra.handoffSourceIds : [];
-    if (contextIds.some(id => typeof id !== 'string' || !(() => { const message = this.getMessage(id); return message?.conversationId === source.conversationId
-      && message.status === 'sent' && message.sequence <= Number(input.extra?.handoffThroughSequence ?? source.sourceMessageSequence); })())
-      || this.withdrawnIn(source.companionId, source.securityDomainId, contextIds as string[]).size) throw new Error('任务交接上下文来源无效或已经撤回。');
-    const requested = new Set(Array.isArray(input.extra?.attachmentIds) ? input.extra.attachmentIds as string[] : []), selected = input.attachmentGrants ?? [];
-    if (selected.length !== requested.size || selected.some(grant => !requested.has(grant.mediaId) || !this.grantValid(source, grant))) throw new Error('任务附件缺少有效的已固定授权来源。');
-    for (const grant of selected) this.db.prepare('INSERT INTO bot_task_media_grants VALUES(?,?,?)').run(id, grant.mediaId, grant.grantId);
-    return this.getTask(id)!;
-    }).immediate();
-  }
-  private task(raw: unknown): BotTask {
-    const r = asRow(raw); return { id: String(r.id), conversationId: String(r.conversation_id), companionId: String(r.companion_id), companionName: optional(r.companion_name), sourceEventId: String(r.source_event_id),
-      goal: String(r.goal), status: String(r.status) as BotTaskStatus, attemptId: String(r.attempt_id), dshTaskId: optional(r.dsh_task_id), sessionId: optional(r.session_id),
-      summary: optional(r.summary), summaryIsPreview: r.summary_is_preview === undefined || r.summary_is_preview === null ? undefined : Number(r.summary_is_preview) === 1,
-      error: optional(r.error), createdAt: String(r.created_at), updatedAt: String(r.updated_at), extra: JSON.parse(String(r.extra_json)) };
-  }
-  getTask(id: string): BotTask | undefined { const raw = this.db.prepare('SELECT * FROM bot_tasks WHERE id=?').get(id); return raw ? this.task(raw) : undefined; }
-  getTaskStatus(id:string):BotTask|undefined{
-    const raw=this.db.prepare(`SELECT id,conversation_id,companion_id,source_event_id,'' AS goal,status,attempt_id,dsh_task_id,session_id,NULL AS summary,NULL AS error,created_at,updated_at,
-      json_object('removedAt',json_extract(extra_json,'$.removedAt'),
-        'cancelRequested',json(CASE WHEN json_type(extra_json,'$.cancelRequested')='true' THEN 'true' ELSE 'false' END),
-        'cancelRequestedAt',json_extract(extra_json,'$.cancelRequestedAt'),
-        'progress',json_object('phase',substr(json_extract(extra_json,'$.progress.phase'),1,100),'updatedAt',substr(json_extract(extra_json,'$.progress.updatedAt'),1,100))) AS extra_json
-      FROM bot_tasks WHERE id=?`).get(id);return raw?this.task(raw):undefined;
-  }
-  /** Bounded SQL projection for chat state, router context and directory pages.
-   * Full reports and frozen worker inputs stay in SQLite until explicitly read. */
-  listTaskCatalog(input: { conversationId?: string; companionId?: string; filter?: 'all' | 'active' | 'done' | 'issues'; query?: string;
-    view: 'context' | 'directory'; order?: 'activity' | 'created' | 'summary'; limit?: number; offset?: number }): BotTask[] {
-    const predicates: string[] = ["json_extract(extra_json,'$.removedAt') IS NULL"], args: Array<string | number> = [];
-    if (input.conversationId) { predicates.push('conversation_id=?'); args.push(input.conversationId); }
-    if (input.companionId) { predicates.push('companion_id=?'); args.push(input.companionId); }
-    if (input.filter === 'active') predicates.push("status IN ('queued','running','waiting','paused','unknown')");
-    if (input.filter === 'done') predicates.push("status IN ('succeeded','failed','cancelled')");
-    if (input.filter === 'issues') predicates.push("status IN ('waiting','unknown','failed')");
-    if (input.query?.trim()) { predicates.push("instr(lower(goal||' '||COALESCE(json_extract(extra_json,'$.title'),'')),lower(?))>0"); args.push(input.query.trim()); }
-    const goalChars = input.view === 'context' ? 2000 : 200, summary = input.view === 'context' ? 'substr(summary,1,2000)' : 'NULL';
-    const limit = bounded(input.limit, input.view === 'context' ? 100 : 6, input.view === 'context' ? 100 : 30);
-    const offset = Number.isSafeInteger(input.offset) ? Math.min(30000000, Math.max(0, input.offset!)) : 0;
-    const plainQueued = "status='queued' AND COALESCE(json_extract(extra_json,'$.cancelRequested'),0)<>1 AND COALESCE(json_extract(extra_json,'$.pauseRequested'),0)<>1";
-    const order = input.order === 'summary'
-      ? `CASE WHEN status IN ('running','waiting','paused','unknown') OR status='queued' AND NOT (${plainQueued}) THEN 0 WHEN status='queued' THEN 1 ELSE 2 END,CASE WHEN ${plainQueued} THEN created_at END ASC,CASE WHEN NOT (${plainQueued}) THEN updated_at END DESC,id`
-      : input.order === 'created' ? 'created_at DESC,id DESC' : 'updated_at DESC,id';
-    const rows = this.db.prepare(`SELECT id,conversation_id,companion_id,(SELECT name FROM bot_companions WHERE bot_companions.id=bot_tasks.companion_id) AS companion_name,source_event_id,substr(goal,1,${goalChars}) AS goal,status,attempt_id,dsh_task_id,session_id,
-      ${summary} AS summary,${input.view === 'context' ? 'length(summary)>2000' : 'NULL'} AS summary_is_preview,${input.order === 'summary' ? 'NULL' : 'substr(error,1,2000)'} AS error,created_at,updated_at,
-      json_object('title',substr(json_extract(extra_json,'$.title'),1,120),
-        'humanStopped',json(CASE WHEN json_type(extra_json,'$.humanStopped')='true' THEN 'true' ELSE 'false' END),
-        'cancelRequested',json(CASE WHEN json_type(extra_json,'$.cancelRequested')='true' THEN 'true' ELSE 'false' END),
-        'cancelRequestedAt',json_extract(extra_json,'$.cancelRequestedAt'),'presenceStartedAt',json_extract(extra_json,'$.presenceStartedAt'),
-        'cancelRecoveryPaused',json(CASE WHEN json_type(extra_json,'$.cancelRecoveryPaused')='true' THEN 'true' ELSE 'false' END),
-        'pauseRequested',json(CASE WHEN json_type(extra_json,'$.pauseRequested')='true' THEN 'true' ELSE 'false' END),
-        'pauseRequestedAt',json_extract(extra_json,'$.pauseRequestedAt'),'pausedAt',json_extract(extra_json,'$.pausedAt'),'pauseOrigin',json_extract(extra_json,'$.pauseOrigin'),
-        'elapsedMs',json_extract(extra_json,'$.elapsedMs'),'timerStartedAt',json_extract(extra_json,'$.timerStartedAt'),
-        'outputCheckpoint',json_extract(extra_json,'$.outputCheckpoint'),
-        'progress',json(CASE WHEN json_type(extra_json,'$.progress')='object' THEN
-          json_object('phase',substr(json_extract(extra_json,'$.progress.phase'),1,100),
-            'detail',substr(json_extract(extra_json,'$.progress.detail'),1,1000),
-            'toolName',substr(json_extract(extra_json,'$.progress.toolName'),1,160),
-            'updatedAt',substr(json_extract(extra_json,'$.progress.updatedAt'),1,100)) ELSE 'null' END)) AS extra_json
-      FROM bot_tasks ${predicates.length ? 'WHERE ' + predicates.join(' AND ') : ''}
-      ORDER BY CASE WHEN status IN ('queued','running','waiting','paused','unknown') THEN 0 ELSE 1 END,${order} LIMIT ? OFFSET ?`)
-      .all(...args, limit, offset);
-    return rows.map(raw => this.task(raw));
-  }
-  taskSchedulingStatus(id: string): string | undefined {
-    const record = this.db.prepare('SELECT status FROM bot_tasks WHERE id=?').get(id); return record ? String(asRow(record).status) : undefined;
-  }
-  pendingTasks(limit = 10, options: { afterCompanionId?: string; excludeCompanionIds?: readonly string[] } = {}): BotTask[] {
-    const excluded = [...new Set(options.excludeCompanionIds ?? [])];
-    return this.db.prepare(`WITH eligible AS (SELECT bot_tasks.*,
-      CASE WHEN json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 THEN 0 ELSE 1 END AS priority,
-      ROW_NUMBER() OVER(PARTITION BY companion_id ORDER BY CASE WHEN json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 THEN 0 ELSE 1 END,created_at,id) AS owner_rank
-      FROM bot_tasks WHERE (status IN ('queued','running','unknown')
-        OR (status IN ('waiting','paused') AND (json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1 OR status='waiting' AND EXISTS(SELECT 1 FROM bot_task_questions q WHERE q.task_id=bot_tasks.id AND q.state='answered'))))
-        AND COALESCE(json_extract(extra_json,'$.delegationProxy'),0)<>1
-        AND COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)<>1
-      AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||bot_tasks.companion_id AND disabled.value='0')
-      AND (COALESCE(json_extract(extra_json,'$.pauseRecoveryPaused'),0)<>1 OR json_extract(extra_json,'$.cancelRequested')=1)
-      AND (COALESCE(json_extract(extra_json,'$.retryAt'),0)<=?
-        OR (json_extract(extra_json,'$.cancelRequested')=1 AND COALESCE(json_extract(extra_json,'$.nativeAttempted'),0)<>1))
-      ${excluded.length ? `AND (companion_id NOT IN (${excluded.map(() => '?').join(',')}) OR status='unknown' OR json_extract(extra_json,'$.cancelRequested')=1 OR json_extract(extra_json,'$.pauseRequested')=1)` : ''})
-      SELECT * FROM eligible ORDER BY priority,owner_rank,CASE WHEN companion_id>? THEN 0 ELSE 1 END,companion_id,created_at,id LIMIT ?`)
-      .all(Date.now(), ...excluded, options.afterCompanionId ?? '', bounded(limit, 10, 100)).map(raw => this.task(raw));
-  }
-  activeDomainTasks(companionId: string, securityDomainId: string): BotTask[] {
-    return this.db.prepare(`SELECT t.* FROM bot_tasks t JOIN bot_inbox source ON source.id=t.source_event_id
-      WHERE t.companion_id=? AND source.domain_id=? AND t.status IN ('queued','running','waiting','paused','unknown') ORDER BY t.created_at,t.id`)
-      .all(companionId, securityDomainId).map(raw => this.task(raw));
-  }
-  /** A terminal task and its source-bound notification commit together. */
-  finishTask(id: string, patch: { status: BotTaskStatus; summary?: string; error?: string; sessionId?: string }, notice: BotEnqueueInput): void {
-    this.db.transaction(() => { if (this.getTask(id)?.extra.removedAt) return; this.updateTask(id, patch); this.enqueueTaskNotice(notice); }).immediate();
-  }
-  updateTask(id: string, patch: { status?: BotTaskStatus; summary?: string; error?: string; dshTaskId?: string; sessionId?: string; extra?: Record<string, unknown>; attemptId?: string }): BotTask {
-    const task = this.getTask(id); if (!task) throw new Error('任务不存在。');
-    if (patch.attemptId && patch.attemptId !== task.attemptId) throw new Error('任务回执来自过期执行轮次。');
-    let status = patch.status ?? task.status; if (!taskStatuses.has(status)) throw new Error('任务状态无效。');
-    if (['succeeded', 'failed', 'cancelled'].includes(task.status) && status !== task.status) throw new Error('任务已结束，不能被迟到回执重新启动。');
-    if (typeof task.extra.removedAt === 'string') {
-      // A cleared record is an admission tombstone. Native cleanup may update
-      // its input-free receipt, never restore user text or a visible task.
-      if (patch.extra?.executorControl) this.db.prepare("UPDATE bot_tasks SET extra_json=json_set(extra_json,'$.executorControl',json(?)) WHERE id=?")
-        .run(JSON.stringify(patch.extra.executorControl), id);
-      return this.getTask(id)!;
-    }
-    const extra = { ...(patch.extra ?? task.extra) }, updatedAt = nowIso();
-    if (!['succeeded', 'failed', 'cancelled'].includes(task.status) && extra.cancelRequested === true) {
-      status = 'cancelled';
-      const stamp = typeof extra.cancelRequestedAt === 'string' ? extra.cancelRequestedAt : updatedAt;
-      Object.assign(extra, { cancelRequestedAt: stamp, humanStopped: true, pauseRequested: false, cancelRecoveryPaused: false, pauseRecoveryPaused: false, retryAt: 0,
-        executorControl: extra.executorControl ?? { kind: 'cancel', requestedAt: stamp, state: extra.nativeAttempted === true ? 'pending' : 'acknowledged', attempts: 0, retryAt: 0, workspaceLayout: extra.workspaceLayout },
-        progress: { phase: 'cancelled', detail: '已停止。', updatedAt: stamp } });
-    } else if (!['succeeded', 'failed', 'cancelled'].includes(task.status) && extra.pauseRequested === true) {
-      status = 'paused';
-      const stamp = typeof extra.pauseRequestedAt === 'string' ? extra.pauseRequestedAt : updatedAt;
-      Object.assign(extra, { pauseRequested: false, userPaused: extra.pauseOrigin !== 'router', pausedAt: stamp, pauseRequestedAt: stamp, pauseRecoveryPaused: false, retryAt: 0,
-        executorControl: extra.executorControl ?? { kind: 'pause', requestedAt: stamp, state: extra.nativeAttempted === true ? 'pending' : 'acknowledged', attempts: 0, retryAt: 0, workspaceLayout: extra.workspaceLayout },
-        progress: { phase: 'paused', detail: '已暂停；继续会使用原任务和工作目录。', updatedAt: stamp } });
-    }
-    // Persist completed timing slices. UI reads this value and the one live
-    // slice; paused time and late executor receipts never increase the total.
-    const priorElapsed = validMilliseconds(task.extra.elapsedMs) ? task.extra.elapsedMs : undefined;
-    const priorStart = typeof task.extra.timerStartedAt === 'string' ? Date.parse(task.extra.timerStartedAt) : NaN;
-    const legacyStart = Date.parse(typeof task.extra.presenceStartedAt === 'string' ? task.extra.presenceStartedAt : task.createdAt);
-    const legacyEnd = Date.parse(String(task.extra.cancelRequestedAt ?? task.extra.pauseRequestedAt ?? task.extra.pausedAt ?? task.updatedAt));
-    let elapsed = priorElapsed ?? (['paused', 'succeeded', 'failed', 'cancelled'].includes(task.status) && Number.isFinite(legacyStart) && Number.isFinite(legacyEnd) ? Math.max(0, legacyEnd - legacyStart) : 0);
-    if (validMilliseconds(patch.extra?.elapsedMs)) elapsed = Math.max(elapsed, patch.extra.elapsedMs);
-    const cutoff = Date.parse(String(status === 'cancelled' ? extra.cancelRequestedAt ?? updatedAt : status === 'paused' ? extra.pauseRequestedAt ?? extra.pausedAt ?? updatedAt : updatedAt));
-    const freezing = status !== 'running';
-    if (Number.isFinite(priorStart) && freezing) elapsed += Math.max(0, cutoff - priorStart);
-    else if (priorElapsed === undefined && !['queued', 'paused', 'succeeded', 'failed', 'cancelled'].includes(task.status) && freezing && Number.isFinite(legacyStart)) elapsed = Math.max(0, cutoff - legacyStart);
-    extra.elapsedMs = elapsed;
-    extra.timerStartedAt = freezing ? undefined : Number.isFinite(priorStart) ? task.extra.timerStartedAt : patch.status === 'running' ? updatedAt : undefined;
-    if (task.extra.presenceStartedAt && !extra.presenceStartedAt) extra.presenceStartedAt = task.extra.presenceStartedAt;
-    const terminal = ['succeeded', 'failed', 'cancelled'].includes(status);
-    const waiting = status === 'waiting' || status === 'unknown' || extra.progress && typeof extra.progress === 'object' && (extra.progress as Record<string, unknown>).phase === 'waiting-approval';
-    const wasWaiting = task.status === 'waiting' || task.status === 'unknown' || task.extra.progress && typeof task.extra.progress === 'object' && (task.extra.progress as Record<string, unknown>).phase === 'waiting-approval';
-    let kind: BotCompanionPresenceEvent['kind'] | undefined;
-    if (terminal && status !== task.status) kind = status === 'failed' ? 'task-failed' : 'task-completed';
-    else if (waiting && (!wasWaiting || extra.cancelRecoveryPaused === true && task.extra.cancelRecoveryPaused !== true)) kind = 'task-needs-attention';
-    else if (status === 'running' && !extra.cancelRequested && !extra.presenceStartedAt) { kind = 'task-started'; extra.presenceStartedAt = updatedAt; }
-    this.db.transaction(() => {
-      this.db.prepare('UPDATE bot_tasks SET status=?,summary=?,error=?,dsh_task_id=?,session_id=?,extra_json=?,updated_at=? WHERE id=?')
-      .run(status, patch.summary ?? task.summary ?? null, patch.error ?? task.error ?? null, patch.dshTaskId ?? task.dshTaskId ?? null, patch.sessionId ?? task.sessionId ?? null,
-        JSON.stringify(extra), updatedAt, id);
-      if (kind) this.db.prepare('INSERT INTO bot_task_presence_events(id,task_id,companion_id,conversation_id,kind,title,status,occurred_at) VALUES(?,?,?,?,?,?,?,?)')
-        .run(randomUUID(), id, task.companionId, task.conversationId, kind, String(typeof extra.title === 'string' ? extra.title : '任务').slice(0, 120), status, updatedAt);
-    }).immediate();
-    return this.getTask(id)!;
-  }
-  /** Host-only continuation after an explicit human request and mandate
-   * validation. Generic late worker updates still cannot reopen a terminal. */
-  reopenTask(id: string, continuation: { id: string; text: string }): BotTask {
-    return this.db.transaction(() => {
-      const task = this.getTask(id);
-      if (!task || !['succeeded', 'failed'].includes(task.status) || task.extra.cancelRequested || task.extra.humanStopped || task.extra.removedAt
-        || this.taskSourcesWithdrawn(id)) throw new Error('任务不能由后续指导重新启动。');
-      const grant = this.db.prepare("SELECT 1 FROM bot_task_mandates WHERE task_id=? AND state='active'").get(id);
-      if (!grant) throw new Error('任务缺少仍有效的原始授权。');
-      const extra = { ...task.extra, taskContinuation: continuation, taskContinuationId: continuation.id,
-        reportBaseline: (task.extra.workerReport as { callId?: string } | undefined)?.callId ?? task.extra.reportBaseline ?? null,
-        retryAt: 0, progress: { phase: 'queued', detail: '用户的后续指导已保存，沿原任务和会话继续。', updatedAt: nowIso() } };
-      this.db.prepare("UPDATE bot_tasks SET status='queued',error=NULL,extra_json=?,updated_at=? WHERE id=? AND status=?")
-        .run(JSON.stringify(extra), nowIso(), id, task.status);
-      return this.getTask(id)!;
-    }).immediate();
-  }
-  /** Runtime presence is a metadata projection, never a Host health request or
-   * a scan of task reports, private message bodies or frozen worker inputs. */
+  /** Historical task tables are archival; presence follows pending native chat turns. */
   companionPresence(companions: readonly Pick<BotCompanion, 'id' | 'updatedAt'>[], modelConfigured: boolean, now = Date.now()): Record<string, BotCompanionPresence> {
-    const tasks = this.db.prepare(`SELECT companion_id,COUNT(*) AS active_tasks,SUM(status='queued') AS queued,SUM(status='running') AS running,
-      SUM(status IN ('waiting','paused') OR json_extract(extra_json,'$.progress.phase')='waiting-approval') AS waiting,
-      SUM(COALESCE(json_extract(extra_json,'$.cancelRequested'),0)=1 AND COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)<>1) AS stopping,
-      SUM(status='paused' AND COALESCE(json_extract(extra_json,'$.cancelRequested'),0)<>1 AND COALESCE(json_extract(extra_json,'$.pauseRequested'),0)<>1) AS paused,
-      SUM(status='unknown' OR COALESCE(json_extract(extra_json,'$.cancelRecoveryPaused'),0)=1 OR COALESCE(json_extract(extra_json,'$.pauseRecoveryPaused'),0)=1) AS blocked,MAX(updated_at) AS updated_at
-      FROM bot_tasks WHERE status IN ('queued','running','waiting','paused','unknown') GROUP BY companion_id`).all().map(asRow);
-    const inbox = this.db.prepare(`SELECT companion_id,SUM(status='running') AS replying,SUM(status='queued') AS pending_messages,MAX(received_at) AS updated_at
-      FROM bot_inbox WHERE status IN ('queued','running') GROUP BY companion_id`).all().map(asRow);
-    const result: Record<string, BotCompanionPresence> = {};
-    for (const companion of companions) {
-      const task = tasks.find(value => value.companion_id === companion.id), message = inbox.find(value => value.companion_id === companion.id);
-      const counts = { activeTasks: Number(task?.active_tasks ?? 0), queued: Number(task?.queued ?? 0), running: Number(task?.running ?? 0), waiting: Number(task?.waiting ?? 0),
-        stopping: Number(task?.stopping ?? 0), blocked: Number(task?.blocked ?? 0), paused: Number(task?.paused ?? 0), replying: Number(message?.replying ?? 0), pendingMessages: Number(message?.pending_messages ?? 0) };
-      const events = this.db.prepare(`SELECT e.sequence,e.id,e.kind,e.task_id,e.conversation_id,e.title,e.status,e.occurred_at FROM bot_task_presence_events e
-        WHERE e.companion_id=? AND EXISTS(SELECT 1 FROM bot_members m WHERE m.conversation_id=e.conversation_id AND m.member_id='user') ORDER BY e.sequence DESC LIMIT 8`).all(companion.id)
-        .map(value => { const e = asRow(value); return { id: String(e.id), sequence: Number(e.sequence), kind: String(e.kind) as BotCompanionPresenceEvent['kind'], taskId: String(e.task_id), conversationId: String(e.conversation_id),
-          title: String(e.title), status: String(e.status), occurredAt: String(e.occurred_at) }; });
-      const lastEvent = events[0], failureExpiry = lastEvent?.kind === 'task-failed' ? Date.parse(lastEvent.occurredAt) + 600000 : 0;
-      const status: BotCompanionPresence['status'] = counts.blocked ? 'needs-attention' : failureExpiry > now ? 'error' : counts.waiting ? 'waiting'
-        : counts.replying ? 'replying' : counts.activeTasks ? 'working' : counts.pendingMessages ? 'waiting' : modelConfigured ? 'idle' : 'unconfigured';
-      const active = this.db.prepare(`SELECT t.id,t.conversation_id,substr(json_extract(t.extra_json,'$.title'),1,120) AS title,
-        substr(COALESCE(json_extract(t.extra_json,'$.progress.phase'),t.status),1,100) AS phase,t.updated_at FROM bot_tasks t
-        WHERE t.companion_id=? AND t.status IN ('queued','running','waiting','paused','unknown') AND EXISTS(SELECT 1 FROM bot_members m WHERE m.conversation_id=t.conversation_id AND m.member_id='user')
-      ORDER BY CASE WHEN t.status='unknown' OR json_extract(t.extra_json,'$.cancelRecoveryPaused')=1 OR json_extract(t.extra_json,'$.pauseRecoveryPaused')=1 THEN 0 WHEN t.status IN ('waiting','paused') THEN 1
-          WHEN json_extract(t.extra_json,'$.cancelRequested')=1 THEN 2 WHEN t.status='running' THEN 3 ELSE 4 END,t.updated_at DESC,t.id LIMIT 1`).get(companion.id);
-      const activity = active ? asRow(active) : undefined;
-      result[companion.id] = { status, counts, updatedAt: [companion.updatedAt, task?.updated_at, message?.updated_at, lastEvent?.occurredAt].filter((value): value is string => typeof value === 'string').sort().at(-1)!,
-        ...(status === 'error' ? { expiresAt: new Date(failureExpiry).toISOString() } : {}),
-        ...(activity ? { activity: { taskId: String(activity.id), conversationId: String(activity.conversation_id), title: String(activity.title ?? '任务'), phase: String(activity.phase), updatedAt: String(activity.updated_at) } } : {}),
-        ...(lastEvent ? { lastEvent, events } : {}) };
-    }
-    return result;
-  }
-  listTasks(conversationId?: string, limit = 100): BotTask[] {
-    const count = bounded(limit, 100, 200);
-    return (conversationId ? this.db.prepare("SELECT * FROM bot_tasks WHERE conversation_id=? AND json_extract(extra_json,'$.removedAt') IS NULL ORDER BY created_at DESC,id LIMIT ?").all(conversationId, count)
-      : this.db.prepare("SELECT * FROM bot_tasks WHERE json_extract(extra_json,'$.removedAt') IS NULL ORDER BY created_at DESC,id LIMIT ?").all(count)).map(raw => this.task(raw));
+    const inbox = this.db.prepare("SELECT companion_id,SUM(status='running') AS replying,SUM(status='queued') AS pending_messages,MAX(received_at) AS updated_at FROM bot_inbox WHERE status IN ('queued','running') GROUP BY companion_id").all().map(asRow);
+    return Object.fromEntries(companions.map(companion => {
+      const message = inbox.find(value => value.companion_id === companion.id);
+      const replying = Number(message?.replying ?? 0), pendingMessages = Number(message?.pending_messages ?? 0);
+      return [companion.id, { status: replying ? 'replying' : pendingMessages ? 'waiting' : modelConfigured ? 'idle' : 'unconfigured',
+        counts: { activeTasks: 0, queued: 0, running: 0, waiting: 0, stopping: 0, blocked: 0, paused: 0, replying, pendingMessages },
+        updatedAt: [companion.updatedAt, message?.updated_at].filter((value): value is string => typeof value === 'string').sort().at(-1) ?? new Date(now).toISOString() }];
+    }));
   }
   getMetadata(key: string): string | undefined { const raw = this.db.prepare('SELECT value FROM bot_metadata WHERE key=?').get(key); return raw ? String(asRow(raw).value) : undefined; }
   setMetadata(key: string, value: string): void { this.db.prepare('INSERT INTO bot_metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key, value); }
@@ -1991,10 +1379,10 @@ export class BotStore {
       COALESCE(SUM(j.status='done' AND (r.value IS NULL OR json_type(r.value,'$.notes') IS NOT 'integer' OR json_extract(r.value,'$.notes')<0)),0) AS unknown_done
       FROM bot_memory_jobs j JOIN bot_inbox e ON e.id=json_extract(j.payload_json,'$.sourceEventId')
       LEFT JOIN bot_metadata r ON r.key='memory-capture-result:'||j.id AND json_valid(r.value)
-      WHERE j.domain_key=? AND j.kind='capture' AND e.companion_id=? AND e.conversation_id=? AND e.domain_id=? AND e.source='user' AND e.status='done'
+      WHERE j.domain_key=? AND j.kind='capture' AND e.companion_id=? AND e.conversation_id=? AND e.domain_id=? AND e.source IN ('user','companion','group','gateway') AND e.status='done'
       AND (COALESCE(json_extract(j.payload_json,'$.policyVersion'),1)>=2 OR NOT EXISTS(
         SELECT 1 FROM bot_memory_jobs upgraded WHERE upgraded.domain_key=j.domain_key AND upgraded.kind='capture'
-        AND json_extract(upgraded.payload_json,'$.sourceEventId')=e.id AND json_extract(upgraded.payload_json,'$.policyVersion')=2))
+        AND json_extract(upgraded.payload_json,'$.sourceEventId')=e.id AND json_extract(upgraded.payload_json,'$.policyVersion')>=2))
       AND NOT EXISTS(SELECT 1 FROM blocked b WHERE b.id IN(e.id,e.source_record_id,e.reply_message_id))`)
       .get(domainKey, scope.companionId, domainKey, scope.companionId, scope.conversationId, scope.securityDomainId));
     return { originals: { archived: Number(originals.archived), pending: Number(originals.pending) }, capture: { queued: Number(capture.queued), running: Number(capture.running),

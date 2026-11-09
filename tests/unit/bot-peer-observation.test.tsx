@@ -32,7 +32,7 @@ async function mount(override?: (input: BotRequest) => Promise<BotResponse> | un
         const snapshot: BotSnapshot = { companions, conversations: fixtureConversations, conversationActivity: fixtureActivity, messages: room === peer.id
           ? [message('bob-peer', room, 'bob', '我们在私聊里核对。'), { ...message('alice-peer', room, 'alice', '我正核对清单。', 'running'), progress: { phase: 'waiting-model' } }]
           : room === group.id ? [] : [message('direct-only', direct.id, 'user', '只在用户私聊里的历史。')], tasks: [], hasMore: false,
-          runtime: { engine: 'worldlinebox', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 0, ready: true, dataRoot: 'isolated' } };
+          runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: 'bundled', activeLanes: 0, ready: true, dataRoot: 'isolated' } };
         return { ok: true, snapshot };
       }
       if (input.type === 'conversation.peer.open') return { ok: true, conversationId: peer.id };
@@ -131,9 +131,9 @@ it('shows an honest empty peer filter without offering an empty pair creator', a
 });
 
 it('gives observed peers a participant summary without exposing task or memory mutations', async () => {
-  host = document.createElement('div'); document.body.append(host); root = createRoot(host); const memory = vi.fn(), tasks = vi.fn(), join = vi.fn(), contact = vi.fn();
-  await act(() => root!.render(<BotChatContext conversation={peer} companions={companions.slice(0, 2)} tasks={[{ id: 'private-task', conversationId: peer.id, companionId: 'alice', goal: 'private task details', status: 'running' }]} locale="zh-CN" onClose={() => undefined} onEdit={() => undefined} onMemory={memory} onTask={tasks} onMembers={() => undefined} onJoinPeer={join} onContact={contact} />));
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host); const memory = vi.fn(), join = vi.fn(), contact = vi.fn();
+  await act(() => root!.render(<BotChatContext conversation={peer} companions={companions.slice(0, 2)} locale="zh-CN" onClose={() => undefined} onEdit={() => undefined} onMemory={memory} onMembers={() => undefined} onJoinPeer={join} onContact={contact} />));
   expect(host.textContent).toContain('两位伙伴的真实私聊'); expect(host.querySelector('.bot-context-brain,.bot-context-tasks,.bot-context-actions')).toBeNull(); expect(host.textContent).not.toContain('private task details');
   await click('创建群聊，一起参与', host); expect(join).toHaveBeenCalledOnce();
-  await act(() => host.querySelector<HTMLButtonElement>('.bot-context-peer-members li>button')!.click()); expect(contact).toHaveBeenCalledWith('alice'); expect(memory).not.toHaveBeenCalled(); expect(tasks).not.toHaveBeenCalled();
+  await act(() => host.querySelector<HTMLButtonElement>('.bot-context-peer-members li>button')!.click()); expect(contact).toHaveBeenCalledWith('alice'); expect(memory).not.toHaveBeenCalled();
 });

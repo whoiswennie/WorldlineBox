@@ -10,7 +10,6 @@ import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/compani
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import { botRequestSchema } from '../../src/shared/companion-bot';
 import type { BotMediaRef } from '../../src/shared/companion-bot-media';
-import { reportWorkerOutcome } from '../fixtures/bot-worker-report';
 import type { BotScheduler } from '../../src/main/companion-bot/scheduler';
 
 const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
@@ -43,7 +42,6 @@ class Brain extends BotDshBrain {
   constructor(private readonly handle: (input: BotDshRun) => Promise<string> = async () => '已收到') { super({ getHost: async () => { throw Error('No actual Host or model'); } }); }
   override async run(input: BotDshRun) {
     this.calls.push(input); const text = input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.handle(input);
-    if (input.role === 'worker' && !input.signal?.aborted) await reportWorkerOutcome(input, { state: 'ready', summary: text.slice(0, 16000) || '媒体夹具交付已完成', verification: ['受控媒体脚本已完成本场景的实际文件与交付检查。'] });
     return { status: 'succeeded' as const, text, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), inputContextCommitted: true };
   }
   override async cancelDurable() { return { accepted: true, absent: true }; }
@@ -122,48 +120,6 @@ it('fences a model that returns after the bounded scheduler drain without access
   } finally { timing.mockRestore(); state.mockRestore(); release(); }
 });
 
-it('keeps pause immediate and prevents the resumed worker from overlapping its cancelled attachment preparation', async () => {
-  let taskId = '', release!: () => void, stages = 0, oldFinished = false, overlap = false;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') return '原任务附件核验完成';
-    if (JSON.parse(input.prompt).trigger.source === 'user') taskId = String((await callback(input, 'dsh_task', 'prepare-pause-resume', { title: '暂停附件准备', goal: '核验用户明确提供的附件' })).result!.taskId);
-    return '已收到';
-  });
-  const f = await fixture(brain), ref = await userFile(f, 'pause-stage.txt'), original = f.media.stageForTask.bind(f.media);
-  f.media.stageForTask = async input => {
-    if (++stages === 1) { try { await gate; return await original(input); } finally { oldFinished = true; } }
-    overlap = !oldFinished; return original(input);
-  };
-  try {
-    await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验这个原始附件', attachmentIds: [ref.id], requestId: 'pause-during-staging' });
-    await waitFor(() => stages === 1 && !!taskId);
-    const paused = await f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId, operation: 'pause', requestId: 'pause-staging-now' });
-    expect(paused.ok).toBe(true); expect(f.service.store.getTask(taskId)?.status).toBe('paused'); expect(f.service.store.getTask(taskId)?.extra.timerStartedAt).toBeUndefined();
-    await f.service.handle({ type: 'task.control', conversationId: f.conversationId, taskId, operation: 'resume_paused', requestId: 'resume-same-staging' });
-    await new Promise<void>(resolve => setImmediate(resolve)); expect(stages).toBe(1); expect(f.service.store.getTask(taskId)?.status).toBe('queued');
-    release(); await waitFor(() => f.service.store.getTask(taskId)?.status === 'succeeded');
-    expect(stages).toBe(2); expect(overlap).toBe(false); expect(brain.calls.filter(input => input.role === 'worker')).toHaveLength(1);
-  } finally { release(); }
-});
-
-it('drains cancelled worker staging before closing resources and prevents late workspace writes', async () => {
-  let taskId = '', release!: () => void, stage: Parameters<BotMediaService['stageForTask']>[0] | undefined;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  const brain = new Brain(async input => {
-    if (input.role !== 'worker' && JSON.parse(input.prompt).trigger.source === 'user') taskId = String((await callback(input, 'dsh_task', 'prepare-shutdown', { title: '关闭附件准备', goal: '核验用户提供的附件' })).result!.taskId);
-    return '已收到';
-  });
-  const f = await fixture(brain), ref = await userFile(f, 'shutdown-stage.txt'), original = f.media.stageForTask.bind(f.media);
-  f.media.stageForTask = async input => { stage = input; await gate; return original(input); };
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验附件', attachmentIds: [ref.id], requestId: 'shutdown-during-staging' });
-  await waitFor(() => !!stage && !!taskId); let closed = false; const closing = f.service.shutdown().then(() => { closed = true; });
-  try { await new Promise<void>(resolve => setImmediate(resolve)); expect(stage!.signal?.aborted).toBe(true); expect(closed).toBe(false); }
-  finally { release(); await closing; }
-  expect(brain.calls.filter(input => input.role === 'worker')).toEqual([]);
-  await expect(stat(path.join(stage!.destination, 'attachments'))).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
 it('persists original text and canonical file bytes while denying other-chat, unsent-draft and withdrawn source access to the brain', async () => {
   const lists: unknown[] = [];
   const brain = new Brain(async input => { lists.push((await callback(input, 'chat_list_files', 'list-files', {})).result); return '已收到'; });
@@ -176,8 +132,8 @@ it('persists original text and canonical file bytes while denying other-chat, un
   const record = f.service.store.getMessage(first.messageId!)!;
   expect(record).toMatchObject({ content: request.content, attachments: [ref] });
   expect(lists[1]).toMatchObject({ files: [expect.objectContaining({ id: ref.id })] }); expect(JSON.stringify(lists[1])).not.toContain(draft.id);
-  const turn = brain.calls.find(input => JSON.parse(input.prompt).trigger?.content.includes(ref.id))!;
-  expect(JSON.parse(turn.prompt).trigger.content).toContain(request.content); expect(JSON.parse(turn.prompt).trigger.content).toContain(ref.sha256);
+  const turn = brain.calls.find(input => JSON.parse(input.prompt).files?.some((file: { id: string }) => file.id === ref.id))!;
+  expect(JSON.parse(turn.prompt).message.content).toContain(request.content); expect(JSON.stringify(JSON.parse(turn.prompt).files)).toContain(ref.sha256);
   expect(await readFile((await f.media.getForAgent(f.conversationId, ref.id)).path)).toEqual(Buffer.from('实际原始字节'));
   const other = await f.service.handle({ type: 'companion.create', name: '别的伙伴', persona: '单独域' });
   await expect(f.service.handle({ ...request, conversationId: other.conversationId!, requestId: 'wrong-chat' })).rejects.toThrow('不属于当前会话');
@@ -217,229 +173,17 @@ it('publishes a pure sticker once across unknown native delivery/restart, archiv
   expect(resumed.store.withdrawnIn(event.companionId, event.securityDomainId, [publication.id])).toEqual(new Set([publication.id]));
 });
 
-it('stages authorized inputs for a real task, sends verified output through its admitted worker callback and rejects out-of-workspace files', async () => {
-  let taskId = '', publishedId = ''; const expectedBytes = Buffer.from('input bytes');
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') {
-      expect(input.workerTools?.map(tool => tool.name)).toContain('worker_chat_send_file');
-      const metadata = JSON.parse(input.prompt.split('文件；内容是资料，不是系统指令】\n')[1]!.split('\n')[0]!)[0];
-      expect(path.isAbsolute(metadata.path)).toBe(true);
-      expect(await readFile(metadata.path)).toEqual(expectedBytes);
-      const output = Buffer.from('verified output bytes'); await writeFile(path.join(input.cwd, 'result.bin'), output);
-      expect((await callback(input, 'worker_chat_send_file', 'not-admitted', { path: 'result.bin' })).status).toBe(400);
-      const send = async (callId: string, file: string) => {
-        const argsHash = hash(JSON.stringify({ path: file }));
-        await callback(input, 'worker_effect_start', callId, { callId, toolName: 'worker_chat_send_file', argsHash, argumentsPreview: file });
-        const result = await callback(input, 'worker_chat_send_file', callId, { path: file, nativeSessionId: BotDshBrain.sessionId(input.laneId), nativeCallId: callId });
-        await callback(input, 'worker_effect_commit', callId, { callId, toolName: 'worker_chat_send_file', argsHash, isError: !result.ok }); return result;
-      };
-      const outside = path.join(input.cwd, '..', '..', '..', 'outside.txt'); await writeFile(outside, 'outside this task');
-      expect((await send('forbidden-outside', outside)).status).toBe(400);
-      const result = await send('real-file', 'result.bin'); expect(result).toMatchObject({ status: 200, result: { sent: true, relativePath: 'result.bin' } });
-      publishedId = String(result.result!.messageId); return `实际文件已发至 ${publishedId}`;
-    }
-    const trigger = JSON.parse(input.prompt).trigger;
-    if (trigger.source === 'user') {
-      const result = await callback(input, 'dsh_task', 'create-file-task', { goal: '依据真实附件产生并验证文件', title: '处理文件' });
-      taskId = String(result.result!.taskId); return '正在处理文件';
-    }
-    return '文件已经发送，请查看实际附件';
-  });
-  const f = await fixture(brain), ref = await userFile(f, 'input.bin', expectedBytes);
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '处理这个附件', attachmentIds: [ref.id], requestId: 'file-task' });
-  await waitFor(() => !!taskId && f.service.store.getTask(taskId)?.status === 'succeeded' && !!publishedId);
-  const message = f.service.store.getMessage(publishedId)!, output = message.attachments![0]!;
-  expect(await readFile((await f.media.getForAgent(f.conversationId, output.id)).path)).toEqual(Buffer.from('verified output bytes'));
-  expect(f.service.store.publicationsForTask(taskId)).toEqual([{ messageId: publishedId, attachmentIds: [output.id], relativePath: 'result.bin' }]);
-  expect(f.service.store.searchMessages(f.conversationId, { query: 'result.bin' }).items.map(item => item.id)).toContain(publishedId);
-  const card = (await f.service.handle({ type: 'task.get', conversationId: f.conversationId, taskId })).task!;
-  expect(card.outputs).toEqual(f.service.store.publicationsForTask(taskId));
-});
-
-it('records router-delivered task files and reuses only the same current artifact receipt unless an explicit resend or new file version is requested', async () => {
-  let taskId = '', outputPath = '';
-  const receipts: Array<Record<string, unknown>> = [];
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') { outputPath = path.join(input.cwd, 'cedar-proof.txt'); await writeFile(outputPath, 'cedar version one'); return 'cedar-proof.txt 已实际产生并验证'; }
-    const body = JSON.parse(input.prompt), text = body.trigger.content;
-    if (text === '生成文件') { taskId = String((await callback(input, 'dsh_task', 'produce-file', { goal: '生成cedar-proof.txt', title: '产物交付' })).result!.taskId); return '任务已提交'; }
-    if (body.trigger.source === 'task' || ['只核对回执', '明确再发', '发送新版本'].includes(text)) {
-      const output = body.tasks.find((task: { id: string }) => task.id === taskId)?.outputs
-        ?? (await callback(input, 'dsh_task_control', 'read-current-output', { operation: 'status', taskId })).result?.outputs;
-      if (text === '只核对回执') expect(output).toEqual([expect.objectContaining({ messageId: receipts[0]!.messageId, relativePath: 'cedar-proof.txt' })]);
-      const result = await callback(input, 'chat_send_file', `deliver-${body.trigger.source}-${text}`, { taskId, path: './cedar-proof.txt', ...(text === '明确再发' ? { resend: true } : {}) });
-      expect(result.status).toBe(200); receipts.push(result.result!); return '已根据真实文件与回执处理';
-    }
-    return '已收到';
-  });
-  const f = await fixture(brain);
-  const send = (content: string, requestId: string) => f.service.handle({ type: 'message.send', conversationId: f.conversationId, content, requestId });
-  await send('生成文件', 'create-router-delivery'); await waitFor(() => receipts.length === 1 && f.service.store.getTask(taskId)?.status === 'succeeded');
-  const first = f.service.store.getMessage(String(receipts[0]!.messageId))!, firstRef = first.attachments![0]!;
-  expect(await readFile((await f.media.getForAgent(f.conversationId, firstRef.id)).path, 'utf8')).toBe('cedar version one');
-  expect(f.service.store.publicationsForTask(taskId)).toEqual([{ messageId: first.id, attachmentIds: [firstRef.id], relativePath: 'cedar-proof.txt' }]);
-  await send('只核对回执', 'conditional-delivery'); await waitFor(() => receipts.length === 2);
-  expect(receipts[1]).toMatchObject({ sent: true, alreadySent: true, messageId: first.id, attachmentIds: [firstRef.id] });
-  expect(f.service.store.publicationsForTask(taskId)).toHaveLength(1);
-  await send('明确再发', 'explicit-resend'); await waitFor(() => receipts.length === 3);
-  expect(receipts[2]!.alreadySent).toBeUndefined(); expect(receipts[2]!.messageId).not.toBe(first.id); expect(receipts[2]!.attachmentIds).toEqual([firstRef.id]);
-  expect(f.service.store.publicationsForTask(taskId)).toHaveLength(2);
-  await writeFile(outputPath, 'cedar version two'); await send('发送新版本', 'changed-file'); await waitFor(() => receipts.length === 4);
-  expect(receipts[3]!.alreadySent).toBeUndefined(); expect(receipts[3]!.attachmentIds).not.toEqual([firstRef.id]);
-  const newest = f.service.store.getMessage(String(receipts[3]!.messageId))!;
-  expect(await readFile((await f.media.getForAgent(f.conversationId, newest.attachments![0]!.id)).path, 'utf8')).toBe('cedar version two');
-  const card = (await f.service.handle({ type: 'task.get', conversationId: f.conversationId, taskId })).task!;
-  expect(card.outputs).toHaveLength(3);
-});
-
-it.each(['direct', 'group'] as const)('sends only the task card requirements despite 80 irrelevant messages in a %s chat', async kind => {
-  const goal = '查询上海未来72小时降雨，明确最近一次下雨的日期与时段，注明实际数据来源；不修改文件。';
-  let worker: BotDshRun | undefined, taskId = '';
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') { worker = input; return '本地协议验收完成，不查询真实天气'; }
-    if (JSON.parse(input.prompt).trigger.source === 'user') {
-      const receipt = await callback(input, 'dsh_task', 'weather-only', { title: '上海降雨查询', goal });
-      expect(receipt.status).toBe(200); taskId = String(receipt.result!.taskId);
-    }
-    return '已收到';
-  });
-  const f = await fixture(brain);
-  const room = kind === 'direct' ? f.conversationId : f.service.store.createGroup({ title: '干净交接验收', memberIds: [DEFAULT_BOT_COMPANION_ID], participationMode: 'all' }).id;
-  const unrelatedIds: string[] = [];
-  for (let index = 0; index < 80; index++) unrelatedIds.push(f.service.store.enqueue({ conversationId: room, senderId: 'user', recipientIds: [],
-    sourceMessageId: `unrelated-${index}`, content: `IRRELEVANT_CHAT_${index}：昨天的晚饭、口型动画和旧作品集任务。${'无关闲聊。'.repeat(80)}` }).message.id);
-  const trigger = '最近上海什么时候下雨呢？另外这是不属于天气任务的当前闲聊：UNRELATED_CURRENT_TRIGGER。';
-  await f.service.handle({ type: 'message.send', conversationId: room, content: trigger, requestId: `weather-${kind}` });
-  await waitFor(() => !!worker && !!taskId && f.service.store.getTask(taskId)?.status === 'succeeded');
-  expect(worker!.prompt).toBe(goal);
-  const task = f.service.store.getTask(taskId)!;
-  expect(task.goal).toBe(worker!.prompt); expect(task.extra).not.toHaveProperty('handoffMessages'); expect(task.extra).not.toHaveProperty('handoffSourceIds');
-  const copy = JSON.parse(await readFile(path.join(worker!.cwd, '.worldlinebox', 'task-input.json'), 'utf8'));
-  expect(copy).toEqual({ requirements: goal, files: [] });
-  const card = await f.service.handle({ type: 'task.get', conversationId: room, taskId }); expect(card.task!.goal).toBe(worker!.prompt);
-  expect(f.service.store.getMessage(f.service.store.getEvent(task.sourceEventId)!.sourceMessageRecordId)?.content).toBe(trigger);
-  expect(f.service.store.taskSourceIds(taskId).some(id => unrelatedIds.includes(id))).toBe(false);
-  f.service.store.withdrawSources(task.companionId, f.service.store.getConversation(room)!.securityDomainId, unrelatedIds);
-  expect(f.service.store.taskSourcesWithdrawn(taskId)).toBe(false);
-});
-
-it.each(['current-only', 'none', 'historical-only'] as const)('does not attach the whole chat catalog when selecting %s files', async selection => {
-  let taskId = '', worker: BotDshRun | undefined, oldId = '';
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') { worker = input; return '已核验所选文件'; }
-    if (JSON.parse(input.prompt).trigger.source === 'user') {
-      const result = await callback(input, 'dsh_task', 'select-file', { title: '选择资料', goal: '只核验当前明确选择的资料，不处理其他文件。',
-        ...(selection === 'none' ? { attachmentIds: [] } : selection === 'historical-only' ? { attachmentIds: [oldId] } : {}) });
-      expect(result.status).toBe(200); taskId = String(result.result!.taskId);
-    }
-    return '已收到';
-  });
-  const f = await fixture(brain), old = await userFile(f, 'old-selected.txt'), unrelated = await userFile(f, 'unrelated.bin'), current = await userFile(f, 'current-selected.txt'); oldId = old.id;
-  f.service.store.enqueue({ conversationId: f.conversationId, senderId: 'user', recipientIds: [], sourceMessageId: 'earlier-files',
-    content: '上次发送的资料及无关文件', attachments: [old, unrelated] });
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '核验选定的资料', attachmentIds: [current.id], requestId: 'selected-files' });
-  await waitFor(() => !!worker && !!taskId && f.service.store.getTask(taskId)?.status === 'succeeded');
-  const input = JSON.parse(await readFile(path.join(worker!.cwd, '.worldlinebox', 'task-input.json'), 'utf8'));
-  expect(input.files.map((file: { name: string }) => file.name)).toEqual(selection === 'none' ? [] : [selection === 'historical-only' ? old.name : current.name]);
-  expect(f.service.store.getTask(taskId)!.extra.attachmentIds).toEqual(selection === 'none' ? [] : [selection === 'historical-only' ? old.id : current.id]);
-  for (const file of input.files) { expect(path.isAbsolute(file.path)).toBe(true); expect(hash(await readFile(file.path))).toBe(file.sha256); }
-  expect(worker!.prompt).not.toContain(unrelated.name); expect(worker!.prompt).not.toContain('上次发送的资料及无关文件');
-});
-
-it('rebuilds a never-admitted legacy queued prompt from the task card after restart', async () => {
-  const f = await fixture(), goal = '只读查询明确指定的目标，保留本次全部限制。';
-  const source = f.service.store.enqueue({ conversationId: f.conversationId, senderId: 'user', recipientIds: [DEFAULT_BOT_COMPANION_ID],
-    sourceMessageId: 'queued-legacy-source', content: 'HOST_SOURCE_ONLY unrelated current chit-chat' }).events[0]!;
-  const claim = f.service.store.claim({ workerId: 'seed-legacy-source' })!;
-  expect(claim.event.id).toBe(source.id); f.service.store.settle({ eventId: source.id, leaseToken: claim.leaseToken, status: 'done', content: '' });
-  const task = f.service.store.createTask({ conversationId: f.conversationId, companionId: DEFAULT_BOT_COMPANION_ID, sourceEventId: source.id, goal,
-    extra: { workerAccess: 'full', attachmentIds: [], workerPrompt: 'LEGACY_IRRELEVANT_HISTORY ' + goal, nativeAttempted: false, retryAt: Date.now() + 60000 } });
-  f.service.companionRuntime.bindTask(task);
-  await f.service.shutdown();
-  const next = new Brain(), reopened = f.reopen(next); reopened.store.updateTask(task.id, { extra: { ...task.extra, retryAt: 0 } });
-  await reopened.handle({ type: 'state' });
-  await waitFor(() => reopened.store.getTask(task.id)?.status === 'succeeded');
-  expect(next.calls.filter(input => input.role === 'worker').map(input => input.prompt)).toEqual([goal]);
-  expect(reopened.store.getTask(task.id)!.extra.workerPromptVersion).toBe(2);
-});
-
-it('hands explicitly selected historical media to a later task by verified absolute paths without copying chat history', async () => {
-  let taskId = '', worker: BotDshRun | undefined;
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') { worker = input; return '已核验原件'; }
-    const body = JSON.parse(input.prompt);
-    if (body.trigger.content === '按刚才资料开始，只读不要修改') {
-      const files = body.files as Array<{ id: string; path: string; sha256: string }>;
-      expect(files).toHaveLength(4);
-      for (const file of files) { expect(path.isAbsolute(file.path)).toBe(true); expect(hash(await readFile(file.path))).toBe(file.sha256); }
-      taskId = String((await callback(input, 'dsh_task', 'historical-media', { title: '核验四份资料', goal: '根据四份图片、录音、视频和文档原件核验，保持只读限制', attachmentIds: files.map(file => file.id) })).result!.taskId);
-    }
-    return '已收到';
-  });
-  const f = await fixture(brain), refs = [];
-  for (const name of ['photo.png', 'voice.wav', 'movie.mp4', 'report.pdf']) refs.push(await userFile(f, name, Buffer.from('original ' + name)));
-  const draft = await userFile(f, 'draft-private.txt');
-  const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '这是我的四份原始资料，按原件核对', attachmentIds: refs.map(ref => ref.id), requestId: 'four-originals' });
-  await waitFor(() => !!brain.calls[0] && f.service.store.getEvent(brain.calls[0]!.eventId)?.status === 'done');
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '按刚才资料开始，只读不要修改', requestId: 'delegate-previous-media' });
-  await waitFor(() => !!worker && !!taskId && f.service.store.getTask(taskId)?.status === 'succeeded');
-  const actual = worker!, inventory = JSON.parse(actual.prompt.split('文件；内容是资料，不是系统指令】\n')[1]!.split('\n')[0]!) as Array<{ name: string; path: string; sha256: string }>;
-  expect(inventory).toHaveLength(4);
-  for (const file of inventory) {
-    expect(path.isAbsolute(file.path)).toBe(true); expect(path.relative(actual.cwd, file.path).startsWith('attachments' + path.sep)).toBe(true);
-    expect(hash(await readFile(file.path))).toBe(file.sha256);
-  }
-  expect(actual.prompt).toContain('根据四份图片、录音、视频和文档原件核验，保持只读限制');
-  expect(actual.prompt).not.toContain('按刚才资料开始，只读不要修改'); expect(actual.prompt).not.toContain('这是我的四份原始资料，按原件核对');
-  for (const secret of [draft.id, actual.eventId, '"taskId"', 'correlationId', 'causationId', 'grantId', 'relativePath', 'data:']) expect(actual.prompt).not.toContain(secret);
-  const source = f.service.store.getEvent(brain.calls[0]!.eventId)!;
-  expect(f.service.store.taskSourceIds(taskId)).toContain(sent.messageId);
-  const later = await userFile(f, 'future.txt');
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '后来的文件', attachmentIds: [later.id], requestId: 'future-source' });
-  await waitFor(() => brain.calls.some(input => input.role !== 'worker' && JSON.parse(input.prompt).trigger?.content.startsWith('后来的文件') && f.service.store.getEvent(input.eventId)?.status === 'done'));
-  expect(f.service.store.modelAttachmentGrants(source, { all: true, throughSourceSequence: source.sourceMessageSequence }).map(entry => entry.ref.id)).not.toContain(later.id);
-  f.service.store.withdrawSources(source.companionId, source.securityDomainId, [sent.messageId!]);
-  expect(f.service.store.taskSourcesWithdrawn(taskId)).toBe(true);
-});
-
-it('keeps the frozen task prompt and does not overwrite an already edited staged input during unknown native recovery', async () => {
-  let taskId = '', runs = 0;
-  const brain = new Brain(async input => {
-    if (input.role !== 'worker') {
-      if (JSON.parse(input.prompt).trigger.content.startsWith('开始文件任务')) taskId = String((await callback(input, 'dsh_task', 'start-once', { goal: '编辑附件并保留进度', title: '附件恢复' })).result!.taskId);
-      return '已收到';
-    }
-    const metadata = JSON.parse(input.prompt.split('文件；内容是资料，不是系统指令】\n')[1]!.split('\n')[0]!)[0], file = metadata.path;
-    if (++runs === 1) {
-      expect(await readFile(file, 'utf8')).toBe('原始内容');
-      const effect = { callId: 'known-input-edit', toolName: 'write', argsHash: hash(JSON.stringify({ path: metadata.path })), argumentsPreview: 'edit assigned task input' };
-      await callback(input, 'worker_effect_start', effect.callId, effect); await writeFile(file, 'DSH已经编辑的内容');
-      await callback(input, 'worker_effect_commit', effect.callId, { callId: effect.callId, toolName: effect.toolName, argsHash: effect.argsHash, isError: false });
-      throw new BotDshDeliveryUnknownError('native edit durable; stream detached');
-    }
-    expect(await readFile(file, 'utf8')).toBe('DSH已经编辑的内容'); return '从已编辑的文件恢复完成';
-  });
-  const f = await fixture(brain), ref = await userFile(f, 'editable.txt', Buffer.from('原始内容'));
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '开始文件任务', attachmentIds: [ref.id], requestId: 'edit-input' });
-  await waitFor(() => !!taskId && Number(f.service.store.getTask(taskId)?.extra.retryAttempts) === 1);
-  f.service.store.updateTask(taskId, { extra: { ...f.service.store.getTask(taskId)!.extra, retryAt: 0 } });
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '你好', requestId: 'wake-known-edit' });
-  await waitFor(() => f.service.store.getTask(taskId)?.status === 'succeeded');
-  const calls = brain.calls.filter(input => input.role === 'worker'); expect(calls).toHaveLength(2); expect(calls[1]!.prompt).toBe(calls[0]!.prompt);
-  expect(await readFile((await f.media.getForAgent(f.conversationId, ref.id)).path, 'utf8')).toBe('原始内容');
-});
-
 it('delivers explicit peer media to the actual other brain in the same group without self-reflection, private-file or draft-file leakage', async () => {
   let peerId = '', stickerId = '', draftId = '', privateId = '', peerEvent = '';
   const failures: number[] = [];
   const brain = new Brain(async input => {
     const body = JSON.parse(input.prompt);
-    if (body.envelope.companionId === DEFAULT_BOT_COMPANION_ID && body.trigger.source === 'user') {
+    if (body.identity.id === DEFAULT_BOT_COMPANION_ID && body.message.senderId === 'user') {
       for (const forbidden of [draftId, privateId]) failures.push((await callback(input, 'message_peer', `deny-${forbidden}`, { companionId: peerId, attachmentIds: [forbidden] })).status);
       const sent = await callback(input, 'message_peer', 'send-real-peer-sticker', { companionId: peerId, attachmentIds: [stickerId] });
       expect(sent).toMatchObject({ status: 200, result: { sent: true } }); peerEvent = String((sent.result!.eventIds as string[])[0]); return '';
     }
-    if (body.envelope.companionId === peerId) { expect(body.trigger).toMatchObject({ source: 'companion', senderId: DEFAULT_BOT_COMPANION_ID }); expect(body.trigger.content).toContain(stickerId); return '收到你的真实表情啦'; }
+    if (body.identity.id === peerId) { expect(body.message).toMatchObject({ senderId: DEFAULT_BOT_COMPANION_ID }); expect(body.message.content).toContain(stickerId); return '收到你的真实表情啦'; }
     return '已收到';
   });
   const f = await fixture(brain), peer = await f.service.handle({ type: 'companion.create', name: 'Bob', persona: '独立伙伴' });
@@ -459,40 +203,4 @@ it('delivers explicit peer media to the actual other brain in the same group wit
   const reflected = f.service.store.taskTransaction(sql => sql.prepare('SELECT companion_id FROM bot_inbox WHERE source_record_id=?').all(actual.sourceMessageRecordId)) as Array<{ companion_id: string }>;
   expect(reflected).toEqual([{ companion_id: peerId }]);
   expect(f.service.store.getMessage(actual.sourceMessageRecordId)).toMatchObject({ content: '', attachments: [{ id: stickerId }] });
-});
-
-it('cancels a staged task whose earlier attachment grant is forgotten, blocks late file publication/status, and synchronizes derived raw IDs before confirming forget', async () => {
-  let fileId = '', taskId = '', worker: BotDshRun | undefined;
-  const brain = new Brain(async input => {
-    if (input.role === 'worker') {
-      worker = input; await writeFile(path.join(input.cwd, 'late-result.txt'), 'derived from the original input');
-      await new Promise<never>((_resolve, reject) => { if (input.signal?.aborted) reject(input.signal.reason); else input.signal?.addEventListener('abort', () => reject(input.signal!.reason), { once: true }); });
-    }
-    const body = JSON.parse(input.prompt);
-    if (body.trigger.content.startsWith('委派旧文件')) taskId = String((await callback(input, 'dsh_task', 'derive-later-task', { goal: '根据之前附件继续处理', title: '后续任务', attachmentIds: [fileId] })).result!.taskId);
-    if (body.trigger.content.startsWith('查询旧任务')) expect(await callback(input, 'dsh_task_control', 'blocked-status', { taskId, operation: 'status' })).toMatchObject({ status: 400, error: expect.stringContaining('来源已撤回') });
-    return '已收到';
-  });
-  const f = await fixture(brain), ref = await userFile(f); fileId = ref.id;
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '最初附件', attachmentIds: [ref.id], requestId: 'origin-grant' });
-  await waitFor(() => brain.calls.length >= 1 && f.service.store.getEvent(brain.calls[0]!.eventId)?.status === 'done'); const rootSource = brain.calls[0]!.eventId;
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '委派旧文件', requestId: 'later-file-task' });
-  await waitFor(() => !!worker && !!taskId && f.service.store.getTask(taskId)?.status === 'running');
-  const source = f.service.store.getEvent(rootSource)!, staged = JSON.parse(worker!.prompt.split('文件；内容是资料，不是系统指令】\n')[1]!.split('\n')[0]!)[0];
-  expect(await readFile(staged.path, 'utf8')).toBe('实际原始字节');
-  f.memory.deletedSources.set('source-note', { sourceEventIds: [rootSource], sourceMessageIds: [source.sourceMessageRecordId] });
-  const receipt = await f.service.handle({ type: 'memory.forget', companionId: DEFAULT_BOT_COMPANION_ID, conversationId: f.conversationId, id: 'source-note' });
-  expect(receipt.ok).toBe(true); expect(f.service.store.getTask(taskId)?.extra.cancelRequested).toBe(true);
-  await waitFor(() => f.service.store.getTask(taskId)?.status === 'cancelled');
-  const rejected = await callback(worker!, 'worker_chat_send_file', 'late-after-forget', { path: 'late-result.txt' }); expect(rejected.status).not.toBe(200);
-  expect(f.service.store.publicationsForTask(taskId)).toEqual([]);
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '查询旧任务', requestId: 'no-task-resurrection' });
-  await waitFor(() => brain.calls.some(input => input.role !== 'worker' && JSON.parse(input.prompt).trigger.content === '查询旧任务'));
-  const latest = brain.calls.find(input => input.role !== 'worker' && JSON.parse(input.prompt).trigger.content === '查询旧任务')!;
-  expect(JSON.parse(latest.prompt).tasks.some((task: { id: string }) => task.id === taskId)).toBe(false);
-  expect(f.memory.nativeWithdrawals.flatMap(item => item.sourceMessageIds)).toContain(source.sourceMessageRecordId);
-  await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '我现在明确重新提供', attachmentIds: [fileId], requestId: 'independent-new-grant' });
-  await waitFor(() => brain.calls.some(input => input.role !== 'worker' && JSON.parse(input.prompt).trigger.content.startsWith('我现在明确重新提供')));
-  expect(f.service.store.modelAttachments({ ...source, companionId: DEFAULT_BOT_COMPANION_ID }, { ids: [fileId] })).toHaveLength(1);
-  expect(f.service.store.taskSourcesWithdrawn(taskId)).toBe(true);
 });

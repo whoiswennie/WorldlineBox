@@ -8,13 +8,14 @@ import { botAttachmentCategoryLabel, botAttachmentDetails, botAttachmentSummary,
 import { formatBotFileSize } from './media-presentation';
 import './bot-message-body.css';
 import { BotVoiceMessage } from './BotVoiceMessage';
+import { BotExecutionDetails, type BotExecutionAnswer } from './BotExecutionDetails';
 
 const ignoreLink = () => undefined;
-interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void }
+interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onAnswer?: BotExecutionAnswer }
 export function BotMessageBody(props: Props) {
   return <MessageBody key={`${props.message.conversationId}:${props.message.id}`} {...props} />;
 }
-function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOpenUrl = ignoreLink }: Props) {
+function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOpenUrl = ignoreLink, onAnswer }: Props) {
   const zh = locale === 'zh-CN', pending = ['queued', 'running'].includes(message.status), [expanded, setExpanded] = useState(false), id = useId(), contents = useRef<HTMLDivElement>(null);
   const hasText = !!message.content || !!streamedText || ['failed', 'cancelled'].includes(message.status);
   const text = (pending && streamedText) || message.content || statusText;
@@ -30,8 +31,9 @@ function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOp
     const target = bubble && transcript && bubble.getBoundingClientRect().height <= transcript.clientHeight ? bubble : contents.current;
     target.scrollIntoView?.({ block: 'nearest' });
   }, [expanded]);
-  if (!hasText && !attachments.length) return null;
-  return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !files.length ? ' is-inline-media-only' : ''}${!hasText && files.length === 1 && !stickers.length ? ' is-single-file-only' : ''}`}>
+  if (!hasText && !attachments.length && !message.execution) return null;
+  return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !files.length && !message.execution ? ' is-inline-media-only' : ''}${!hasText && files.length === 1 && !stickers.length && !message.execution ? ' is-single-file-only' : ''}`}>
+    {message.execution && <BotExecutionDetails execution={message.execution} locale={locale} onAnswer={onAnswer} />}
     {hasText && <div className="bot-message-text">{message.senderId === 'user' ? message.content || statusText : <BrowserMarkdown text={text} pending={pending} open={onOpenUrl} linkAppearance="chat" locale={locale} />}</div>}
     {voices.map(media => <BotVoiceMessage key={media.id} media={media} conversationId={message.conversationId} locale={locale} />)}
     {files.length === 1 && <div className="bot-message-single-file"><BotAttachment media={files[0]!} {...common} /></div>}

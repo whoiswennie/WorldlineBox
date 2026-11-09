@@ -65,13 +65,13 @@ it('rejects invalid concurrency, preserves a failed-save draft and retries witho
   expect(save).toHaveBeenCalledTimes(2); expect(save.mock.calls[0]).toEqual(save.mock.calls[1]);
 });
 
-it('loads the read-only capability dossier only when requested inside the same character card', async () => {
+it('keeps native environment management outside the character card', async () => {
   const request = vi.fn(async () => ({ ok: false as const, error: '未配置 DSH 运行环境' }));
   await mount(undefined, { request, onChanged: () => () => undefined } as WorldlineBoxDshLauncherApi);
-  expect(request).not.toHaveBeenCalled(); await click('能力档案');
-  expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'state' });
+  expect(request).not.toHaveBeenCalled();
+  expect([...host.querySelectorAll('.bot-editor-tabs button')].some(button => button.textContent?.includes('能力档案'))).toBe(false);
   expect(host.querySelectorAll('[role=dialog]')).toHaveLength(1);
-  expect(host.querySelector('[data-companion-capabilities]')?.getAttribute('data-companion-capabilities')).toBe(companion.id);
+  expect(host.querySelector('[data-companion-capabilities]')).toBeNull();
   await click('人格提示词'); expect(host.querySelector<HTMLTextAreaElement>('textarea[name=persona]')?.value).toBe(companion.persona);
 });
 

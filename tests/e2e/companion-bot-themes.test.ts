@@ -384,62 +384,6 @@ test('companions inherit appearance profiles and a single playable wallpaper wit
     await expect.poll(() => page.locator('.app-animated-background-video').evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await audit('shuimo-danqing', 'dark', true, false); await capture('companions-theme-shuimo-narrow-dark.png');
-    // Exercise the nonintrusive task entry with an actual Main cancellation.
-    // The existing fixture cancels source inboxes and defers all task retries;
-    // this local, never-admitted cancellation performs no DSH/model work.
-    const taskFixtureDirectory = testInfo.outputPath('task-update-fixture'); await mkdir(taskFixtureDirectory, { recursive: true });
-    await build({ configFile: false, envDir: false, publicDir: false, logLevel: 'warn', build: {
-      ssr: 'tests/fixtures/bot-task-workspace-fixture.ts', target: 'node24', outDir: taskFixtureDirectory, emptyOutDir: false,
-      rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'seed.cjs' } },
-    } });
-    const taskSeed = await application.evaluate(({ app }, input) => {
-      if (app.getPath('userData') !== input.profile) throw Error('Task update checks require their owned theme profile.');
-      const { createRequire } = process.getBuiltinModule('node:module'), paths = process.getBuiltinModule('node:path');
-      const require = createRequire(paths.join(app.getAppPath(), 'package.json'));
-      return (require(input.fixture) as { seedTaskWorkspace(profile: string, room: string): { ids: string[]; synthetic: boolean } }).seedTaskWorkspace(input.profile, input.room);
-    }, { profile, room: seeded.peerId, fixture: path.join(taskFixtureDirectory, 'seed.cjs') });
-    await page.reload(); await companions.click();
-    await page.locator('.bot-sidebar .bot-conversation').filter({ hasText: seeded.peerTitle }).click();
-    const taskEntry = page.locator('.bot-chat-tasks'), taskUpdates = taskEntry.locator('.bot-task-updates');
-    await expect(taskEntry).toContainText('群任务');
-    await expect(taskEntry.locator(':scope>span:not(.bot-task-updates)')).toHaveCount(1);
-    await expect(taskUpdates).toHaveCount(0); await expect(page.locator('.bot-presence-feedback')).toHaveCount(0);
-    const updateTransition = await page.evaluate(async input => {
-      const api = (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot;
-      const before = await api.request({ type: 'state', conversationId: input.conversationId });
-      const previous = before.snapshot?.presence?.['builtin-dafeiyu']?.lastEvent;
-      const result = await api.request({ type: 'task.control', operation: 'cancel', conversationId: input.conversationId, taskId: input.taskId, requestId: 'theme-native-task-update' });
-      const after = await api.request({ type: 'state', conversationId: input.conversationId });
-      const event = after.snapshot?.presence?.['builtin-dafeiyu']?.events?.find(event => event.taskId === input.taskId && event.status === 'cancelled');
-      return { previous, event, result, task: after.snapshot?.tasks.find(task => task.id === input.taskId), activeCount: after.snapshot?.taskSummary?.activeCount };
-    }, { conversationId: seeded.peerId, taskId: taskSeed.ids[3]! });
-    expect(updateTransition.result.ok).toBe(true); expect(updateTransition.task?.status).toBe('cancelled');
-    expect(updateTransition.event).toMatchObject({ conversationId: seeded.peerId, taskId: taskSeed.ids[3], kind: 'task-completed', status: 'cancelled' });
-    expect(updateTransition.event!.sequence).toBeGreaterThan(updateTransition.previous?.sequence ?? 0);
-    await expect(taskUpdates).toHaveAttribute('data-count', '1'); await expect(taskUpdates).toContainText('新动态 1');
-    await expect(taskEntry.locator(':scope>span:not(.bot-task-updates)')).toHaveText(String(updateTransition.activeCount));
-    await expect(page.locator('.bot-presence-feedback')).toHaveCount(0);
-    const taskUpdateGeometry = await taskUpdates.evaluate(element => {
-      const header = element.closest('.bot-chat-header')!, entry = element.closest('button')!, title = header.querySelector('.bot-chat-identity')!;
-      return { viewport: { width: innerWidth, height: innerHeight }, badge: element.getBoundingClientRect().toJSON(), entry: entry.getBoundingClientRect().toJSON(),
-        header: header.getBoundingClientRect().toJSON(), title: title.getBoundingClientRect().toJSON(), nav: header.querySelector('nav')!.getBoundingClientRect().toJSON(),
-        background: getComputedStyle(element).backgroundColor, ink: getComputedStyle(element).color,
-        headerOverflow: header.scrollWidth > header.clientWidth + 1, mainOverflow: document.querySelector('.bot-main')!.scrollWidth > document.querySelector('.bot-main')!.clientWidth + 1 };
-    });
-    expect(taskUpdateGeometry.headerOverflow).toBe(false); expect(taskUpdateGeometry.mainOverflow).toBe(false);
-    expect(taskUpdateGeometry.badge.right).toBeLessThanOrEqual(taskUpdateGeometry.viewport.width);
-    expect(taskUpdateGeometry.badge.left).toBeGreaterThanOrEqual(taskUpdateGeometry.entry.left);
-    expect(taskUpdateGeometry.badge.bottom).toBeLessThanOrEqual(taskUpdateGeometry.header.bottom);
-    const titleAndActionsShareRow = Math.min(taskUpdateGeometry.title.bottom, taskUpdateGeometry.nav.bottom) > Math.max(taskUpdateGeometry.title.top, taskUpdateGeometry.nav.top);
-    if (titleAndActionsShareRow) expect(taskUpdateGeometry.title.right).toBeLessThanOrEqual(taskUpdateGeometry.nav.left + 1);
-    else expect(taskUpdateGeometry.nav.top).toBeGreaterThanOrEqual(taskUpdateGeometry.title.bottom - 1);
-    await expect.poll(() => page.locator('.app-animated-background-video').evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await capture('companions-task-updates-narrow-dark.png');
-    await taskEntry.click(); await expect(page.getByRole('dialog', { name: '任务工作台', exact: true })).toBeVisible();
-    await expect(taskUpdates).toHaveCount(0);
-    await page.getByRole('button', { name: '关闭任务', exact: true }).click(); await expect(taskUpdates).toHaveCount(0);
-    checks.push({ taskUpdates: { ...updateTransition, taskUpdateGeometry, panelAcknowledgedCurrentRoom: true, noFloatingFeedback: true, neverAdmittedCancellationOnly: true } });
     const finalHash = identity.packaged ? await hashFile(identity.appPath) : undefined; expect(finalHash).toBe(initialHash);
     const result = { identity, initialHash, finalHash, actualModelInference: false, actualDshExecution: false, actualBundledVideoDecoding: true,
       focusSimulation: 'DOM focus event in hidden offscreen renderer; no native focus/foreground FPS claim',

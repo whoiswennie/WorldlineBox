@@ -90,16 +90,13 @@
 .bot-atmosphere .bot-empty h2 { color:var(--bot-text);font-size:26px;font-weight:500; }
 .bot-atmosphere .bot-empty p { color:var(--bot-muted); }
 .bot-atmosphere .bot-conversation-welcome .bot-avatar { width:84px;height:84px;box-shadow:0 0 0 8px color-mix(in srgb,var(--bot-accent-bright) 8%,transparent),0 8px 28px #5c438520; }
-.bot-atmosphere .bot-context-toggle { display:none; }
 .bot-chat-context { display:none; }
 @media(min-width:1450px) {
  .bot-atmosphere.has-context { grid-template-columns:282px minmax(0,1fr) 280px; }
  .bot-atmosphere.has-context .bot-main { margin-right:9px; }
- .bot-atmosphere .bot-context-toggle { display:inline-flex; }
  .bot-atmosphere .bot-chat-context { display:flex;flex-direction:column;min-height:0;min-width:0;margin:8px 14px 14px 0;border:1px solid var(--bot-edge);border-radius:20px;overflow:auto;background:var(--bot-panel);padding:18px 16px;scrollbar-width:thin; }
 }
 
-.bot-atmosphere .bot-task-notice { color:var(--bot-muted); }
 @media(max-width:1100px) { .bot-workspace.bot-atmosphere { grid-template-columns:238px minmax(0,1fr); }.bot-atmosphere .bot-sidebar { margin-left:10px; }.bot-atmosphere .bot-sidebar>header { padding:20px 16px 15px; }.bot-atmosphere .bot-transcript { padding:24px 24px 8px; }.bot-atmosphere .bot-chat-header,.bot-atmosphere .bot-chat-header.is-group { padding:14px 17px; } }
 @media(max-width:850px) { .bot-workspace.bot-atmosphere { grid-template-columns:210px minmax(0,1fr); }.bot-atmosphere .bot-sidebar { margin:6px 7px 10px 9px;border-radius:16px; }.bot-atmosphere .bot-main { margin:6px 10px 10px 0;border-radius:16px; }.bot-atmosphere .bot-sidebar-shortcuts { padding:10px 11px 5px;gap:5px; }.bot-atmosphere .bot-sidebar-shortcuts button { font-size:10px; }.bot-atmosphere .bot-sidebar-shortcuts .bot-icon { display:none; }.bot-atmosphere .bot-contact { gap:9px;padding:10px 7px; }.bot-atmosphere .bot-contact .bot-avatar { width:36px;height:36px; }.bot-atmosphere .bot-contact strong { font-size:12px; }.bot-atmosphere .bot-contact small { font-size:10px; }.bot-atmosphere .bot-chat-header h2 { font-size:14px; }.bot-atmosphere .bot-chat-header>nav { gap:1px; }.bot-atmosphere .bot-chat-header>nav>button { padding:6px; }.bot-atmosphere .bot-chat-header>nav>button>.bot-icon { width:14px;height:14px; }.bot-atmosphere .bot-transcript { padding:20px 17px 8px; }.bot-atmosphere .bot-message { gap:9px; }.bot-atmosphere .bot-message-content { max-width:calc(100% - 44px); }.bot-atmosphere .bot-message-text { font-size:13px;padding:10px 13px; }.bot-atmosphere .bot-composer-dock { padding:9px 12px 12px; }.bot-atmosphere .bot-composer { grid-template-columns:minmax(0,1fr) auto;grid-template-areas:'draft draft' 'field field' 'tools send';padding:5px 8px 7px 11px;gap:0 5px;border-radius:15px; }.bot-atmosphere .bot-composer textarea { padding:8px 0; }.bot-atmosphere .bot-compose-tools { justify-self:start; }.bot-atmosphere .bot-compose-footer { justify-self:end; }.bot-atmosphere .bot-compose-tools>button,.bot-atmosphere .bot-expression-tools>button { width:31px;height:30px; }.bot-atmosphere .bot-send { width:33px;height:33px;min-width:33px;border-radius:10px; } }
 /* Reveal only the root wallpaper. Keep panels opaque unless the existing

@@ -280,7 +280,7 @@ export class InstanceService {
   private async initializeProfile(instance: DshInstance, signal: AbortSignal) {
     const profile = path.join(instance.homePath, 'profiles', 'web');
     if (!await readJson(path.join(profile, 'package.json'))) await this.command(instance, ['web', '--dump-default-config'], signal);
-    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'cordis.patch.yml'];
+    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'cordis.patch.yml'];
     const sources = await Promise.all(names.map(name => readFile(path.join(this.options.bridgePackagePath, name))));
     const digest = createHash('sha256'); for (const source of sources) digest.update(source);
     const hash = digest.digest('hex'), target = path.join(instance.homePath, '.worldlinebox', 'bridge', hash);
@@ -607,8 +607,6 @@ export class InstanceService {
           }
           case 'instance.stop': await this.stop(request.instanceId); break;
           case 'instance.delete': await this.remove(request.instanceId, op); break;
-          case 'instance.plugin': await op.log(await this.plugin(request.instanceId, request.action, request.spec, op)); break;
-          case 'instance.check': await this.options.runtimes.verify(this.require(request.instanceId).runtimeId, op.signal, true); break;
           case 'snapshot.restore': {
             const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
             await this.restoreFrom(path.join(this.options.rootPath, 'snapshots', snapshot.id), request.name, op); break;

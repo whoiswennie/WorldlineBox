@@ -41,7 +41,7 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
     :instance?(zh?'共享 DSH 未启动':'Shared DSH is stopped')
     :(zh?'尚未配置 DSH':'DSH is not configured');
   const diagnostic=error||(failed?instance?.lastError:undefined);
-  const hint=zh?'所有伙伴共用此 DSH，执行任务时按需启动。停止共享实例会影响所有运行中的任务；暂停的任务可在任务中心继续。':'All companions share this DSH, which starts on demand. Stopping it affects all active tasks; paused tasks can be resumed in the task center.';
+  const hint=zh?'所有伙伴共用此 DSH，聊天时按需启动。停止共享实例会中断进行中的 DSH 会话。':'All companions share this DSH, which starts on demand. Stopping it interrupts active DSH sessions.';
   const start=async()=>{
     if(!instance||busy||starting||preparing||stopping||unsupported)return;
     const current=generation.current,requestedAt=revision.current;

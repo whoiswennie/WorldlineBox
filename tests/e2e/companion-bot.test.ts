@@ -7,7 +7,7 @@ import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test
 import { BUILTIN_BOT_COMPANIONS } from '../../src/shared/builtin-bot-companions';
 
 // eslint-disable-next-line no-empty-pattern -- Electron supplies its own window.
-test('new companion UI uses the event runtime, preserves chats, and reports an unconfigured brain honestly', async ({}, testInfo) => {
+test('companion UI uses native DSH sessions and reports the shared runtime setup clearly', async ({}, testInfo) => {
   test.setTimeout(90000);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-bot-ui-'));
   const application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
@@ -18,6 +18,7 @@ test('new companion UI uses the event runtime, preserves chats, and reports an u
     await page.locator('[data-application-module="companions"]').click();
     await expect(page.locator('.bot-workspace')).toBeVisible();
     await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
+    await page.getByRole('button', { name: '稍后设置', exact: true }).click();
     const initial = await page.evaluate(() => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' }));
     expect(initial.snapshot?.companions).toHaveLength(BUILTIN_BOT_COMPANIONS.length);
     for (const retired of ['default-companion', 'deepseek-sister', 'deepseek-flash']) expect(initial.snapshot?.companions.map(item => item.id)).not.toContain(retired);
@@ -57,27 +58,16 @@ test('new companion UI uses the event runtime, preserves chats, and reports an u
       await page.reload(); await page.locator('[data-application-module="companions"]').click();
       await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+      await page.getByRole('button', { name: '稍后设置', exact: true }).click();
     };
     await switchTheme('dark');
     const darkPane = await page.locator('.bot-main').evaluate(element => getComputedStyle(element).backgroundColor);
     expect(darkPane).not.toBe('rgb(247, 247, 248)');
     await capture('chat-empty-dark.png');
     await switchTheme('light');
-    await page.locator('.bot-composer textarea').fill('这是一次大肥鱼新主脑界面验收。');
-    await page.getByRole('button', { name: '发送 ↑', exact: true }).click();
-    await expect(page.locator('.bot-message-text').filter({ hasText: '这是一次大肥鱼新主脑界面验收。' })).toBeVisible();
-    await expect(page.getByText('请先在模型设置中配置主脑 API。', { exact: true })).toBeVisible();
-    await capture('chat-messages-light.png');
-    await page.getByRole('button', { name: '聊天记录', exact: true }).click();
-    await page.getByRole('searchbox', { name: '搜索聊天记录' }).fill('大肥鱼新主脑');
-    await expect(page.locator('.bot-history-record')).toHaveCount(1);
-    await page.locator('.bot-history-locate').click();
-    await expect(page.getByRole('button', { name: '回到最新', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: '回到最新', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: '聊天记录', exact: true })).toHaveCount(0);
-    await page.getByRole('button', { name: '表情', exact: true }).click();
-    await page.getByRole('button', { name: '🐳', exact: true }).click();
-    await expect(page.locator('.bot-composer textarea')).toHaveValue('🐳');
+    await expect(page.locator('.bot-binding-blocked')).toContainText('配置共享 DSH 后开始聊天');
+    await expect(page.locator('.bot-composer,.bot-chat-tasks')).toHaveCount(0);
+    await capture('chat-native-dsh-setup-light.png');
     await page.getByRole('button', { name: '新伙伴', exact: true }).click();
     const create = page.getByRole('dialog', { name: '新伙伴' });
     await create.getByLabel('名字', { exact: true }).fill('林舟');
@@ -85,7 +75,7 @@ test('new companion UI uses the event runtime, preserves chats, and reports an u
     await create.getByRole('button', { name: '创建', exact: true }).click();
     await expect(page.locator('.bot-chat-header h2')).toHaveText('林舟');
     const state = await page.evaluate(() => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' }));
-    expect(state.snapshot?.runtime).toMatchObject({ engine: 'worldlinebox', memory: 'vcp-memory', ready: false });
+    expect(state.snapshot?.runtime).toMatchObject({ engine: 'dsh-native', memory: 'vcp-memory', ready: false });
     expect(state.snapshot?.companions).toHaveLength(BUILTIN_BOT_COMPANIONS.length + 1);
     await page.getByRole('button', { name: '新群聊', exact: true }).click();
     const group = page.getByRole('dialog', { name: '新群聊' });

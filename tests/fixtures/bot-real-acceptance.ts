@@ -1,54 +1,44 @@
-/** Opt-in real service acceptance. No synthetic model or embedding outputs. */
+/** Native DSH acceptance, isolated from user chats and instance configuration. */
 import { app, safeStorage } from 'electron';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import { BotService } from '../../src/main/companion-bot/service';
-import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
-import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
-import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
+import { BotDshBrain, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService } from '../../src/main/companion-bot/memory-service';
+import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { GlobalEmbeddingService } from '../../src/main/embedding-global-service';
 import { VcpEmbeddingGateway } from '../../src/main/vcp-embedding-gateway';
 import { GLOBAL_EMBEDDING_SELECTION_ID } from '../../src/shared/embedding/global-profile';
 import { resolveStoredLlmConfig } from '../../src/shared/llm';
 import { createBotNativeHost } from './bot-native-host';
 import { startBotProtocolModel } from './bot-protocol-model';
-import { assertPreferenceCapture, captureJobId } from './bot-acceptance-evidence';
-import { BotMediaService } from '../../src/main/companion-bot/media-service';
+import type { NativeHostEvent } from '../../src/main/dsh/native-host-client';
 
-const root = process.env.WORLDLINEBOX_BOT_REAL_ROOT!, project = process.env.WORLDLINEBOX_BOT_REAL_PROJECT!;
-const source = process.env.WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT!;
+const root = process.env.WORLDLINEBOX_BOT_REAL_ROOT!, project = process.env.WORLDLINEBOX_BOT_REAL_PROJECT!, source = process.env.WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT!;
 const protocolMode = process.env.WORLDLINEBOX_BOT_PROTOCOL_ACCEPTANCE === '1';
-if (!root || !source || !project || !protocolMode && process.env.WORLDLINEBOX_BOT_REAL_ACCEPTANCE !== '1') throw new Error('Bot acceptance requires explicit isolated inputs.');
+if (!root || !source || !project || !protocolMode && process.env.WORLDLINEBOX_BOT_REAL_ACCEPTANCE !== '1') throw new Error('Explicit isolated acceptance inputs required.');
 app.setPath('userData', path.join(root, 'electron-profile')); app.disableHardwareAcceleration();
-const progress = (stage: string, counts: Record<string, number | string | boolean> = {}) => process.send?.({ kind: 'bot-real-progress', stage, ...counts });
-const phases: Array<{ stage: string; durationMs: number }> = [];
-const errors: Array<{ name: string; code?: string; phase: string; message?: string }> = [];
-let secret = '';
-const safeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).replaceAll(secret || '\0', '<redacted>')
-  .replace(/Bearer\s+\S+/gi, 'Bearer <redacted>').replace(/\b[a-f0-9]{64}\b/gi, '<digest>').slice(0, 2000);
-const measured = async <T>(stage: string, work: () => Promise<T>): Promise<T> => {
-  progress(stage); const start = performance.now();
-  try { return await work(); } finally { phases.push({ stage, durationMs: performance.now() - start }); }
-};
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
+const phases: Array<{ stage: string; durationMs: number }> = [], errors: Array<{ stage: string; name: string; message: string }> = [];
+let secret = '', stage = 'start';
+const safeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).replaceAll(secret || '\0', '<redacted>').replace(/Bearer\s+\S+/gi, 'Bearer <redacted>').slice(0, 3000);
+async function measured<T>(name: string, work: () => Promise<T>): Promise<T> {
+  stage = name; process.send?.({ kind: 'bot-real-progress', stage }); const started = performance.now();
+  try { return await work(); } finally { phases.push({ stage: name, durationMs: performance.now() - started }); }
+}
 void app.whenReady().then(async () => {
-  let service: BotService | undefined, native: Awaited<ReturnType<typeof createBotNativeHost>> | undefined;
-  let memory: BotMemoryService | undefined;
+  let service: BotService | undefined, native: Awaited<ReturnType<typeof createBotNativeHost>> | undefined, memory: BotMemoryService | undefined;
   let protocolModel: Awaited<ReturnType<typeof startBotProtocolModel>> | undefined;
-  const embedding = new GlobalEmbeddingService({ userDataPath: path.join(root, 'embedding-state'),
-    bundleDirectory: path.join(project, 'resources/embedding-models'), koffiPath: createRequire(path.join(project, 'package.json')).resolve('koffi'),
-    devicePreference: () => ({ backend: 'cpu' }) });
+  const embedding = new GlobalEmbeddingService({ userDataPath: path.join(root, 'embedding-state'), bundleDirectory: path.join(project, 'resources/embedding-models'),
+    koffiPath: createRequire(path.join(project, 'package.json')).resolve('koffi'), devicePreference: () => ({ backend: 'cpu' }) });
   const gateway = new VcpEmbeddingGateway(embedding);
-  let stage = 'start';
-  const report: Record<string, unknown> = { kind: 'bot-real-result', passed: false, phases, errors, usesRealModel: !protocolMode, usesRealEmbedding: true };
+  const report: Record<string, unknown> = { kind: 'bot-real-result', passed: false, architecture: 'native-session-per-message', usesRealModel: !protocolMode, usesRealEmbedding: true, phases, errors };
+  const runs = new Map<string, { cwd: string; laneId: string; sessionId: string; tools: string[]; prompt: string; events: NativeHostEvent[] }>();
   try {
-    stage = 'global-model';
-    let model;
+    stage = 'global-model'; let model;
     if (protocolMode) { protocolModel = await startBotProtocolModel(); model = { apiFormat: 'openai_chat' as const, model: 'protocol-fixture', baseUrl: protocolModel.baseUrl, apiKey: 'protocol-fixture-no-secret' }; }
     else {
       const catalog = JSON.parse(await readFile(path.join(source, 'ai-profiles.json'), 'utf8'));
@@ -58,208 +48,144 @@ void app.whenReady().then(async () => {
     }
     secret = model.apiKey;
     if (model.apiFormat !== 'openai_chat' || !model.baseUrl || !model.apiKey) throw new Error('GLOBAL_MODEL_REQUIRES_OPENAI_CHAT');
-    report.model = { apiFormat: model.apiFormat, model: model.model, endpointHost: new URL(model.baseUrl).host };
-    stage = 'embedding-warmup';
-    const encoded = await measured(stage, () => embedding.embed(['世界线盒子新主脑验收'], { purpose: 'query' }));
-    if (encoded.vectors.length !== 1 || encoded.vectors[0]?.length !== 768 || encoded.vectors[0].some(value => !Number.isFinite(value))) throw new Error('BUILTIN_EMBEDDING_INVALID');
-    report.embedding = { dimension: encoded.profile.dimension, model: encoded.profile.modelName, source: encoded.profile.source };
-    stage = 'native-host';
-    native = await measured(stage, () => createBotNativeHost(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!));
+    report.model = { model: model.model, endpointHost: new URL(model.baseUrl).host };
+    const encoded = await measured('embedding-warmup', () => embedding.embed(['原生 DSH 伙伴验收'], { purpose: 'query' }));
+    if (encoded.vectors[0]?.length !== 768 || encoded.vectors[0].some(value => !Number.isFinite(value))) throw new Error('BUILTIN_EMBEDDING_INVALID');
+    report.embedding = { dimension: encoded.profile.dimension, model: encoded.profile.modelName };
+    native = await measured('native-host', () => createBotNativeHost(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!));
     process.send?.({ kind: 'bot-real-owned-root', root: native.root });
-    let client = await native.instances.ensureHost(native.instance.id);
-    report.dsh = { version: native.runtimeVersion };
+    const client = await native.instances.ensureHost(native.instance.id); report.dsh = { version: native.runtimeVersion };
     const botRoot = path.join(root, 'bot'); await mkdir(botRoot, { recursive: true });
     const media = new BotMediaService({ root: path.join(botRoot, 'media'), builtinRoot: path.join(project, 'resources/bot-stickers') });
-    let streamCount = 0, firstText = 0;
-    const nativeCalls = new Map<string, { eventId: string; callId: string; name: string }>();
-    const makeService = () => {
-      memory = new BotMemoryService({ root: path.join(botRoot, 'memory'),
-        runtime: async () => ({ nodePath: path.join(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!, 'bin/node.exe'), packageRoot: path.join(project, '.tools/bot-memory-release/vcp-memory') }),
-        embedding: async () => gateway.configuration(GLOBAL_EMBEDDING_SELECTION_ID, await embedding.resolveProfile()),
-        chat: async () => ({ baseUrl: model.baseUrl!, model: model.model, apiKey: model.apiKey, apiType: 'openai-completions' }),
-      });
-      const worker = new BotDshBrain({ getHost: async () => ({ client }) });
-      const appBrain = new BotAppBrain({ root: path.join(botRoot, 'router'),
-        reconcileTool: (call, signal) => service ? service.reconcileToolReceipt(call, signal) : Promise.resolve({ state: 'unknown' as const }) });
-      const brain = new BotBrainRouter({ app: appBrain, worker }), run = brain.run.bind(brain);
-      brain.run = input => run({ ...input, onEvent: event => {
-        if (event.type === 'tool_call' && event.callId && event.toolName) nativeCalls.set(`${input.eventId}:${event.callId}`, { eventId: input.eventId, callId: event.callId, name: event.toolName });
-        input.onEvent?.(event);
-      } });
-      return new BotService({ root: botRoot, brain, brainRuntime: 'worldlinebox', memory, media, model: () => ({ ...model, baseUrl: model.baseUrl! }),
-        retention: { maxTurns: 3 },
-        report: error => errors.push({ phase: stage, name: error instanceof Error ? error.name : 'Error', code: String((error as { code?: string })?.code ?? ''), message: safeError(error) }),
-        onEvent: event => { if (event.type === 'text') { streamCount++; firstText ||= performance.now(); } } });
+    memory = new BotMemoryService({ root: path.join(botRoot, 'memory'),
+      runtime: async () => ({ nodePath: path.join(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!, 'bin/node.exe'), packageRoot: path.join(project, '.tools/bot-memory-release/vcp-memory') }),
+      embedding: async () => gateway.configuration(GLOBAL_EMBEDDING_SELECTION_ID, await embedding.resolveProfile()),
+      chat: async () => ({ baseUrl: model.baseUrl!, model: model.model, apiKey: model.apiKey, apiType: 'openai-completions' }) });
+    const brain = new BotDshBrain({ getHost: async () => ({ client, instance: native!.instance }) });
+    const nativeRun = brain.run.bind(brain);
+    brain.run = async (input: BotDshRun) => {
+      const run = { cwd: input.cwd, laneId: input.laneId, sessionId: BotDshBrain.sessionId(input.laneId), tools: (input.workerTools ?? input.tools).map(tool => tool.name), prompt: input.prompt, events: [] as NativeHostEvent[] };
+      runs.set(input.eventId, run);
+      return nativeRun({ ...input, onEvent: event => { run.events.push(event); input.onEvent?.(event); } });
     };
-    service = makeService();
+    service = new BotService({ root: botRoot, brain, memory, media, model: () => ({ ...model, baseUrl: model.baseUrl! }),
+      report: error => errors.push({ stage, name: error instanceof Error ? error.name : 'Error', message: safeError(error) }), onEvent: () => undefined });
     let snapshot = (await service.handle({ type: 'state' })).snapshot!;
-    const companionId = DEFAULT_BOT_COMPANION_ID;
-    if (!snapshot.companions.some(companion => companion.id === companionId)) throw new Error('BUILTIN_COMPANION_MISSING');
-    const conversationId = service.store.openDirect(companionId).id;
-    const send = async (content: string, attachmentIds?: string[], targetConversationId = conversationId, respondingCompanionId = companionId) => {
-      const input = await service!.handle({ type: 'message.send', conversationId: targetConversationId, content, requestId: randomUUID(), ...(attachmentIds?.length ? { attachmentIds } : {}) });
-      if (!input.ok || !input.messageId) throw new Error('INPUT_NOT_ACCEPTED');
-      const sent = service!.store.getMessage(input.messageId)!;
-      const started = performance.now(); firstText = 0;
-      while (performance.now() - started < 180000) {
-        snapshot = (await service!.handle({ type: 'state', conversationId: targetConversationId })).snapshot!;
-        const reply = snapshot.messages.find(message => message.sequence > sent.sequence && message.senderId === respondingCompanionId
-          && service!.store.getEvent(message.eventId)?.sourceMessageRecordId === input.messageId && ['sent', 'failed', 'cancelled'].includes(message.status));
+    const companionId = DEFAULT_BOT_COMPANION_ID, conversationId = service.store.openDirect(companionId).id;
+    async function send(content: string, attachmentIds?: string[], room = conversationId, responding = companionId) {
+      const accepted = await service!.handle({ type: 'message.send', conversationId: room, content, requestId: randomUUID(), ...(attachmentIds?.length ? { attachmentIds } : {}) });
+      if (!accepted.ok || !accepted.messageId) throw new Error('MESSAGE_NOT_ACCEPTED');
+      const sourceMessageId = accepted.messageId, sourceMessage = service!.store.getMessage(sourceMessageId)!; const started = performance.now();
+      while (performance.now() - started < 240000) {
+        snapshot = (await service!.handle({ type: 'state', conversationId: room })).snapshot!;
+        const reply = snapshot.messages.find(message => message.sequence > sourceMessage.sequence && message.senderId === responding
+          && service!.store.getEvent(message.eventId)?.sourceMessageRecordId === sourceMessageId && ['sent', 'failed', 'cancelled'].includes(message.status));
         if (reply && !['queued', 'running'].includes(service!.store.getEvent(reply.eventId)?.status ?? 'queued')) {
-          if (reply.status !== 'sent') throw new Error('REPLY_' + reply.status.toUpperCase());
-          const published = [...new Map([...snapshot.messages.filter(message => message.eventId === reply.eventId && message.senderId === respondingCompanionId && message.status === 'sent'),
-            ...service!.store.publicationsForEvent(reply.eventId)].map(message => [message.id, message])).values()];
-          return { text: published.map(message => message.content).filter(Boolean).join('\n'), attachments: published.flatMap(message => message.attachments ?? []), milliseconds: performance.now() - started, firstTextMs: firstText ? firstText - started : null,
-            eventId: reply.eventId, sourceMessageId: input.messageId, replyMessageId: reply.id };
+          if (reply.status !== 'sent') throw new Error('REPLY_' + reply.status.toUpperCase() + ': ' + service!.store.getEvent(reply.eventId)?.error);
+          const published = [...new Map([reply, ...service!.store.publicationsForEvent(reply.eventId)].map(item => [item.id, item])).values()];
+          return { eventId: reply.eventId, sourceMessageId, replyId: reply.id, text: published.map(message => message.content).filter(Boolean).join('\n'),
+            attachments: published.flatMap(message => message.attachments ?? []), elapsedMs: performance.now() - started, execution: reply.execution };
         }
-        await pause(100);
+        await pause(150);
       }
       throw new Error('REPLY_TIMEOUT');
-    };
-    stage = 'ordinary-chat';
-    const ordinary = await measured(stage, () => send('你好，这是新伙伴系统的开发验收。请用一句简短中文问候，不调用任务工具。'));
-    report.ordinary = { durationMs: ordinary.milliseconds, firstTextMs: ordinary.firstTextMs, outputChars: ordinary.text.length };
-    stage = 'memory-write';
-    await measured(stage, async () => { const result = await service!.handle({ type: 'memory.remember', conversationId, companionId,
-      content: '开发验收事实：测试项目代号为青榆舟。该代号只属于本次验收，状态已经确认。' }); if (!result.ok) throw new Error('MEMORY_WRITE_FAILED'); });
-    stage = 'memory-search';
-    const recall = await measured(stage, async () => {
-      const deadline=Date.now()+120000;
-      while(true){
-        const result=await service!.handle({type:'memory.search',conversationId,companionId,query:'测试项目的代号是什么'});
-        if(!result.ok||JSON.stringify(result.memory).includes('青榆舟')||Date.now()>deadline)return result;
-        await pause(250);
+    }
+    const toolsFor = (eventId: string) => runs.get(eventId)!.events.filter(event => event.type === 'tool_call').map(event => event.toolName ?? '');
+    const ordinary = await measured('ordinary-chat', () => send('你好，这是原生 DSH 伙伴验收。只用一句简短中文问候。'));
+    const second = await measured('fresh-session', () => send('这是下一条独立消息，只回答“收到第二条”。'));
+    const firstRun = runs.get(ordinary.eventId)!, secondRun = runs.get(second.eventId)!;
+    if (firstRun.sessionId === secondRun.sessionId || firstRun.cwd !== secondRun.cwd || firstRun.laneId === secondRun.laneId) throw new Error('NATIVE_SESSION_ISOLATION_FAILED');
+    if ([...runs.values()].some(run => run.tools.includes('dsh_task') || run.tools.includes('chat_send_file'))) throw new Error('LEGACY_TASK_OR_FILE_TOOL_EXPOSED');
+    if (secondRun.prompt.includes('你好，这是原生')) throw new Error('ROUTER_TRANSCRIPT_REPLAYED');
+    report.sessions = { distinctSessionIds: true, sameCompanionWorkspace: true, noRouterTranscript: true, legacyToolsAbsent: true, streamedEvents: firstRun.events.length + secondRun.events.length };
+    async function verifyInteractionDiary(reply: Awaited<ReturnType<typeof send>>, expectedContent: string[]) {
+      const room = service!.store.getConversation(conversationId)!;
+      const scope = { companionId, conversationId, securityDomainId: room.securityDomainId };
+      const id = createHash('sha256').update(reply.eventId + ':interaction:v3').digest('hex'), deadline = Date.now() + 180000;
+      while (Date.now() < deadline) {
+        const diary = (await memory!.list(scope)).find(note => note.id === id);
+        if (diary?.indexState === 'indexed') {
+          if (!diary.sourceMessageIds.includes(reply.sourceMessageId) || !diary.sourceMessageIds.includes(reply.replyId)
+            || !expectedContent.every(fragment => diary.content.includes(fragment))) throw new Error('INTERACTION_DIARY_PROVENANCE_INVALID');
+          return { indexed: true, sourceMessagesVerified: true, contentVerified: true };
+        }
+        await pause(300);
       }
+      throw new Error('COMPLETED_INTERACTION_DIARY_NOT_INDEXED');
+    }
+    report.interactionDiary = await measured('completed-interaction-diary', () => verifyInteractionDiary(ordinary,
+      [ordinary.sourceMessageId, ordinary.replyId, ordinary.text, service!.store.getMessage(ordinary.sourceMessageId)!.senderName]));
+    await measured('memory-write', async () => { const saved = await service!.handle({ type: 'memory.remember', conversationId, companionId,
+      content: '开发验收事实：测试项目代号为青榆舟。只用于本次验收。' }); if (!saved.ok) throw new Error('MEMORY_WRITE_FAILED'); });
+    await measured('memory-search', async () => {
+      const deadline = Date.now() + 120000;
+      while (Date.now() < deadline) { const found = await service!.handle({ type: 'memory.search', conversationId, companionId, query: '测试项目代号' });
+        if (found.ok && JSON.stringify(found.memory).includes('青榆舟')) return; await pause(300); }
+      throw new Error('MEMORY_FACT_NOT_RECALLED');
     });
-    if (!recall.ok || !JSON.stringify(recall.memory).includes('青榆舟')) throw new Error('MEMORY_FACT_NOT_RECALLED');
-    report.memory = { semanticRecallPassed: true };
-    stage = 'model-memory-tool';
-    const recalled = await measured(stage, () => send('请先调用 memory_search 查询测试项目代号，再依据真实检索结果告诉我代号。'));
-    if (!recalled.text.includes('青榆舟')) throw new Error('MODEL_DID_NOT_USE_MEMORY_FACT');
-    const searchReceipts = [...nativeCalls.values()].filter(call => call.eventId === recalled.eventId && call.name === 'memory_search')
-      .map(call => service!.store.getMetadata(`effect:${call.eventId}:${call.callId}`)).filter((value): value is string => !!value)
-      .map(value => JSON.parse(value) as { fingerprint?: string; result?: unknown });
-    if (!searchReceipts.some(receipt => receipt.fingerprint && JSON.stringify(receipt.result).includes('青榆舟'))) throw new Error('MODEL_MEMORY_SEARCH_HAS_NO_ACTUAL_TOOL_RECEIPT');
-    report.memoryModel = { answerHasFact: true, outputChars: recalled.text.length, actualMemorySearchReceipts: searchReceipts.length };
-    stage = 'automatic-capture';
-    const preference = await measured(stage, () => send('验收偏好更新：从今天起，晚上喝麦茶，上午仍喝咖啡；不是全天都不喝咖啡。请按这个范围理解。'));
-    const captureDeadline = Date.now() + 120000;
-    let job = service.store.getMemoryJob(captureJobId(preference.eventId));
-    while (job && job.status !== 'done' && job.status !== 'failed' && Date.now() < captureDeadline) { await pause(200); job = service.store.getMemoryJob(captureJobId(preference.eventId)); }
-    const conversationScope = service.store.getConversation(conversationId)!;
-    const captureScope={companionId,conversationId,securityDomainId:conversationScope.securityDomainId};
-    let captureNotes=await memory!.list(captureScope);
-    while(captureNotes.some(note=>note.indexState==='pending')&&Date.now()<captureDeadline){await pause(250);captureNotes=await memory!.list(captureScope);}
-    const captureEvidence = assertPreferenceCapture({ ...preference, job,
-      notes: captureNotes });
-    const captured = await service.handle({ type: 'memory.search', conversationId, companionId, query: '验收夜间饮料偏好是什么，上午是否仍喝咖啡' });
-    if (!JSON.stringify(captured.memory).includes('麦茶') || !JSON.stringify(captured.memory).includes('咖啡')) throw new Error('AUTOMATIC_CAPTURE_NOT_RECALLED');
-    report.capture = { recordedAndRecalled: true, ...captureEvidence };
+    const recalled = await measured('native-memory-tool', () => send('请先调用 memory_search 查询测试项目代号，再依据真实检索结果告诉我代号。'));
+    if (!recalled.text.includes('青榆舟') || !toolsFor(recalled.eventId).some(name => name.endsWith('memory_search'))) throw new Error('NATIVE_MEMORY_TOOL_NOT_USED');
+    report.memory = { semanticRecall: true, nativeToolRecall: true, passiveEvidenceIncluded: JSON.parse(runs.get(recalled.eventId)!.prompt).memoryEvidence.length > 0 };
     if (!protocolMode) {
-      stage = 'companion-sticker';
-      const expression = await measured(stage, () => send('大肥鱼，今天很开心。请先查一下可用的表情，再挑一张合适的“你真棒”或开心的真实表情发给我，我们来斗图。不创建任务，不用文字冒充发图。'));
-      report.stickerAttempt = { text: safeError(expression.text), media: expression.attachments.map(ref => ({ id: ref.id, kind: ref.kind, animated: ref.animated, name: ref.name })),
-        tools: [...nativeCalls.values()].filter(call => call.eventId === expression.eventId).map(call => call.name) };
-      if (!expression.attachments.some(item => item.kind === 'sticker' && item.animated)) throw new Error('COMPANION_DID_NOT_SEND_ACTUAL_STICKER');
-      const receipt = [...nativeCalls.values()].find(call => call.eventId === expression.eventId && call.name === 'chat_send_sticker');
-      if (!receipt || !service.store.getMetadata(`effect:${receipt.eventId}:${receipt.callId}`)) throw new Error('STICKER_HAS_NO_DURABLE_TOOL_RECEIPT');
-      const original = await media.response(new Request(expression.attachments[0]!.url));
-      if (original.status !== 200 || createHash('sha256').update(Buffer.from(await original.arrayBuffer())).digest('hex') !== expression.attachments[0]!.sha256) throw new Error('STICKER_ORIGINAL_MEDIA_INVALID');
-      report.sticker = { actualPublished: true, animated: true, originalMediaVerified: true };
-    }
-    stage = 'delegated-task';
-    let inputIds: string[] | undefined;
-    if (!protocolMode) {
-      const inputFile = path.join(root, 'numbers.txt'); await writeFile(inputFile, '输入数字：3,5,8\n');
-      inputIds = (await media.importFiles({ conversationId, paths: [inputFile] })).map(item => item.id);
-    }
-    await measured(stage, () => send('请实际调用 dsh_task 创建一个独立任务，标题“验收文件”。目标：在任务自己的工作区创建 cedar-proof.txt，内容严格为 WLB_SUPER_AGENT_OK，然后读取该文件验证。'
-      + (protocolMode ? '' : '同时读取这条消息的 numbers.txt 真实附件，计算其中数字之和，写入 sum-proof.txt（只写数字），再读取核验。请把任务实际产出的文件发回这段聊天。')
-      + '现在提交这个任务，完成后通过任务回执告诉我。', inputIds));
-    const deadline = Date.now() + 180000;
-    let task = service.store.listTasks(conversationId)[0];
-    while ((!task || !['succeeded', 'failed', 'cancelled'].includes(task.status)) && Date.now() < deadline) {
-      await pause(250); task = service.store.listTasks(conversationId)[0];
-    }
-    if (!task || task.status !== 'succeeded') throw new Error('DELEGATED_TASK_NOT_SUCCEEDED');
-    const conversation = service.store.getConversation(conversationId)!;
-    const artifact = path.join(botRoot, 'workspaces', ...(task.extra.workspaceLayout === 'companion-v1'
-      ? [createHash('sha256').update(task.companionId).digest('hex')] : []), createHash('sha256').update(conversation.securityDomainId).digest('hex'), task.id, 'cedar-proof.txt');
-    if ((await readFile(artifact, 'utf8')).trim() !== 'WLB_SUPER_AGENT_OK') throw new Error('DELEGATED_ARTIFACT_INVALID');
-    report.task = { count: service.store.listTasks(conversationId).length, status: task.status, artifactVerified: true };
-    if (!protocolMode) {
-      if ((await readFile(path.join(path.dirname(artifact), 'sum-proof.txt'), 'utf8')).trim() !== '16') throw new Error('ATTACHMENT_TASK_DID_NOT_READ_REAL_INPUT');
-      stage = 'companion-file-delivery';
-      const beforeDelivery = (await service.handle({ type: 'state', conversationId })).snapshot!;
-      const previousDeliveries = beforeDelivery.messages.filter(message => message.senderId === companionId && message.status === 'sent')
-        .flatMap(message => message.attachments ?? []).filter(item => item.name === 'cedar-proof.txt').length;
-      const delivery = await measured(stage, () => send(`请把刚才任务 ${task.id} 的 cedar-proof.txt 实际附件发送到当前聊天；若任务已发过同一文件，核对已有发送回执即可，不新建任务。`));
-      const deliveredState = (await service.handle({ type: 'state', conversationId })).snapshot!;
-      const sharedFiles = deliveredState.messages.filter(message => message.senderId === companionId && message.status === 'sent').flatMap(message => message.attachments ?? []);
-      const publishedFile = sharedFiles.find(item => item.name === 'cedar-proof.txt');
-      if (!publishedFile) throw new Error('COMPANION_FILE_NOT_DELIVERED');
-      const finalDeliveries = sharedFiles.filter(item => item.name === 'cedar-proof.txt').length;
-      report.fileDeliveryAttempt = { previousDeliveries, finalDeliveries, text: safeError(delivery.text),
-        taskOutputs: deliveredState.tasks.find(item => item.id === task.id)?.outputs,
-        receipts: [...nativeCalls.values()].filter(call => call.name === 'chat_send_file' || call.name === 'worker_chat_send_file')
-          .map(call => ({ eventId: call.eventId, name: call.name, receipt: safeError(service!.store.getMetadata(`effect:${call.eventId}:${call.callId}`) ?? '') })) };
-      if (finalDeliveries !== Math.max(1, previousDeliveries)) throw new Error('CONDITIONAL_FILE_DELIVERY_DUPLICATED');
-      if (!deliveredState.tasks.find(item => item.id === task.id)?.outputs?.some(output => output.attachmentIds.includes(publishedFile.id))) throw new Error('TASK_CARD_MISSING_ACTUAL_DELIVERY_RECEIPT');
-      const actual = await media.getForAgent(conversationId, publishedFile.id);
-      if ((await readFile(actual.path, 'utf8')).trim() !== 'WLB_SUPER_AGENT_OK') throw new Error('COMPANION_FILE_BYTES_INVALID');
-      report.fileDelivery = { inputReadAndSumVerified: true, actualPublished: true, contentVerified: true, conditionalDeliveryNotDuplicated: true,
-        previousDeliveries, finalDeliveries, taskCardHasReceipt: true, followupChars: delivery.text.length };
-    }
-    stage = 'restart';
-    await service.shutdown(); service = undefined;
-    await native.instances.stop(native.instance.id); client = await native.instances.ensureHost(native.instance.id);
-    service = makeService();
-    stage = 'restart-continuity';
-    const afterRestart = await measured(stage, () => send('继续刚才的验收：请核对记忆后告诉我测试项目代号，并简短说明刚才文件任务是否已经完成。不要再创建新任务。'));
-    if (!afterRestart.text.includes('青榆舟') || service.store.listTasks(conversationId).length !== 1) throw new Error('RESTART_CONTINUITY_FAILED');
-    report.restart = { factRetained: true, tasksNotDuplicated: service.store.listTasks(conversationId).length === 1, outputChars: afterRestart.text.length };
-    if (!protocolMode) {
-      stage = 'peer-sticker-chat';
-      const group = await service.handle({ type: 'conversation.create', title: '伙伴斗图验收', kind: 'group', memberIds: [companionId, 'gpt'], participationMode: 'mentions' });
-      if (!group.ok || !group.conversationId) throw new Error('PEER_GROUP_NOT_CREATED');
-      await measured(stage, () => send('@大肥鱼 请先查询真实可用的表情，选一张友好的表情，通过 message_peer 工具把表情作为附件发送给本群的 GPT。给它的文字写“GPT，给你一张表情，收到后也选一张真实表情回到群里吧”。请实际发送，不用创建任务。', undefined, group.conversationId));
-      const end = Date.now() + 180000; let groupState;
-      while (Date.now() < end) {
-        groupState = (await service.handle({ type: 'state', conversationId: group.conversationId })).snapshot!;
-        if (groupState.messages.some(message => message.senderId === 'gpt' && message.status === 'sent' && message.attachments?.some(item => item.kind === 'sticker'))) break;
-        await pause(200);
+      const sticker = await measured('native-sticker', () => send('请查询真实表情列表，选一张开心的动图，用 chat_send_sticker 实际发给我。不要用文字冒充发图。'));
+      if (!sticker.attachments.some(item => item.kind === 'sticker' && item.animated)) throw new Error('ACTUAL_ANIMATED_STICKER_MISSING');
+      report.sticker = { published: true, animated: true, tools: toolsFor(sticker.eventId) };
+      const inputFile = path.join(root, 'numbers.txt'); await writeFile(inputFile, '3,5,8\n');
+      const ids = (await media.importFiles({ conversationId, paths: [inputFile] })).map(ref => ref.id);
+      const files = await measured('native-file-task', () => send('直接使用原生文件工具完成：读取本消息 numbers.txt 附件，把其中数字之和写入当前工作区 sum-proof.txt，只写数字。另建 cedar-proof.txt，内容严格为 WLB_SUPER_AGENT_OK。实际读取两个输出核验后，用原生 present_files 一次交付两个文件。', ids));
+      const workspace = runs.get(files.eventId)!.cwd;
+      if ((await readFile(path.join(workspace, 'sum-proof.txt'), 'utf8')).trim() !== '16' || (await readFile(path.join(workspace, 'cedar-proof.txt'), 'utf8')).trim() !== 'WLB_SUPER_AGENT_OK') throw new Error('REAL_FILE_CONTENT_INVALID');
+      if (!toolsFor(files.eventId).some(name => name === 'present' || name.endsWith('present_files'))) throw new Error('NATIVE_PRESENT_FILES_NOT_CALLED');
+      if (!files.attachments.some(ref => ref.name === 'cedar-proof.txt') || !files.attachments.some(ref => ref.name === 'sum-proof.txt')) throw new Error('NATIVE_FILE_NOT_PUBLISHED_TO_CHAT');
+      for (const ref of files.attachments) {
+        const local = await media.getForAgent(conversationId, ref.id), bytes = await readFile(local.path);
+        if (createHash('sha256').update(bytes).digest('hex') !== ref.sha256) throw new Error('DELIVERED_FILE_HASH_INVALID');
       }
-      const peers = groupState?.messages.filter(message => message.status === 'sent' && message.attachments?.some(item => item.kind === 'sticker')) ?? [];
-      if (!peers.some(message => message.senderId === companionId) || !peers.some(message => message.senderId === 'gpt')) throw new Error('PEER_DID_NOT_EXCHANGE_ACTUAL_STICKERS');
-      const received = groupState!.messages.filter(message => message.senderId === 'gpt').map(message => service!.store.getEvent(message.eventId))
-        .find(event => event?.source === 'companion' && event.senderId === companionId && Array.isArray(event.payload.attachments) && event.payload.attachments.length);
-      if (!received) throw new Error('PEER_HAS_NO_ACTUAL_MEDIA_INBOX');
-      if (groupState!.messages.some(message => message.content.includes('青榆舟'))) throw new Error('PRIVATE_FACT_LEAKED_TO_GROUP');
-      report.peerChat = { realMediaExchanged: true, peerReceivedAttachmentEvent: true, privateFactAbsent: true, participantIdsFromHost: true };
+      report.files = { inputRead: true, outputBytesVerified: true, presentFiles: true, delivered: files.attachments.map(ref => ref.name), tools: toolsFor(files.eventId) };
+      report.fileInteractionDiary = await measured('native-delivery-diary', () => verifyInteractionDiary(files, ['sum-proof.txt', 'cedar-proof.txt', files.sourceMessageId]));
+      const complex = await measured('native-subagent-task', () => send('请使用当前可用的 sessions_spawn 工具创建原生子会话，子会话用真实代码计算1到12的平方和并写入 child-audit.json，结构为 {"sumSquares":650}。等候子会话完成，再由你读取该文件核验，最后只回复数值650。不创建旧版任务中心任务。'));
+      if (!toolsFor(complex.eventId).some(name => name.endsWith('sessions_spawn')) || JSON.parse(await readFile(path.join(workspace, 'child-audit.json'), 'utf8')).sumSquares !== 650) throw new Error('REAL_NATIVE_SUBAGENT_NOT_VERIFIED');
+      report.subagent = { nativeSpawn: true, artifactVerified: true, tools: toolsFor(complex.eventId) };
+      const fileSessionId = runs.get(files.eventId)!.sessionId;
+      const history = await measured('cross-session-recall', () => send('请先用 sessions_list 根据标题和消息预览，找到本次读取 numbers.txt 并交付 sum-proof.txt、cedar-proof.txt 的历史原生会话，再仅用 sessions_read 读取它的消息，核实 cedar-proof.txt 的内容。沿分页继续，最后只告诉我已核实的文件内容。本次只测试自然查找历史会话，不调用 shell、read 或其他文件工具。'));
+      const historyRun = runs.get(history.eventId)!;
+      const listCalls = new Set(historyRun.events.filter(event => event.type === 'tool_call' && event.toolName?.endsWith('sessions_list')).map(event => event.callId));
+      const successfulLists = historyRun.events.filter(event => event.type === 'tool_result' && listCalls.has(event.callId) && event.summary === '工具执行完成');
+      const readCalls = new Set(historyRun.events.filter(event => event.type === 'tool_call' && event.toolName?.endsWith('sessions_read')).map(event => event.callId));
+      const successfulReads = historyRun.events.filter(event => event.type === 'tool_result' && readCalls.has(event.callId) && event.summary === '工具执行完成');
+      if (!successfulLists.some(event => event.text?.includes(fileSessionId)) || !history.text.includes('WLB_SUPER_AGENT_OK')
+        || !successfulReads.some(event => event.text?.includes('WLB_SUPER_AGENT_OK'))) throw new Error('CROSS_SESSION_READ_NOT_VERIFIED');
+      report.crossSession = { explicitNativeRead: true, textVerified: true, tools: toolsFor(history.eventId) };
+      const group = await service.handle({ type: 'conversation.create', title: '原生伙伴群验收', kind: 'group', memberIds: [companionId, 'gpt'], participationMode: 'mentions' });
+      if (!group.ok || !group.conversationId) throw new Error('GROUP_CREATION_FAILED');
+      const groupReply = await measured('group-chat', () => send('@大肥鱼 请只回答“群聊已连接”，不要联系其他伙伴。', undefined, group.conversationId));
+      if (!groupReply.text.includes('群聊已连接')) throw new Error('GROUP_REPLY_MISSING');
+      const peer = await measured('companion-private-chat', () => send('请用 companion_contact 联系 GPT，destination 选 peer，消息内容为“这是一条原生DSH伙伴私聊验收，请只回复：伙伴私聊已连接。不要继续发起联系。”只做这一次发送。'));
+      if (!toolsFor(peer.eventId).some(name => name.endsWith('companion_contact'))) throw new Error('COMPANION_CONTACT_NOT_CALLED');
+      const deadline = Date.now() + 180000; let peerVerified = false;
+      while (Date.now() < deadline) {
+        const state = (await service.handle({ type: 'state' })).snapshot!;
+        for (const room of state.conversations.filter(room => room.kind === 'peer')) {
+          const state = (await service.handle({ type: 'state', conversationId: room.id })).snapshot!;
+          if (state.messages.some(message => message.senderId === 'gpt' && message.status === 'sent' && message.content.includes('伙伴私聊已连接'))) peerVerified = true;
+          if (state.messages.some(message => message.content.includes('青榆舟'))) throw new Error('PRIVATE_MEMORY_LEAKED_TO_PEER');
+        }
+        if (peerVerified) break; await pause(250);
+      }
+      if (!peerVerified) throw new Error('COMPANION_PRIVATE_REPLY_NOT_OBSERVED');
+      report.social = { groupReplyVerified: true, peerReplyVerified: true, privateMemoryAbsent: true };
     }
-    if (protocolMode) {
-      for (let index = 0; index < 6; index++) await send(`连续对话交接验收 ${index + 1}：保持同一聊天，只简短确认，不创建任务。`);
-    }
-    {
-      const latest = (await service.handle({ type: 'state', conversationId })).snapshot!.messages.findLast(message => message.senderId === companionId && message.status === 'sent');
-      const event = latest && service.store.getEvent(latest.eventId), lane = event && service.store.getLane(event.laneId);
-      if (!lane || lane.epoch < (protocolMode ? 3 : 2) || protocolMode && !protocolModel?.counters.summaries) throw new Error('NATIVE_LANE_HANDOFF_NOT_EXERCISED');
-      report.retention = { epoch: lane.epoch, ...(protocolModel ? { nativeSummaries: protocolModel.counters.summaries } : {}), sameConversationId: true, stressTurnThreshold: 3 };
-    }
-    report.nativeTools = Object.fromEntries([...new Set([...nativeCalls.values()].map(call => call.name))].map(name => [name, [...nativeCalls.values()].filter(call => call.name === name).length]));
-    report.streamEvents = streamCount; report.passed = true;
-    if (protocolModel) report.protocolFixture = protocolModel.counters;
-  } catch (error) {
-    report.failedStage = stage; report.failure = { name: error instanceof Error ? error.name : 'Error', code: (error as { code?: string })?.code,
-      message: safeError(error) };
+    report.nativeTools = [...new Set([...runs.values()].flatMap(run => run.events.filter(event => event.toolName).map(event => event.toolName)))];
+    report.nativeRuns = [...runs].map(([eventId, run]) => ({ eventId, sessionId: run.sessionId, workspace: path.basename(run.cwd), tools: toolsFor(eventId), events: run.events.length }));
+    report.passed = true;
+  } catch (error) { report.failedStage = stage; report.failure = { name: error instanceof Error ? error.name : 'Error', message: safeError(error) };
+    report.lastNative = [...runs].filter(([eventId]) => eventId.startsWith('event-')).slice(-2).map(([eventId, run]) => ({ eventId,
+      tools: run.events.filter(event => event.toolName || event.type === 'tool_result').map(event => ({ type: event.type, name: event.toolName,
+        callId: event.callId, summary: safeError(event.summary ?? ''), text: safeError(event.text ?? '').slice(0, 2000) })), events: run.events.length }));
   } finally {
+    await service?.shutdown().catch(error => errors.push({ stage: 'shutdown', name: 'Error', message: safeError(error) }));
+    await memory?.close().catch(() => undefined); await native?.close().catch(() => undefined); await gateway.close(); await embedding.close(); await protocolModel?.close();
     if (protocolModel) report.protocolFixture = protocolModel.counters;
-    stage = 'shutdown';
-    await service?.shutdown().catch(error => errors.push({ phase: stage, name: error instanceof Error ? error.name : 'Error' }));
-    await memory?.close().catch(() => undefined); await native?.close().catch(() => undefined);
-    await gateway.close(); await embedding.close();
-    await protocolModel?.close();
-    await writeFile(path.join(root, 'result.json'), JSON.stringify(report, null, 2));
-    process.send?.(report); app.exit(report.passed ? 0 : 1);
+    await writeFile(path.join(root, 'result.json'), JSON.stringify(report, null, 2)); process.send?.(report); app.exit(report.passed ? 0 : 1);
   }
-}).catch(() => { process.send?.({ kind: 'bot-real-result', passed: false, failedStage: 'electron-ready' }); app.exit(1); });
+}).catch(error => { process.send?.({ kind: 'bot-real-result', passed: false, failedStage: 'electron-ready', error: safeError(error) }); app.exit(1); });

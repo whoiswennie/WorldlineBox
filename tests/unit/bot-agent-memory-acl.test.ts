@@ -1,10 +1,8 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotService } from '../../src/main/companion-bot/service';
-import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
-import { BotBrainRouter } from '../../src/main/companion-bot/brain-router';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryScope, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
@@ -29,22 +27,22 @@ class Memory extends BotMemoryService {
 }
 async function until(check: () => boolean | Promise<boolean>, timeout = 10000) { const end = Date.now() + timeout; while (!await check()) { if (Date.now() > end) throw Error('Memory ACL fixture timed out'); await new Promise(resolve => setTimeout(resolve, 15)); } }
 
-it.each(['members', 'dissolve', 'forget'] as const)('invalidates imported tool context and capture sources after source group %s changes, before the next real App turn', async operation => {
+it.each(['members', 'dissolve', 'forget'] as const)('invalidates imported tool context and capture sources after source group %s changes, before the next fresh native DSH turn', async operation => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-memory-acl-'));
   let groupId = '', nextRequest = '';
   const memory = new Memory({ root: path.join(root, 'memory'), runtime: async () => { throw Error('No native VCP in protocol ACL test'); }, embedding: async () => { throw Error('No embedding in protocol ACL test'); } });
-  const app: BotAppBrain = new BotAppBrain({ root: path.join(root, 'router'), reconcileTool: async call => service.reconcileToolReceipt(call), fetchFn: async (url, init) => {
-    if (new URL(String(url)).pathname === '/bot/tool') return fetch(url, init);
-    const body = JSON.parse(String(init!.body)) as { messages: Array<{ role: string; content: string }> };
-    const last = body.messages.findLastIndex(message => message.role === 'user'); let event: { trigger?: { content?: string } } = {};
-    try { event = JSON.parse(body.messages[last]!.content); } catch { /* A non-envelope encoder request is handled below. */ }
-    const query = event.trigger?.content;
-    if (query === 'READ_APPROVED_GROUP' && !body.messages.slice(last + 1).some(message => message.role === 'tool')) return Response.json({ choices: [{ finish_reason: 'tool_calls', message: { content: '', tool_calls: [{ id: 'scope-read', type: 'function', function: { name: 'memory_search', arguments: JSON.stringify({ query: 'GROUP_SCOPE_SECRET', conversationId: groupId }) } }] } }] });
-    const text = query === 'READ_APPROVED_GROUP' ? 'GROUP_SCOPE_SECRET_FROM_MEMORY' : query === 'NEXT_AFTER_ACL' ? 'AFTER_ACL_OK' : '{"notes":[]}';
-    if (query === 'NEXT_AFTER_ACL') nextRequest = JSON.stringify(body);
-    return Response.json({ choices: [{ finish_reason: 'stop', message: { content: text } }] });
-  } });
-  const service: BotService = new BotService({ root, brainRuntime: 'worldlinebox', brain: new BotBrainRouter({ app, worker: new BotDshBrain({ getHost: async () => { throw Error('No worker needed'); } }) }), memory,
+  const brain = new BotDshBrain({ getHost: async () => { throw Error('No DSH process in native protocol fixture'); } });
+  vi.spyOn(brain, 'run').mockImplementation(async input => {
+    const query = input.prompt;
+    if (query.includes('READ_APPROVED_GROUP')) {
+      const response = await fetch(input.callback!.url, { method: 'POST', headers: { authorization: `Bearer ${input.callback!.token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'scope-read', name: 'memory_search', args: { query: 'GROUP_SCOPE_SECRET', conversationId: groupId } }) });
+      expect(response.ok).toBe(true); expect(JSON.stringify(await response.json())).toContain('GROUP_SCOPE_SECRET_FROM_MEMORY');
+    }
+    if (query.includes('NEXT_AFTER_ACL')) nextRequest = JSON.stringify({ system: input.system, prompt: input.prompt });
+    return { status: 'succeeded', text: query.includes('READ_APPROVED_GROUP') ? 'GROUP_SCOPE_SECRET_FROM_MEMORY' : 'AFTER_ACL_OK', eventId: input.eventId, sessionId: input.laneId };
+  });
+  const service: BotService = new BotService({ root, brain, memory,
     model: () => ({ apiFormat: 'openai_chat', model: 'local-protocol', baseUrl: 'http://127.0.0.1:9', apiKey: 'no-billing', contextWindow: 65536, maxTokens: 512 }), onEvent: () => undefined });
   cleanup.push(async () => { await service.shutdown(); if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-memory-acl-')) throw Error('Invalid ACL fixture cleanup'); await rm(root, { recursive: true, force: true }); });
   await service.handle({ type: 'state' }); service.store.createCompanion({ id: 'memory-other', name: 'Other', persona: 'other' });

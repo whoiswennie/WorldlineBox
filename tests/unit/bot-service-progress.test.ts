@@ -24,10 +24,11 @@ async function fixture(memoryError?: Error) {
     override async finishTurn() { return { recorded: true }; }
     override async appendHistory() { return { archived: true }; }
     override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
+    override async remember() { return { state: 'indexed', indexed: true, durable: true }; }
     override async catalog() { return { items: [], tags: [], total: 0 }; }
     override async close() {}
   }({ root, runtime: async () => { throw new Error('No native runtime for controlled fixture'); }, embedding: async () => { throw new Error('No paid embedding'); } });
-  const host = vi.fn(async () => { throw new Error('Ordinary App progress must not start DSH'); });
+  const host = vi.fn(async () => { throw new Error('Native adapter progress must not start DSH'); });
   const brain = new class extends BotDshBrain {
     override async run(input: BotDshRun): Promise<BotDshResult> {
       if (input.laneId.startsWith('memory-encoder-')) return { text: '{"notes":[]}', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
@@ -36,7 +37,7 @@ async function fixture(memoryError?: Error) {
     }
     override async archive() {}
   }({ getHost: host });
-  const service = new BotService({ root, brain, memory, brainRuntime: 'worldlinebox', model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
+  const service = new BotService({ root, brain, memory, model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
     onEvent: () => undefined, report: error => { reported.push(error); } });
   const initial = (await service.handle({ type: 'state' })).snapshot!, conversationId = initial.conversations[0]!.id;
   cleanups.push(async () => { preparation.resolve(); completion.resolve(); await service.shutdown(); await rm(root, { recursive: true, force: true }); });
@@ -68,13 +69,13 @@ it('keeps a crashed memory preparation terminal and readable, preserves the sour
   expect(f.service.store.messagesPage(f.conversationId).items.find(message => message.senderId === 'user')?.content).toBe('你好');
   expect(f.prepares).toBe(1); expect(f.reported).toEqual([original]); expect(f.run).toBeUndefined(); expect(f.host).not.toHaveBeenCalled();
 });
-it('persists a real v2 empty-encoding outcome with completion and exposes it independently of zero journals', async () => {
+it('persists a v3 interaction diary even when semantic encoding returns no notes', async () => {
   const f = await fixture(); await f.send('刚刚我们一起讨论了桌面整理，尚未动手。'); f.preparation.resolve(); await until(() => f.run); f.completion.resolve();
   await until(async () => (await f.reply())?.status === 'sent' ? true : undefined);
   const companionId = f.service.store.getConversation(f.conversationId)!.memberIds.find(id => id !== 'user')!;
   const scope = { companionId, conversationId: f.conversationId, securityDomainId: f.service.store.getConversation(f.conversationId)!.securityDomainId };
-  await until(() => f.service.store.memoryActivity(scope).capture.empty === 1 ? true : undefined);
+  await until(() => f.service.store.memoryActivity(scope).capture.withNotes === 1 ? true : undefined);
   const response = await f.service.handle({ type: 'memory.catalog', companionId, conversationId: f.conversationId, limit: 24 });
-  expect(response.memory).toMatchObject({ total: 0, activity: { capture: { empty: 1, unknownDone: 0, queued: 0, running: 0 } } });
+  expect(response.memory).toMatchObject({ total: 0, activity: { capture: { empty: 0, withNotes: 1, unknownDone: 0, queued: 0, running: 0 } } });
   expect(f.host).not.toHaveBeenCalled();
 });

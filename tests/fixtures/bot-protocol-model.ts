@@ -32,8 +32,8 @@ export async function startBotProtocolModel() {
         if (messages[index]?.role !== 'user') continue;
         const serialized = plain(messages[index]!.content);
         let direct: Record<string, unknown> | undefined; try { direct = JSON.parse(serialized) as Record<string, unknown>; } catch { /* Native legacy wrappers are read below. */ }
-        const envelope = direct?.trigger ? direct : jsonEnvelope(serialized, '{"envelope":');
-        const trigger = envelope?.trigger as { content?: unknown } | undefined;
+        const envelope = direct?.trigger || direct?.message ? direct : jsonEnvelope(serialized, '{"envelope":');
+        const trigger = (envelope?.trigger ?? envelope?.message) as { content?: unknown } | undefined;
         if (typeof trigger?.content === 'string') { current = trigger.content; lastUser = index; break; }
       }
       const suffix = messages.slice(lastUser + 1);

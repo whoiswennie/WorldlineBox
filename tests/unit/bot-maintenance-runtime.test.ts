@@ -2,8 +2,6 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createServer } from 'node:http';
-import { BotAppBrain } from '../../src/main/companion-bot/app-brain';
 import { BotDshDeliveryUnknownError, BotDshTurnFailedError } from '../../src/main/companion-bot/dsh-brain';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotMaintenanceStore, maintenanceDomain, maintenanceOwner } from '../../src/main/companion-bot/memory-maintenance-store';
@@ -73,37 +71,31 @@ function realCoreRuntime(f: ReturnType<typeof fixture>, brain: BotMaintenanceRun
     callback: async () => ({ url: 'http://127.0.0.1:9/bot/tool', token: 'unused-fixture' }), changed: () => undefined } as unknown as BotMaintenanceRuntimeOptions);
   cleanups.push(() => value.close()); return { value, memory, report };
 }
-it('renews admission on explicit retry after actual AppBrain HTTP 503 while preserving the frozen source snapshot', async () => {
-  const f = fixture(), requests: unknown[] = [];
-  const server = createServer(async (request, response) => {
-    let body = ''; for await (const chunk of request) body += chunk; requests.push(JSON.parse(body));
-    response.setHeader('content-type', 'application/json');
-    if (requests.length === 1) { response.writeHead(503).end('{"error":"local fixture temporarily unavailable"}'); return; }
-    response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: '{"narrative":"本地HTTP回归：无需改写。","candidates":[]}' } }] }));
+it('renews native admission after a confirmed terminal failure while preserving the frozen source snapshot', async () => {
+  const f = fixture();
+  let attempts = 0;
+  const admissions = vi.fn<BotMaintenanceRuntimeOptions['brain']['run']>(async input => {
+    if (++attempts === 1) throw new BotDshTurnFailedError(input.eventId, 'DSH model HTTP 503', '', false);
+    return { status: 'succeeded', text: '{"narrative":"本批无需改写。","candidates":[]}', eventId: input.eventId, sessionId: input.laneId };
   });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  cleanups.push(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing owned local HTTP port');
-  const brain = new BotAppBrain({ root: path.join(f.root, 'real-app-brain') }); cleanups.push(() => brain.close());
-  const admissions = vi.spyOn(brain, 'run'), r = realCoreRuntime(f, brain as unknown as BotMaintenanceRuntimeOptions['brain'], `http://127.0.0.1:${address.port}/v1`);
-  const job = r.value.journal.enqueue(f.scope, 'organize', 'actual-http-503');
+  const brain = { run: admissions, archive: vi.fn(async () => undefined) };
+  const r = realCoreRuntime(f, brain as unknown as BotMaintenanceRuntimeOptions['brain']);
+  const job = r.value.journal.enqueue(f.scope, 'organize', 'native-terminal-retry');
   expect((await execute(f, r.value)).result.status).toBe('failed');
   const before = r.value.journal.get(f.scope, job.id), frozen = JSON.stringify(before.snapshot);
-  expect(before.job.status).toBe('blocked'); expect(before.job.error).toContain('HTTP 503'); expect(requests).toHaveLength(1);
+  expect(before.job.status).toBe('blocked'); expect(before.job.error).toContain('HTTP 503');
   expect(r.report).toHaveBeenCalledWith(expect.objectContaining({ code: 'MEMORY_MAINTENANCE_MODEL_FAILED', cause: expect.any(BotDshTurnFailedError) }));
   expect(f.store.getMetadata(`maintenance-new-admission:${job.id}`)).toBe('1');
-  const diagnostic = f.store.taskTransaction(sql => sql.prepare("SELECT text FROM bot_maintenance_diagnostics WHERE job_id=? AND phase='model-response' ORDER BY sequence DESC LIMIT 1").get(job.id)) as { text: string };
-  expect(JSON.parse(diagnostic.text)).toMatchObject({ status: 'failed', outcome: 'host-terminal-failure-confirmed' });
-  r.value.journal.control(f.scope, job.id, 'retry', 'explicit-retry-after-503');
+  r.value.journal.control(f.scope, job.id, 'retry', 'explicit-native-retry');
   expect((await execute(f, r.value)).result.status).toBe('done');
   const after = r.value.journal.get(f.scope, job.id);
   expect(after.job.status).toBe('completed'); expect(after.plan).toBeDefined(); expect(JSON.stringify(after.snapshot)).toBe(frozen);
-  expect(requests).toHaveLength(2); expect(admissions).toHaveBeenCalledTimes(2);
+  expect(admissions).toHaveBeenCalledTimes(2);
   expect(admissions.mock.calls[0]![0].laneId).not.toBe(admissions.mock.calls[1]![0].laneId);
   expect(admissions.mock.calls[0]![0].eventId).not.toBe(admissions.mock.calls[1]![0].eventId);
   expect(admissions.mock.calls[0]![0].prompt).toBe(admissions.mock.calls[1]![0].prompt);
   expect(r.memory.catalog).toHaveBeenCalledOnce(); expect(r.memory.readNote).toHaveBeenCalledTimes(2);
-}, 15000);
+});
 it('preserves typed unknown delivery through the actual core/runtime without enabling a fresh admission', async () => {
   const f = fixture(), unknown = new BotDshDeliveryUnknownError('unconfirmed model delivery');
   const brain = { run: vi.fn<BotMaintenanceRuntimeOptions['brain']['run']>(async () => { throw unknown; }), archive: vi.fn(async () => undefined) };

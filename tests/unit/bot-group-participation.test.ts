@@ -37,7 +37,7 @@ it('honors explicit broadcasts and trusted targets while preserving the all-disc
   f.store.setConversationPolicy(f.conversation.id, 'all');
   expect(f.send('discussion', '公开讨论').events).toHaveLength(4);
   expect(f.send('directed-in-all', '@阿明 请先回答').events.map(event => event.companionId)).toEqual(['id-ming']);
-  const lifecycle = f.store.enqueue({ conversationId: f.conversation.id, source: 'task', senderId: 'task-service', content: '任务真实回执', sourceMessageId: 'task-notice', recipientIds: ['id-annabelle'] });
+  const lifecycle = f.store.enqueue({ conversationId: f.conversation.id, source: 'companion', senderId: 'id-ann', content: '原生伙伴真实回执', sourceMessageId: 'native-notice', recipientIds: ['id-annabelle'] });
   expect(lifecycle.events.map(event => event.companionId)).toEqual(['id-annabelle']);
 });
 

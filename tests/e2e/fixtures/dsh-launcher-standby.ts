@@ -22,20 +22,28 @@ export async function verifyActualLauncherStandby(root: string, profile: string,
   try {
     const snapshot = () => host.evaluate(() => (globalThis as StandbyFixture).standbyLauncher?.state());
     await expect.poll(async () => (await snapshot())?.executionReadiness?.status, { timeout: 120000 }).toBe('ready');
-    const originalPid = (await snapshot())!.tasks![0]!.pid!;
+    const probe = () => host.evaluate(async () => {
+      const launcher = (globalThis as StandbyFixture).standbyLauncher!, native = await launcher.botHost();
+      const release = launcher.acquireCompanionLease(native.instance.id, 'session');
+      try {
+        const catalog = await native.client.request<{ tools: Array<{name:string}> }>('/capabilities', { sessionId: 'worldlinebox-standby-catalog', cwd: native.instance.workspacePath });
+        return { pid: native.client.pid, tools: catalog.tools };
+      } finally { release(); }
+    });
+    const originalPid = (await probe()).pid;
     // Initial background discovery is lease one. The thirty-first explicit read
     // reaches the normal retirement bound without a model turn.
     for (let index = 0; index < 31; index++) {
-      const catalog = await host.evaluate(() => (globalThis as StandbyFixture).standbyLauncher!.taskCapabilities());
+      const catalog = await probe();
       expect(catalog.tools.some(tool => tool.name === 'read')).toBe(true);
     }
     await expect.poll(async () => {
-      const state = await snapshot(); return state?.executionReadiness?.status === 'ready' && state.tasks?.[0]?.pid !== originalPid ? state.tasks?.[0]?.pid : undefined;
+      const state = await snapshot(), native = await probe(); return state?.executionReadiness?.status === 'ready' && native.pid !== originalPid ? native.pid : undefined;
     }, { timeout: 60000 }).toBeTruthy();
-    const replacementPid = (await snapshot())!.tasks![0]!.pid!;
-    const started = performance.now(); await host.evaluate(() => (globalThis as StandbyFixture).standbyLauncher!.taskCapabilities());
+    const replacementPid = (await probe()).pid;
+    const started = performance.now(); await probe();
     const warmAfterRotationMs = Math.round(performance.now() - started); expect(warmAfterRotationMs).toBeLessThan(2000);
-    expect((await snapshot())!.tasks![0]!.pid).toBe(replacementPid);
+    expect((await probe()).pid).toBe(replacementPid);
     let failedProbeDoesNotRetry: boolean | undefined;
     if (verifyFailure) {
       const selected = (await snapshot())!, instance = selected.instances.find(item => item.id === selected.executionReadiness?.instanceId)!;
@@ -44,10 +52,10 @@ export async function verifyActualLauncherStandby(root: string, profile: string,
       const plugin = path.join(root, 'intentional-native-failure.mjs');
       await writeFile(plugin, "export function apply(ctx){ctx.on('agent/created',()=>{process.exit(17)})}");
       await writeFile(file, JSON.stringify([...(parse(bytes.toString()) as unknown[]), { insert: [{ id: 'intentional-native-failure', name: plugin }] }]));
+      await probe().catch(() => undefined);
       await expect.poll(async () => (await snapshot())?.executionReadiness?.status, { timeout: 60000 }).toBe('failed');
-      const failedTaskId = (await snapshot())!.tasks![0]!.id;
       await new Promise(resolve => setTimeout(resolve, 1500));
-      expect((await snapshot())!.tasks![0]!.id).toBe(failedTaskId); expect((await snapshot())!.executionReadiness?.status).toBe('failed');
+      expect((await snapshot())!.executionReadiness?.status).toBe('failed');
       failedProbeDoesNotRetry = true;
     }
     await host.evaluate(() => (globalThis as StandbyFixture).standbyLauncher!.shutdown());

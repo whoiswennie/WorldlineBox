@@ -5097,9 +5097,8 @@ async function startApplication(): Promise<void> {
     if (applicationClosing) return Promise.reject(new Error('应用正在关闭。'));
     if (botService) return Promise.resolve(botService);
     return creatingBotService ??= (async () => {
-      const [{ BotService }, { BotMemoryService }, { BotDshBrain }, { BotAppBrain }, { BotBrainRouter }, media] = await Promise.all([
+      const [{ BotService }, { BotMemoryService }, { BotDshBrain }, media] = await Promise.all([
         import('./companion-bot/service'), import('./companion-bot/memory-service'), import('./companion-bot/dsh-brain'),
-        import('./companion-bot/app-brain'), import('./companion-bot/brain-router'),
         ensureBotMediaService(),
       ]);
       const root = path.join(app.getPath('userData'), 'companion-bot-v2');
@@ -5133,37 +5132,24 @@ async function startApplication(): Promise<void> {
       const { selectBotWorkerInstance } = await import('./companion-bot/worker-host-selection');
       const { DshHostUnavailableError } = await import('./dsh/host-errors');
       const getWorkerHost = async (id: string | undefined, signal: AbortSignal | undefined, nativeLaneId: string | undefined, options?: { explicit?: boolean }) => {
-        if (!launcher) throw new DshHostUnavailableError('configuration', 'DSH 启动器尚未就绪；伙伴主脑仍可正常对话，请检查启动器后继续原任务。');
-        const selected = await selectBotWorkerInstance(launcher, botService?.store, nativeLaneId, id);
-        const task = nativeLaneId?.startsWith('worker-') ? botService?.store.getTask(nativeLaneId.slice(7)) : undefined;
-        if (options?.explicit && (!task || !['queued', 'running'].includes(task.status) || task.extra.hostResumeRequested !== true))
-          throw new DshHostUnavailableError('stopped', '任务的继续请求已被撤销；执行环境保持关闭。', selected.id);
-        const ownerId = task?.companionId ?? (nativeLaneId ? (botService?.store.getLane(nativeLaneId) ?? botService?.store.getLane(nativeLaneId.replace(/-epoch-[1-9]\d*$/u, '')))?.companionId : undefined);
-        if (ownerId && botService?.store.getCompanion(ownerId)?.enabled === false && !botService.isCompanionStopping(ownerId)) throw new Error('伙伴已关闭，不能重新启动其执行环境。');
-        // Bind before preparation yields: an instance switch or manual stop
-        // during startup cannot migrate or accidentally revive this task.
+        if (!launcher) throw new DshHostUnavailableError('configuration', 'DSH 启动器尚未就绪，请先配置并启动共享执行实例。');
+        const isMemory = nativeLaneId?.startsWith('memory-') || nativeLaneId?.startsWith('maintenance-');
+        const selected = isMemory ? await launcher.resolveBotInstance() : await selectBotWorkerInstance(launcher, botService?.store, nativeLaneId, id);
+        const event = nativeLaneId?.startsWith('turn-') ? botService?.store.getEvent(nativeLaneId.slice(5)) : undefined;
+        const ownerId = event?.companionId;
+        if (ownerId && botService?.store.getCompanion(ownerId)?.enabled === false && !botService.isCompanionStopping(ownerId)) throw new Error('伙伴已关闭。');
         if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), selected.id);
         const host = await launcher.botHost(selected.id, signal, options);
         signal?.throwIfAborted();
-        if (options?.explicit && task) {
-          const latest = botService?.store.getTask(task.id);
-          if (latest && ['queued', 'running'].includes(latest.status)) botService?.store.updateTask(task.id, { extra: { ...latest.extra, hostResumeRequested: false } });
-        }
+
         if (nativeLaneId) botService?.store.setMetadata(botNativeHostBindingKey(nativeLaneId), host.instance.id);
         return host;
       };
       const worker = new BotDshBrain({ acquireLease: host => host.instance && launcher
         ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
         getHost: getWorkerHost });
-      const appBrain = new BotAppBrain({ root: path.join(root, 'router'),
-        fetchFn: async (input, init) => (await import('electron')).net.fetch(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, init),
-        reconcileTool: async (call, signal) => botService ? botService.reconcileToolReceipt(call, signal) : { state: 'unknown' as const },
-      });
-      const brain = new BotBrainRouter({ app: appBrain, worker,
-        isLegacyNativeLane: laneId => { const owner = botService?.store.getMetadata(botNativeHostBindingKey(laneId)); return !!owner && owner !== 'worldlinebox'; },
-      });
-      const capacity = currentBotModel().limits.window;
-      botService = new BotService({ root, brain, brainRuntime: 'worldlinebox', prewarmMemory: true, memory, media,
+      const brain = worker;
+      botService = new BotService({ root, brain, prewarmMemory: true, memory, media,
         ensureCompanionBindings: async ids => {
           // One selected DSH serves every Router. Admission checks availability
           // without starting a Host, provisioning one per character or copying
@@ -5175,17 +5161,6 @@ async function startApplication(): Promise<void> {
               { code: 'BOT_EXECUTION_INSTANCE_REQUIRED' });
           });
         },
-        capabilityState: companionId => launcher?.companionCapabilityState(companionId)
-          ?? { configured: false, mode: 'shared', revision: 'unavailable' },
-        capabilities: async (companionId, query, signal) => {
-          if (!launcher) throw new Error('DSH 启动器尚未就绪。');
-          const companion = botService?.store.getCompanion(companionId);
-          if (!companion || companion.enabled === false) throw new Error('伙伴不存在或已关闭。');
-          const instance = await launcher.resolveCompanionInstance(companion.id, companion.name);
-          if (botService?.store.getCompanion(companionId)?.enabled === false) throw new Error('伙伴已关闭。');
-          signal.throwIfAborted(); const release = launcher.acquireCompanionLease(instance.id, 'session');
-          try { return await launcher.taskCapabilities(instance.id, { companionCapabilities: true }, query); } finally { release(); }
-        },
         companionRuntime: async (companionId, name, operation, signal) => {
           if (!launcher) { if (operation === 'start') throw new Error('DSH 启动器尚未就绪；聊天仍可使用。'); return; }
           if (operation === 'start') await launcher.startCompanionEnvironment(companionId, name, signal);
@@ -5194,7 +5169,6 @@ async function startApplication(): Promise<void> {
         restoreCompanionEnvironments: async (companions, signal) => {
           await launcher?.restoreCompanionEnvironments(companions, signal, id => !!botService?.store.getCompanion(id) && botService.store.getCompanion(id)?.enabled !== false);
         },
-        resumeTaskRuntime: async (taskId, signal) => { await getWorkerHost(undefined, signal, `worker-${taskId}`, { explicit: true }); },
         transcribeAttachments: async (conversationId, attachments, requestId) => {
           if (!attachments.some(attachment => attachment.mimeType.startsWith('audio/') && !attachment.transcript && !attachment.analysisBlocked)) return attachments;
           return ensureLocalSpeech().run(requestId, async signal => {
@@ -5211,10 +5185,6 @@ async function startApplication(): Promise<void> {
             return result;
           });
         },
-        // Actual context compaction follows the model budget in the App Agent.
-        // Generation retirement is a larger lifetime bound, not a 32k window.
-        retention: { maxTurns: Number.MAX_SAFE_INTEGER, maxBytes: Math.min(Number.MAX_SAFE_INTEGER, capacity * 8) },
-        modelLimits: () => { const { limits } = currentBotModel(); return { window: limits.window, source: limits.source, estimate: limits.contextEstimate }; },
         model: () => { const { connection, limits } = currentBotModel(); return { ...connection, imageSupport: modelCapabilities.imageSupport(connection), contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
         onEvent: event => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event); },
         report: error => logger?.error('companion-bot.runtime', error),

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { link, lstat, mkdir, open, readFile, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -10,6 +10,41 @@ const schema = z.strictObject({ version: z.literal(1), sourceHash: z.string().re
 export type CapturePiece = z.infer<typeof piece>;
 export type CapturePlan = z.infer<typeof schema>;
 export const captureCapacity = () => Object.assign(new Error('Memory capture fragment cannot fit the current model capacity; the frozen job remains incomplete.'), { code: 'MEMORY_CAPTURE_CAPACITY' });
+
+const resultSchema = z.strictObject({ version: z.literal(1), sourceHash: z.string().regex(/^[a-f0-9]{64}$/u), checksum: z.string().regex(/^[a-f0-9]{64}$/u), value: z.unknown() });
+const resultFlights = new Map<string, Promise<unknown>>();
+/** Freeze an encoder result before archiving its DSH session or writing notes.
+ * Concurrent/restarted callers all use the first atomically published result. */
+export async function freezeCaptureResult<T>(input: { cwd: string; key: string; sourceHash: string; produce(): Promise<T>; validate(value: unknown): T; signal?: AbortSignal }): Promise<T> {
+  const directory = path.join(path.resolve(input.cwd), 'capture-results');
+  if (!/^[a-f0-9]{64}$/u.test(input.key)) throw new Error('A hashed memory capture result identity is required');
+  const file = path.join(directory, `${input.key}.json`), flightKey = file + ':' + input.sourceHash;
+  const existing = resultFlights.get(flightKey); if (existing) return existing as Promise<T>;
+  const work = (async () => {
+    input.signal?.throwIfAborted(); await mkdir(directory, { recursive: true });
+    const [root, actual, info] = await Promise.all([realpath(input.cwd), realpath(directory), lstat(directory)]);
+    if (info.isSymbolicLink() || path.relative(root, actual).toLowerCase() !== 'capture-results') throw new Error('Memory capture results must remain in their owned directory');
+    const checksum = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+    const read = async () => {
+      const info = await lstat(file); if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024) throw new Error('Invalid frozen memory capture result');
+      const record = resultSchema.parse(JSON.parse(await readFile(file, 'utf8')));
+      if (record.sourceHash !== input.sourceHash || record.checksum !== checksum(record.value)) throw Object.assign(new Error('Frozen memory encoder result does not match its source or checksum'), { code: 'MEMORY_CAPTURE_SOURCE_CONFLICT' });
+      return input.validate(record.value);
+    };
+    try { return await read(); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    const value = input.validate(await input.produce()); input.signal?.throwIfAborted();
+    const temporary = path.join(directory, `${input.key}.${randomUUID()}.tmp`);
+    try {
+      const handle = await open(temporary, 'wx', 0o600);
+      try { await handle.writeFile(JSON.stringify({ version: 1, sourceHash: input.sourceHash, checksum: checksum(value), value })); await handle.sync(); } finally { await handle.close(); }
+      input.signal?.throwIfAborted();
+      try { await link(temporary, file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      return await read();
+    } finally { await rm(temporary, { force: true }); }
+  })();
+  resultFlights.set(flightKey, work);
+  try { return await work; } finally { if (resultFlights.get(flightKey) === work) resultFlights.delete(flightKey); }
+}
 
 function validate(plan: CapturePlan, sourceHash: string, units: readonly string[][]): CapturePlan {
   if (plan.sourceHash !== sourceHash) throw Object.assign(new Error('Memory capture job was reused with different source data.'), { code: 'MEMORY_CAPTURE_SOURCE_CONFLICT' });

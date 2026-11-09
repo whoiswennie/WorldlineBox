@@ -86,15 +86,6 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('preserves guidance/cancel 
     const regular = seen.filter(request => !request.summary);
     expect(regular.at(-1)!.chars).toBeLessThan(payload.length * 14 / 2);
     expect((await client.request<{ botCompactions: number }>('/health')).botCompactions).toBeGreaterThan(0);
-    const handoffInput = { ...base, laneId: 'compact-lane', eventId: 'compact-event-13', cwd: path.join(native.root, 'compact') };
-    const handoff = await brain.handoff(handoffInput);
-    expect(handoff.summaryText).toContain('CEDAR_PIN'); expect(handoff.coveredEventSeqs.length).toBeGreaterThan(0);
-    expect(handoff.nativeCursor).toBeGreaterThan(handoff.summarySeq);
-    const beforeHandoffReplay = seen.length;
-    expect(await brain.handoff(handoffInput)).toEqual(handoff); expect(seen.length).toBe(beforeHandoffReplay);
-    expect((await brain.run({ ...base, laneId: 'compact-epoch-2', eventId: 'epoch-2-input', cwd: path.join(native.root, 'epoch-2'),
-      prompt: JSON.stringify({ handoff, latestMessage: 'Continue the conversation using the native checkpoint.' }) })).text).toBe('native-output');
-    expect(seen.at(-1)!.chars).toBeLessThan(16000);
     const health = await client.request<{ botLanes: number; botCompactions: number }>('/health');
     await mkdir(path.resolve('artifacts/superagent-bot-development'), { recursive: true });
     await writeFile(path.resolve('artifacts/superagent-bot-development/native-reliability.json'), JSON.stringify({
@@ -104,8 +95,6 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('preserves guidance/cancel 
       compactionEndEvents: health.botCompactions, lastRegularRequestChars: regular.at(-1)!.chars,
       lifetimePayloadChars: payload.length * 14, coldDuplicateReplaysWithoutModel: true,
       explicitArchiveReleasesResidentLane: true,
-      handoff: { summaryChars: handoff.summaryText.length, tailMessages: handoff.tail.length,
-        coveredNodes: handoff.coveredEventSeqs.length, nativeCursor: handoff.nativeCursor, idempotent: true, newEpochRequestChars: seen.at(-1)!.chars },
       access: { scopedLocalReadVerified: true, scopedAbsoluteReadBlocked: true, scopedJunctionReadBlocked: true, scopedShellNotExecuted: true, trustedFullShellArtifactVerified: true },
     }, null, 2));
   } finally {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { writeSealedArchive } from '../../src/main/dsh/archive';
 import { PackDistributionService, type PackPublishRequest } from '../../src/main/dsh/pack-distribution';
-import type { DshMarketplaceNetwork } from '../../src/main/dsh/marketplace';
+import type { DshPackNetwork } from '../../src/main/dsh/pack-distribution';
 import type { OperationContext } from '../../src/main/dsh/operations';
 
 const roots: string[] = [];
@@ -17,7 +17,7 @@ async function fixture() {
   await writeFile(path.join(source, 'agents', 'skills', 'fixture', 'SKILL.md'), '---\nname: fixture\ndescription: Test\n---\nFixture\n');
   await mkdir(path.join(source, 'runtime-lock')); await writeFile(path.join(source, 'runtime-lock/package-lock.json'), '{}');
   const archivePath = path.join(rootPath, 'fixture.dshpack');
-  const network: DshMarketplaceNetwork = { fetch: vi.fn(async () => new Response(null, { status: 404 })), json: vi.fn(), githubCandidates: url => [url] };
+  const network: DshPackNetwork = { fetch: vi.fn(async () => new Response(null, { status: 404 })), json: vi.fn(), githubCandidates: url => [url] };
   const importArchive = vi.fn(async () => ({ id: 'imported' }));
   const exportArchive = async (_packId: string, file: string, signal: AbortSignal) => writeSealedArchive(source, file, {
     format: 'worldlinebox-dshpack-v2', name: 'Fixture pack', version: '1.0.0', createdAt: '2026-10-12T00:00:00Z',
