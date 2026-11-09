@@ -135,6 +135,23 @@ export class BotTopics {
     const row=this.store.taskTransaction(sql=>sql.prepare('SELECT topic_id FROM bot_topic_events WHERE event_id=?').get(event.id)) as {topic_id:string}|undefined;
     if(row)this.readTopic(row.topic_id,event.conversationId);
   }
+  /** VCP can discover a committed withdrawal only after restart. A fresh user
+   * event may then have inherited a now-stale topic before its first dispatch.
+   * Move only that unprepared event; old events retain their original binding
+   * so cancellation and effect reconciliation never target the replacement. */
+  refreshBeforeDispatch(event:BotEvent):void{
+    this.store.taskTransaction(sql=>{
+      const live=this.store.getEvent(event.id),room=this.store.getConversation(event.conversationId);
+      if(event.source!=='user'||live?.status!=='running'||live.dshEventId||room?.revision!==event.aclRevision||this.store.getMetadata('native-memory-prepared:'+event.id))return;
+      const stale=sql.prepare(`SELECT 1 FROM bot_topic_events e JOIN bot_topic_bindings b ON b.topic_id=e.topic_id
+        JOIN bot_lanes l ON l.conversation_id=b.conversation_id AND l.companion_id=b.companion_id
+        WHERE e.event_id=? AND b.lane_epoch<>l.epoch LIMIT 1`).get(event.id);
+      if(!stale)return;
+      const selected=this.create(event.conversationId,'withdrawal:'+event.sourceMessageRecordId,event.content);
+      sql.prepare('DELETE FROM bot_topic_events WHERE event_id=?').run(event.id);
+      this.bind([event],selected);
+    });
+  }
   topicEvent(id: string, conversationId: string, companionId: string): BotEvent {
     this.get(id,conversationId);
     const row = this.store.taskTransaction(sql => sql.prepare(`SELECT i.id FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=? AND i.companion_id=? AND i.dsh_event_id IS NOT NULL ORDER BY i.sequence DESC LIMIT 1`).get(id,companionId)) as { id:string } | undefined;

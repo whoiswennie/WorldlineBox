@@ -1,6 +1,6 @@
 .bot-message-bubble{display:flex;flex-direction:column;gap:12px;min-width:0;max-width:100%;padding:13px 17px;border:1px solid color-mix(in srgb,var(--bot-accent,var(--ui-content-accent)) 12%,var(--bot-edge,var(--ui-border-subtle)));border-radius:5px 16px 16px 16px;background:var(--bot-message,var(--ui-surface-raised));box-shadow:0 2px 8px #41305c04;color:var(--bot-text,var(--ui-content-primary))}
 .from-user .bot-message-bubble{border-radius:17px 5px 17px 17px}
-.bot-workspace .bot-message-bubble>.bot-message-text,.bot-workspace.bot-atmosphere .bot-message-bubble>.bot-message-text,.bot-workspace.bot-atmosphere .bot-message-part>.bot-message-text{margin:0;padding:0;min-width:0;max-width:100%;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit}
+.bot-workspace .bot-message-bubble>.bot-message-text,.bot-workspace.bot-atmosphere .bot-message-bubble>.bot-message-text{margin:0;padding:0;min-width:0;max-width:100%;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit}
 .bot-message-bubble.has-file-summary{min-width:min(285px,100%)}
 .bot-message-single-file { width:360px;max-width:100%;min-width:0; }
 .bot-message-text+.bot-message-single-file { padding-top:4px; }
@@ -16,12 +16,7 @@
 .bot-message-bubble.is-inline-media-only{padding:0;border:0;background:transparent;box-shadow:none}
 .bot-message-bubble .bot-message-inline-stickers{display:flex;flex-wrap:wrap;gap:8px;min-width:0;max-width:100%;margin:0}.bot-message-bubble .bot-message-attachments{min-width:0;max-width:100%}
 .bot-workspace .bot-message-text .browser-markdown { color:inherit;font-size:inherit;line-height:1.85; }
-.bot-message-ordered>.bot-reply-part { margin:0;min-width:0; }
-.bot-message-ordered>.bot-reply-part:first-child { margin-top:0; }
-.bot-message-part { min-width:0;max-width:100%; }
-.bot-message-part .bot-message-text { margin-bottom:10px; }
-.bot-message-part .bot-message-text:last-child { margin-bottom:0; }
-.bot-message-part .bot-message-attachments { max-width:100%; }
+.bot-message-progress { min-width:0;max-width:100%;margin-bottom:8px; }
 .bot-message-ordered>.bot-reply-draft { margin-top:12px; }
 .bot-workspace .bot-message-text .browser-markdown p { margin:.7em 0; }
 .bot-workspace .bot-message-text .browser-markdown>:first-child { margin-top:0; }

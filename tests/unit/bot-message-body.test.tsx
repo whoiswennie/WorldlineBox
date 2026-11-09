@@ -22,7 +22,7 @@ async function click(label: string) {
   const target = [...document.querySelectorAll<HTMLButtonElement>('button')].find(button => button.getAttribute('aria-label') === label || button.textContent?.trim() === label);
   expect(target, label).toBeDefined(); await act(async () => { target!.click(); await Promise.resolve(); });
 }
-it('renders native text, sticker, delivery and final text once in their source order inside one bubble',async()=>{
+it('shows only the final body, sticker group and attachments after native completion',async()=>{
   await render({...message,attachments:[sticker,textFile],content:'全部答复',execution:{status:'succeeded',steps:[]},parts:[
     {id:'last',kind:'text',sequence:40,text:'交付完毕'},
     {id:'first',kind:'text',sequence:10,text:'最早的关键结论'},
@@ -30,13 +30,17 @@ it('renders native text, sticker, delivery and final text once in their source o
     {id:'files',kind:'media',sequence:30,attachments:[textFile]},
   ]});
   expect(host.querySelectorAll('.bot-message-bubble')).toHaveLength(1);
-  const pieces=[...host.querySelectorAll('[data-reply-kind]')];expect(pieces.map(piece=>piece.getAttribute('data-native-order'))).toEqual(['10','20','30','40']);
-  expect(pieces[0]?.textContent).toContain('最早的关键结论');expect(pieces[1]?.querySelector('img')).not.toBeNull();expect(pieces[2]?.textContent).toContain(textFile.name);expect(pieces[3]?.textContent).toContain('交付完毕');
-  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('false');
+  expect(host.querySelectorAll('.bot-message-text')).toHaveLength(1);expect(host.querySelector('.bot-message-text')?.textContent).toBe('交付完毕');
+  expect(host.textContent).not.toContain('最早的关键结论');expect(host.textContent).not.toContain('给你一个表情');expect(host.querySelector('.is-sticker img')).not.toBeNull();expect(host.textContent).toContain(textFile.name);
+  expect(host.querySelector('.bot-execution,.bot-message-progress')).toBeNull();
 });
-it('does not repeat a committed caption as a final echo or live draft',async()=>{
-  await render({...message,status:'running',attachments:[sticker],parts:[{id:'sticker',kind:'media',sequence:10,text:'收到',attachments:[sticker]},{id:'echo',kind:'text',sequence:20,text:'收到'}]},'收到');
-  expect(host.querySelectorAll('.bot-message-text')).toHaveLength(1);expect(host.querySelector('.bot-reply-draft')).toBeNull();expect(host.querySelectorAll('img')).toHaveLength(1);
+it('streams only the current body without repeating earlier committed bodies or sticker captions',async()=>{
+  await render({...message,status:'running',attachments:[sticker],parts:[{id:'sticker',kind:'media',sequence:10,text:'收到',attachments:[sticker]},{id:'echo',kind:'text',sequence:20,text:'收到'}]},'正在输出正文');
+  expect(host.querySelectorAll('.bot-message-text')).toHaveLength(1);expect(host.querySelector('.bot-message-text')?.textContent).toBe('正在输出正文');expect(host.textContent).not.toContain('收到');expect(host.querySelectorAll('img')).toHaveLength(1);
+});
+it('groups multiple native stickers and files without repeating captions or merging an earlier answer into the final body',async()=>{
+  await render({...message,content:'不应回显的汇总',attachments:[sticker,textFile],parts:[{id:'early',kind:'text',sequence:1,text:'中途答复'},{id:'s1',kind:'media',sequence:2,text:'表情台词一',attachments:[sticker]},{id:'s2',kind:'media',sequence:3,text:'表情台词二',attachments:[sticker]},{id:'f',kind:'media',sequence:4,attachments:[textFile]},{id:'final',kind:'text',sequence:5,text:'最终正文'}]});
+  expect(host.querySelectorAll('.bot-message-inline-stickers')).toHaveLength(1);expect(host.querySelectorAll('.is-sticker img')).toHaveLength(2);expect(host.querySelectorAll('.bot-attachment-card')).toHaveLength(1);expect(host.querySelector('.bot-message-text')?.textContent).toBe('最终正文');expect(host.textContent).not.toContain('表情台词');expect(host.textContent).not.toContain('中途答复');
 });
 it('renders an intentional sticker-only duel without an empty answer or an execution toolbar',async()=>{
   await render({...message,content:'',attachments:[sticker],execution:{status:'succeeded',steps:[]},parts:[{id:'only-sticker',kind:'media',sequence:10,attachments:[sticker]}]});
@@ -83,7 +87,7 @@ it('uses only a safe thumbnail for a single photo and keeps photo collections an
   await render({ ...message, id: 'large', content: '', attachments: [{ ...image, size: 200 * 1024 * 1024 + 1, storage: 'external', analysisBlocked: true }] });
   expect(host.querySelector('.bot-message-file-toggle')).toBeNull(); expect(host.querySelector('img')).toBeNull(); expect(request).not.toHaveBeenCalled();
 });
-it('preserves literal user text, actual assistant Markdown, live text and terminal status without inventing a blank reply', async () => {
+it('preserves user text, assistant Markdown and current streamed body without inventing a blank reply', async () => {
   await render({ ...message, senderId: 'user', content: '**原样用户文字**', attachments: [] }); expect(host.querySelector('.bot-message-text')?.textContent).toBe('**原样用户文字**'); expect(host.querySelector('.bot-message-text strong')).toBeNull();
   await render({ ...message, content: '**伙伴正文**', attachments: [] }); expect(host.querySelector('.bot-message-text strong')?.textContent).toBe('伙伴正文');
   await render({ ...message, content: '', status: 'running' }, '**实际流式文字**'); expect(host.querySelector('.bot-message-text strong')?.textContent).toBe('实际流式文字');

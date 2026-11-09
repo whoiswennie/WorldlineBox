@@ -618,11 +618,12 @@ export class BotService {
     try {
       this.topics.started(event);nativeLaneId=this.topics.lane(event);
       await this.ensureConversationBindings(event.conversationId); signal.throwIfAborted();
-      this.store.bindEventNativeEpoch(event.id, this.store.getLane(event.laneId)!.epoch);
       if (event.payload.groupAttention === true) this.store.promoteGroupReply(event.id, claim.leaseToken);
       await mkdir(cwd, { recursive: true });
       progress({ phase: 'recalling-memory' });
       await this.loadTombstones(scopeFor(event), event.id);
+      this.topics.refreshBeforeDispatch(event);nativeLaneId=this.topics.lane(event);
+      this.store.bindEventNativeEpoch(event.id, this.store.getLane(event.laneId)!.epoch);
       this.topics.assertCurrent(event);
       // Freeze VCP's source input independently of the chat's later publications.
       // A crash between VCP preparation and the marker can safely re-prepare the

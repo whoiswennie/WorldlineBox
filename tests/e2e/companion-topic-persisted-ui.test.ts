@@ -23,8 +23,7 @@ test('renders compact progress and reconnectable topic links from the actual col
     const other=topics.find(topic=>topic.id!==report.originalTopic.id);expect(other).toBeDefined();expect((await request({type:'topic.select',conversationId:room.id,topicId:other!.id})).ok).toBe(true);
     await expect(page.locator('.bot-message-topic').first()).toBeVisible();
     await page.locator('.bot-message-topic').filter({hasText:report.originalTopic.title}).first().click();await expect(page.locator('.bot-topic-current')).toContainText(report.originalTopic.title);
-    const bubbles=page.locator('.bot-execution-toggle');expect(await bubbles.count()).toBeGreaterThan(5);
-    for(const bubble of await bubbles.all())await expect(bubble).toHaveAttribute('aria-expanded','false');
+    await expect(page.locator('.bot-execution-toggle')).toHaveCount(0);
     const capture=async(name:string)=>{await mkdir(evidence,{recursive:true});const file=path.join(evidence,name+'.png');await page.screenshot({path:file,fullPage:true});await testInfo.attach(name,{path:file,contentType:'image/png'});};
     await page.locator('[data-bot-message]').last().scrollIntoViewIfNeeded();await capture('topic-links-latest-ui');
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(1200,850));

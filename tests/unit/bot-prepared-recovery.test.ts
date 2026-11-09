@@ -92,14 +92,14 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
     await waitFor(() => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
     const third = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
     expect(JSON.parse(third.prompt)).not.toHaveProperty('history');
-    expect(third.laneId).not.toBe(attempts[0]!.laneId);
+    expect(third.laneId).toBe(attempts[0]!.laneId);
     expect(memory.inputs.find(input => input.requestId === third.eventId)!.messages.filter(message => message.id === late.id)).toEqual([expect.objectContaining({ content: late.content })]);
     await waitFor(() => service.store.getEvent(third.eventId)?.status === 'done');
     await service.handle({ type: 'message.send', conversationId, content: 'fourth', requestId: 'fourth' });
     await waitFor(() => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
     const fourth = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
     expect(JSON.parse(fourth.prompt)).not.toHaveProperty('history');
-    expect(fourth.laneId).not.toBe(third.laneId);
+    expect(fourth.laneId).toBe(third.laneId);
     expect(unexpected).toEqual([]);
   } catch (error) { throw new Error(`${String(error)}\n${logs.join('').slice(-8000)}`, { cause: error }); }
   finally {

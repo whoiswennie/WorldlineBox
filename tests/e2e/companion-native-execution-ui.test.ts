@@ -58,7 +58,7 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     };
     await seed(running, '', 'running'); await page.reload(); await open();
     const bubble = page.locator('[data-bot-message="native-ui-reply"]');
-    expect(await bubble.locator('.bot-message-bubble').evaluate(element=>element.clientWidth)).toBeGreaterThanOrEqual(378);
+    await expect(bubble.locator('.bot-message-bubble .bot-execution')).toHaveCount(0);
     await expect(bubble.locator('.bot-execution-toggle')).toHaveAttribute('aria-expanded', 'false');
     await expect(bubble.locator('.bot-execution-contents')).toBeHidden();
     await capture('native-chat-running-compact.png');
@@ -73,17 +73,11 @@ test('native execution bubbles preserve chat, group and peer UI with a single in
     await capture('native-chat-running.png');
     await seed({ ...running, status: 'succeeded' }, '**资料已经整理好了。**\n\n伙伴工作区中保留本次结果。', 'sent');
     await page.reload(); await open();
-    await expect(bubble.locator('.bot-execution-toggle')).toHaveAttribute('aria-expanded', 'false');
-    await expect(bubble.locator('.bot-execution-contents')).toBeHidden();
+    await expect(bubble.locator('.bot-execution-toggle')).toHaveCount(0);
     await expect(bubble.locator('.bot-message-text strong')).toHaveText('资料已经整理好了。');
     await capture('native-chat-completed.png');
-    await bubble.locator('.bot-execution-toggle').click(); await expect(bubble.locator('.bot-execution-contents')).toBeVisible();
-    await bubble.locator('.bot-execution-round>summary').click();
-    await bubble.locator('.bot-execution-reasoning summary').click();
-    await bubble.locator('.bot-execution-tool summary').click(); await expect(bubble.locator('.bot-execution-tool pre')).toContainText('读取：项目说明.md');
-    await capture('native-chat-details.png');
     await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(1200,850));
-    expect(await bubble.locator('.bot-execution').evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
+    expect(await bubble.locator('.bot-message-bubble').evaluate(element=>element.scrollWidth<=element.clientWidth+1)).toBe(true);
     await capture('native-process-narrow.png');
     await application.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0]!.setSize(1760,1000));
     await page.getByRole('button', { name: '收起聊天信息', exact: true }).click();

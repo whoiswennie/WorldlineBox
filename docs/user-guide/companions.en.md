@@ -20,7 +20,7 @@ The topic picker initially shows six recent topics, with pinned topics first and
 
 While work is running, new input appears in the queue above the composer. It normally starts a new topic after the task finishes, or continues another explicitly selected topic. **Steer** delivers the queued message and verified attachments to the current native task at its next input boundary. Unknown deliveries retain their stable receipt; they are never silently replayed as new work. Confirmed non-admission restores the queue.
 
-Execution bubbles start with one compact status row. Steps, thoughts and tool details expand only on request; completion collapses progress. Committed answers, stickers and native file deliveries remain visible in their original order inside one reply, including important answers given before the final step. Standalone sticker exchanges remain supported. Uploads reach DSH as verified absolute paths. Native `present` deliveries become real chat attachments for preview and saving. Stopping work does not undo completed external effects.
+While work runs, necessary progress, question and continuation controls appear outside the reply bubble. A completed bubble contains only the last committed body, a sticker group and attachments. Intermediate bodies, sticker captions and completed execution counters are hidden. Standalone sticker exchanges remain supported. Uploads reach DSH as verified absolute paths. Native `present` deliveries become real chat attachments for preview and saving. Stopping work does not undo completed external effects.
 
 ## Memory
 

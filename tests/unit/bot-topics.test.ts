@@ -21,6 +21,29 @@ it('rejects cross-room topics and contexts invalidated by memory withdrawal or A
   expect(()=>f.topics.select(room.id,selected.id)).toThrow();
   store.rotateDomain(f.companion.id,f.room.securityDomainId);expect(()=>f.topics.select(f.room.id,selected.id)).toThrow('上下文');expect(f.topics.current(f.room.id)).toBeUndefined();
 });
+it('moves only an undispatched event into a clean topic after a recovered VCP withdrawal',()=>{
+  const f=fixture(),selected=f.topics.create(f.room.id,'old'),first=f.send('旧任务');f.topics.bind(first.events,selected);
+  const old=store.claim({workerId:'old'})!;store.bindEventNativeEpoch(old.event.id,1);store.markDispatched(old.event.id,old.leaseToken,old.event.id);store.settle({eventId:old.event.id,leaseToken:old.leaseToken,status:'done',content:'旧答复'});
+  const second=f.send('重启后的新消息');f.topics.bind(second.events,selected);const next=store.claim({workerId:'next'})!,oldLane=f.topics.lane(old.event);
+  store.rotateDomain(f.companion.id,f.room.securityDomainId);f.topics.refreshBeforeDispatch(next.event);
+  expect(f.topics.lane(next.event)).not.toBe(oldLane);expect(f.topics.lane(old.event)).toBe(oldLane);expect(f.topics.reference(old.event.id)?.id).toBe(selected.id);
+  expect(()=>f.topics.assertCurrent(next.event)).not.toThrow();expect(()=>f.topics.get(selected.id,f.room.id)).toThrow('上下文');
+  expect(store.bindEventNativeEpoch(next.event.id,2)).toBe(2);
+});
+it('never redirects an already dispatched event after its native epoch is withdrawn',()=>{
+  const f=fixture(),selected=f.topics.create(f.room.id,'old'),sent=f.send('已投递');f.topics.bind(sent.events,selected);const claim=store.claim({workerId:'one'})!;
+  store.bindEventNativeEpoch(claim.event.id,1);store.markDispatched(claim.event.id,claim.leaseToken,claim.event.id);const lane=f.topics.lane(claim.event);
+  store.rotateDomain(f.companion.id,f.room.securityDomainId);f.topics.refreshBeforeDispatch(claim.event);
+  expect(f.topics.lane(claim.event)).toBe(lane);expect(()=>f.topics.assertCurrent(claim.event)).toThrow('上下文');
+});
+it('keeps fresh group events from one user message in the same replacement topic',()=>{
+  const f=fixture(),second=store.createCompanion({name:'第二位',persona:'第二位'}),room=store.createGroup({title:'协同',memberIds:[f.companion.id,second.id],participationMode:'all'}),selected=f.topics.create(room.id,'old');
+  const source=store.enqueue({conversationId:room.id,senderId:'user',content:'同一条新请求',sourceMessageId:'shared'});f.topics.bind(source.events,selected);
+  const a=store.claim({workerId:'a'})!,b=store.claim({workerId:'b'})!;store.rotateDomain(a.event.companionId,room.securityDomainId);
+  f.topics.refreshBeforeDispatch(a.event);f.topics.refreshBeforeDispatch(b.event);
+  expect(f.topics.reference(a.event.id)?.id).toBe(f.topics.reference(b.event.id)?.id);expect(f.topics.reference(a.event.id)?.id).not.toBe(selected.id);
+  expect(()=>f.topics.assertCurrent(a.event)).not.toThrow();expect(()=>f.topics.assertCurrent(b.event)).not.toThrow();
+});
 it('reserves a queued message atomically for native steering and restores it only after confirmed non-admission',()=>{
   const f=fixture();f.send('执行中的任务');const claim=store.claim({workerId:'one'})!;const queued=f.send('用户补充');
   expect(f.topics.runtime(f.room.id).queued).toHaveLength(1);

@@ -26,14 +26,13 @@ it('bounds a thousand-member automatic group before starting any brain or memory
   expect(context.room.members.includes(actor.id)).toBe(true);
   expect(context.companionDirectory.length).toBeLessThanOrEqual(64);
 });
-it('serializes group replies and retains previous replies for explicit history lookup', () => {
+it('allows distinct native group lanes to run concurrently and retains replies for explicit history lookup', () => {
   const { store, room } = fixture(2);
   const source = store.enqueue({ conversationId: room.id, senderId: 'user', sourceMessageId: 'each', content: '你们一人一篇作文' });
   expect(source.events.every(event => !event.payload.groupAttention)).toBe(true);
   const first = store.claim({ workerId: 'first' })!;
-  expect(store.claim({ workerId: 'second' })).toBeUndefined();
+  const second = store.claim({ workerId: 'second' })!;expect(second.event.companionId).not.toBe(first.event.companionId);
   store.settle({ eventId: first.event.id, leaseToken: first.leaseToken, status: 'done', content: '第一位已经交付的作文' });
-  const second = store.claim({ workerId: 'second' })!;
   const context = buildNativeBotContext({ companion: store.getCompanion(second.event.companionId)!, conversation: room, event: second.event,
     companions: store.listCompanions(), memories: '', files: [] });
   expect(context.prompt).not.toContain('第一位已经交付的作文');

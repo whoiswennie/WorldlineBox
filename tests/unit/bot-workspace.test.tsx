@@ -549,7 +549,7 @@ it('changes only the originating group policy and ignores its late completion af
 });
 
 
-it('keeps only the far-right information sidebar control and projects a native run in its own bubble', async () => {
+it('keeps the far-right sidebar control and removes live controls once the final body is available', async () => {
   snapshots.a!.messages[0] = { ...snapshots.a!.messages[0]!, content: '', execution: { sessionId: 'new-session', status: 'running', steps: [{ id: '1', type: 'tool_call', summary: '正在查询', toolName: 'search', at }] } };
   await mount();
   expect(host.querySelector('.bot-chat-header .bot-context-toggle,.bot-chat-tasks')).toBeNull();
@@ -561,7 +561,7 @@ it('keeps only the far-right information sidebar control and projects a native r
   await act(() => host.querySelector<HTMLButtonElement>('[aria-label="展开聊天信息"]')!.click());
   expect(host.querySelector('.bot-chat-context')).not.toBeNull();
   snapshots.a!.messages[0] = { ...snapshots.a!.messages[0]!, status: 'sent', content: '查询完成。', execution: { ...snapshots.a!.messages[0]!.execution!, status: 'succeeded' } }; await changed();
-  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('false');
+  expect(host.querySelector('.bot-execution-toggle,.bot-message-progress')).toBeNull();
   expect(host.querySelector('.bot-message-text')?.textContent).toBe('查询完成。');
 });
 

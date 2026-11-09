@@ -1,8 +1,12 @@
 import {expect,it,afterEach} from 'vitest';
 import {BotStore} from '../../src/main/companion-bot/store';
-import {botReplyDisplayParts} from '../../src/shared/companion-bot-reply';
+import {botReplyDisplayParts,botReplyPresentation} from '../../src/shared/companion-bot-reply';
 import type {BotMediaRef} from '../../src/shared/companion-bot-media';
 let store:BotStore;afterEach(()=>store?.close());
+it('projects the final committed body and media without changing the stored source or exposing tool captions',()=>{
+  const parts=[{id:'last',kind:'text' as const,sequence:30,text:'最终正文'},{id:'early',kind:'text' as const,sequence:10,text:'过程正文'},{id:'caption',kind:'media' as const,sequence:20,text:'表情台词'}];
+  expect(botReplyPresentation(parts).content).toBe('最终正文');expect(parts[1]!.text).toBe('过程正文');expect(botReplyPresentation([parts[2]!]).content).toBe('');
+});
 it('keeps an early substantive answer, media and the last response in native order despite asynchronous arrival',()=>{
   const parts=botReplyDisplayParts([{id:'last',kind:'text',sequence:30,text:'处理结束'},{id:'answer',kind:'text',sequence:10,text:'关键结论已经在这里'},{id:'sticker',kind:'media',sequence:20,text:'给你一张表情'}]);
   expect(parts.map(part=>part.text)).toEqual(['关键结论已经在这里','给你一张表情','处理结束']);

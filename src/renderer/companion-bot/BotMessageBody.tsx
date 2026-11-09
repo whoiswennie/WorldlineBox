@@ -9,14 +9,21 @@ import { formatBotFileSize } from './media-presentation';
 import './bot-message-body.css';
 import { BotVoiceMessage } from './BotVoiceMessage';
 import { BotExecutionDetails, type BotExecutionAnswer, type BotExecutionContinue } from './BotExecutionDetails';
-import {botReplyDisplayParts} from '../../shared/companion-bot-reply';
+import {botReplyPresentation} from '../../shared/companion-bot-reply';
 
 const ignoreLink = () => undefined;
-interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue;embedded?:boolean }
+interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }
 export function BotMessageBody(props: Props) {
-  return <MessageBody key={`${props.message.conversationId}:${props.message.id}`} {...props} />;
+  const original=props.message,pending=['queued','running'].includes(original.status),assistant=original.senderId!=='user';
+  const presentation=assistant&&original.parts?.length?botReplyPresentation(original.parts,original.attachments):undefined;
+  const message={...original,execution:undefined,parts:undefined,...presentation};
+  const execution=original.execution;
+  return <>
+    {execution&&(pending||!!execution.continuation)&&<div className="bot-message-progress"><BotExecutionDetails execution={execution} locale={props.locale} onAnswer={props.onAnswer} onContinue={props.onContinue}/></div>}
+    <MessageBody key={`${message.conversationId}:${message.id}`} {...props} message={message}/>
+  </>;
 }
-function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOpenUrl = ignoreLink, onAnswer, onContinue,embedded=false }: Props) {
+function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOpenUrl = ignoreLink }: Props) {
   const zh = locale === 'zh-CN', pending = ['queued', 'running'].includes(message.status), [expanded, setExpanded] = useState(false), id = useId(), contents = useRef<HTMLDivElement>(null);
   const hasText = !!message.content || !!streamedText || ['failed', 'cancelled'].includes(message.status);
   const text = (pending && streamedText) || message.content || statusText;
@@ -32,24 +39,10 @@ function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOp
     const target = bubble && transcript && bubble.getBoundingClientRect().height <= transcript.clientHeight ? bubble : contents.current;
     target.scrollIntoView?.({ block: 'nearest' });
   }, [expanded]);
-  const parts=botReplyDisplayParts(message.parts??[]);
-  if(parts.length){
-    const covered=new Set(parts.flatMap(part=>part.attachments?.map(file=>file.id)??[])),remaining=attachments.filter(file=>!covered.has(file.id));
-    const draft=pending&&streamedText&&!parts.some(part=>part.text===streamedText)?streamedText:undefined;
-    const stickerOnly=!pending&&parts.every(part=>part.kind==='media'&&!part.text&&part.attachments?.every(file=>file.kind==='sticker'));
-    return <div className={`bot-message-bubble bot-message-ordered${stickerOnly?' is-inline-media-only':''}`}>
-      {message.execution&&!stickerOnly&&<BotExecutionDetails execution={message.execution} locale={locale} onAnswer={onAnswer} onContinue={onContinue}/>}
-      {parts.map(part=><section className="bot-reply-part" key={part.id} data-reply-kind={part.kind} data-native-order={part.sequence}>
-        <MessageBody embedded message={{...message,id:message.id+':'+part.id,status:'sent',parts:undefined,execution:undefined,content:part.text??'',attachments:part.attachments??[]}} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} statusText=""/>
-      </section>)}
-      {!!remaining.length&&<MessageBody embedded message={{...message,parts:undefined,execution:undefined,status:'sent',content:'',attachments:remaining}} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} statusText=""/>}
-      {draft&&<div className="bot-message-text bot-reply-draft"><BrowserMarkdown text={draft} pending open={onOpenUrl} linkAppearance="chat" locale={locale}/></div>}
-    </div>;
-  }
-  if (!hasText && !attachments.length && !message.execution) return null;
-  return <div className={`${embedded?'bot-message-part':'bot-message-bubble'}${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !files.length && !message.execution ? ' is-inline-media-only' : ''}${!hasText && files.length === 1 && !stickers.length && !message.execution ? ' is-single-file-only' : ''}`}>
-    {message.execution && <BotExecutionDetails execution={message.execution} locale={locale} onAnswer={onAnswer} onContinue={onContinue} />}
+  if (!hasText && !attachments.length) return null;
+  return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !files.length ? ' is-inline-media-only' : ''}${!hasText && files.length === 1 && !stickers.length ? ' is-single-file-only' : ''}`}>
     {hasText && <div className="bot-message-text">{message.senderId === 'user' ? message.content || statusText : <BrowserMarkdown text={text} pending={pending} open={onOpenUrl} linkAppearance="chat" locale={locale} />}</div>}
+    {!!stickers.length && <div className="bot-message-attachments bot-message-inline-stickers">{stickers.map((media,index) => <BotAttachment key={media.id+':'+index} media={media} {...common} />)}</div>}
     {voices.map(media => <BotVoiceMessage key={media.id} media={media} conversationId={message.conversationId} locale={locale} />)}
     {files.length === 1 && <div className="bot-message-single-file"><BotAttachment media={files[0]!} {...common} /></div>}
     {collapsible && <div className="bot-message-file-section">
@@ -60,6 +53,5 @@ function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOp
       </button>
       <div className="bot-message-attachments bot-message-expanded-files" id={id} ref={contents} hidden={!expanded}>{expanded && <BotAttachmentBundle media={files} {...common} />}</div>
     </div>}
-    {!!stickers.length && <div className="bot-message-attachments bot-message-inline-stickers">{stickers.map(media => <BotAttachment key={media.id} media={media} {...common} />)}</div>}
   </div>;
 }

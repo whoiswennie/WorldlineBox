@@ -15,23 +15,18 @@ async function render(item: BotMessage, answer = vi.fn(async () => ({ ok: true }
   await act(() => root!.render(<BotMessageBody message={item} streamedText="流式正文" statusText="正在回复" locale="zh-CN" onAnswer={answer} onContinue={proceed} />));
   return answer;
 }
-it('shows native live stages inside a pending bubble and collapses automatically on completion while preserving the final body', async () => {
+it('keeps necessary live controls outside the bubble and removes completed execution chrome', async () => {
   await render({ ...message, execution });
-  expect(host.querySelector('.bot-message-bubble')?.classList.contains('is-inline-media-only')).toBe(false);
-  let toggle = host.querySelector<HTMLButtonElement>('.bot-execution-toggle')!;
+  expect(host.querySelector('.bot-message-bubble .bot-execution')).toBeNull();
+  const toggle = host.querySelector<HTMLButtonElement>('.bot-message-progress .bot-execution-toggle')!;
   expect(toggle.getAttribute('aria-expanded')).toBe('false');
   expect(toggle.textContent).toContain('正在读取资料');
   expect(host.querySelector('.bot-execution-contents')?.textContent).toContain('read_file');
   expect(host.querySelector('.bot-message-text')?.textContent).toBe('流式正文');
   await render({ ...message, status: 'sent', content: '**最终答复**', execution: { ...execution, status: 'succeeded' } });
-  toggle = host.querySelector<HTMLButtonElement>('.bot-execution-toggle')!;
-  expect(toggle.getAttribute('aria-expanded')).toBe('false');
-  expect(host.querySelector<HTMLElement>('.bot-execution-contents')?.hidden).toBe(true);
+  expect(host.querySelector('.bot-execution,.bot-message-progress')).toBeNull();
   expect(host.querySelector('.bot-message-text strong')?.textContent).toBe('最终答复');
   expect(host.querySelector('.bot-message-text')?.textContent).not.toContain('流式正文');
-  await act(() => toggle.click());
-  expect(host.querySelector<HTMLElement>('.bot-execution-contents')?.hidden).toBe(false);
-  expect(host.querySelector('.bot-execution-contents')?.textContent).toContain('原始工具调用内容');
 });
 it('offers explicit native continuation and retries the same command without duplicating an accepted continuation',async()=>{
   let ok=false;const proceed=vi.fn(async()=>({ok,error:ok?undefined:'暂时断开'}));

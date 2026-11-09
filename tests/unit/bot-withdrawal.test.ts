@@ -187,20 +187,21 @@ it('restores a committed VCP revision after a crash before host rotation, includ
   const { service, brain, memory, scope, reopen } = await fixture();
   const source = await send(service, scope.conversationId, '你好', 'first');
   await waitFor(() => service.store.getEvent(source.event!.id)?.status === 'done');
-  expect(brain.calls[0]!.laneId).toBe(`turn-${source.event!.id}`);
+  expect(brain.calls[0]!.laneId).toMatch(/^topic-/);
   await service.shutdown();
   // The VCP commit is authoritative even if the host never received its receipt.
   memory.withdrawals.set(memory.domain(scope), { revision: '7', sourceEventIds: [], sourceMessageIds: [] });
   const nextBrain = new BrainBoundary(), restarted = reopen(nextBrain);
+  const restartedRuns=()=>nextBrain.calls.filter(call=>!call.laneId.startsWith('memory-'));
   await send(restarted, scope.conversationId, '你好', 'after-crash');
-  await waitFor(() => nextBrain.calls.length === 1);
-  expect(nextBrain.calls[0]!.laneId).toBe(`turn-${nextBrain.calls[0]!.eventId}`);
-  expect(nextBrain.calls[0]!.laneId).not.toBe(brain.calls[0]!.laneId);
+  await waitFor(() => restartedRuns().length === 1);
+  expect(restartedRuns()[0]!.laneId).toMatch(/^topic-/);
+  expect(restartedRuns()[0]!.laneId).not.toBe(brain.calls[0]!.laneId);
   expect(restarted.store.getLane(source.event!.laneId)!.epoch).toBe(2);
-  await waitFor(() => restarted.store.getEvent(nextBrain.calls[0]!.eventId)?.status === 'done');
+  await waitFor(() => restarted.store.getEvent(restartedRuns()[0]!.eventId)?.status === 'done');
   await send(restarted, scope.conversationId, '你好', 'same-revision');
-  await waitFor(() => nextBrain.calls.length === 2);
-  expect(nextBrain.calls[1]!.laneId).not.toBe(nextBrain.calls[0]!.laneId);
+  await waitFor(() => restartedRuns().length === 2);
+  expect(restartedRuns()[1]!.laneId).toBe(restartedRuns()[0]!.laneId);
 });
 
 it('checks duplicate tool fingerprints while the original effect is still pending', async () => {
@@ -237,7 +238,7 @@ it('cancels an unknown native turn after source withdrawal and never replays it 
   f.memory.deletions.set('unknown-note', { revision: '1', sourceEventIds: [source.event.id], sourceMessageIds: [source.message.id] });
   await f.service.handle({ type: 'memory.forget', ...f.scope, id: 'unknown-note' });
   await waitFor(() => brain.stops.some(input => input.eventId === source.event.id));
-  expect(brain.stops.find(input => input.eventId === source.event.id)!.laneId).toBe(`turn-${source.event.id}`);
+  expect(brain.stops.find(input => input.eventId === source.event.id)!.laneId).toBe(brain.calls[0]!.laneId);
   expect(f.service.store.getEvent(source.event.id)?.status).toBe('cancelled');
   await f.service.shutdown();
   const next = new BrainBoundary(), restarted = f.reopen(next);

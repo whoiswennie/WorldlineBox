@@ -41,11 +41,11 @@ test('real ordered replies, standalone stickers and scalable topic management su
     const answer=await reply(before);mainSession=answer.execution!.sessionId!;report.mainSession=mainSession;
     const parts=answer.parts??[];expect(parts.some(part=>part.text?.includes(marker))).toBe(true);expect(parts.some(part=>part.attachments?.some(media=>media.kind==='sticker'))).toBe(true);expect(parts.some(part=>part.attachments?.some(media=>media.name===path.basename(file)))).toBe(true);
     const order=parts.map(part=>part.sequence);expect(order).toEqual([...order].sort((a,b)=>a-b));expect((await readFile(file,'utf8')).trim()).toBe(marker);
-    const bubble=page.locator(`[data-bot-message="${answer.id}"]`);await bubble.scrollIntoViewIfNeeded();await expect(bubble.locator('.bot-execution-toggle')).toHaveAttribute('aria-expanded','false');
-    const rendered=await bubble.locator('[data-reply-kind]').evaluateAll(elements=>elements.map(element=>({kind:element.getAttribute('data-reply-kind'),sequence:Number(element.getAttribute('data-native-order')),text:element.textContent})));
-    expect(rendered.map(part=>part.sequence)).toEqual(order);expect(rendered[0]!.text).toContain(marker);
+    const bubble=page.locator(`[data-bot-message="${answer.id}"]`);await bubble.scrollIntoViewIfNeeded();await expect(bubble.locator('.bot-execution,.bot-message-progress')).toHaveCount(0);
+    await expect(bubble.locator('.bot-message-text')).toHaveCount(1);await expect(bubble.locator('.bot-message-text')).toHaveText('交付完毕');
+    await expect(bubble).not.toContainText('给你一个表情');await expect(bubble).not.toContainText('关键结论');await expect(bubble.locator('.bot-message-inline-stickers')).toHaveCount(1);await expect(bubble.locator('.bot-attachment-card')).toHaveCount(1);
     const current=(await state()).snapshot!.messages.filter(message=>message.eventId===answer.eventId&&message.senderId!=='user');expect(current).toHaveLength(1);
-    report.orderedReply={singleBubble:true,parts:parts.map(part=>({kind:part.kind,sequence:part.sequence,text:part.text,files:part.attachments?.map(media=>media.name)})),sha256:createHash('sha256').update(await readFile(file)).digest('hex')};await capture('ordered-answer-sticker-delivery');
+    report.orderedReply={singleBubble:true,finalBodyOnly:true,mediaCaptionsHidden:true,completedExecutionChromeHidden:true,parts:parts.map(part=>({kind:part.kind,sequence:part.sequence,text:part.text,files:part.attachments?.map(media=>media.name)})),sha256:createHash('sha256').update(await readFile(file)).digest('hex')};await capture('final-answer-sticker-delivery');
     await stage('standalone-user-sticker-and-two-native-duel-replies');
     const sticker=parts.flatMap(part=>part.attachments??[]).find(media=>media.kind==='sticker')!;
     for(let round=0;round<2;round++){
