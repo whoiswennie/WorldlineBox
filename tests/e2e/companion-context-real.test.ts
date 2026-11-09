@@ -90,7 +90,7 @@ test('independent native topic meters survive rapid switching, follow-ups and na
     const opened=await page.evaluate(instanceId=>(Reflect.get(window,'worldlinebox') as {dshLauncher:WorldlineBoxDshLauncherApi}).dshLauncher.request({type:'instance.open',instanceId}),instance.id);expect(opened.ok).toBe(true);
     const native=await workbenchPromise,nativeWindow=await app.browserWindow(native);
     await nativeWindow.evaluate(win=>{win.setOpacity(0);win.setFocusable(false);win.webContents.setBackgroundThrottling(false);win.showInactive();});
-    await expect(native.getByText(topicA.title,{exact:true}).first()).toBeVisible({timeout:60000});
+    await expect(native.getByRole('tree',{name:'会话',exact:true})).toBeVisible({timeout:60000});
     // A fresh native browser partition can have DSH's own welcome/settings modal.
     // Dismiss it through its public controls before selecting the real Session.
     await capture('native-initial',native);await writeFile(path.join(evidence,'native-initial-ui.txt'),await native.locator('body').innerText());
@@ -98,6 +98,12 @@ test('independent native topic meters survive rapid switching, follow-ups and na
     if(await native.getByText('预览版说明',{exact:true}).isVisible())await native.getByRole('button',{name:'继续',exact:true}).click();
     const skip=native.getByRole('button',{name:/^(跳过|Skip)$/});
     if(await skip.first().isVisible()){await skip.first().click();const confirmation=native.getByRole('dialog').getByRole('button',{name:/^(跳过|Skip)$/});if(await confirmation.isVisible())await confirmation.click();}
+    if(!await native.getByText(topicA.title,{exact:true}).first().isVisible()){
+      const search=native.getByRole('textbox',{name:'搜索会话名称',exact:true});
+      if(!await search.isVisible())await native.getByRole('button',{name:'搜索会话',exact:true}).click();
+      await search.fill(topicA.title);
+    }
+    await expect(native.getByText(topicA.title,{exact:true}).first()).toBeVisible({timeout:60000});
     await native.getByText(topicA.title,{exact:true}).first().click();
     const nativeMeter=native.getByRole('button',{name:/上下文已用\s*\d+%|\d+% of context used/});await expect(nativeMeter).toBeVisible({timeout:60000});
     const expected=botContextOccupancy(afterCompact)!.percent;await expect(nativeMeter).toHaveAccessibleName(new RegExp(`(?:上下文已用\\s*${expected}%|${expected}% of context used)`));
