@@ -69,6 +69,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
     await service.handle({ type: 'message.send', conversationId, content: 'first', requestId: 'first' });
     await waitFor(() => brain.calls.filter(call => !call.laneId.startsWith('memory-encoder-')).length === 2
       && brain.calls.filter(call => !call.laneId.startsWith('memory-encoder-')).every(call => service.store.getEvent(call.eventId)?.status === 'done'));
+    const topicId=(await service.handle({type:'state',conversationId})).snapshot!.chatRuntime!.topic!.id;
     await service.handle({ type: 'message.send', conversationId, content: 'second', requestId: 'second' });
     await waitFor(() => secondAttempts === 1);
     await waitFor(() => brain.calls.some(call => JSON.parse(call.prompt).identity?.id === bobId && JSON.parse(call.prompt).message?.content === 'second'));
@@ -88,14 +89,14 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
       timestamp: Date.parse(late.createdAt), senderId: late.senderId, senderName: late.senderName }] })).rejects.toMatchObject({ code: 'MEMORY_CONFLICT' });
     retry.resolve(); await waitFor(() => service.store.getEvent(original.requestId)?.status === 'done');
     expect(service.store.getMessage(service.store.getEvent(original.requestId)!.replyMessageId)?.content).toBe('Alice第二轮已从原始输入恢复');
-    await service.handle({ type: 'message.send', conversationId, content: 'third', requestId: 'third' });
+    await service.handle({ type: 'message.send', conversationId, content: 'third', requestId: 'third',topicId });
     await waitFor(() => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
     const third = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
     expect(JSON.parse(third.prompt)).not.toHaveProperty('history');
     expect(third.laneId).toBe(attempts[0]!.laneId);
     expect(memory.inputs.find(input => input.requestId === third.eventId)!.messages.filter(message => message.id === late.id)).toEqual([expect.objectContaining({ content: late.content })]);
     await waitFor(() => service.store.getEvent(third.eventId)?.status === 'done');
-    await service.handle({ type: 'message.send', conversationId, content: 'fourth', requestId: 'fourth' });
+    await service.handle({ type: 'message.send', conversationId, content: 'fourth', requestId: 'fourth',topicId });
     await waitFor(() => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
     const fourth = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
     expect(JSON.parse(fourth.prompt)).not.toHaveProperty('history');
