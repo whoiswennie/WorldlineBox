@@ -119,3 +119,9 @@ WorldlineBox 保存联系人、人设、消息、媒体授权和 VCP 记忆，�
 显式 `chat_list_files` 继续提供受权限和撤回规则约束的分页查询。同一话题的历史由 DSH 原生 Session 保留；角色系统说明区分本次增量附件与完整聊天目录。VCP 主动召回仍保留，每轮证据默认最多 4096 字节，并非完整聊天重放；既有原生历史和已冻结请求不改写，避免破坏中断恢复和幂等回执。
 
 `bot-chat-media.test.ts` 覆盖连续上传 12 份文件、普通追问、话题切换、重启接续、旧资料查询、引导幂等及新伙伴接入时的资料和交付补齐；`bot-native-service.test.ts` 检查已有交付不会附加进追问。`bot-incremental-input-native.test.ts` 用隔离的真实 DSH Host、桥接插件、原生文件读取和会话历史验证多轮、跨话题接续和新伙伴加入，模型端点和 VCP 召回使用确定性测试替身；不借用用户凭证或修改用户会话。
+
+## 2026-11-10 召回核对与壁纸控件表面
+
+只读核对用户 14:26 的实际请求：当前消息 8 字符，files 为空，VCP 自动召回证据 4095 字节，没有整段 history/messages/transcript 字段；原生执行记录为 agent_conversations、memory_search、agent_conversations，符合先获取有界记忆证据、再主动查证历史的路径。router 是确定性消息投递，主脑是对应话题的原生 DSH Agent。同一原生会话仍会使用自身历史，不意味着每轮上下文恒定；跨话题通过记忆或有权限的会话工具检索。报告 `artifacts/wallpaper-control-surfaces/recall-audit.json` 仅含统计和工具名。
+
+启动器与网络模块在开启壁纸及面板透背景时，共用半透明的按钮、选中项和表单控件表面，颜色继续来自现有主题语义变量；主操作保留强调色，文字、键盘焦点和禁用状态独立于背景不透明度。关闭面板透背景或没有壁纸时沿用原实色表面。实例就绪状态的翻译从带点的平面键修正为目录可解析的嵌套键。`wallpaper-control-surfaces.test.ts` 在真实 Electron 渲染器中覆盖水墨浅/深色、未至之境、午夜加个人壁纸、实色面板与无壁纸，校验控件透明度、焦点、重命名弹窗和网络下拉菜单；仅实例状态使用 UI 测试数据，不启动或停止用户的实例。截图及结果在 `artifacts/wallpaper-control-surfaces/`。

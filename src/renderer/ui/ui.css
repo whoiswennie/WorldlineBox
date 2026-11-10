@@ -16,7 +16,7 @@
   padding: 0 var(--ui-space-3);
   border: 1px solid var(--ui-border-control);
   border-radius: var(--ui-radius-control);
-  background: var(--ui-surface-raised);
+  background: var(--ui-control-surface, var(--ui-surface-raised));
   color: var(--ui-content-primary);
   font: inherit;
   font-size: var(--ui-font-size-label);
@@ -39,7 +39,7 @@
 }
 
 .ui-button:hover:not(:disabled) {
-  background: var(--ui-surface-raised-subtle);
+  background: var(--ui-control-surface-hover, var(--ui-surface-raised-subtle));
   border-color: var(--ui-border-focus);
 }
 
@@ -61,13 +61,13 @@
 
 .ui-button--primary {
   border-color: transparent;
-  background: var(--ui-action-accent-pressed);
+  background: var(--ui-control-primary-surface, var(--ui-action-accent-pressed));
   color: var(--ui-content-on-accent);
 }
 
 .ui-button--primary:hover:not(:disabled) {
   border-color: transparent;
-  background: var(--ui-action-accent);
+  background: var(--ui-control-primary-surface-hover, var(--ui-action-accent));
 }
 
 .ui-button--primary:focus,
@@ -171,7 +171,7 @@
   border: 1px solid var(--ui-border-control);
   border-radius: var(--ui-radius-control);
   outline: 0;
-  background: var(--ui-surface-canvas);
+  background: var(--ui-field-surface, var(--ui-surface-canvas));
   color: var(--ui-content-primary);
   font: inherit;
   font-size: var(--ui-font-size-label);

@@ -1,9 +1,11 @@
 export const launcherZh = {
   pluginRestartRequired: 'DSH 已保存插件配置，重启此实例后生效。请先结束当前任务，再停止并启动实例。',
-  'executionReadiness.warming': "正在连接 DSH Web Host（不会调用模型）…",
-  'executionReadiness.ready': "共享 DSH 已就绪，所有伙伴使用同一套账号、模型、插件和技能。",
-  'executionReadiness.cold': "DSH Web Host 尚未启动，下次任务时会启动。",
-  'executionReadiness.failed': "DSH Web Host 尚未就绪，启动任务时会重试。",
+  executionReadiness: {
+    warming: "正在连接 DSH Web Host（不会调用模型）…",
+    ready: "共享 DSH 已就绪，所有伙伴使用同一套账号、模型、插件和技能。",
+    cold: "DSH Web Host 尚未启动，下次任务时会启动。",
+    failed: "DSH Web Host 尚未就绪，启动任务时会重试。",
+  },
   recheckSmartRoutes: '重新检测智能线路',
   proxySmart: '智能代理（仅本软件）', proxyGlobal: '全局代理（仅本软件）', activeProxyMode: '立即切换代理模式',
   proxySmartNote: '本地网络和常见国内站点直连，其他外网走所选代理。应用智能模式时检测 Pixiv CDN：优先代理，仅当代理失败且直连成功时改为该 CDN 直连。重新应用智能模式可重测。',
@@ -89,10 +91,12 @@ export const launcherZh = {
 
 export const launcherEn = {
   pluginRestartRequired: 'DSH saved the plugin configuration and requires an instance restart. Finish current tasks, then stop and start this instance.',
-  'executionReadiness.warming': "Connecting to the DSH Web Host without a model request…",
-  'executionReadiness.ready': "Shared DSH is ready. All companions use the same accounts, models, plugins and skills.",
-  'executionReadiness.cold': "The DSH Web Host is stopped. The next task starts it.",
-  'executionReadiness.failed': "The DSH Web Host is unavailable. Task startup will retry.",
+  executionReadiness: {
+    warming: "Connecting to the DSH Web Host without a model request…",
+    ready: "Shared DSH is ready. All companions use the same accounts, models, plugins and skills.",
+    cold: "The DSH Web Host is stopped. The next task starts it.",
+    failed: "The DSH Web Host is unavailable. Task startup will retry.",
+  },
   recheckSmartRoutes: 'Recheck smart routes',
   proxySmart: 'Smart proxy (this app)', proxyGlobal: 'Global proxy (this app)', activeProxyMode: 'Switch applied proxy mode',
   proxySmartNote: 'Local networks and common Chinese sites connect directly; other public sites use the selected proxy. Applying smart mode probes Pixiv CDNs: prefer the proxy, and use direct only when the proxy fails and direct succeeds. Reapply smart mode to probe again.',
