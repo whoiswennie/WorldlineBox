@@ -154,6 +154,10 @@ it('projects real native deliveries onto the reply and preserves process separat
   expect(reply.content).toBe('最终交付正文'); expect(reply.attachments).toHaveLength(1);
   expect(reply.attachments![0]!.name).toBe('native-report.txt');
   expect(reply.execution).toMatchObject({ status: 'succeeded', steps: [{ toolName: 'present' }, { type: 'artifacts' }] });
+  const followup = await f.send('继续检查结果');
+  await until(() => f.service.store.getMessage(followup.replyMessageIds![0]!)?.status === 'sent');
+  expect(JSON.parse(f.brain.calls[1]!.prompt).files).toEqual([]);
+  expect(f.brain.calls[1]!.prompt).not.toContain('native-report.txt');
 });
 it('keeps a native question pending and resumes that exact session after the user answers', async () => {
   const f = await fixture();

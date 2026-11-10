@@ -13,6 +13,52 @@ const short = (text: string) => Array.from(text.trim().replace(/\s+/gu, ' ')).sl
 /** Deterministic topic routing: explicit selection and current-topic follow-ups
  * choose a native Session. No application model classifies or rewrites messages. */
 export class BotTopics {
+  private fileKey(event:BotEvent,id:string):string{return 'native-file:'+this.lane(event)+':'+id;}
+  private fileCursorKey(event:BotEvent):string{return 'native-file-cursor:'+this.lane(event);}
+  private fileIds(prompt:string):string[]{try{const value=JSON.parse(prompt) as {files?:Array<{id?:unknown}>};return Array.isArray(value.files)?value.files.flatMap(file=>typeof file?.id==='string'?[file.id]:[]):[];}catch{return[];}}
+  /** Topic membership selects candidates; the media service still applies the
+   * current recipient's grants and withdrawals. Receipts belong to one native
+   * Session, so another companion joining this topic gets its own bootstrap. */
+  inputAttachmentIds(event:BotEvent):string[]{
+    const selected=this.reference(event.id);if(!selected)return this.store.getMessage(event.sourceMessageRecordId)?.attachments?.map(file=>file.id)??[];
+    return this.store.taskTransaction(sql=>{
+      const cursorKey=this.fileCursorKey(event);let saved=this.store.getMetadata(cursorKey);
+      if(saved===undefined){
+        let through=0;
+        // One-time upgrade of existing Sessions: previously frozen, acknowledged
+        // envelopes are authoritative. Never mutate or resend those requests.
+        const prior=sql.prepare(`SELECT i.id,m.value,source.sequence AS source_sequence FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id
+          JOIN bot_metadata m ON m.key='native-input:'||i.id JOIN bot_messages source ON source.id=i.source_record_id
+          WHERE t.topic_id=? AND i.companion_id=? AND i.sequence<? AND i.dsh_event_id IS NOT NULL
+          AND COALESCE((SELECT value FROM bot_metadata WHERE key='native-input-committed:'||i.id),CASE WHEN i.status='done' THEN '1' ELSE '0' END)='1'`)
+          .all(selected.id,event.companionId,event.sequence) as Array<{id:string;value:string;source_sequence:number}>;
+        for(const row of prior){const context=JSON.parse(row.value) as {prompt:string};for(const id of this.fileIds(context.prompt))this.store.setMetadata(this.fileKey(event,id),'1');through=Math.max(through,row.source_sequence);}
+        const guidance=sql.prepare(`SELECT g.text FROM bot_guidance g JOIN bot_topic_events t ON t.event_id=g.event_id JOIN bot_inbox i ON i.id=g.event_id
+          JOIN bot_messages m ON m.id=g.message_id WHERE t.topic_id=? AND i.companion_id=? AND g.status='accepted' AND m.sequence<=?`)
+          .all(selected.id,event.companionId,event.sourceMessageSequence) as Array<{text:string}>;
+        for(const row of guidance)for(const id of this.fileIds(row.text))this.store.setMetadata(this.fileKey(event,id),'1');
+        saved=String(through);this.store.setMetadata(cursorKey,saved);
+      }
+      const rows=sql.prepare(`WITH events AS (
+        SELECT i.id,i.source_record_id,i.reply_message_id,i.companion_id,i.dsh_event_id FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=?),
+        sources(id) AS (SELECT source_record_id FROM events UNION SELECT reply_message_id FROM events
+          UNION SELECT p.message_id FROM bot_publications p JOIN events e ON e.id=p.event_id
+          UNION SELECT g.message_id FROM bot_guidance g JOIN events e ON e.id=g.event_id WHERE g.status='accepted')
+        SELECT m.attachments_json FROM sources s JOIN bot_messages m ON m.id=s.id
+        WHERE m.conversation_id=? AND m.status='sent' AND m.sequence>? AND m.sequence<=? AND m.attachments_json<>'[]'
+        AND NOT(m.sender_id=? AND (EXISTS(SELECT 1 FROM events e WHERE e.reply_message_id=m.id AND e.companion_id=? AND e.dsh_event_id IS NOT NULL)
+          OR EXISTS(SELECT 1 FROM bot_publications p JOIN events e ON e.id=p.event_id WHERE p.message_id=m.id AND e.companion_id=? AND e.dsh_event_id IS NOT NULL)))
+        ORDER BY m.sequence`).all(selected.id,event.conversationId,Number(saved),event.sourceMessageSequence,event.companionId,event.companionId,event.companionId) as Array<{attachments_json:string}>;
+      return [...new Set(rows.flatMap(row=>(JSON.parse(row.attachments_json) as Array<{id:string}>).map(file=>file.id)))].filter(id=>!this.store.getMetadata(this.fileKey(event,id)));
+    });
+  }
+  recordInputFiles(event:BotEvent,prompt:string,committed:boolean):void{
+    this.store.taskTransaction(()=>{
+      this.store.setMetadata('native-input-committed:'+event.id,committed?'1':'0');if(!committed)return;
+      for(const id of this.fileIds(prompt))this.store.setMetadata(this.fileKey(event,id),'1');
+      const key=this.fileCursorKey(event);this.store.setMetadata(key,String(Math.max(Number(this.store.getMetadata(key)??0),event.sourceMessageSequence)));
+    });
+  }
   private cachedContext(conversationId:string,laneId:string):BotNativeContext|undefined{
     try{const saved=this.store.getMetadata('native-context:'+conversationId+':'+laneId);if(!saved)return;const parsed=botNativeContextSchema.safeParse(JSON.parse(saved));return parsed.success?parsed.data:undefined;}catch{return;}
   }
@@ -213,7 +259,10 @@ export class BotTopics {
     });
   }
   pendingGuidance(): BotGuidance[] { return this.store.taskTransaction(sql => sql.prepare("SELECT * FROM bot_guidance WHERE status='pending' LIMIT 80").all()) as BotGuidance[]; }
-  guidanceResult(item: BotGuidance, error?: string): void { this.store.taskTransaction(sql=>sql.prepare('UPDATE bot_guidance SET status=?,error=? WHERE message_id=? AND event_id=?').run(error?'pending':'accepted',error??null,item.message_id,item.event_id)); }
+  guidanceResult(item: BotGuidance, error?: string): void { this.store.taskTransaction(sql=>{
+    sql.prepare('UPDATE bot_guidance SET status=?,error=? WHERE message_id=? AND event_id=?').run(error?'pending':'accepted',error??null,item.message_id,item.event_id);
+    const event=this.store.getEvent(item.event_id);if(!error&&event)for(const id of this.fileIds(item.text))this.store.setMetadata(this.fileKey(event,id),'1');
+  }); }
   guidanceNotAccepted(item:BotGuidance):void{
     this.store.taskTransaction(sql=>{
       const target=this.store.getEvent(item.event_id);if(!target)return;

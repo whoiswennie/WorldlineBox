@@ -696,7 +696,7 @@ export class BotService {
       signal.throwIfAborted();
       const frozen = this.store.getMetadata(persistKey);
       const context = frozen ? JSON.parse(frozen) as {system:string;prompt:string} : buildNativeBotContext({ companion, event,
-        memories: prepared.evidence, files: await this.verifiedAttachmentFiles(event, undefined, undefined, signal),
+        memories: prepared.evidence, files: await this.verifiedAttachmentFiles(event, this.topics.inputAttachmentIds(event), undefined, signal),
         conversation: this.store.getConversation(event.conversationId)!, companions: this.store.listCompanions() });
       if (!frozen) this.store.setMetadata(persistKey, JSON.stringify(context));
       this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(nativeLaneId), interruption: undefined });
@@ -747,6 +747,7 @@ export class BotService {
             progress({ phase, toolName: update.toolName });
           }
         } });
+      if(typeof result.inputContextCommitted==='boolean'||result.status==='succeeded')this.topics.recordInputFiles(event,context.prompt,result.inputContextCommitted??true);
       text = result.text;
       for(const output of result.outputs??[]){if(output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
       await Promise.allSettled([...this.guidanceRuns].filter(([key])=>key.endsWith(':'+event.id)).map(([,operation])=>operation));
@@ -770,6 +771,8 @@ export class BotService {
     } catch (error) {
       if (this.closed) return;
       const code = (error as {code?:string})?.code;
+      const committed=(error as {inputContextCommitted?:boolean;result?:BotDshResult})?.inputContextCommitted??(error as {result?:BotDshResult})?.result?.inputContextCommitted;
+      if(typeof committed==='boolean'){const saved=this.store.getMetadata(persistKey);if(saved)this.topics.recordInputFiles(event,(JSON.parse(saved) as {prompt:string}).prompt,committed);}
       // A user interruption retains the prepared VCP turn and its native
       // receipts. Only successful continuation commits the response/diary.
       if (signal.aborted && (signal.reason as { code?: string })?.code === 'BOT_SUSPEND') return;
@@ -835,10 +838,12 @@ export class BotService {
     return selected.map(entry => ({ mediaId: entry.ref.id, grantId: entry.grantId }));
   }
   private attachmentThrough(event: BotEvent): number { return event.sourceMessageSequence; }
-  private async verifiedAttachmentFiles(event: BotEvent, ids?: string[], throughSourceSequence = this.attachmentThrough(event), signal?: AbortSignal) {
+  private async verifiedAttachmentFiles(event: BotEvent, ids = this.store.getMessage(event.sourceMessageRecordId)?.attachments?.map(ref => ref.id) ?? [], throughSourceSequence = this.attachmentThrough(event), signal?: AbortSignal) {
     signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted();
-    const grants = ids ? ids.flatMap((_, index) => index % 16 ? [] : this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, ids: ids.slice(index, index + 16), throughSourceSequence }))
-      : this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, throughSourceSequence, all: true });
+    // A turn or steering message carries only its own attachments. The native
+    // Session already retains earlier inputs; chat_list_files provides explicit
+    // paginated access to other authorized files without replaying the catalog.
+    const grants = ids.flatMap((_, index) => index % 16 ? [] : this.store.modelAttachmentGrants(event, { ownPublicationsFromEventId:event.id, ids: ids.slice(index, index + 16), throughSourceSequence }));
     const result = [];
     for (const { ref } of grants) {
       signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted();

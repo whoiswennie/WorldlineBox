@@ -17,6 +17,24 @@ it('reuses a selected topic, isolates new topics and restores an earlier topic a
   f.topics.select(f.room.id,first.id);expect(f.topics.current(f.room.id)?.id).toBe(first.id);
   expect(f.topics.list(f.room.id,'项目一').items).toHaveLength(1);
 });
+it('advances attachment receipts only for committed native input, retaining undelivered topic files for the next turn',()=>{
+  const f=fixture(),selected=f.topics.create(f.room.id,'files'),file={id:'file-topic',name:'资料.txt',mimeType:'text/plain',size:1,url:'worldlinebox-companion://file-topic',kind:'file' as const};
+  const first=store.enqueue({conversationId:f.room.id,senderId:'user',sourceMessageId:'upload',content:'处理资料',attachments:[file]});f.topics.bind(first.events,selected);
+  const claim=store.claim({workerId:'one'})!,event=claim.event,prompt=JSON.stringify({files:[{id:file.id}]});
+  expect(f.topics.inputAttachmentIds(event)).toEqual([file.id]);f.topics.recordInputFiles(event,prompt,false);
+  store.markDispatched(event.id,claim.leaseToken,event.id);store.settle({eventId:event.id,leaseToken:claim.leaseToken,status:'failed',content:'输入未提交'});
+  const second=f.send('继续'),next=second.events[0]!;f.topics.bind(second.events,selected);
+  expect(f.topics.inputAttachmentIds(next)).toEqual([file.id]);f.topics.recordInputFiles(next,prompt,true);
+  const third=f.send('再追问');f.topics.bind(third.events,selected);expect(f.topics.inputAttachmentIds(third.events[0]!)).toEqual([]);
+});
+it('bootstraps delivery receipts from acknowledged legacy envelopes without rewriting or replaying them',()=>{
+  const f=fixture(),selected=f.topics.create(f.room.id,'legacy-files'),file={id:'file-legacy',name:'旧资料.txt',mimeType:'text/plain',size:1,url:'worldlinebox-companion://file-legacy',kind:'file' as const};
+  const first=store.enqueue({conversationId:f.room.id,senderId:'user',sourceMessageId:'upload',content:'处理资料',attachments:[file]});f.topics.bind(first.events,selected);
+  const claim=store.claim({workerId:'old'})!,saved=JSON.stringify({system:'original',prompt:JSON.stringify({files:[{id:file.id}]})});
+  store.setMetadata('native-input:'+claim.event.id,saved);store.markDispatched(claim.event.id,claim.leaseToken,claim.event.id);store.settle({eventId:claim.event.id,leaseToken:claim.leaseToken,status:'done',content:'已处理'});
+  const next=f.send('升级后追问');f.topics.bind(next.events,selected);expect(f.topics.inputAttachmentIds(next.events[0]!)).toEqual([]);
+  expect(store.getMetadata('native-input:'+claim.event.id)).toBe(saved);
+});
 it('keeps context measurements independent across topics and rejects out-of-order observations within one session',()=>{
   const f=fixture(),a=f.topics.create(f.room.id,'a'),first=f.send('项目A');f.topics.bind(first.events,a);const laneA=f.topics.lane(first.events[0]!);
   const b=f.topics.create(f.room.id,'b'),second=f.send('项目B');f.topics.bind(second.events,b);const laneB=f.topics.lane(second.events[0]!);

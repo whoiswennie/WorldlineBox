@@ -39,12 +39,14 @@ class Memory extends BotMemoryService {
 }
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
+  guidance: Array<{ laneId: string; input: Parameters<BotDshBrain['send']>[1] }> = [];
   constructor(private readonly handle: (input: BotDshRun) => Promise<string> = async () => '已收到') { super({ getHost: async () => { throw Error('No actual Host or model'); } }); }
   override async run(input: BotDshRun) {
     this.calls.push(input); const text = input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.handle(input);
     return { status: 'succeeded' as const, text, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), inputContextCommitted: true };
   }
   override async cancelDurable() { return { accepted: true, absent: true }; }
+  override async send(laneId: string, input: Parameters<BotDshBrain['send']>[1]) { this.guidance.push({ laneId, input }); }
   override async close() {}
 }
 const fixtures: Array<{ root: string; services: BotService[] }> = [];
@@ -73,6 +75,98 @@ async function callback(input: BotDshRun, name: string, callId: string, args: Re
 async function userFile(f: Awaited<ReturnType<typeof fixture>>, name = '原始资料.any', bytes = Buffer.from('实际原始字节')) {
   const source = path.join(f.root, name); await writeFile(source, bytes); return (await f.media.importFiles({ conversationId: f.conversationId, paths: [source] }))[0]!;
 }
+
+it('keeps later native inputs incremental across many uploads, plain follow-ups, topic switches and restart while old files remain searchable', async () => {
+  let oldSearch: unknown;
+  const brain = new Brain(async input => {
+    if (JSON.parse(input.prompt).message.content === '接回旧话题') oldSearch = (await callback(input, 'chat_list_files', 'explicit-old-file', { query: '资料-0' })).result;
+    return '已收到';
+  }), f = await fixture(brain), refs: BotMediaRef[] = [];
+  const verification = vi.spyOn(f.media, 'verifiedLocalFile');
+  const send = async (content: string, attachmentIds?: string[]) => {
+    const sent = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content, attachmentIds, requestId: content });
+    await waitFor(() => f.service.store.getMessage(sent.replyMessageIds![0]!)?.status === 'sent');
+    return brain.calls.find(call => call.eventId === f.service.store.eventForReply(sent.replyMessageIds![0]!)?.id)!;
+  };
+  let firstLane = '';
+  for (let index = 0; index < 12; index++) {
+    const ref = await userFile(f, `资料-${index}.txt`); refs.push(ref); verification.mockClear();
+    const call = await send('新增资料-' + index, [ref.id]), body = JSON.parse(call.prompt);
+    firstLane ||= call.laneId; expect(call.laneId).toBe(firstLane);
+    expect(body.files.map((file: { id: string }) => file.id)).toEqual([ref.id]); expect(verification).toHaveBeenCalledTimes(1);
+    expect(body.message.content).toContain('新增资料-' + index); expect(body).not.toHaveProperty('history');
+    for (const previous of refs.slice(0, -1)) expect(call.prompt).not.toContain(previous.id);
+    expect(path.isAbsolute(body.files[0].path)).toBe(true);
+  }
+  for (let index = 0; index < 5; index++) {
+    verification.mockClear(); const call = await send('普通追问-' + index);
+    expect(call.laneId).toBe(firstLane); expect(JSON.parse(call.prompt).files).toEqual([]); expect(verification).not.toHaveBeenCalled();
+  }
+  const originalTopic = (await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.chatRuntime!.topic!;
+  await f.service.handle({ type: 'topic.new', conversationId: f.conversationId, requestId: 'clean-input-topic' });
+  const fresh = await send('独立话题'); expect(fresh.laneId).not.toBe(firstLane); expect(JSON.parse(fresh.prompt).files).toEqual([]);
+  await f.service.handle({ type: 'topic.select', conversationId: f.conversationId, topicId: originalTopic.id });
+  const reused = await send('接回旧话题'); expect(reused.laneId).toBe(firstLane); expect(JSON.parse(reused.prompt).files).toEqual([]);
+  expect(oldSearch).toMatchObject({ files: [expect.objectContaining({ id: refs[0]!.id })] });
+  await f.service.shutdown(); const next = new Brain(), resumed = f.reopen(next);
+  const sent = await resumed.handle({ type: 'message.send', conversationId: f.conversationId, content: '重启后继续', requestId: 'restart-incremental' });
+  await waitFor(() => resumed.store.getMessage(sent.replyMessageIds![0]!)?.status === 'sent');
+  const call = next.calls.find(call => !call.laneId.startsWith('memory-encoder-'))!;
+  expect(call.laneId).toBe(firstLane); expect(JSON.parse(call.prompt).files).toEqual([]);
+});
+
+it('steers only the supplemental message attachments once, without replaying older uploads into the active task', async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const brain = new Brain(async input => { if (JSON.parse(input.prompt).message.content === '执行中') await gate; return '完成'; }), f = await fixture(brain);
+  try {
+    const old = await userFile(f, '已处理的旧文件.txt'), extra = await userFile(f, '本次补充.txt');
+    const first = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '旧任务', attachmentIds: [old.id], requestId: 'old' });
+    await waitFor(() => f.service.store.getMessage(first.replyMessageIds![0]!)?.status === 'sent');
+    const active = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '执行中', requestId: 'active' });
+    await waitFor(() => brain.calls.some(call => call.eventId === f.service.store.eventForReply(active.replyMessageIds![0]!)?.id));
+    const queued = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '补充要求', attachmentIds: [extra.id], requestId: 'extra' });
+    const command = { type: 'message.guide' as const, conversationId: f.conversationId, messageId: queued.messageId! };
+    await f.service.handle(command); await f.service.handle(command);
+    expect(brain.guidance).toHaveLength(1);
+    const body = JSON.parse(brain.guidance[0]!.input.text);
+    expect(body.files.map((file: { id: string }) => file.id)).toEqual([extra.id]); expect(body.message.content).toContain('补充要求');
+    expect(brain.guidance[0]!.input.text).not.toContain(old.id);
+    const plain = await f.service.handle({ type: 'message.send', conversationId: f.conversationId, content: '只补充一句', requestId: 'plain' });
+    await f.service.handle({ type: 'message.guide', conversationId: f.conversationId, messageId: plain.messageId! });
+    expect(JSON.parse(brain.guidance[1]!.input.text).files).toEqual([]);
+    release(); await waitFor(() => f.service.store.getMessage(active.replyMessageIds![0]!)?.status === 'sent');
+  } finally { release(); }
+});
+
+it('bootstraps a newly participating companion with only that topic files and deliveries, then sends only its unseen additions', async () => {
+  const brain = new Brain(async input => {
+    if (JSON.parse(input.prompt).message.content.includes('第一话题资料')) {
+      const output = path.join(input.cwd, '第一话题产物.txt'); await writeFile(output, 'THIS_TOPIC_PRODUCT');
+      input.onEvent?.({ type: 'artifacts', sequence: 1, receivedAt: new Date().toISOString(), artifacts: [{ path: output }] });
+    }
+    return '完成';
+  }), f = await fixture(brain);
+  const bob = await f.service.handle({ type: 'companion.create', name: 'Bob', persona: '协作者' });
+  const bobId = f.service.store.getConversation(bob.conversationId!)!.memberIds.find(id => id !== 'user')!;
+  const group = (await f.service.handle({ type: 'conversation.create', kind: 'group', title: '话题附件', memberIds: [DEFAULT_BOT_COMPANION_ID, bobId], participationMode: 'mentions' })).conversationId!;
+  const firstFile = path.join(f.root, '第一话题.txt'), otherFile = path.join(f.root, '其他话题.txt'); await writeFile(firstFile, 'FIRST_TOPIC'); await writeFile(otherFile, 'OTHER_TOPIC');
+  const [firstRef, otherRef] = await f.media.importFiles({ conversationId: group, paths: [firstFile, otherFile] });
+  const send = async (content: string, attachmentIds?: string[], newTopic?: boolean) => {
+    const result = await f.service.handle({ type: 'message.send', conversationId: group, content, attachmentIds, newTopic, requestId: content });
+    await waitFor(() => result.replyMessageIds!.every(id => f.service.store.getMessage(id)?.status === 'sent'));
+    return { result, input: brain.calls.find(call => call.eventId === f.service.store.eventForReply(result.replyMessageIds![0]!)!.id)! };
+  };
+  const first = await send('@大肥鱼 第一话题资料', [firstRef!.id]);
+  const product = f.service.store.getMessage(first.result.replyMessageIds![0]!)!.attachments![0]!;
+  const originalTopic = (await f.service.handle({ type: 'state', conversationId: group })).snapshot!.chatRuntime!.topic!;
+  await send('@大肥鱼 另外一个无关话题', [otherRef!.id], true);
+  await f.service.handle({ type: 'topic.select', conversationId: group, topicId: originalTopic.id });
+  const joined = await send('@Bob 接手当前话题');
+  expect(JSON.parse(joined.input.prompt).files.map((file: { id: string }) => file.id).sort()).toEqual([firstRef!.id, product.id].sort());
+  expect(joined.input.prompt).not.toContain(otherRef!.id); expect(joined.input.laneId).not.toBe(first.input.laneId);
+  const followup = await send('@Bob 继续处理'); expect(followup.input.laneId).toBe(joined.input.laneId); expect(JSON.parse(followup.input.prompt).files).toEqual([]);
+  const ownerFollowup = await send('@大肥鱼 继续本话题'); expect(ownerFollowup.input.laneId).toBe(first.input.laneId); expect(JSON.parse(ownerFollowup.input.prompt).files).toEqual([]);
+});
 
 it('gives the actual brain original sticker filenames, semantic descriptions and tags and searches by the source filename', async () => {
   let result: unknown;
