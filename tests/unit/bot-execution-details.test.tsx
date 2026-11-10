@@ -36,6 +36,21 @@ it('offers explicit native continuation and retries the same command without dup
   await act(()=>button.click());expect(host.querySelector('[role=alert]')?.textContent).toBe('暂时断开');
   ok=true;await act(()=>button.click());expect(proceed).toHaveBeenCalledTimes(2);expect(proceed.mock.calls[0]).toEqual(proceed.mock.calls[1]);expect(button.disabled).toBe(true);
 });
+it('offers a compact one-click continuation outside the bubble only after interruption is confirmed', async () => {
+  const proceed = vi.fn(async () => ({ ok: true }));
+  await render({ ...message, status: 'cancelled', execution: { ...execution, status: 'cancelled', interruption: { state: 'stopping' } } }, undefined, proceed);
+  expect(host.querySelector('.bot-message-bubble')).toBeNull();
+  expect(host.querySelector('.bot-execution-toggle')).toBeNull();
+  expect(host.querySelector('.is-interrupted [role=status]')?.textContent).toContain('正在停止');
+  expect(host.querySelector<HTMLButtonElement>('.is-interrupted button')!.disabled).toBe(true);
+  await render({ ...message, status: 'cancelled', execution: { ...execution, status: 'cancelled', interruption: { state: 'ready' } } }, undefined, proceed);
+  const button = host.querySelector<HTMLButtonElement>('.is-interrupted button')!;
+  expect(button.textContent).toBe('继续执行'); expect(button.disabled).toBe(false);
+  expect(host.querySelector('textarea')).toBeNull();
+  await act(() => button.click()); await act(() => button.click());
+  expect(proceed).toHaveBeenCalledTimes(1);
+  expect(button.disabled).toBe(true);
+});
 it('keeps each reply session and its collapsed state separate from other messages', async () => {
   await render({ ...message, execution });
   await act(() => host.querySelector<HTMLButtonElement>('.bot-execution-toggle')!.click());

@@ -1,10 +1,12 @@
 import type { BotDshTool } from './dsh-brain';
+import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
 
 const object = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = (description: string, maxLength = 16000) => ({ type: 'string', description, minLength: 1, maxLength });
 const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。用户私聊可选agent_memory_scopes列出的本人参与且用户可查看的会话，包括伙伴私聊；不能传路径或其他伙伴。' };
 /** Application interaction tools augment native DSH tools without another agent loop. */
 export const BOT_TOOLS: BotDshTool[] = [
+COMPANION_BROWSER_CAPABILITY_TOOL,
 { name: 'companion_directory', description: '分页查找真实伙伴ID和姓名，用于联系伙伴；目录不包含私人提示词或记忆。', parameters: object({ query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 64 } }, []) },
 { name: 'agent_conversations', description: '实时回查你本人参与的已发布聊天，不等VCP记忆索引。用户私聊可查询自己与伙伴的私聊及自己参加的用户群；其它受众只读当前房间。list列会话与最新消息索引；read选conversationId读最近一页，沿nextBefore读旧页；message按messageId分页读完整正文；contacts核实自己先前联系是否投递、对方是否实际回复或已向用户发布，仅返回关联回执元数据。已发不等于已回复，事件queued不等于没发消息。不能读其它伙伴的用户私聊或内部任务回执。', parameters: object({ operation: { type: 'string', enum: ['list', 'read', 'message', 'contacts'] }, conversationId: string('本人获准会话编号，read/message需要', 160), messageId: string('真实已发布消息编号，message需要', 160), companionId: string('contacts可选的目标伙伴编号，不能改变当前身份', 160), cursor: string('list的稳定分页游标', 160), before: { type: 'integer', minimum: 1 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['operation']) },
 { name: 'chat_read_message', description: '按本轮sourceMessageId或同会话已有消息ID分页读取原文。长消息预览不包含全部需求，读取时沿nextOffset继续；不能访问其他会话或未来消息。', parameters: object({ messageId: string('当前会话原消息ID', 160), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['messageId']) },

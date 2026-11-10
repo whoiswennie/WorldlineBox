@@ -23,6 +23,9 @@ import { BrowserCompanionActivity } from './companion-activity';
 import { companionVideo } from './companion-video';
 import { companionScreenshot } from './companion-screenshot';
 import { companionViewport } from './companion-viewport';
+import { fullPageImage } from './full-page-image';
+import { writeFile } from 'node:fs/promises';
+import { BROWSER_COMPANION_REQUEST, browserPageContextSchema, type BrowserPageContext } from '../../shared/browser-page-context';
 
 export interface CompanionBrowserResult { value: unknown; screenshot?: Uint8Array }
 
@@ -33,6 +36,7 @@ export class BrowserService {
   private initialization?: Promise<void>;
   private ready = false;
   private readonly views = new Map<string, { view: WebContentsView; used: number }>();
+  private readonly pageContexts = new Map<string, { value: BrowserPageContext; version: number | undefined; contentsId: number }>();
   private readonly downloads = new Map<string, DownloadItem>();
   private readonly pendingPermissions = new Map<string, { origin: string; permission: string; callback: (allow: boolean) => void; timer: ReturnType<typeof setTimeout> }>();
   private bounds = { x: 0, y: 0, width: 0, height: 0 };
@@ -399,12 +403,15 @@ export class BrowserService {
       const items: Electron.MenuItemConstructorOptions[] = [];
       const selectionVersion = this.textVersions.get(tab.id) ?? 0;
       const selectedSnapshot = params.formControlType !== 'input-password' ? params.selectionText : '';
+      items.push({ id: 'browser-summon-companion', label: '呼唤伙伴…', enabled: /^https?:\/\//.test(contents.getURL()), click: () => this.pageAction(() => {
+        const context = this.createPageContext(tab.id, selectedSnapshot); owner.webContents.send(BROWSER_COMPANION_REQUEST, context);
+      }) });
       if (params.linkURL && isBrowserUrl(params.linkURL)) items.push({ label: '在新标签页打开链接', click: () => this.pageAction(() => { this.addTab(params.linkURL, true); this.changed(); }) }, { label: '复制链接地址', click: () => clipboard.writeText(params.linkURL) }, { type: 'separator' });
       if (params.srcURL && (isBrowserUrl(params.srcURL) || params.srcURL.startsWith('blob:'))) items.push({ label: '下载此内容', click: () => contents.downloadURL(params.srcURL) });
       if (params.isEditable) items.push({ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' });
       else if (params.selectionText) items.push({ label: '复制', click: () => contents.copy() });
       if (params.formControlType !== 'input-password' && params.selectionText.trim() && this.onSelection) items.push({ label: 'AI 划词助手', click: () => { void this.onSelection!(params.selectionText).catch(error => this.reportPageError(error)); } });
-      items.push({ type: 'separator' }, { label: '后退', enabled: contents.navigationHistory.canGoBack(), click: () => contents.navigationHistory.goBack() }, { label: '前进', enabled: contents.navigationHistory.canGoForward(), click: () => contents.navigationHistory.goForward() }, { label: '重新加载', click: () => contents.reload() }, { label: '检查页面', click: () => contents.inspectElement(params.x, params.y) });
+      items.push({ type: 'separator' }, { id: 'browser-page-image', label: '网页转长图…', enabled: /^https?:\/\//.test(contents.getURL()), click: () => this.pageAction(() => this.savePageImage(tab.id)) }, { type: 'separator' }, { label: '后退', enabled: contents.navigationHistory.canGoBack(), click: () => contents.navigationHistory.goBack() }, { label: '前进', enabled: contents.navigationHistory.canGoForward(), click: () => contents.navigationHistory.goForward() }, { label: '重新加载', click: () => contents.reload() }, { label: '检查页面', click: () => contents.inspectElement(params.x, params.y) });
       const popup = async () => {
         const frame = params.frame ?? contents.mainFrame;
         if (this.capture && params.srcURL && ['image', 'video', 'audio'].includes(params.mediaType) && /^https?:\/\//.test(params.srcURL)) {
@@ -616,6 +623,31 @@ export class BrowserService {
     if (contents.isDestroyed() || !this.store.data.tabs.includes(tab)) throw Error('标签页已关闭，无法保存网页。');
     await contents.savePage(selected.filePath, 'MHTML');
   }
+  private async savePageImage(id = this.active().id): Promise<void> {
+    const tab = this.requireTab(id), contents = this.ensureView(tab).webContents;
+    if (!/^https?:\/\//.test(contents.getURL())) throw Error('请先打开需要生成长图的网页。');
+    const version = this.navigationVersions.get(id), title = Array.from(tab.title, char => char.charCodeAt(0) < 32 ? '_' : char).join('').replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/, '').slice(0, 100) || 'webpage';
+    const selected = await dialog.showSaveDialog(this.attachOwner(), { title: '网页转长图', defaultPath: title + '.png', filters: [{ name: 'PNG 长图', extensions: ['png'] }] });
+    if (selected.canceled || !selected.filePath) return;
+    const current = () => this.store.data.tabs.includes(tab) && this.navigationVersions.get(id) === version;
+    if (!current()) throw Error('网页已变化，请重新生成长图。');
+    const bytes = await fullPageImage(contents, current);
+    if (!current()) throw Error('网页已变化，请重新生成长图。');
+    await writeFile(selected.filePath, bytes);
+  }
+  private createPageContext(id = this.active().id, selection = ''): BrowserPageContext {
+    const tab = this.requireTab(id), contents = this.ensureView(tab).webContents;
+    const value = browserPageContextSchema.parse({ referenceId: randomUUID(), tabId: id, url: contents.getURL(), title: tab.title.slice(0, 500), selection: selection.slice(0, 4000), capturedAt: new Date().toISOString() });
+    this.pageContexts.set(value.referenceId, { value, version: this.navigationVersions.get(id), contentsId: contents.id });
+    while (this.pageContexts.size > 64) this.pageContexts.delete(this.pageContexts.keys().next().value!);
+    return value;
+  }
+  resolveCompanionContext(referenceId: string): BrowserPageContext {
+    const saved = this.pageContexts.get(referenceId), view = saved && this.views.get(saved.value.tabId)?.view;
+    if (!saved || !view || view.webContents.isDestroyed() || view.webContents.id !== saved.contentsId || this.navigationVersions.get(saved.value.tabId) !== saved.version
+      || view.webContents.getURL() !== saved.value.url || Date.now() - Date.parse(saved.value.capturedAt) > 2 * 60 * 60 * 1000) throw Error('所附网页已跳转、关闭或过期，请重新附加当前网页。');
+    return { ...saved.value };
+  }
   private async waitForPage(tab: BrowserTab, signal: AbortSignal): Promise<void> {
     const contents = this.ensureView(tab).webContents;
     await delay(80, undefined, { signal });
@@ -814,6 +846,8 @@ export class BrowserService {
       case 'tab.command': this.tabCommand(request.id, request.command); return { ok: true, state: this.state() };
       case 'tab.contextMenu': this.tabContextMenu(request.id, request.locale); return { ok: true };
       case 'page.save': await this.savePage(); break;
+      case 'page.image': await this.savePageImage(request.id); break;
+      case 'page.context': return { ok: true, pageContext: this.createPageContext(request.id) };
       case 'page.results.reset': {
         const tab = this.store.data.tabs.find(item => item.id === request.id);
         if (!tab || tab.url !== BROWSER_HOME || tab.nativeBlank) throw Error('当前标签页不是原生搜索结果页。');
@@ -895,7 +929,7 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool' | 'resolveCompanionContext'> {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
@@ -914,6 +948,7 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
   });
   ipcMain.on(BROWSER_CAPTURE_SELECTION_STATE, (event, value: unknown) => browser?.captureSelectionState(event, value));
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
+    resolveCompanionContext: id => { if (!browser) throw Error('内置浏览器尚未启动。'); return browser.resolveCompanionContext(id); },
     companionTool: (scope, input, signal) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).companionTool(scope, input, signal),
     captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).captureViewport(),
     selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).selectedText(),

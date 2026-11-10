@@ -1,0 +1,26 @@
+.bot-browser-context-card { display:flex;align-items:center;gap:10px;min-width:0;margin:6px 0;padding:10px 12px;border:1px solid var(--ui-border-subtle);border-radius:10px;background:var(--ui-surface-raised);color:var(--ui-content-primary); }
+.bot-browser-context-symbol { display:grid;place-items:center;flex-shrink:0;width:32px;height:36px;border-radius:7px;background:var(--ui-action-accent-soft);color:var(--ui-content-accent); }
+.bot-browser-context-card>div { flex:1;min-width:0;display:grid;gap:3px; }
+.bot-browser-context-card small { color:var(--ui-content-accent);font-size:10px; }
+.bot-browser-context-card strong,.bot-browser-context-card>div>span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.bot-browser-context-card strong { font-size:12px;font-weight:550; }
+.bot-browser-context-card>div>span { color:var(--ui-content-tertiary);font-size:10px; }
+.bot-browser-context-card>button { flex-shrink:0;display:grid;place-items:center;width:26px;height:26px;padding:3px;border:0;border-radius:6px;background:transparent;color:var(--ui-content-secondary);font-size:20px;cursor:pointer; }
+.bot-browser-context-card>button:hover { background:var(--ui-surface-hover); }
+.bot-browser-context-card button>.bot-icon { width:14px;height:14px; }
+.bot-browser-picker-backdrop { position:fixed;inset:var(--shell-toolbar-height,44px) 0 0;z-index:calc(var(--ui-layer-modal-backdrop,1000) + 4);display:grid;place-items:center;padding:20px;background:var(--ui-surface-scrim); }
+.bot-browser-picker { display:flex;flex-direction:column;gap:14px;width:min(460px,100%);max-height:min(680px,90vh);padding:22px;border:1px solid var(--ui-border-subtle);border-radius:15px;background:var(--ui-surface-raised);box-shadow:var(--ui-shadow-menu);color:var(--ui-content-primary); }
+.bot-browser-picker header { display:flex;justify-content:space-between;gap:12px; }
+.bot-browser-picker h2 { margin:0 0 7px;font-size:19px; }
+.bot-browser-picker header p,.bot-browser-picker footer { margin:0;font-size:11px;line-height:1.7;color:var(--ui-content-secondary); }
+.bot-browser-picker header>button { align-self:flex-start;border:0;background:transparent;color:var(--ui-content-secondary);font-size:22px;cursor:pointer; }
+.bot-browser-picker-search { display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid var(--ui-border-control);border-radius:9px;background:var(--ui-surface-pane); }
+.bot-browser-picker-search>.bot-icon { color:var(--ui-content-tertiary);width:16px; }
+.bot-browser-picker-search input { flex:1;width:0;min-width:0;border:0;outline:0;background:transparent;color:inherit;font:inherit;font-size:12px; }
+.bot-browser-picker-list { display:grid;gap:4px;min-height:0;overflow:auto;overscroll-behavior:contain; }
+.bot-browser-picker-list>button { display:flex;align-items:center;gap:11px;padding:9px 10px;border:0;border-radius:8px;background:transparent;color:inherit;text-align:left;cursor:pointer; }
+.bot-browser-picker-list>button:hover { background:var(--ui-action-accent-soft); }
+.bot-browser-picker-list strong { flex:1;font-size:13px;font-weight:550; }
+.bot-browser-picker-list>button>span:last-child { color:var(--ui-content-tertiary);font-size:14px; }
+.bot-browser-picker-list .bot-avatar { width:32px;height:32px; }
+.bot-browser-picker button:focus-visible { outline:2px solid var(--ui-border-focus);outline-offset:2px; }

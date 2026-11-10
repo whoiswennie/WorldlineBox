@@ -1,7 +1,12 @@
 import { ipcRenderer } from 'electron';
+import { BROWSER_COMPANION_REQUEST, browserPageContextSchema, type BrowserPageContext } from '../../shared/browser-page-context';
 import { BROWSER_CAPTURE_OPEN_ASSETS, BROWSER_CAPTURE_REQUEST, browserCaptureRequestSchema, browserCaptureResponseSchema, type BrowserCaptureRequest } from '../../shared/browser-capture';
 import { BROWSER_CHANGED, BROWSER_FOCUS, BROWSER_REQUEST, browserResponseSchema, browserStateSchema, type BrowserRequest, type BrowserState, type WorldlineBoxBrowserApi } from '../../shared/browser';
 export const browser: WorldlineBoxBrowserApi = Object.freeze({
+  onCompanionRequest(listener: (context: BrowserPageContext) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown) => { const parsed = browserPageContextSchema.safeParse(value); if (parsed.success) listener(parsed.data); };
+    ipcRenderer.on(BROWSER_COMPANION_REQUEST, handler); return () => ipcRenderer.removeListener(BROWSER_COMPANION_REQUEST, handler);
+  },
   onCaptureOpenAssets(listener: () => void) {
     const handler = () => listener();
     ipcRenderer.on(BROWSER_CAPTURE_OPEN_ASSETS, handler);

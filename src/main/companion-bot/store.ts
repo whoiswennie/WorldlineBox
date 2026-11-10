@@ -1209,6 +1209,35 @@ export class BotStore {
       return !!result.changes;
     }).immediate();
   }
+  interruptNativeReply(eventId: string): boolean {
+    return this.db.transaction(() => {
+      const event = this.getEvent(eventId);
+      if (!event || !this.cancelEvent(eventId)) return false;
+      const key = 'execution:' + event.replyMessageId, raw = this.getMetadata(key);
+      const execution = raw ? JSON.parse(raw) : { steps: [] };
+      const stopping = !!this.getMetadata('native-input:' + eventId);
+      this.setMetadata(key, JSON.stringify({ ...execution, status: 'cancelled', question: undefined, continuation: undefined,
+        interruption: { state: stopping ? 'stopping' : 'ready' } }));
+      // Persist in the same transaction as the publication fence. A crash can
+      // never turn a user interruption into an automatically resumed task.
+      this.setMetadata('native-interrupted:' + eventId, '1');
+      if (stopping) this.setMetadata('native-stop:' + eventId, JSON.stringify({ eventId, suspend: true, retryAt: 0 }));
+      return true;
+    }).immediate();
+  }
+  confirmNativeInterruption(eventId: string): void {
+    this.db.transaction(() => {
+      this.setMetadata('native-stop:' + eventId, '');
+      const event = this.getEvent(eventId);
+      if (!event || event.status !== 'cancelled' || this.getMetadata('native-interrupted:' + eventId) !== '1') return;
+      const key = 'execution:' + event.replyMessageId, raw = this.getMetadata(key);
+      if (raw) this.setMetadata(key, JSON.stringify({ ...JSON.parse(raw), interruption: { state: 'ready' } }));
+    }).immediate();
+  }
+  nativeReplySuperseded(event: BotEvent): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM bot_topic_events current JOIN bot_topic_events later ON later.topic_id=current.topic_id
+      JOIN bot_inbox i ON i.id=later.event_id WHERE current.event_id=? AND i.companion_id=? AND i.sequence>? AND i.dsh_event_id IS NOT NULL LIMIT 1`).get(event.id, event.companionId, event.sequence);
+  }
   confirmMemoryForget(eventId: string, callId: string, receipt: { forgotten: true; id: string; revision: string; physicalSourceErasure: false }): BotMessage {
     if (receipt.forgotten !== true || receipt.physicalSourceErasure !== false || !receipt.id || !receipt.revision) throw new Error('遗忘没有有效的真实回执。');
     return this.db.transaction(() => {
@@ -1241,11 +1270,17 @@ export class BotStore {
       const room=this.getConversation(event.conversationId),companion=this.getCompanion(event.companionId);
       if(!room||room.kind==='peer'||!room.memberIds.includes('user')||room.revision!==event.aclRevision||!companion||companion.enabled===false)throw Error('当前会话不能继续这条回复。');
       const raw=this.getMetadata('execution:'+messageId),execution=raw?JSON.parse(raw):undefined;
-      if(event.status!=='failed'||!Number.isSafeInteger(execution?.continuation?.checkpoint)||execution.continuation.checkpoint<0)throw Error('这条回复没有可继续的原生进展。');
-      this.setMetadata('native-output-continuation:'+event.id,JSON.stringify({checkpoint:execution.continuation.checkpoint,requestId}));
-      this.db.prepare("UPDATE bot_inbox SET status='queued',lease_token=NULL,lease_until=NULL,available_at=0,error=NULL WHERE id=? AND status='failed'").run(event.id);
+      const interrupted = event.status === 'cancelled' && execution?.interruption?.state === 'ready' && this.getMetadata('native-interrupted:' + event.id) === '1';
+      const checkpoint = event.status === 'failed' && Number.isSafeInteger(execution?.continuation?.checkpoint) && execution.continuation.checkpoint >= 0;
+      if (!interrupted && !checkpoint) throw Error('这条回复没有可继续的原生进展。');
+      if (this.getMetadata('native-stop:' + event.id)) throw Error('原任务仍在停止，请稍后再继续。');
+      const lane = this.getLane(event.laneId), epoch = this.getEventNativeEpoch(event.id);
+      if (!lane || epoch !== undefined && epoch !== lane.epoch || this.withdrawnIn(event.companionId, event.securityDomainId, this.eventSourceIds(event.id)).size) throw Error('原任务的资料或授权已变化，不能继续。');
+      if (this.nativeReplySuperseded(event)) throw Error('这个话题已有后续进展，请接着最新的回复继续。');
+      if (checkpoint) this.setMetadata('native-output-continuation:'+event.id,JSON.stringify({checkpoint:execution.continuation.checkpoint,requestId}));
+      this.db.prepare("UPDATE bot_inbox SET status='queued',lease_token=NULL,lease_until=NULL,available_at=0,error=NULL WHERE id=? AND status IN ('failed','cancelled')").run(event.id);
       this.db.prepare("UPDATE bot_messages SET status='queued',error=NULL WHERE id=?").run(messageId);
-      this.setMetadata('execution:'+messageId,JSON.stringify({...execution,status:'running',continuation:undefined}));
+      this.setMetadata('execution:'+messageId,JSON.stringify({...execution,status:'running',continuation:undefined,interruption:undefined}));
       this.setMetadata(receipt,event.id);return event.conversationId;
     }).immediate();
   }

@@ -14,6 +14,16 @@ Common shortcuts: Ctrl+L for the address bar, Ctrl+T for a new tab, Ctrl+W to cl
 
 The tab audio button independently mutes/unmutes its native audio output, including background tabs. Right-click any tab for mute, duplicate, pin, reload, close others/right, and restore. Batch closing retains pinned tabs. Muting survives reload and session restoration. Middle-click closes tabs; Ctrl+M toggles audio, Ctrl+1–8 selects a tab, Ctrl+9 selects the last, and Ctrl+PageUp/PageDown switches. Ctrl+S saves MHTML through a native dialog; Ctrl+P opens the native print dialog.
 
+## Connect a companion to this browser
+
+Right-click a page and choose **呼唤伙伴…** (Call a companion), then search with `@name` and choose a companion. The page becomes a removable application context card in chat; send your task to have the native DSH Agent prefer that existing tab. The chat toolbar can also attach the current built-in browser page. Attaching does not send a message automatically. Cookies, tokens and site storage stay in the browser. Other native browser tools remain available. Closed, navigated or expired draft references must be attached again.
+
+The `browser` tool observes, reads, fills and operates real tabs, preserving their signed-in state. Screenshot calls provide an actual PNG path for DSH's native image-reading tool. A model without image support cannot claim it has viewed those pixels.
+
+## Full-page PNG
+
+Choose **网页转长图…** in the page context menu, or **Save full-page image** under More. It exports the entire current document from the existing tab, including its bottom, without resizing or moving your viewport. Existing lazy images are given time to load; expand website content before capture when necessary. Oversized pages report an error rather than silently cropping the output.
+
 ## Native AI search and browser conversation
 
 Browser Settings has a dedicated, OS-encrypted DeepSeek Search/Fetch key independent of the global model. Without a browser key, only an official DeepSeek global endpoint/key can supply search credentials. Test or remove the dedicated key without changing global model settings. Search/fetch use the [official DeepSeek tool APIs](https://api-docs.deepseek.com/guides/search/); planning, conversation and analysis use the configured global model.

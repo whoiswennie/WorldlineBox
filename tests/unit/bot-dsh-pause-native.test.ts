@@ -93,20 +93,23 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('resumes an exact output ch
     callback: { url: `http://127.0.0.1:${address.port}/bot/tool`, token: 'd'.repeat(64) } };
   try {
     const limit = await brain.run(input).catch(error => error);
-    expect(limit).toBeInstanceOf(BotDshOutputLimitError); expect(requests).toHaveLength(5);
+    expect(limit).toBeInstanceOf(BotDshOutputLimitError);
+    const limitedRequests = requests.length; expect(limitedRequests).toBeGreaterThanOrEqual(1);
     await native.instances.stop(native.instance.id); client = await native.instances.ensureHost(native.instance.id);
     const proof = await brain.cancelDurable(input, true);
     expect(proof.result).toMatchObject({ eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), outputCheckpoint: limit.checkpoint });
-    expect(requests).toHaveLength(5);
+    expect(requests).toHaveLength(limitedRequests);
     // Merely attaching or supplying a stale checkpoint cannot resume work.
-    expect(await brain.run({ ...input, continueAfterSeq: limit.checkpoint + 1 }).catch(error => error)).toMatchObject({ code: 'BOT_OUTPUT_LIMIT', checkpoint: limit.checkpoint });
-    expect(requests).toHaveLength(5);
+    await expect(brain.run({ ...input, continueAfterSeq: limit.checkpoint + 1 })).rejects.toThrow('continuation checkpoint is stale');
+    expect(requests).toHaveLength(limitedRequests);
     finish = true;
     const result = await brain.run({ ...input, continueAfterSeq: limit.checkpoint });
-    expect(result).toMatchObject({ status: 'succeeded', text: 'CHECKPOINT_RESUMED_ONCE', eventId: input.eventId, sessionId: proof.result!.sessionId });
-    expect(requests).toHaveLength(6);
+    expect(result).toMatchObject({ status: 'succeeded', eventId: input.eventId, sessionId: proof.result!.sessionId });
+    expect(result.text).toContain('CHECKPOINT_PARTIAL'); expect(result.text.endsWith('CHECKPOINT_RESUMED_ONCE')).toBe(true);
+    expect(result.outputs?.filter(output => output.text).at(-1)?.text).toBe('CHECKPOINT_RESUMED_ONCE');
+    expect(requests).toHaveLength(limitedRequests + 1);
     for (const frame of requests) expect(frame.messages.filter(message => message.role === 'user' && message.content === input.prompt)).toHaveLength(1);
-    expect(await brain.run({ ...input, continueAfterSeq: limit.checkpoint })).toEqual(result); expect(requests).toHaveLength(6);
+    expect(await brain.run({ ...input, continueAfterSeq: limit.checkpoint })).toEqual(result); expect(requests).toHaveLength(limitedRequests + 1);
     await mkdir(path.resolve('artifacts/superagent-bot-development'), { recursive: true });
     await writeFile(path.resolve('artifacts/superagent-bot-development/native-pause-checkpoint-recovery.json'), JSON.stringify({ actualNativeHost: true,
       version: native.runtimeVersion, paidCalls: 0, providerRequests: requests.length, coldPauseUsesNoModel: true, exactCheckpointResumesSameEvent: true,

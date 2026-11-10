@@ -10,6 +10,7 @@ export type BotExecutionContinue = (requestId: string) => Promise<BotResponse>;
 
 /** The transport supplies these events; the chat never interprets or rewrites a result. */
 export function BotExecutionDetails({ execution, locale, onAnswer, onContinue }: { execution: BotExecution; locale: Locale; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }) {
+  if (execution.interruption) return <ExecutionContinuation key={`${execution.sessionId ?? ''}:interrupted`} locale={locale} onContinue={onContinue} interruption={execution.interruption.state} />;
   return <ExecutionDetails key={`${execution.sessionId ?? ''}:${execution.status}`} execution={execution} locale={locale} onAnswer={onAnswer} onContinue={onContinue} />;
 }
 
@@ -45,13 +46,14 @@ function ExecutionDetails({ execution, locale, onAnswer, onContinue }: { executi
   </section>;
 }
 
-function ExecutionContinuation({ locale, onContinue }: { locale: Locale; onContinue?: BotExecutionContinue }) {
+function ExecutionContinuation({ locale, onContinue, interruption }: { locale: Locale; onContinue?: BotExecutionContinue; interruption?: 'stopping' | 'ready' }) {
   const zh=locale==='zh-CN',[requestId]=useState(()=>crypto.randomUUID()),[busy,setBusy]=useState(false),[accepted,setAccepted]=useState(false),[error,setError]=useState('');
-  return <div className="bot-execution-continuation"><p>{zh?'本轮输出已达上限，文件和过程已保留。继续执行会复用原来的 DSH 会话。':'This output limit was reached. Files and progress are saved; continue in the same DSH session.'}</p>
-    <button type="button" disabled={!onContinue||busy||accepted} onClick={()=>{
+  const stopping = interruption === 'stopping';
+  return <div className={`bot-execution-continuation${interruption ? ' is-interrupted' : ''}`}><p role={interruption ? 'status' : undefined}>{interruption ? <><BotIcon name="clock" />{stopping ? zh ? '正在停止，保留当前进展…' : 'Stopping and saving progress…' : zh ? '已中断 · 进展已保留' : 'Interrupted · progress saved'}</> : zh?'本轮输出已达上限，文件和过程已保留。继续执行会复用原来的 DSH 会话。':'This output limit was reached. Files and progress are saved; continue in the same DSH session.'}</p>
+    <button type="button" title={interruption ? zh ? '接回原来的 DSH 会话，无需发送新消息' : 'Continue the original DSH session without sending a new message' : undefined} disabled={!onContinue||busy||accepted||stopping} onClick={()=>{
       if(!onContinue||busy||accepted)return;setBusy(true);setError('');
       void onContinue(requestId).then(result=>{if(result.ok)setAccepted(true);else setError(result.error||(zh?'暂时无法继续，请重试。':'Could not continue. Try again.'));}).catch(()=>setError(zh?'连接中断，请重试。':'Connection interrupted. Try again.')).finally(()=>setBusy(false));
-    }}>{accepted?zh?'已继续':'Continued':busy?zh?'正在继续…':'Continuing…':zh?'继续执行':'Continue execution'}</button>{error&&<small role="alert">{error}</small>}
+    }}>{accepted?zh?'已继续':'Continued':busy?zh?'正在继续…':'Continuing…':stopping?zh?'正在停止…':'Stopping…':zh?'继续执行':'Continue execution'}</button>{error&&<small role="alert">{error}</small>}
   </div>;
 }
 

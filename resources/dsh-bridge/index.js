@@ -754,6 +754,11 @@ export async function apply(ctx) {
         record.preset = actual.id; record.presetRevision = actual.revision;
       });
       record.agent = agent; sessions.set(record.id, record); decorateBot(record);
+      // Session.model restores its durable pending selection before the first
+      // request. Initial agentOptions alone cannot replace a historical route
+      // (including an old cancel-only route). Select the actual model during
+      // setup, before a recovered inbox can drive the native loop.
+      if (input.cancelIntent !== true) agent.model?.select?.(input.selection);
       // A recovered cancel intent must not wake a persisted worker inbox
       // before the subsequent authenticated cancel reconciliation request.
       if (input.cancelIntent === true) {
@@ -1008,11 +1013,13 @@ export async function apply(ctx) {
           }
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
           if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(record.bot.workerTools ?? []) !== JSON.stringify(input.workerTools)) throw new Error('Companion tool selection changed; create a new lane epoch.');
-          record.bot.system = input.system; record.bot.callback = input.callback; record.bot.audience = input.audience; record.bot.selection = selection;
+          record.bot.system = input.system; record.bot.callback = input.callback; record.bot.audience = input.audience;
           // Newer native loops freeze model identity before agent/request.
           // A cold suspend may have attached with the inert cancel-only model;
           // select the real model before resuming that same native Session.
-          record.agent.model?.select?.(selection);
+          // Inspection/stop must not persist a dummy model selection into a
+          // real Session, or trigger model-switch compaction during resume.
+          if (input.cancelIntent !== true) { record.bot.selection = selection; record.agent.model?.select?.(selection); }
           record.lastUsed = Date.now();
         }
         if (input.workspaceTitle !== undefined) { await prepareBotWorkspace(ctx, record, input); record.workspace = await registerBotWorkspace(ctx, record, input); }

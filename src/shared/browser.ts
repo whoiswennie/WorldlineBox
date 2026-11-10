@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { browserPageContextSchema, type BrowserPageContext } from './browser-page-context';
 import { browserCompanionActivitySchema } from './companion-browser';
 import { browserCaptureStateSchema, type BrowserCaptureRequest, type BrowserCaptureResponse } from './browser-capture';
 import { browserAiConfigSchema, browserAiRequests, browserAiTaskSchema, browserAiSourceSchema } from './browser-ai';
@@ -45,6 +46,8 @@ export const browserRequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('tab.command'), id, command: z.enum(['reload', 'duplicate', 'pin', 'closeOthers', 'closeRight']) }).strict(),
   z.object({ type: z.literal('tab.contextMenu'), id, locale: z.enum(['zh-CN', 'en']) }).strict(),
   z.object({ type: z.literal('page.save') }).strict(), z.object({ type: z.literal('page.print') }).strict(),
+  z.object({ type: z.literal('page.image'), id: id.optional() }).strict(),
+  z.object({ type: z.literal('page.context'), id: id.optional() }).strict(),
   z.object({ type: z.literal('page.results.reset'), id }).strict(),
   z.object({ type: z.literal('tab.navigate'), text: z.string().min(1).max(8192) }),
   z.object({ type: z.literal('tab.action'), action: z.enum(['back', 'forward', 'reload', 'stop', 'home', 'pin', 'mute', 'fullscreen', 'devtools']) }),
@@ -63,9 +66,11 @@ export const browserRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type BrowserRequest = z.infer<typeof browserRequestSchema>;
 export const browserResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: browserStateSchema.optional(),
+  pageContext: browserPageContextSchema.optional(),
   history: z.array(browserHistorySchema).max(100).optional(), total: z.number().int().optional(), found: z.object({ matches: z.number(), activeMatchOrdinal: z.number() }).optional() }), z.object({ ok: z.literal(false), error: z.string() })]);
 export type BrowserResponse = z.infer<typeof browserResponseSchema>;
 export interface WorldlineBoxBrowserApi { request(request: BrowserRequest): Promise<BrowserResponse>;
+  onCompanionRequest?(listener: (context: BrowserPageContext) => void): () => void;
   capture(request: BrowserCaptureRequest): Promise<BrowserCaptureResponse>;
   onCaptureOpenAssets(listener: () => void): () => void;
   onChanged(listener: (state: BrowserState) => void): () => void;

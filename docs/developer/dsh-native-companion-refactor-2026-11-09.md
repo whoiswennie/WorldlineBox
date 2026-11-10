@@ -77,3 +77,17 @@ WorldlineBox 保存联系人、人设、消息、媒体授权和 VCP 记忆，�
 `tests/e2e/companion-context-real.test.ts` 使用真实模型验证新话题无旧读数、独立 Session 的快速切换、原会话追问与材料输入、跨话题查看期间的原生压缩及另一会话统计隔离；也打开同一 Session 的 DSH 原生界面核对占用和构成，并检查窄窗排版。报告与界面截图保存在 `artifacts/companion-context-real/`。单元测试另覆盖迟到请求、群聊伙伴切换、离线值、公开字段过滤及清理。
 
 同文件的群聊验收只读接回已完成的真实三伙伴协作项目，依次选择大肥鱼、Claude、GPT，核对三个独立 Session 与原生读数，且 Session 身份与原项目主脑／Workers 回执一致。没有为读取统计发送新任务或构造模拟用量。
+
+## 11 月 10 日：中断、阅读器与内置浏览器应用连接
+
+用户「停止」与撤回资料的永久取消分开处理。用户停止原子写入发布租约围栏、原生 suspend 意图和 interruption 状态；收到原生停止回执后原子清除意图并启用「继续执行」。应用重启不会自动领取被用户中断的事件。继续复用原 event、reply、topic lane、VCP prepared turn 和 DSH Session，先等待旧处理器释放资源，再幂等入队。未完成时不关闭或提交 VCP response；最终完成后提交一次。原生推送按 streamGeneration 与 sequence 标识，恢复后的新阶段不会与旧阶段重名。资料／ACL／epoch 变化及同话题已推进的后续事件不能被旧恢复按钮覆盖。
+
+真实冷恢复发现停止检查用的 cancel-only 配置被写成待选模型。桥接器现在不在停止操作中选择临时模型，并在冷会话 setup 中、恢复 inbox 驱动之前选择正常模型。`companion-interrupt-real.test.ts` 实际中断前台文件任务、切换话题、重启应用、空输入框一键继续，核对同消息和 Session，观察恢复后的新工具阶段与流式正文，最终交付实际文件。报告与截图：`artifacts/companion-interrupt-real/`。原生暂停／取消协议另有四项真实 DSH Host 回归。
+
+文本阅读器采用独立文档滚动区、目录、紧凑页边距、阅读／原文切换与字号。每种模式保存自己的滚动位置，关闭滚动锚定，避免切换或字号变化造成跳动。最多读取当前 64 KiB 分段；单段文件不显示无意义的分页按钮。`companion-text-reader.test.ts` 用实际导入文件与生产分页 IPC 验证滚轮、PageDown／Ctrl+End、目录、字体、模式位置、五段长文本、深色与窄窗，确认不滚动背后的聊天。
+
+浏览器右键「呼唤伙伴」由主进程生成有界、带 document/version 身份的网页引用，经 IPC 提供给伙伴选择器。用户用 @ 名称搜索，确认选择后只添加草稿中的应用卡。发送时再次验证实际标签、文档、URL 与期限；引用经 event payload 进入本次原生 DSH 请求，执行中的引导同样携带引用。任务的 browser 工具接到同一 BrowserService 的 WebContentsView，沿用真实 Session；Cookie、Token 与 storage 不经聊天、提示词或桥接器传送。截图落到受管工作区供原生 read_image 读取，页面文字和标题始终是资料，不能覆盖用户任务与权限。清理伙伴记录会删除相应的引用元数据。
+
+右键及更多菜单的网页长图使用 Chromium 原生 Page.captureScreenshot／captureBeyondViewport，按实际文档与像素比限制分配，等待已有懒加载图片，保留 viewport 与滚动位置，拒绝导航竞态、并发捕获、其他调试器占用及超大输出，并设总超时。不在主进程解码整张图片。[CDP 接口](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-captureScreenshot) 与 [Electron Debugger](https://www.electronjs.org/docs/latest/api/debugger) 为依据。
+
+`browser-companion-connected-real.test.ts` 在已登录的本地工作台中触发真实 Chromium 右键事件及生产菜单，保存并核对 2394×18180 长图底部像素与滚动位置，通过 @ 大肥鱼附加网页，使用真实模型和 DSH 修改筛选框，再于同 Session 追问修改。核对 WebContents ID、标签 ID 和标签总数均保持，账号来自原 HTTP-only 登录会话。报告及截图：`artifacts/browser-companion-connected-real/`。

@@ -23,6 +23,7 @@ export class BotScheduler {
   private readonly active = new Map<string, Active>();
   /** Abort releases a scheduling slot before cooperative file cleanup finishes. */
   private readonly executions = new Set<Promise<void>>();
+  private readonly eventExecutions = new Map<string, Promise<void>>();
   private readonly concurrency: number;
   private readonly leaseMs: number;
   private poll?: ReturnType<typeof setInterval>;
@@ -77,6 +78,8 @@ export class BotScheduler {
       active.heartbeat.unref?.();
       const execution = Promise.resolve().then(() => { controller.signal.throwIfAborted(); return this.options.handle(claim, controller.signal); });
       this.executions.add(execution);
+      this.eventExecutions.set(claim.event.id, execution);
+      void execution.finally(() => { if (this.eventExecutions.get(claim.event.id) === execution) this.eventExecutions.delete(claim.event.id); }).catch(() => undefined);
       void execution.then(() => this.executions.delete(execution), () => this.executions.delete(execution));
       active.promise = abortable(execution, controller.signal).then(() => {
         if (this.closed) return;
@@ -105,6 +108,24 @@ export class BotScheduler {
     this.active.get(eventId)?.controller.abort(new Error('用户停止了本轮回复。'));
     if (changed) { this.changed(); this.wake(); }
     return changed;
+  }
+  /** User Stop fences publication immediately, retaining the original native task. */
+  interrupt(eventId: string): boolean {
+    if (this.closed) return false;
+    const changed = this.store.interruptNativeReply(eventId);
+    if (!changed) return false;
+    this.active.get(eventId)?.controller.abort(Object.assign(new Error('用户中断了本轮回复，可继续原任务。'), { code: 'BOT_SUSPEND' }));
+    this.changed(); this.wake(); return true;
+  }
+  async drainEvent(eventId: string): Promise<void> {
+    const execution = this.eventExecutions.get(eventId);
+    if (!execution) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([execution.catch(() => undefined), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('原任务仍在停止，请稍后再继续。')), 15000);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
   }
   private changed(): void { try { this.options.onChange?.(); } catch (error) { this.report(error); } }
   private report(error: unknown): void {

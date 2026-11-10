@@ -23,6 +23,12 @@ class Memory extends BotMemoryService {
 }
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
+  stops: Array<{ eventId: string; suspend: boolean }> = [];
+  stop: () => Promise<void> = async () => undefined;
+  override async cancelDurable(input: Parameters<BotDshBrain['cancelDurable']>[0], suspend = false) {
+    this.stops.push({ eventId: input.eventId, suspend }); await this.stop();
+    return { accepted: true, paused: true, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId) };
+  }
   contextCalls:string[]=[];
   readContext:(laneId:string)=>Promise<BotNativeContext>=async laneId=>({source:'dsh-native-projections',sessionId:BotDshBrain.sessionId(laneId),state:'ready',asOfSeq:10,sampledAt:new Date().toISOString(),pressure:{pressureTokens:10000,projectedTokens:11000,contextWindow:128000}});
   override async topicContext(laneId:string){this.contextCalls.push(laneId);return this.readContext(laneId);}
@@ -197,6 +203,57 @@ it('continues a budget-limited reply in the exact native session and finishes it
   expect(f.brain.calls).toHaveLength(2);expect(f.brain.calls[1]!.laneId).toBe(f.brain.calls[0]!.laneId);expect(f.brain.calls[1]!.eventId).toBe(f.brain.calls[0]!.eventId);
   expect(f.service.store.getMessage(messageId)!.content).toBe('续跑后的最终正文');
   expect(f.service.store.taskTransaction(sql=>sql.prepare("SELECT COUNT(*) n FROM bot_memory_jobs WHERE kind='response'").get())).toEqual({n:1});
+});
+it('interrupts and directly resumes the same reply twice without another user message or premature VCP completion', async () => {
+  const f = await fixture(); let aborted = 0;
+  f.brain.execute = async input => {
+    if (f.brain.calls.length <= 2) {
+      input.onEvent?.({ type: 'reasoning', sequence: f.brain.calls.length, receivedAt: new Date().toISOString(), text: '已保留的进展' });
+      await new Promise<void>((_, reject) => input.signal!.addEventListener('abort', () => {
+        expect(input.signal!.reason.code).toBe('BOT_SUSPEND'); aborted++; reject(input.signal!.reason);
+      }, { once: true }));
+    }
+    return { text: '原任务完成' };
+  };
+  const sent = await f.send('开始可中断的任务'), messageId = sent.replyMessageIds![0]!;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await until(() => f.brain.calls.length === attempt);
+    await f.service.handle({ type: 'reply.cancel', messageId });
+    await until(async () => (await f.service.handle({ type: 'state', conversationId: f.room.id })).snapshot!.messages.find(item => item.id === messageId)?.execution?.interruption?.state === 'ready');
+    expect(f.service.store.getMessage(messageId)?.status).toBe('cancelled');
+    expect(f.service.store.taskTransaction(sql => sql.prepare("SELECT COUNT(*) n FROM bot_memory_jobs WHERE kind='response'").get())).toEqual({ n: 0 });
+    const request = { type: 'execution.continue' as const, messageId, requestId: 'resume-' + attempt };
+    await f.service.handle(request); await f.service.handle(request);
+  }
+  await until(() => f.service.store.getMessage(messageId)?.status === 'sent');
+  expect(aborted).toBe(2); expect(f.brain.calls).toHaveLength(3);
+  expect(new Set(f.brain.calls.map(call => call.eventId)).size).toBe(1);
+  expect(new Set(f.brain.calls.map(call => call.laneId)).size).toBe(1);
+  expect(new Set(f.brain.calls.map(call => call.prompt)).size).toBe(1);
+  expect(f.brain.calls.slice(1).every(call => call.resumeHost)).toBe(true);
+  expect(f.brain.stops.every(stop => stop.suspend)).toBe(true);
+  const snapshot = (await f.service.handle({ type: 'state', conversationId: f.room.id })).snapshot!;
+  expect(snapshot.messages.filter(item => item.senderId === 'user')).toHaveLength(1);
+  expect(snapshot.messages.find(item => item.id === messageId)).toMatchObject({ content: '原任务完成', execution: { status: 'succeeded' } });
+  expect(snapshot.messages.find(item => item.id === messageId)?.execution?.interruption).toBeUndefined();
+  expect(f.service.store.taskTransaction(sql => sql.prepare("SELECT COUNT(*) n FROM bot_memory_jobs WHERE kind='response'").get())).toEqual({ n: 1 });
+});
+it('does not offer continuation before the native stop is confirmed, or resume a withdrawn task', async () => {
+  const f = await fixture(); let confirm!: () => void;
+  f.brain.stop = () => new Promise<void>(resolve => { confirm = resolve; });
+  f.brain.execute = input => new Promise((_, reject) => input.signal!.addEventListener('abort', () => reject(input.signal!.reason), { once: true }));
+  const sent = await f.send('等待原生停止回执'), messageId = sent.replyMessageIds![0]!;
+  await until(() => f.brain.calls.length === 1); await f.service.handle({ type: 'reply.cancel', messageId });
+  await until(() => !!confirm);
+  const snapshot = (await f.service.handle({ type: 'state', conversationId: f.room.id })).snapshot!;
+  expect(snapshot.messages.find(item => item.id === messageId)?.execution?.interruption?.state).toBe('stopping');
+  await expect(f.service.handle({ type: 'execution.continue', messageId, requestId: 'too-early' })).rejects.toThrow('没有可继续');
+  expect(JSON.parse(f.service.store.getMetadata('native-stop:' + f.brain.calls[0]!.eventId)!)).toMatchObject({ suspend: true });
+  confirm(); await until(() => !f.service.store.getMetadata('native-stop:' + f.brain.calls[0]!.eventId));
+  const event = f.service.store.eventForReply(messageId)!;
+  f.service.store.taskTransaction(sql => sql.prepare('UPDATE bot_lanes SET epoch=epoch+1 WHERE id=?').run(event.laneId));
+  await expect(f.service.handle({ type: 'execution.continue', messageId, requestId: 'withdrawn' })).rejects.toThrow('资料或授权');
+  expect(f.brain.calls).toHaveLength(1);
 });
 it('reuses historical effect receipts whose fingerprints included the old embedded native identity',async()=>{
   const f=await fixture();f.brain.execute=async input=>{

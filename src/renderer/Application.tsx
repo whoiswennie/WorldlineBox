@@ -15,6 +15,7 @@ import type { WorldlineBoxApplicationNetworkApi } from '../shared/application-ne
 import type { WorldlineBoxMusicApi } from '../shared/music';
 import type { WorldlineBoxShellApi } from '../shared/external-url';
 import type { WorldlineBoxBrowserApi } from '../shared/browser';
+import type { BrowserPageContext } from '../shared/browser-page-context';
 import type { CaptureToolTask, WorldlineBoxCaptureToolsApi } from '../shared/capture-tools';
 import { CaptureToolsToolbar } from './CaptureToolsToolbar';
 import { useApplicationModuleShortcuts } from './use-application-module-shortcuts';
@@ -44,8 +45,13 @@ function FeatureLoading() {
 export function App() {
   const t = useT();
   const [activeModuleId, setActiveModuleId] = useState('dsh');
+  const [browserContext, setBrowserContext] = useState<BrowserPageContext>();
+  useEffect(() => api?.browser?.onCompanionRequest?.(context => { setBrowserContext(context); setActiveModuleId('companions'); }), []);
   useApplicationModuleShortcuts(api?.shell, activeModuleId !== 'assets');
   const [toolError, setToolError] = useState('');
+  const openAttachedBrowser = useCallback((id: string) => {
+    void api?.browser?.request({ type: 'tab.select', id }).then(result => { if (result.ok) setActiveModuleId('browser'); else setToolError(result.error); });
+  }, []);
   const openTool = useCallback((task: CaptureToolTask, source?: 'browser') => {
     void api?.captureTools?.request({ type: 'open', task, ...(source ? { source } : {}) }).then(result => setToolError(result.ok ? '' : result.error)).catch(() => setToolError('无法打开屏幕工具，请重试。'));
   }, []);
@@ -101,7 +107,7 @@ export function App() {
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} speechApi={api?.companionBotSpeech} launcherApi={api?.dshLauncher} onOpenLauncher={() => setActiveModuleId('dsh')} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} isActive={activeModuleId === 'companions'} /></Suspense> },
+          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} speechApi={api?.companionBotSpeech} launcherApi={api?.dshLauncher} browserApi={api?.browser} browserContext={browserContext} onOpenBrowserContext={openAttachedBrowser} onOpenLauncher={() => setActiveModuleId('dsh')} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} isActive={activeModuleId === 'companions'} /></Suspense> },
           { id: 'assets', preload: assetsFeature.preload, label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
           { id: 'browser', preload: browserFeature.preload, label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
           { id: 'network', preload: networkFeature.preload, label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },

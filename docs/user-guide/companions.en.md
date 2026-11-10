@@ -22,6 +22,8 @@ While work is running, new input appears in the queue above the composer. It nor
 
 While work runs, necessary progress, question and continuation controls appear outside the reply bubble. A completed bubble contains only the last committed body, a sticker group and attachments. Intermediate bodies, sticker captions and completed execution counters are hidden. Standalone sticker exchanges remain supported. Uploads reach DSH as verified absolute paths. Native `present` deliveries become real chat attachments for preview and saving. Stopping work does not undo completed external effects.
 
+**Stop** interrupts execution and preserves progress. Once DSH confirms the stop, **Continue execution** reconnects the original task and topic Session without typing or sending another message. Switching topics or restarting the app preserves this control. An interrupted result is not recorded as a completed diary entry. If a later message has already progressed in the same topic, continue from that latest reply instead.
+
 ## Memory
 
 Open **Memory** from the chat toolbar to enter the selected companion's **Memory workspace**. **Journal** lists notes and tags by page; select a note to read its full text. You can save a new note, edit a note, or select related notes and write an organized version. Originals are archived after the new note is confirmed available for recall. The brain can also search, inspect historical fragments, write and forget. Automatic encoding runs in the background and may make additional model calls; a finished reply does not imply its memory index is ready.

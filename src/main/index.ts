@@ -655,7 +655,7 @@ let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
 let closeGlobalNetwork: (() => Promise<void>) | undefined;
 let disposeGlobalNetworkIpc: (() => void) | undefined;
-let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool'> | undefined;
+let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool' | 'resolveCompanionContext'> | undefined;
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let botService: BotService | undefined;
@@ -5154,6 +5154,8 @@ async function startApplication(): Promise<void> {
         getHost: getWorkerHost });
       const brain = worker;
       botService = new BotService({ root, brain, prewarmMemory: true, memory, media,
+        resolveBrowserContext: id => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.resolveCompanionContext(id); },
+        browserTool: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },
         ensureCompanionBindings: async ids => {
           // One selected DSH serves every Router. Admission checks availability
           // without starting a Host, provisioning one per character or copying

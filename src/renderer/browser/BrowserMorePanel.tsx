@@ -41,6 +41,7 @@ export function BrowserMorePanel({ tab, run, onFind, b, openPanel }: {
     </section>
     <section aria-label={words.tools}><h3>{words.tools}</h3>
       {row('save', b('savePage'), () => void run({ type: 'page.save' }), `${command}+S`, undefined, !tab)}
+      {row('camera', b('pageImage'), () => void run({ type: 'page.image' }), undefined, undefined, !tab || !/^https?:\/\//.test(tab.url))}
       {row('printer', b('printPage'), () => void run({ type: 'page.print' }), `${command}+P`, undefined, !tab)}
       {row('globe', b('openExternal'), () => void run({ type: 'tab.openExternal', source: 'page' }), undefined, undefined, !tab || !/^https?:\/\//.test(tab.url))}
       {row('code', b('devtools'), action('devtools'), undefined, undefined, !tab)}

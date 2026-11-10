@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { BotService } from '../../src/main/companion-bot/service';
+import { BotService, type BotServiceOptions } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 
@@ -15,7 +15,7 @@ export class NativeServiceMemory extends BotMemoryService {
   override async appendHistory() { return { appended: [] }; }
   override async close() {}
 }
-export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string>) {
+export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext'>>) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-native-routing-')), calls: BotDshRun[] = [];
   class Native extends BotDshBrain {
     constructor() { super({ getHost: async () => { throw Error('No DSH process in service routing fixture'); } }); }
@@ -27,7 +27,7 @@ export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<st
     override async close() {}
   }
   const service = new BotService({ root, brain: new Native(), memory: new NativeServiceMemory(path.join(root, 'memory')),
-    model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined });
+    model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined, ...options });
   await service.handle({ type: 'state' });
   return { root, service, calls, close: async () => {
     await service.shutdown();
