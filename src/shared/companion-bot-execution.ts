@@ -19,7 +19,7 @@ function fold(steps: BotExecutionStep[], incoming: BotExecutionStep): BotExecuti
       && (step.callId ? item.callId === step.callId : !item.output));
     if (index >= 0) {
       const previous = steps[index]!;
-      steps[index] = { ...previous, sequence: step.sequence, output: step.text, summary: step.summary, status: step.status ?? 'completed' };
+      steps[index] = { ...previous, sequence: step.sequence, output: step.text, summary: step.summary, status: step.status ?? 'completed', updatedAt: step.updatedAt ?? step.at };
       return steps;
     }
   }

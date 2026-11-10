@@ -22,7 +22,9 @@ The `browser` tool observes, reads, fills and operates real tabs, preserving the
 
 ## Full-page PNG
 
-Choose **网页转长图…** in the page context menu, or **Save full-page image** under More. It exports the entire current document from the existing tab, including its bottom, without resizing or moving your viewport. Existing lazy images are given time to load; expand website content before capture when necessary. Oversized pages report an error rather than silently cropping the output.
+Choose **网页转长图…** in the page context menu, or **Save full-page image** under More. Follow capture progress, scroll through the preview, then confirm and choose a save location. Cancel at any time during capture. Errors appear in the app; successful saves show the actual path. Cancelling the save picker keeps the preview available.
+
+Small tiles are captured from the existing signed-in tab and stitched by a background worker. Only nearby preview bands load in the UI. Pages with more than fifty images are supported without the previous 64-million-pixel or 65,500-pixel-height caps. Scroll position and temporary page styles are restored afterwards. Expand website content first when needed; infinite loading, PNG format bounds, available disk space and browser failures can still affect capture and are reported explicitly.
 
 ## Native AI search and browser conversation
 

@@ -2,6 +2,7 @@ import { useId, useLayoutEffect, useRef, useState } from 'react';
 import type { BotExecution, BotExecutionStep, BotResponse } from '../../shared/companion-bot';
 import { botExecutionRounds } from '../../shared/companion-bot-execution';
 import { BotIcon } from './BotIcon';
+import { botExecutionActivity, latestBotExecutionActivity } from './execution-activity';
 import './bot-execution.css';
 
 type Locale = 'zh-CN' | 'en';
@@ -19,8 +20,9 @@ function ExecutionDetails({ execution, locale, onAnswer, onContinue }: { executi
   const contents=useRef<HTMLDivElement>(null),following=useRef(true);
   useLayoutEffect(()=>{if(running&&expanded&&following.current&&contents.current)contents.current.scrollTop=contents.current.scrollHeight;},[execution.steps,expanded,running]);
   const rounds = botExecutionRounds(execution.steps.filter(step=>!['session_created','session_resumed'].includes(step.type))).filter(round=>round.step!==undefined||round.steps.some(step=>step.type!=='status'));
-  const latest = execution.steps.reduce<BotExecution['steps'][number] | undefined>((latest, step) => !latest || Date.parse(step.updatedAt ?? step.at) >= Date.parse(latest.updatedAt ?? latest.at) ? step : latest, undefined);
-  const status = running ? execution.question ? zh ? '等待你的回复' : 'Waiting for your reply' : latest?.type === 'reasoning' ? zh ? '正在思考' : 'Thinking' : latest?.summary || execution.phase || (zh ? 'DSH 正在处理' : 'DSH is working')
+  const latest = latestBotExecutionActivity(execution.steps), activity = latest ? botExecutionActivity(latest, locale) : undefined;
+  const liveActivity = latest && ['reasoning','tool_call','tool_result'].includes(latest.type) && activity ? `${activity.title}${activity.detail ? ' · ' + activity.detail : ''}` : undefined;
+  const status = running ? execution.question ? zh ? '等待你的回复' : 'Waiting for your reply' : liveActivity || latest?.summary || execution.phase || (zh ? 'DSH 正在处理' : 'DSH is working')
     : execution.continuation ? zh ? '等待继续' : 'Ready to continue' : execution.status === 'succeeded' ? zh ? '已完成' : 'Completed' : execution.status === 'failed' ? zh ? '执行失败' : 'Execution failed' : zh ? '已停止' : 'Stopped';
   const toolCount = rounds.flatMap(round => round.steps).filter(step => step.type === 'tool_call').length;
   const stepCount = rounds.filter(round => round.step !== undefined).length;
@@ -29,7 +31,7 @@ function ExecutionDetails({ execution, locale, onAnswer, onContinue }: { executi
   return <section className="bot-execution" data-status={execution.status} data-native-session={execution.sessionId} aria-label={zh ? 'DSH 执行过程' : 'DSH execution'}>
     <button className="bot-execution-toggle" type="button" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded(value => !value)}>
       <span className="bot-execution-state-icon"><BotIcon name={running ? 'clock' : execution.status === 'succeeded' ? 'check' : 'notice'} /></span>
-      <span className="bot-execution-status">{currentStage}</span>
+      <span className="bot-execution-status" title={currentStage}>{currentStage}</span>
       <span className="bot-execution-count">{stepCount ? zh ? `${stepCount} 步` : `${stepCount} steps` : ''}{toolCount ? zh ? ` · ${toolCount} 次工具` : ` · ${toolCount} tools` : ''}</span>
       <span className="bot-execution-action"><span className="bot-sr-only">{expanded ? zh ? '收起过程' : 'Hide details' : zh ? '查看过程' : 'Show details'}</span><BotIcon name="chevron-down" /></span>
     </button>
@@ -61,17 +63,13 @@ function ExecutionPhase({ step, running, locale }: { step: BotExecutionStep; run
   const zh = locale === 'zh-CN', thinking = step.type === 'reasoning', tool = step.type === 'tool_call' || step.type === 'tool_result';
   const interrupted = step.outputState === 'abandoned', complete = step.outputState === 'committed' || step.status === 'completed' || step.output !== undefined;
   const failed = step.status === 'failed' || step.summary?.includes('工具执行失败');
-  const labels: Record<string, [string, string]> = { read: ['读取文件', 'Read file'], read_file: ['读取文件', 'Read file'], write: ['写入文件', 'Write file'], edit: ['编辑文件', 'Edit file'],
-    shell: ['运行命令', 'Run command'], pwsh: ['运行命令', 'Run command'], bash: ['运行命令', 'Run command'], web_fetch:['读取网页','Read page'],web_search:['搜索网页','Search web'], present: ['交付文件', 'Deliver files'], present_files: ['交付文件', 'Deliver files'],
-    message_peer: ['伙伴协作', 'Collaborate'], companion_contact: ['伙伴私聊', 'Contact companion'], sessions_spawn: ['启动子会话', 'Start subagent'] };
-  const name = Object.keys(labels).find(name => step.toolName === name || step.toolName?.endsWith('_' + name));
-  const title = thinking ? zh ? '思考' : 'Thinking' : tool ? name ? labels[name]![zh ? 0 : 1] : zh ? '调用工具' : 'Tool call'
+  const activity = botExecutionActivity(step, locale);
+  const title = thinking || tool ? activity.title
     : step.type === 'child_text' ? zh ? '子会话回复' : 'Subagent reply' : step.type === 'artifacts' ? zh ? '文件已交付' : 'Files delivered' : step.summary || (zh ? '处理进展' : 'Progress');
   const badge = failed ? zh ? '失败' : 'Failed' : interrupted ? zh ? '已中断' : 'Interrupted' : complete ? zh ? '已完成' : 'Done' : running ? zh ? '进行中' : 'In progress' : zh ? '已记录' : 'Recorded';
   const icon = thinking ? 'sparkles' : tool ? 'settings' : step.type === 'artifacts' ? 'file' : 'clock';
-  let preview='';
-  if(tool&&step.text){try{const args=JSON.parse(step.text) as Record<string,unknown>;preview=String(args.description??args.path??args.file_path??args.url??args.query??args.command??step.toolName??'').replace(/\s+/gu,' ').slice(0,180);}catch{preview=step.toolName??'';}}
-  const heading = <><span className="bot-execution-phase-icon"><BotIcon name={icon} /></span><span className="bot-execution-phase-title">{title}</span>{preview&&<span className="bot-execution-preview">{preview}</span>}{(failed||(!complete&&running&&!thinking))&&<span className="bot-execution-phase-badge">{badge}</span>}</>;
+  const preview = thinking || tool ? activity.detail : '';
+  const heading = <><span className="bot-execution-phase-icon"><BotIcon name={icon} /></span><span className="bot-execution-phase-title">{title}</span>{preview&&<span className="bot-execution-preview" title={preview}>{preview}</span>}{(failed||(!complete&&running&&!thinking))&&<span className="bot-execution-phase-badge">{badge}</span>}</>;
   if (!step.text && !step.output) return <div className="bot-execution-notice">{heading}</div>;
   return <details className={`bot-execution-phase ${thinking ? 'bot-execution-reasoning' : tool ? 'bot-execution-tool' : ''}${failed ? ' is-error' : ''}`}>
     <summary>{heading}<BotIcon name="chevron-down" /></summary>

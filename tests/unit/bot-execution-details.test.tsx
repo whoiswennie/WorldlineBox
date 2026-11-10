@@ -21,7 +21,7 @@ it('keeps necessary live controls outside the bubble and removes completed execu
   const toggle = host.querySelector<HTMLButtonElement>('.bot-message-progress .bot-execution-toggle')!;
   expect(toggle.getAttribute('aria-expanded')).toBe('false');
   expect(toggle.textContent).toContain('正在读取资料');
-  expect(host.querySelector('.bot-execution-contents')?.textContent).toContain('read_file');
+  expect(host.querySelector('.bot-execution-contents')?.textContent).toContain('读取文件');
   expect(host.querySelector('.bot-message-text')?.textContent).toBe('流式正文');
   await render({ ...message, status: 'sent', content: '**最终答复**', execution: { ...execution, status: 'succeeded' } });
   expect(host.querySelector('.bot-execution,.bot-message-progress')).toBeNull();
@@ -35,6 +35,18 @@ it('offers explicit native continuation and retries the same command without dup
   const button=host.querySelector<HTMLButtonElement>('.bot-execution-continuation button')!;
   await act(()=>button.click());expect(host.querySelector('[role=alert]')?.textContent).toBe('暂时断开');
   ok=true;await act(()=>button.click());expect(proceed).toHaveBeenCalledTimes(2);expect(proceed.mock.calls[0]).toEqual(proceed.mock.calls[1]);expect(button.disabled).toBe(true);
+});
+it('shows the actual native tool description and a short live reasoning preview while staying collapsed', async () => {
+  await render({ ...message, execution: { ...execution, steps: [{ id: 'call', type: 'tool_call', at: message.createdAt, nativeStep: 4, toolName: 'pwsh', text: JSON.stringify({ description: '导出 56 张示例图片', command: 'secret command is never used as the description' }), summary: '开始调用工具', sequence: 8 }] } });
+  expect(host.querySelector('.bot-execution-status')?.textContent).toBe('第 4 步 · 运行命令 · 导出 56 张示例图片');
+  expect(host.querySelector('.bot-execution-toggle')?.getAttribute('aria-expanded')).toBe('false');
+  expect(host.querySelector('.bot-execution-status')?.textContent).not.toContain('secret command');
+  await render({ ...message, execution: { ...execution, steps: [{ id: 'think', type: 'reasoning', at: message.createdAt, nativeStep: 5, text: '先读取图片。\n\n已完成图片读取，接下来核对结果。', sequence: 9 }] } });
+  expect(host.querySelector('.bot-execution-status')?.textContent).toBe('第 5 步 · 思考 · 已完成图片读取，接下来核对结果。');
+});
+it('uses native sequence after coalescing parallel calls rather than showing an older array entry', async () => {
+  await render({ ...message, execution: { ...execution, steps: [{ id: 'r', type: 'reasoning', at: message.createdAt, text: '下一步核对文件', sequence: 12 }, { id: 'tool', type: 'tool_call', at: message.createdAt, toolName: 'read_file', text: '{"path":"report.md"}', sequence: 11 }] } });
+  expect(host.querySelector('.bot-execution-status')?.textContent).toContain('下一步核对文件');
 });
 it('offers a compact one-click continuation outside the bubble only after interruption is confirmed', async () => {
   const proceed = vi.fn(async () => ({ ok: true }));

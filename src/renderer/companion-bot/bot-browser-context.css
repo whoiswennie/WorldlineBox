@@ -5,7 +5,7 @@
 .bot-browser-context-card strong,.bot-browser-context-card>div>span { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
 .bot-browser-context-card strong { font-size:12px;font-weight:550; }
 .bot-browser-context-card>div>span { color:var(--ui-content-tertiary);font-size:10px; }
-.bot-browser-context-card>button { flex-shrink:0;display:grid;place-items:center;width:26px;height:26px;padding:3px;border:0;border-radius:6px;background:transparent;color:var(--ui-content-secondary);font-size:20px;cursor:pointer; }
+.bot-browser-context-card>button { flex-shrink:0;align-self:center;display:grid;place-items:center;width:26px;height:26px;padding:3px;border:0;border-radius:6px;background:transparent;color:var(--ui-content-secondary);line-height:0;cursor:pointer; }
 .bot-browser-context-card>button:hover { background:var(--ui-surface-hover); }
 .bot-browser-context-card button>.bot-icon { width:14px;height:14px; }
 .bot-browser-picker-backdrop { position:fixed;inset:var(--shell-toolbar-height,44px) 0 0;z-index:calc(var(--ui-layer-modal-backdrop,1000) + 4);display:grid;place-items:center;padding:20px;background:var(--ui-surface-scrim); }

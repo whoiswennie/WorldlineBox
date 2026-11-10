@@ -23,8 +23,7 @@ import { BrowserCompanionActivity } from './companion-activity';
 import { companionVideo } from './companion-video';
 import { companionScreenshot } from './companion-screenshot';
 import { companionViewport } from './companion-viewport';
-import { fullPageImage } from './full-page-image';
-import { writeFile } from 'node:fs/promises';
+import { BrowserPageImageJob } from './page-image-job';
 import { BROWSER_COMPANION_REQUEST, browserPageContextSchema, type BrowserPageContext } from '../../shared/browser-page-context';
 
 export interface CompanionBrowserResult { value: unknown; screenshot?: Uint8Array }
@@ -64,7 +63,9 @@ export class BrowserService {
   private readonly companionActivity = new BrowserCompanionActivity(() => { this.layout(); this.changed(false); });
   private readonly companionPages = new Map<string, BrowserPageController>();
   private readonly companionOpenedTabs = new Map<string, string>();
+  private readonly pageImage: BrowserPageImageJob;
   constructor(private readonly getWindow: () => BrowserWindow | null | undefined, private readonly root = path.join(app.getPath('userData'), 'browser'), private readonly captureHooks?: BrowserCaptureHooks, private readonly onSelection?: (text: string) => Promise<void>, private readonly fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig) {
+    this.pageImage = new BrowserPageImageJob(path.join(root, 'page-image-cache'), () => this.changed(false));
     this.store = new BrowserStore(root, error => { this.error = '浏览器配置保存失败：' + String(error).slice(0, 600); this.changed(false); });
     this.ai = new BrowserAiService(root, { getConfig: getModelConfig, changed: () => this.changed(false), hasTab: id => this.store.data.tabs.some(tab => tab.id === id),
       context: () => ({ activeTabId: this.store.data.activeTabId, tabCount: this.store.data.tabs.length,
@@ -238,7 +239,7 @@ export class BrowserService {
       companions: this.companionActivity.state(),
       downloads: structuredClone(this.store.data.downloads), historyCount: this.store.data.history.length, preferences: { ...this.store.data.preferences },
       permissions: [...this.pendingPermissions].map(([id, value]) => ({ id, origin: value.origin, permission: value.permission })),
-      fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state(),
+      fullscreen: this.fullscreen, revision: this.revision, find: this.find, cacheBytes: this.cacheBytes, error: this.error, capture: this.capture?.state(), pageImage: this.pageImage.state,
       ai: { ...this.ai.state(), page: this.searchPages.get(this.store.data.activeTabId ?? '') },
       ...(isRestrictedBrowserSignIn(this.store.data.tabs.find(tab => tab.id === this.store.data.activeTabId)?.url ?? '')
         ? { signIn: { provider: 'google' as const, siteUrl: this.signInSources.get(this.store.data.activeTabId!) } } : {}) };
@@ -273,8 +274,8 @@ export class BrowserService {
       && !this.companionActivity.busy(id)
       && !entry.view.webContents.isDestroyed() && !entry.view.webContents.isCurrentlyAudible()).sort((a, b) => a[1].used - b[1].used)[0];
   }
-  private pageAction(action: () => void): void {
-    try { action(); }
+  private pageAction(action: () => void | Promise<void>): void {
+    try { Promise.resolve(action()).catch(error => this.reportPageError(error)); }
     catch (error) { this.reportPageError(error); }
   }
   private reportPageError(error: unknown): void {
@@ -626,14 +627,9 @@ export class BrowserService {
   private async savePageImage(id = this.active().id): Promise<void> {
     const tab = this.requireTab(id), contents = this.ensureView(tab).webContents;
     if (!/^https?:\/\//.test(contents.getURL())) throw Error('请先打开需要生成长图的网页。');
-    const version = this.navigationVersions.get(id), title = Array.from(tab.title, char => char.charCodeAt(0) < 32 ? '_' : char).join('').replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/, '').slice(0, 100) || 'webpage';
-    const selected = await dialog.showSaveDialog(this.attachOwner(), { title: '网页转长图', defaultPath: title + '.png', filters: [{ name: 'PNG 长图', extensions: ['png'] }] });
-    if (selected.canceled || !selected.filePath) return;
+    const version = this.navigationVersions.get(id);
     const current = () => this.store.data.tabs.includes(tab) && this.navigationVersions.get(id) === version;
-    if (!current()) throw Error('网页已变化，请重新生成长图。');
-    const bytes = await fullPageImage(contents, current);
-    if (!current()) throw Error('网页已变化，请重新生成长图。');
-    await writeFile(selected.filePath, bytes);
+    await this.pageImage.start(id, tab.title, contents, current);
   }
   private createPageContext(id = this.active().id, selection = ''): BrowserPageContext {
     const tab = this.requireTab(id), contents = this.ensureView(tab).webContents;
@@ -847,6 +843,14 @@ export class BrowserService {
       case 'tab.contextMenu': this.tabContextMenu(request.id, request.locale); return { ok: true };
       case 'page.save': await this.savePage(); break;
       case 'page.image': await this.savePageImage(request.id); break;
+      case 'page.image.save': await this.pageImage.save(request.jobId, async title => {
+        const filename = Array.from(title, char => char.charCodeAt(0) < 32 ? '_' : char).join('').replace(/[<>:"/\\|?*]/g, '_').replace(/[. ]+$/, '').slice(0, 100) || 'webpage';
+        const selected = await dialog.showSaveDialog(this.attachOwner(), { title: '保存网页长图', defaultPath: path.join(app.getPath('pictures'), filename + '.png'), filters: [{ name: 'PNG 长图', extensions: ['png'] }] });
+        return selected.canceled ? undefined : selected.filePath;
+      }); break;
+      case 'page.image.cancel': this.pageImage.cancel(request.jobId); break;
+      case 'page.image.close': if (this.pageImage.state?.id === request.jobId) await this.pageImage.clear(); break;
+      case 'page.image.tile': return { ok: true, pageImageTile: await this.pageImage.tile(request.jobId, request.index) };
       case 'page.context': return { ok: true, pageContext: this.createPageContext(request.id) };
       case 'page.results.reset': {
         const tab = this.store.data.tabs.find(item => item.id === request.id);
@@ -915,6 +919,7 @@ export class BrowserService {
     this.changed(); return { ok: true, state: this.state() };
   }
   async shutdown(): Promise<void> {
+    await this.pageImage.shutdown();
     this.companionActivity.pause(true); this.companionPages.clear();
     await this.initialization?.catch(() => undefined);
     await this.ai.shutdown();

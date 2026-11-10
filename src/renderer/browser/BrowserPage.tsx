@@ -11,6 +11,7 @@ import { BrowserMorePanel } from './BrowserMorePanel';
 import { BrowserLoadFailure } from './BrowserLoadFailure';
 import { BrowserTabStrip } from './BrowserTabStrip';
 import { BrowserCompanionStatus } from './BrowserCompanionStatus';
+import { BrowserPageImage } from './BrowserPageImage';
 import { browserTabShortcut } from '../../shared/browser-shortcuts';
 import { BrowserStartPage } from './BrowserStartPage';
 import type { BrowserAiRequest } from '../../shared/browser-ai';
@@ -154,6 +155,7 @@ export function BrowserPage({ api, active, onOpenNetwork, onOpenAssets, onScreen
   const activeDownloads = state?.downloads.filter(item => item.status === 'progressing').length ?? 0;
   const panelIcon: Record<Panel, IconName> = { bookmarks: 'star', history: 'clock', downloads: 'download', settings: 'settings', more: 'sliders', capture: 'save', ai: 'sparkles' };
   return <section className="web-browser" data-web-browser aria-label={b('title')}>
+    {active && state?.pageImage && <BrowserPageImage key={state.pageImage.id} state={state.pageImage} run={run} />}
     <BrowserTabStrip tabs={state?.tabs ?? []} activeId={state?.activeTabId} activities={state?.companions?.activities} run={run} b={b} />
     {state ? <BrowserCompanionStatus state={state} run={run} b={b} /> : null}
     <div className="browser-toolbar" aria-label={b('toolbar')}>

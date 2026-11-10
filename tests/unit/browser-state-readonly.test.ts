@@ -19,3 +19,10 @@ it('reads the ready browser snapshot without rewriting its session or broadcasti
   expect(persist).not.toHaveBeenCalled();
   expect(send).not.toHaveBeenCalled();
 });
+it('reports asynchronous native-menu failures in the app snapshot instead of leaking a rejected promise', async () => {
+  const send = vi.fn(), service = new BrowserService(() => ({ isDestroyed: () => false, webContents: { send } }) as never, 'unused-menu-browser-root');
+  const action = Reflect.get(service, 'pageAction') as (action: () => Promise<void>) => void;
+  action.call(service, async () => { throw Error('网页长图生成失败：原生错误'); });
+  await vi.waitFor(() => expect(service.state().error).toBe('网页长图生成失败：原生错误'));
+  expect(send).toHaveBeenCalled();
+});

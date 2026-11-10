@@ -88,6 +88,16 @@ WorldlineBox 保存联系人、人设、消息、媒体授权和 VCP 记忆，�
 
 浏览器右键「呼唤伙伴」由主进程生成有界、带 document/version 身份的网页引用，经 IPC 提供给伙伴选择器。用户用 @ 名称搜索，确认选择后只添加草稿中的应用卡。发送时再次验证实际标签、文档、URL 与期限；引用经 event payload 进入本次原生 DSH 请求，执行中的引导同样携带引用。任务的 browser 工具接到同一 BrowserService 的 WebContentsView，沿用真实 Session；Cookie、Token 与 storage 不经聊天、提示词或桥接器传送。截图落到受管工作区供原生 read_image 读取，页面文字和标题始终是资料，不能覆盖用户任务与权限。清理伙伴记录会删除相应的引用元数据。
 
-右键及更多菜单的网页长图使用 Chromium 原生 Page.captureScreenshot／captureBeyondViewport，按实际文档与像素比限制分配，等待已有懒加载图片，保留 viewport 与滚动位置，拒绝导航竞态、并发捕获、其他调试器占用及超大输出，并设总超时。不在主进程解码整张图片。[CDP 接口](https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-captureScreenshot) 与 [Electron Debugger](https://www.electronjs.org/docs/latest/api/debugger) 为依据。
+网页长图最初使用单次 CDP 截图；实际长页触发尺寸限制后，已改为下面的分块预览流程。
 
 `browser-companion-connected-real.test.ts` 在已登录的本地工作台中触发真实 Chromium 右键事件及生产菜单，保存并核对 2394×18180 长图底部像素与滚动位置，通过 @ 大肥鱼附加网页，使用真实模型和 DSH 修改筛选框，再于同 Session 追问修改。核对 WebContents ID、标签 ID 和标签总数均保持，账号来自原 HTTP-only 登录会话。报告及截图：`artifacts/browser-companion-connected-real/`。
+
+## 11 月 10 日：长图进度、预览与当前动作
+
+右键和更多菜单共用一个主进程长图作业。准备、捕获、编码、预览、保存、失败与取消状态经浏览器快照返回；原生菜单的异步 rejection 也会被捕获并显示。只有用户在预览中确认后才打开保存框，通过同目录临时文件异步复制与重命名完成保存。失败保留预览以便重试；目标路径、ID、预览索引均在主进程校验，不能读取任意文件。
+
+使用同一 WebContents 的小视口捕获，暂时关闭后台节流，保持隐藏且唤醒页面；等待滚动后的两次重绘，避免复制上一帧。捕获结束或取消后恢复滚动、样式和节流。Windows 直接把有界 BGRA 像素交给 Worker，颜色转换与压缩都在后台进行。Worker 保留约 400 万像素的横向带，逐行写入 zlib/PNG，不分配完整长图；预览为独立 JPEG 横带，按可见区域载入。移除旧的 6400 万像素、65500 高度、90 MiB 和 30 秒整项限制，仅为无响应的单项操作保留超时。PNG 格式及物理资源仍有边界。
+
+`browser-page-image.test.ts` 使用 56 张真实懒加载图片，验证进度、确认前无保存框与目标文件、整页底部、每一张图片的独立颜色位置标记、预览首尾、取消、原生错误反馈和主进程心跳。加入逐图校验是为了覆盖仅检查尺寸与底部无法发现的分块重复。报告：`artifacts/browser-page-image-preview/result.json`。[Electron capturePage](https://www.electronjs.org/docs/latest/api/web-contents#contentscapturepagerect-opts) 与 [后台节流](https://www.electronjs.org/docs/latest/api/web-contents#contentssetbackgroundthrottlingallowed) 为原生捕获依据。
+
+伙伴过程默认保持折叠。当前行与展开后的工具行共用原生参数中的 description/title、文件名、查询或浏览器动作短述；思考行显示简短文本预览。使用原生 sequence 与 streamGeneration 选取最新事件，避免合并后的流片段被较旧的数组位置遮蔽。完成后继续只保留正文、表情与附件。网页卡片的打开与移除按钮统一采用 SVG、相同点击区与居中方式。

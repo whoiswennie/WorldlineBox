@@ -80,6 +80,8 @@ test('stops a real native tool, switches topics and cold-resumes the same reply 
     await expect(resumedRow.locator('.bot-reply-progress')).toBeVisible();
     await expect.poll(async () => { const message = await reply(); return message?.status === 'running' && message.execution?.steps.some(step => !beforeResumeSteps.includes(step.id) && step.type === 'tool_call'); }, { timeout: 120000, intervals: [100] }).toBe(true);
     await expect(resumedRow.locator('.bot-execution-toggle')).toBeVisible();
+    await expect(resumedRow.locator('.bot-execution-status')).not.toContainText('开始调用工具');
+    await expect(resumedRow.locator('.bot-execution-status')).toContainText(' · ');
     await expect(resumedRow.locator('.bot-reply-progress')).toHaveAttribute('data-phase', 'using-tool');
     report.liveAfterResume = { running: true, nativeSessionId: (await reply())!.execution!.sessionId, phase: await resumedRow.locator('.bot-reply-progress').getAttribute('data-phase'), label: await resumedRow.locator('.bot-execution-status').innerText(), newSteps: (await reply())!.execution!.steps.filter(step => !beforeResumeSteps.includes(step.id)) };
     await capture('continued-live-native-progress');
