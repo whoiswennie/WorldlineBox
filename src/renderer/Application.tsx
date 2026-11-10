@@ -103,7 +103,7 @@ export function App() {
       {usesWindowsStyleShell(navigator.userAgent) ? <><WindowsWindowControls shell={api?.shell} /><WindowEdgeResizeHandles shell={api?.shell} /></> : null}
       {toolError ? <div className="application-tool-error" role="alert">{toolError}<button type="button" onClick={() => setToolError('')} aria-label={t('common.close')}>×</button></div> : null}
       <ApplicationShell activeModuleId={activeModuleId} onSelectModule={setActiveModuleId} onOpenSettings={openSettings}
-        tools={api?.captureTools ? <CaptureToolsToolbar onOpen={openTool} /> : null}
+        tools={api?.captureTools ? <CaptureToolsToolbar onOpen={openTool} onError={setToolError} nativeMenu={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen ? api.captureTools : undefined} /> : null}
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },

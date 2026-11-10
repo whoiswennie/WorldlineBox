@@ -55,6 +55,7 @@ const message = z.strictObject({ role: z.enum(['user', 'assistant']), content: z
 const selectionText = z.string().max(CAPTURE_SELECTION_MAX_BYTES).refine(value => new TextEncoder().encode(value).byteLength <= CAPTURE_SELECTION_MAX_BYTES, '选中文字超过 32 KiB 上限。');
 export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }), z.strictObject({ type: z.literal('context') }),
+  z.strictObject({ type: z.literal('menu.popup'), locale: z.enum(['zh-CN', 'en']), x: z.number().finite().min(0).max(32768), y: z.number().finite().min(0).max(32768) }),
   z.strictObject({ type: z.literal('surface.ready') }),
   z.strictObject({ type: z.literal('recording.controls.ready'), id: z.string().min(1).max(100) }),
   z.strictObject({ type: z.literal('settings.save'), settings: captureToolsSettingsSchema }),
@@ -87,7 +88,7 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reveal'), path: z.string().min(1).max(8192) }),
 ]);
 export type CaptureToolsRequest = z.infer<typeof captureToolsRequestSchema>;
-export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), preview: captureRecordingPreviewSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
+export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), menuTask: captureToolTaskSchema.optional(), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), preview: captureRecordingPreviewSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
 export type CaptureToolsResponse = z.infer<typeof captureToolsResponseSchema>;
 export interface WorldlineBoxCaptureToolsApi {
   request(request: CaptureToolsRequest): Promise<CaptureToolsResponse>;

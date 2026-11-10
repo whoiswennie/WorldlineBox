@@ -101,3 +101,9 @@ WorldlineBox 保存联系人、人设、消息、媒体授权和 VCP 记忆，�
 `browser-page-image.test.ts` 使用 56 张真实懒加载图片，验证进度、确认前无保存框与目标文件、整页底部、每一张图片的独立颜色位置标记、预览首尾、取消、原生错误反馈和主进程心跳。加入逐图校验是为了覆盖仅检查尺寸与底部无法发现的分块重复。报告：`artifacts/browser-page-image-preview/result.json`。[Electron capturePage](https://www.electronjs.org/docs/latest/api/web-contents#contentscapturepagerect-opts) 与 [后台节流](https://www.electronjs.org/docs/latest/api/web-contents#contentssetbackgroundthrottlingallowed) 为原生捕获依据。
 
 伙伴过程默认保持折叠。当前行与展开后的工具行共用原生参数中的 description/title、文件名、查询或浏览器动作短述；思考行显示简短文本预览。使用原生 sequence 与 streamGeneration 选取最新事件，避免合并后的流片段被较旧的数组位置遮蔽。完成后继续只保留正文、表情与附件。网页卡片的打开与移除按钮统一采用 SVG、相同点击区与居中方式。
+
+## 11 月 10 日：全局工具列表保留背景页面
+
+浏览器的 WebContentsView 始终位于主窗口 HTML 之上。旧版全局工具列表使用 DOM portal，并触发浏览器的遮挡检测隐藏整个原生页面，留下白色区域。浏览器模块现在通过主窗口专用的 `menu.popup` 请求打开 Electron 原生菜单，原生页面保留可见性、视口、输入和滚动，并继续绘制；其他模块及设置对话框继续使用原来的 DOM 菜单。选中工具后等菜单关闭再分派原有 open 请求，不会仅因展开列表就截图或隐藏主窗口。
+
+主进程限定调用者为主窗口主框架、校验并按窗口缩放转换坐标，菜单项来自固定枚举；关闭菜单不启动工具，窗口导航、退出与渲染进程结束会结清待处理请求。`browser-tools-menu-live.test.ts` 调用真实 `Menu.popup`，在菜单打开期间核对同一 WebContentsView 仍可见、计时器推进、原生截图像素随页面样式变化、输入与滚动不变，并验证启动器、网络与伙伴界面。`application-rail-layout.test.ts` 另覆盖三种窗口大小及四种缩放、设置对话框菜单、键盘关闭与实际工具分派。报告：`artifacts/tools-menu-live/result.json`。[Electron 原生菜单 API](https://www.electronjs.org/docs/latest/api/menu#menupopupoptions)。

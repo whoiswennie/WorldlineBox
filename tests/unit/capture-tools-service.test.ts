@@ -77,6 +77,12 @@ async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => v
 function handler(name: string) { return mock.scope[name] as (...args: unknown[]) => unknown; }
 
 describe('isolated capture tools authorization and settings', () => {
+  it('allows only the main frame of the main window to open a native global tools popup', async () => {
+    const { service, main, tool } = await fixture();
+    const command = { type: 'menu.popup', locale: 'zh-CN', x: 40, y: 200 };
+    expect((await service.handle(event(tool), command)).ok).toBe(false);
+    expect((await service.handle(event(main, {} as Electron.WebFrameMain), command)).ok).toBe(false);
+  });
   it('starts long capture from a fresh native screen without enumerating a fake source ID', async () => {
     const { service } = await fixture();
     vi.mocked(windowsSnapshot).mockResolvedValueOnce(mock.png);

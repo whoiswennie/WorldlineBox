@@ -20,6 +20,7 @@ import { answerSelectedText } from './text-answer';
 import { CAPTURE_TOOLS_ANSWER_PROGRESS, captureAnswerProgressSchema, type CaptureAnswerUpdate } from '../../shared/capture-answer';
 import { createCaptureDesktopContext, nativeCaptureRectToDisplayDip, placeCaptureRecordingControls, positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor, readWindowsDesktopRegions, recordingBoundaryPage, recordingBoundaryRectangles } from './desktop-regions';
 import { windowsSnapshot } from './windows-snapshot';
+import { CaptureToolsMenu } from './menu';
 
 export interface CaptureToolsServiceOptions {
   getMainWindow(): BrowserWindow | null | undefined;
@@ -37,7 +38,7 @@ export interface CaptureToolsServiceOptions {
 }
 const TASKS: CaptureToolTask[] = ['screenshot', 'recording', 'ocr', 'translate', 'long-screenshot', 'selection'];
 const IMAGE_BYTES = 32 * 1024 * 1024;
-const mainActions = new Set(['state', 'settings.save', 'shortcuts.capture', 'open']);
+const mainActions = new Set(['state', 'settings.save', 'shortcuts.capture', 'open', 'menu.popup']);
 const flushActions = new Set(['state', 'recording.chunk', 'recording.finish', 'recording.cancel', 'recording.stop']);
 type CaptureProvider = () => Promise<CaptureImageSource>;
 export function canonicalCaptureShortcut(value: string): string {
@@ -53,6 +54,7 @@ export function canonicalCaptureShortcut(value: string): string {
 
 /** An isolated, ephemeral utility. Web pages never receive desktop or model APIs. */
 export class CaptureToolsService {
+  private readonly menu = new CaptureToolsMenu();
   private settings: CaptureToolsSettings = structuredClone(DEFAULT_CAPTURE_TOOLS_SETTINGS);
   private shortcuts: CaptureToolsState['shortcuts'] = [];
   private registered = new Set<string>();
@@ -282,6 +284,7 @@ export class CaptureToolsService {
     if (!own && !main) return { ok: false, error: '无权访问截图工具。' };
     const parsed = captureToolsRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的截图工具请求。' };
     if (parsed.data.type === 'shortcuts.capture' && !main) return { ok: false, error: '请在主窗口设置中修改快捷键。' };
+    if (parsed.data.type === 'menu.popup' && !main) return { ok: false, error: '请在主窗口打开工具列表。' };
     const openDownloads = parsed.data.type === 'reveal' && path.resolve(parsed.data.path) === this.downloadPath;
     if (!own && !mainActions.has(parsed.data.type) && !openDownloads) return { ok: false, error: '请在独立截图工具窗口中执行此操作。' };
     try {
@@ -329,6 +332,10 @@ export class CaptureToolsService {
   }
   private async request(request: CaptureToolsRequest): Promise<CaptureToolsResponse> {
     switch (request.type) {
+      case 'menu.popup': {
+        const owner = this.options.getMainWindow(); if (!owner) throw Error('主窗口已关闭。');
+        return { ok: true, menuTask: await this.menu.open(owner, request) };
+      }
       case 'state': return { ok: true, state: this.state() };
       case 'context': {
         const tool = this.tool; await this.capturePending;
@@ -717,7 +724,7 @@ export class CaptureToolsService {
     }
     // Keep the tool IPC alive during the grace period so MediaRecorder's final
     // dataavailable and finish messages reach disk before its renderer closes.
-    await this.recordings.shutdown(); this.closed = true;
+    this.menu.close(); await this.recordings.shutdown(); this.closed = true;
     if (this.ipcRegistered) { ipcMain.removeHandler(CAPTURE_TOOLS_REQUEST); this.ipcRegistered = false; }
     const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
     this.scope?.setDisplayMediaRequestHandler(null); this.scope?.setPermissionRequestHandler(null); this.scope?.setPermissionCheckHandler(null);

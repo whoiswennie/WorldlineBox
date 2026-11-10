@@ -83,7 +83,7 @@ test('the application rail keeps capture, recording and settings aligned across 
   const measurements: unknown[] = [];
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-    response.end('<!doctype html><html><head><title>Native browser rail overlay fixture</title></head><body style="margin:0;padding:35px;background:#e7efff;color:#23406b;font:24px/1.8 Segoe UI"><h1>Real native browser view</h1><p>This page must be hidden while the global tools menu is open, then restored.</p><div style="height:220px;background:#89a9ed;border-radius:20px"></div></body></html>');
+    response.end('<!doctype html><html><head><title>Native browser rail overlay fixture</title></head><body style="margin:0;padding:35px;background:#e7efff;color:#23406b;font:24px/1.8 Segoe UI"><h1>Real native browser view</h1><p>This page stays visible while the global tools menu is open.</p><div style="height:220px;background:#89a9ed;border-radius:20px"></div></body></html>');
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); if (!address || typeof address === 'string') throw Error('Missing rail browser fixture port');
@@ -157,16 +157,28 @@ test('the application rail keeps capture, recording and settings aligned across 
       return { attached: !!view, visible: view?.getVisible() ?? false };
     }, browserUrl);
     await expect.poll(browserViewState).toEqual({ attached: true, visible: true });
+    // Intercept only this popup in the invisible geometry matrix. A separate
+    // native-menu acceptance uses the actual popup and live compositor pixels.
+    await application.evaluate(({ Menu }) => {
+      const original = Menu.prototype.popup;
+      Menu.prototype.popup = function (options) {
+        if (!this.getMenuItemById('capture-tool-screenshot')) return original.call(this, options);
+        Reflect.set(globalThis, 'railToolsMenu', { menu: this, options });
+      };
+    });
     await more.click();
-    await expect.poll(async () => { const view = await browserViewState(); return !view.attached || !view.visible; }).toBe(true);
-    const browserMenu = await assertMenuInteraction(page, (await railGeometry(page)).viewport, 'native browser overlay');
+    await expect.poll(() => application!.evaluate(() => !!Reflect.get(globalThis, 'railToolsMenu'))).toBe(true);
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('.application-capture-menu')).toHaveCount(0);
+    expect(await browserViewState()).toEqual({ attached: true, visible: true });
     await snapshot('.tools/test-output/application-rail-expanded-browser.png');
-    await page.keyboard.press('Escape'); await expect(browserMenu).toHaveCount(0);
+    await application.evaluate(() => { const value = Reflect.get(globalThis, 'railToolsMenu') as { options: Electron.PopupOptions }; value.options.callback?.(); Reflect.deleteProperty(globalThis, 'railToolsMenu'); });
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
     await expect.poll(browserViewState).toEqual({ attached: true, visible: true });
     await expect(browser.getByRole('heading', { name: 'Real native browser view' })).toBeVisible();
 
-    // A real click must survive the portal's pointerdown outside-click handler.
-    // Observe clipboard access without reading or replacing personal clipboard data.
+    // Selecting the native item must route through the production toolbar and
+    // open the assistant without reading personal clipboard data.
     await application.evaluate(({ clipboard }) => {
       const probe = { reads: 0, original: clipboard.readText };
       (globalThis as typeof globalThis & { __railClipboardProbe?: typeof probe }).__railClipboardProbe = probe;
@@ -174,7 +186,8 @@ test('the application rail keeps capture, recording and settings aligned across 
     });
     try {
       await more.click();
-      await page.locator('.application-capture-menu').getByRole('menuitem', { name: '划词助手', exact: true }).click();
+      await expect.poll(() => application!.evaluate(() => !!Reflect.get(globalThis, 'railToolsMenu'))).toBe(true);
+      await application.evaluate(({ BrowserWindow }) => { const value = Reflect.get(globalThis, 'railToolsMenu') as { menu: Electron.Menu; options: Electron.PopupOptions }, item = value.menu.getMenuItemById('capture-tool-selection')!; item.click(item, BrowserWindow.getAllWindows()[0], {} as Electron.KeyboardEvent); value.options.callback?.(); Reflect.deleteProperty(globalThis, 'railToolsMenu'); });
       await expect(page.locator('.application-capture-menu')).toHaveCount(0);
       await expect.poll(() => application!.windows().some(candidate => candidate.url().includes('window=capture-tools')), { timeout: 15000 }).toBe(true);
       const tool = application.windows().find(candidate => candidate.url().includes('window=capture-tools'))!;
@@ -202,8 +215,8 @@ test('the application rail keeps capture, recording and settings aligned across 
     }
     await test.info().attach('application-rail-measurements', { body: JSON.stringify(measurements), contentType: 'application/json' });
     console.log('APPLICATION_RAIL_LAYOUT_RESULT', JSON.stringify({ nativeSizes: sizes, zoomFactors: zooms, cases: measurements.length, alignedFooterButtons: ['screenshot', 'recording', 'settings'], settingsOpenAligned: true,
-      menuItems: 6, menuInsideViewport: true, menuTopmostAndActionable: true, portalMenuRealClickOpensSelection: true, noImplicitClipboardRead: true,
-      escapePreservesSettings: true, nativeBrowserViewHiddenAndRestored: true, moduleScrollingContained: true }));
+      menuItems: 6, menuInsideViewport: true, menuTopmostAndActionable: true, nativeMenuSelectionOpensAssistant: true, noImplicitClipboardRead: true,
+      escapePreservesSettings: true, nativeBrowserViewRemainsVisible: true, moduleScrollingContained: true }));
   } catch (cause) { failed = true; throw cause; }
   finally {
     await application?.close().catch(cause => { if (!failed) cleanupFailure = cause; });

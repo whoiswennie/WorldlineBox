@@ -52,6 +52,8 @@ After signing in with the default browser, continue using the website there. Its
 
 Screenshot and recording tools appear after their selection interface and captured desktop image are ready. Recording controls are also laid out before they become visible. Region recordings place controls outside the captured area; a full-display recording hides them when no outside area is available. Use the recording shortcut again to stop.
 
+Expanding the global tools list keeps the background page visible and live, preserving input and scroll position. The hide-app setting applies when you actually start capture or recording, rather than when you open the list.
+
 ## Save to an asset library
 
 Asset capture is built in; no extension installation is needed. Open a library in Assets, then click **Save to asset library** beside the browser's address bar.
