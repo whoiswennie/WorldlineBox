@@ -7,9 +7,22 @@ it('registers the companion preset during direct CLI startup even without a Host
   const list = vi.fn(async () => [{ id: 'worldlinebox-companion-v2' }]), effect = vi.fn();
   try {
     const bridgePath = '../../resources/dsh-bridge/index.js', bridge = await import(bridgePath);
-    await bridge.apply({ agentPresets: { list }, effect });
+    await bridge.apply({ agentPresets: { list }, effect, on: vi.fn() });
     expect(list).toHaveBeenCalledOnce(); expect(effect).toHaveBeenCalledOnce();
   } finally { if (previous !== undefined) process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN = previous; }
+});
+
+it('recovers only missing ephemeral Workbench routes using an actually registered native default', async () => {
+  const bridgePath = '../../resources/dsh-bridge/index.js', bridge = await import(bridgePath);
+  const select = vi.fn(), fallback = { provider: 'native', model: 'configured-native-model' };
+  let current = { provider: 'worldlinebox-bot-old', model: 'old' }, providers = [{ id: 'native' }];
+  const ctx = { llm: { listProviders: () => providers }, get: () => ({ currentSelection: () => fallback }) };
+  const agent = { model: { current: () => current, select } };
+  bridge.restoreWorkbenchModel(ctx, agent); expect(select).toHaveBeenCalledExactlyOnceWith(fallback);
+  select.mockClear(); providers.push({ id: current.provider }); bridge.restoreWorkbenchModel(ctx, agent); expect(select).not.toHaveBeenCalled();
+  providers = []; bridge.restoreWorkbenchModel(ctx, agent); expect(select).not.toHaveBeenCalled();
+  current = { provider: 'user-selected-provider', model: 'manual' }; providers = [{ id: 'native' }];
+  bridge.restoreWorkbenchModel(ctx, agent); expect(select).not.toHaveBeenCalled();
 });
 
 it('discovers the actual companion scope without assuming newer native turn-boundary APIs exist', async () => {

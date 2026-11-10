@@ -119,7 +119,16 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('uses fresh native turns, r
     expect(await readFile(path.join(cwd, 'resumed.txt'), 'utf8')).toBe('RESUMED_REAL_FILE');
     expect(callbacks).toEqual(['memory_recall', 'chat_ask_user']);
     expect(trace.some(event => event.type === 'artifacts' && event.artifacts?.some(file => file.path === path.join(cwd, 'child.txt')))).toBe(true);
-    const group = await brain.run(input('audience')); expect(group.text).toBe('GROUP_AUDIENCE_ISOLATED'); expect(errors).toEqual([]);
+    const group = await brain.run(input('audience'));
+    // Native child completion can wake its parent after an earlier answer.
+    // The scripted peer deliberately returns the same marker on both turns;
+    // the output contract preserves each committed message by native identity.
+    const groupAnswers = group.outputs?.filter(output => output.text) ?? [];
+    expect(groupAnswers.length).toBeGreaterThan(0);
+    expect(groupAnswers.every(output => output.text === 'GROUP_AUDIENCE_ISOLATED')).toBe(true);
+    expect(new Set(groupAnswers.map(output => output.id)).size).toBe(groupAnswers.length);
+    expect(new Set(groupAnswers.map(output => output.sequence)).size).toBe(groupAnswers.length);
+    expect(group.text).toBe(groupAnswers.map(output => output.text).join('\n\n')); expect(errors).toEqual([]);
     expect(counts.get('audience-child')).toBeGreaterThanOrEqual(2);
     const foreign = await brain.run(input('foreign', path.join(native.root, 'other-companion')));
     expect(foreign.status).toBe('succeeded');

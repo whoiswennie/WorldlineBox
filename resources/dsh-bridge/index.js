@@ -162,6 +162,18 @@ export async function createBotProvider(ctx) {
   };
 }
 
+/** Ephemeral application routes are not native profile configuration. A Web
+ * resume after Host restart must use a configured native default when that
+ * route is gone, rather than persisting a dead adapter identity forever. */
+export function restoreWorkbenchModel(ctx, agent) {
+  const selection = agent.model?.current?.();
+  if (!selection?.provider?.startsWith('worldlinebox-bot-')) return;
+  const providers = ctx.llm.listProviders();
+  if (providers.some(provider => provider.id === selection.provider)) return;
+  const fallback = ctx.get('agentDefaultModel')?.currentSelection();
+  if (fallback?.model && providers.some(provider => provider.id === fallback.provider)) agent.model.select(fallback);
+}
+
 const botReceiptPath = (record, eventId) => path.join(record.cwd, '.worldlinebox-brain', createHash('sha256').update(eventId).digest('hex') + '.json');
 /** Idempotent steering shares the native inbox/log admission semantics. A
  * prepared receipt must be reconciled before a finished task can reject it. */
@@ -302,6 +314,18 @@ export async function apply(ctx) {
   // Register before a Web user resumes persisted sessions, including direct CLI startup.
   const registeredPreset = await registerCompanionPreset(ctx);
   ctx.effect(() => registeredPreset.release);
+  const bridgeOwnedAgents = new WeakSet();
+  ctx.on('agent/created', ({ agent }) => {
+    if (!bridgeOwnedAgents.has(agent)) restoreWorkbenchModel(ctx, agent);
+    // Keep the Session open/configurable even when neither connection exists.
+    // Recheck per request: a later authenticated bot admission can restore it.
+    agent.ctx.on('agent/request', async (_payload, next) => {
+      const selection = agent.model?.current?.();
+      if (selection?.provider?.startsWith('worldlinebox-bot-') && !ctx.llm.listProviders().some(provider => provider.id === selection.provider))
+        throw new Error('伙伴模型连接尚未恢复。请从世界线盒子的伙伴界面继续这个话题，或在 DSH 中选择已配置的模型。');
+      return next();
+    }, { prepend: true });
+  });
   const token = process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;
   delete process.env.WORLDLINEBOX_DSH_BRIDGE_TOKEN;
   // A user may also launch this profile through the official CLI.
@@ -701,12 +725,9 @@ export async function apply(ctx) {
       const prompt = record.agent.ctx.get('systemPrompt');
       if (!prompt) throw new Error('DSH system prompt service is unavailable.');
       record.disposers.push(prompt.section({ name: 'worldlinebox-companion', order: 0, complete: true, interpolate: false, text: () => record.bot.system }));
-      record.disposers.push(record.agent.ctx.on('agent/request', async (_payload, next) => {
-        const value = await next(); return { ...value, ...record.bot.selection };
-      }, { prepend: true }));
       record.disposers.push(record.agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
         const value = await next(); return { ...value, ...(record.bot.role === 'brain' ? { contexts: [] } : {}),
-          variables: { ...value.variables, provider: record.bot.selection.provider, model: record.bot.selection.model } };
+          variables: { ...value.variables, ...(record.agent.model?.current?.() ?? record.bot.selection) } };
       }, { prepend: true }));
     if (record.bot.role === 'brain' || record.bot.workerAccess !== 'full') {
       const allow = record.bot.role === 'brain' ? record.bot.tools.map(tool => tool.name) : [...scopedWorkerTools, ...(record.bot.workerTools ?? []).map(tool => tool.name)];
@@ -748,8 +769,20 @@ export async function apply(ctx) {
     await mkdir(input.cwd, { recursive: true }); await mkdir(project, { recursive: true });
     const currentPreset = await ensureBotPreset(), preset = currentPreset.id;
     record.preset = preset; record.presetRevision = currentPreset.revision;
-    const setup = async (scope, agent) => {
-      await registeredPreset.use(async actual => {
+    const validateSession = agent => {
+      if (![project, input.cwd].some(directory => path.resolve(directory) === path.resolve(agent.session.header.cwd ?? '')))
+        throw new Error('Companion Session project ownership differs.');
+      const events = agent.session.snapshotEvents();
+      const audience = events.find(event => event.type === 'user/message' && event.data.source?.worldlineboxAudience)?.data.source.worldlineboxAudience;
+      if (audience && (audience.conversationId !== input.audience?.conversationId || audience.kind !== input.audience?.kind))
+        throw new Error('Native Session audience ownership differs.');
+      if (!audience && input.audience && !agent.session.header.parentSession && events.some(event => event.type === 'user/message'))
+        throw new Error('An unlabelled legacy Session cannot acquire a new audience.');
+    };
+    const setup = async (scope, agent, adopted = false) => {
+      validateSession(agent);
+      bridgeOwnedAgents.add(agent);
+      if (!adopted) await registeredPreset.use(async actual => {
         await ctx.agentPresets.mount(scope, actual.id);
         record.preset = actual.id; record.presetRevision = actual.revision;
       });
@@ -769,11 +802,24 @@ export async function apply(ctx) {
       await prepareBotWorkspace(ctx, record, input);
     };
     record.setup = setup;
+    const adopt = async agent => {
+      validateSession(agent);
+      if (agent.status !== 'idle') throw new Error('Companion lane is busy.');
+      // The Web controller already owns the writer and mounted preset. Attach
+      // to that exact Agent under native maintenance; never resume a second
+      // writer or remount its plugins. Detaching releases only our decorators.
+      await agent.runMaintenance(() => setup(agent.ctx, agent, true));
+      return { agent, dispose: async () => { for (const dispose of record.disposers.splice(0)) dispose(); } };
+    };
     try {
-      try { record.handle = await ctx.agents.resume({ resumeSessionId: input.sessionId, agentOptions: input.selection, setup }); }
+      try { record.handle = ctx.agents.get(input.sessionId) ? await adopt(ctx.agents.get(input.sessionId))
+        : await ctx.agents.resume({ resumeSessionId: input.sessionId, agentOptions: input.selection, setup }); }
       catch (error) {
-        if (error.name !== 'SessionPersistenceNotFoundError') throw error;
-        record.handle = await ctx.agents.create({ sessionId: input.sessionId, meta: { cwd: project, agentPreset: preset }, agentOptions: input.selection, setup });
+        const live = ctx.agents.get(input.sessionId);
+        if (!record.agent && live) record.handle = await adopt(live);
+        else if (error.name === 'SessionPersistenceNotFoundError')
+          record.handle = await ctx.agents.create({ sessionId: input.sessionId, meta: { cwd: project, agentPreset: preset }, agentOptions: input.selection, setup });
+        else throw error;
       }
       record.agent = record.handle.agent;
       record.workspace = await registerBotWorkspace(ctx, record, input);
@@ -786,7 +832,8 @@ export async function apply(ctx) {
       if (turnStart >= 0) record.artifacts = restoredEvents.slice(turnStart + 1).filter(event => event.type === 'deliverables/presented').flatMap(event => event.data.files);
       record.admissions--;
       // Native persistence owns the recovered inbox; retry reconciles the same admission.
-      record.status = record.agent.status !== 'idle' ? 'running' : 'idle';
+      const queued = [...record.agent.inbox.nextTurn, ...record.agent.inbox.nextStep].some(message => message.id === 'worldlinebox-bot:' + input.eventId);
+      record.status = record.agent.status !== 'idle' && (record.bot.inputContextCommitted || queued) ? 'running' : 'idle';
       emit(record, { type: 'ready', stage: 'session', summary: '伙伴主脑原生会话已就绪' });
       if (record.status === 'running') void settle(record);
       return record;
@@ -1012,6 +1059,7 @@ export async function apply(ctx) {
             json(response, { sessionId: record.id, cursor: record.next - 1 }); return;
           }
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
+          if (record.agent.status !== 'idle') throw new Error('Companion lane is busy.');
           if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(record.bot.workerTools ?? []) !== JSON.stringify(input.workerTools)) throw new Error('Companion tool selection changed; create a new lane epoch.');
           record.bot.system = input.system; record.bot.callback = input.callback; record.bot.audience = input.audience;
           // Newer native loops freeze model identity before agent/request.
@@ -1135,6 +1183,7 @@ export async function apply(ctx) {
           json(response, { accepted: true }); return;
         }
         if (record.admissions) throw new Error('The companion lane has an active maintenance admission.');
+        if (record.agent.status !== 'idle') throw new Error('Companion lane is busy.');
         const pendingFile = path.join(record.cwd, '.worldlinebox-brain', record.id + '-pending.json');
         let pending;
         try { pending = JSON.parse(await readFile(pendingFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
