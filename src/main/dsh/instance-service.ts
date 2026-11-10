@@ -280,7 +280,7 @@ export class InstanceService {
   private async initializeProfile(instance: DshInstance, signal: AbortSignal) {
     const profile = path.join(instance.homePath, 'profiles', 'web');
     if (!await readJson(path.join(profile, 'package.json'))) await this.command(instance, ['web', '--dump-default-config'], signal);
-    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'cordis.patch.yml'];
+    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'context.js', 'cordis.patch.yml'];
     const sources = await Promise.all(names.map(name => readFile(path.join(this.options.bridgePackagePath, name))));
     const digest = createHash('sha256'); for (const source of sources) digest.update(source);
     const hash = digest.digest('hex'), target = path.join(instance.homePath, '.worldlinebox', 'bridge', hash);

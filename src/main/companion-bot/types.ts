@@ -54,6 +54,8 @@ export interface BotEnqueueInput {
   attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[];
   /** Host-only validated cross-direct delivery; never accepted from a UI sender. */
   contactSourceEventId?: string;
+  /** Host-owned return route, never a field accepted from a model/UI payload. */
+  peerReturnSourceEventId?: string;
 }
 export interface BotMessagePage { items: BotMessage[]; hasMore: boolean; nextBefore?: number; }
 export type BotTaskStatus = 'queued' | 'running' | 'waiting' | 'paused' | 'succeeded' | 'failed' | 'cancelled' | 'unknown';

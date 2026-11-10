@@ -1,4 +1,5 @@
 import type { BotDshTool } from './dsh-brain';
+import { COMPANION_ASSET_CAPABILITY_TOOL } from '../../shared/companion-apps';
 import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
 
 const object = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
@@ -6,7 +7,7 @@ const string = (description: string, maxLength = 16000) => ({ type: 'string', de
 const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。用户私聊可选agent_memory_scopes列出的本人参与且用户可查看的会话，包括伙伴私聊；不能传路径或其他伙伴。' };
 /** Application interaction tools augment native DSH tools without another agent loop. */
 export const BOT_TOOLS: BotDshTool[] = [
-COMPANION_BROWSER_CAPABILITY_TOOL,
+COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL,
 { name: 'companion_directory', description: '分页查找真实伙伴ID和姓名，用于联系伙伴；目录不包含私人提示词或记忆。', parameters: object({ query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 64 } }, []) },
 { name: 'agent_conversations', description: '实时回查你本人参与的已发布聊天，不等VCP记忆索引。用户私聊可查询自己与伙伴的私聊及自己参加的用户群；其它受众只读当前房间。list列会话与最新消息索引；read选conversationId读最近一页，沿nextBefore读旧页；message按messageId分页读完整正文；contacts核实自己先前联系是否投递、对方是否实际回复或已向用户发布，仅返回关联回执元数据。已发不等于已回复，事件queued不等于没发消息。不能读其它伙伴的用户私聊或内部任务回执。', parameters: object({ operation: { type: 'string', enum: ['list', 'read', 'message', 'contacts'] }, conversationId: string('本人获准会话编号，read/message需要', 160), messageId: string('真实已发布消息编号，message需要', 160), companionId: string('contacts可选的目标伙伴编号，不能改变当前身份', 160), cursor: string('list的稳定分页游标', 160), before: { type: 'integer', minimum: 1 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['operation']) },
 { name: 'chat_read_message', description: '按本轮sourceMessageId或同会话已有消息ID分页读取原文。长消息预览不包含全部需求，读取时沿nextOffset继续；不能访问其他会话或未来消息。', parameters: object({ messageId: string('当前会话原消息ID', 160), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['messageId']) },
@@ -31,6 +32,11 @@ COMPANION_BROWSER_CAPABILITY_TOOL,
     action: { type: 'string', enum: ['sit', 'sleep', 'rest', 'work', 'eat', 'read', 'stand'] }, expectedRevision: { type: 'integer', minimum: 1 } }, ['operation']) },
 { name: 'companion_contact', description: '按当前用户或伙伴的请求联系真实伙伴。消息进入仅双方伙伴参加的独立私聊；群内分工或传递当前群已分享的附件使用message_peer，目标在自己的原生DSH会话中执行，不存在另外的任务中心。“让GPT跟我说下午好”用destination=user，目标获得一次以本人身份向用户回复的宿主授权；你不能在目标与用户的私聊里发言。“你和GPT私下讨论”用peer。发送即自然产生伙伴私聊消息，无需用户另选双方。message仅本次最小必要请求，不复制无关私聊、历史或秘密，不代替目标编台词。', parameters: object({ companionId: string('伙伴目录中的目标ID', 160), destination: { type: 'string', enum: ['user', 'peer'] }, message: string('本次明确转达的最小必要请求，排除无关私聊资料', 4000) }, ['companionId', 'destination', 'message']) },
 { name: 'companion_reply_user', description: '当前伙伴私聊带有peerContact.responseDestination=user-direct时，用自己的话向用户发出获准的一条真实消息。宿主绑定接收人、原始请求和你自己的用户私聊；不能指定其他会话或替其他伙伴发言。普通伙伴讨论没有此授权。成功即已送达用户，不在伙伴私聊里重复整段用户回复，也不假称只是转达。', parameters: object({ message: string('你本人对用户的自然回复，仅含本次请求必要内容', 24000) }, ['message']) },
-{ name: 'message_peer', description: '显式向当前群或伙伴交流里另一位已有伙伴发送文字、真实表情或当前聊天已分享文件。私聊中用户想联系其他伙伴时用companion_contact，不要声称无法联系。异步投递，sent只表示已进入目标队列；伙伴回信会在你的后续独立会话中处理。分工后说明已交接并结束本轮，不用sleep轮询等待回信；仍可先完成自己的独立工作。可以只发attachmentIds；继承活动预算与衍生轮次，不向自己反射，不要反复互相回应。', parameters: object({ companionId: string('当前会话中的目标伙伴ID', 200), content: { type: 'string', maxLength: 8000 }, attachmentIds: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['companionId']) },
+{ name: 'message_peer', description: '显式向当前群或伙伴交流里另一位已有伙伴发送文字、真实表情或当前聊天已分享文件。私聊中用户想联系其他伙伴时用companion_contact。sent只表示已进入目标队列；宿主会将本次分工的真实结果自动回传到你发起委托的原话题，你仍负责最终向该话题受众交付。多位伙伴的结果会汇合，不能把发送成功当作任务完成。分工后可结束本轮并先完成独立工作，不用sleep轮询；不要为确认收信再互发收到/谢谢。可以只发attachmentIds。', parameters: object({ companionId: string('当前会话中的目标伙伴ID', 200), content: { type: 'string', maxLength: 8000 }, attachmentIds: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['companionId']) },
 { name: 'chat_ask_user', description: '在当前聊天向用户提问并等待回答；缺少必要信息或需要用户选择时使用。', parameters: object({ question: string('清楚说明问题及选项', 24000) }, ['question']) }
 ];
+
+/** Unselected app declarations never enter native model requests. */
+export function botToolsForApps(apps: readonly string[] = []): BotDshTool[] {
+  return BOT_TOOLS.filter(tool => tool.name === 'browser' ? apps.includes('browser') : tool.name === 'asset_manager' ? apps.includes('asset-manager') : true);
+}

@@ -45,3 +45,13 @@ it('switches to a different companion session within the same group topic withou
   await render(request,{cached:sample});expect(host.textContent).toContain('5%');await render(request,{companionId:'peer',cached:other});
   expect(host.querySelector('.bot-context-meter')?.getAttribute('data-native-context-session')).toBe('session-peer');expect(host.querySelector('.bot-context-trigger strong')?.textContent).toBe('75%');
 });
+it('renders pushed native compaction and its failure while preventing duplicate compression',async()=>{
+  const running:BotNativeContext={...sample,asOfSeq:50,observation:{hostId:'host',revision:1},activity:{phase:'compacting',compaction:{id:'c',state:'running',origin:'automatic',startedAt:stamp,sequence:50}}};
+  await render(async()=>({ok:true,topicContext:{topicId:'topic-a',companionId:'actor',sample:running}}));
+  expect(host.querySelector('.bot-native-activity')?.textContent).toContain('正在自动压缩');await click('.bot-context-trigger');
+  expect(host.querySelector('.bot-context-maintenance')?.textContent).toContain('排队');expect(host.querySelector<HTMLButtonElement>('footer button')?.disabled).toBe(true);
+  const failed:BotNativeContext={...running,observation:{hostId:'host',revision:2},activity:{phase:'idle',compaction:{...running.activity!.compaction!,state:'failed',error:'Summary quota exceeded'}}};
+  await render(async()=>({ok:true,topicContext:{topicId:'topic-a',companionId:'actor',sample:running}}),{cached:failed});
+  expect(host.querySelector('.bot-native-activity')).toBeNull();expect(host.querySelector('.bot-context-compaction')?.textContent).toContain('Summary quota exceeded');
+  expect(host.querySelector<HTMLButtonElement>('footer button')?.disabled).toBe(false);
+});

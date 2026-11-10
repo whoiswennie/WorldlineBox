@@ -319,13 +319,21 @@ function summary(record: CredentialRecord): McpClientCredentialSummary {
 export class McpClientCredentialStore {
   readonly #filePath: string;
   readonly #pepper: Buffer;
+  readonly #managedFilePath: string;
+  #managedOwners: Record<string, string> = {};
+  #managedFailure?: Error;
   #records: CredentialRecord[] = [];
   #persistTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(userDataPath: string) {
     this.#filePath = path.join(userDataPath, 'mcp-client-credentials.json');
+    this.#managedFilePath = path.join(userDataPath, 'mcp-companion-connections.json');
     this.#pepper = readOrCreatePepper(path.join(userDataPath, 'mcp-client-credential-pepper'));
     this.load();
+    try {
+      const managed = readAtomicJsonFile(this.#managedFilePath);
+      if (managed) { const parsed = z.strictObject({ version: z.literal(1), owners: z.record(z.string(), z.string().uuid()) }).parse(JSON.parse(managed)); this.#managedOwners = parsed.owners; }
+    } catch (cause) { this.#managedFailure = new Error('伙伴应用连接索引无法读取，请检查 MCP 设置中的诊断信息。', { cause }); }
   }
 
   list(): McpClientCredentialSummary[] {
@@ -350,6 +358,21 @@ export class McpClientCredentialStore {
     this.#records = [...this.#records, record].slice(-256);
     this.persist();
     return { credentialId: record.credentialId, token, summary: summary(record) };
+  }
+
+  /** Stable encrypted credentials for a first-party app; labels are never identities. */
+  managedConnection(owner: string, label: string, activate: boolean): { credentialId: string; token: string } {
+    if (this.#managedFailure) throw this.#managedFailure;
+    const record = this.#records.find(candidate => candidate.credentialId === this.#managedOwners[owner]);
+    if (record) {
+      const token = this.tokenFor(record.credentialId);
+      if (token) return { credentialId: record.credentialId, token };
+      if (!activate) throw new Error('资产管理器应用连接已撤销，请在“应用”中重新连接。');
+    } else if (!activate) throw new Error('请先在“应用”中连接资产管理器。');
+    const issued = this.issue(label);
+    this.#managedOwners[owner] = issued.credentialId;
+    writeAtomicJsonFile(this.#managedFilePath, JSON.stringify({ version: 1, owners: this.#managedOwners }));
+    return issued;
   }
 
   /** Return the stable token for a live credential so it can be copied again. */

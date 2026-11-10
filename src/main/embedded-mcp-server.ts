@@ -493,6 +493,15 @@ export class EmbeddedMcpServer {
     return { credentialId: credential.credentialId, snapshot: this.#publish(), configText, connectionText };
   }
 
+  /** First-party connections never expose their token to IPC, prompts, or DSH. */
+  public async companionConnection(companionId: string, companionName: string, activate = false): Promise<{ endpoint: string; token: string; generation: string }> {
+    const credential = this.#credentials.managedConnection('companion-assets:' + companionId, '伙伴应用 · ' + companionName.slice(0, 200), activate);
+    if (!this.#settings.preferences.enabled) await this.setEnabled(true);
+    const snapshot = await this.start();
+    if (snapshot.runtime.status !== 'running') throw new EmbeddedMcpServerError('MCP_SERVER_NOT_RUNNING', '资产管理器 MCP 服务尚未就绪。');
+    return { endpoint: snapshot.runtime.endpoint, token: credential.token, generation: credential.credentialId + ':' + snapshot.runtime.startedAt };
+  }
+
   /** Return an Agent-ready bundle without changing the existing credential. */
   public async copyAgentConnection(
     credentialId: string,

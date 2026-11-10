@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { botClock, botLocalTimestamp, buildNativeBotContext } from '../../src/main/companion-bot/context';
 import type { BotCompanion, BotEvent } from '../../src/main/companion-bot/types';
+import { botToolsForApps } from '../../src/main/companion-bot/tools';
 const companion: BotCompanion = { id: 'alice', name: 'Alice', persona: '沉稳，认真。', createdAt: '2026-11-02', updatedAt: '2026-11-02' };
 const event: BotEvent = { id: 'e1', eventId: 'e1', companionId: 'alice', conversationId: 'c1', laneId: 'lane1', source: 'user',
   sourceInstanceId: 'desktop', sourceMessageId: 'm1', senderId: 'user', senderType: 'user', senderName: '我', audienceScopeId: 'c1', securityDomainId: 'c1',
@@ -8,6 +9,17 @@ const event: BotEvent = { id: 'e1', eventId: 'e1', companionId: 'alice', convers
   replyMessageId: 'reply', status: 'running', attempts: 1, occurredAt: '2026-11-02', receivedAt: '2026-11-02' };
 
 const conversation = { id: 'c1', title: '聊天', kind: 'direct' as const, memberIds: ['user','alice'], audienceScopeId: 'c1', securityDomainId: 'c1', revision: 1, createdAt: '2026-11-02' };
+it('omits unselected application instructions, contexts and declarations', () => {
+  const pageEvent = { ...event, payload: { browserContext: { title: 'OLD_PAGE' } } };
+  const base = { companion, event: pageEvent, conversation, companions: [companion], files: [], memories: '' };
+  const plain = buildNativeBotContext(base);
+  expect(plain.system).not.toContain('MCP'); expect(plain.system).not.toContain('browserContext');
+  expect(JSON.parse(plain.prompt)).not.toHaveProperty('browserContext'); expect(JSON.parse(plain.prompt)).not.toHaveProperty('apps');
+  expect(botToolsForApps().map(tool => tool.name)).not.toContain('browser'); expect(botToolsForApps().map(tool => tool.name)).not.toContain('asset_manager');
+  const assets = buildNativeBotContext({ ...base, apps: ['asset-manager'] }); expect(assets.system).toContain('MCP'); expect(assets.system).not.toContain('browserContext');
+  expect(botToolsForApps(['asset-manager']).map(tool => tool.name)).toContain('asset_manager'); expect(botToolsForApps(['asset-manager']).map(tool => tool.name)).not.toContain('browser');
+  const browser = buildNativeBotContext({ ...base, apps: ['browser'] }); expect(JSON.parse(browser.prompt).browserContext.title).toBe('OLD_PAGE'); expect(browser.system).not.toContain('MCP');
+});
 it('keeps current user input, attribution, persona and recalled evidence in a fresh native envelope', () => {
   const context = buildNativeBotContext({ companion, event, conversation, companions: [companion], files: [], memories: 'VCP证据' });
   expect(context.system).toContain(companion.persona);

@@ -1,3 +1,4 @@
+import { nativeSessionBusy } from './context.js';
 /** Read-only native quiescence probe. An unknown registry or projection never
  * authorizes process reclamation; caller leases must fence new admissions. */
 export async function inspectNativeIdle(ctx, state) {
@@ -15,6 +16,7 @@ export async function inspectNativeIdle(ctx, state) {
   for (const agent of agents) {
     if (!['idle', 'running'].includes(agent.status)) unknown.add('agent-status');
     if (agent.status === 'running') result.activeTurns++;
+    else try { if (nativeSessionBusy(ctx, agent)) result.activeTurns++; } catch { unknown.add('agent-maintenance'); }
     if (!Array.isArray(agent.inbox?.nextTurn) || !Array.isArray(agent.inbox?.nextStep)) unknown.add('agent-inbox');
     else result.pendingInbox += agent.inbox.nextTurn.length + agent.inbox.nextStep.length;
     try {

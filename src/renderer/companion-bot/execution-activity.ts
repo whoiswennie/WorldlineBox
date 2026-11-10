@@ -27,6 +27,7 @@ export function botExecutionActivity(step: BotExecutionStep, locale: Locale): { 
     if (!detail && action === 'fill') detail = `${zh ? '输入' : 'Enter'} ${typeof args.text === 'string' ? args.text.length : typeof args.value === 'string' ? args.value.length : 0} ${zh ? '个字符' : 'characters'}`;
     detail ||= clean(args.selector) || clean(args.query);
   }
+  if (step.toolName === 'asset_manager') { title = zh ? '操作资产管理器' : 'Use asset manager'; detail ||= clean(args.name) || clean(args.query) || clean(args.action); }
   detail ||= clean(args.path) || clean(args.file_path) || clean(args.query);
   if (!detail && typeof args.url === 'string') { try { const url = new URL(args.url); detail = url.origin + url.pathname; } catch { /* Invalid source URL is shown only in expanded input. */ } }
   if (!detail && step.summary && !/^(开始调用工具|工具执行完成|工具执行失败)$/u.test(step.summary)) detail = clean(step.summary);

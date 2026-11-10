@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { botProjectDirectory, prepareBotWorkspace, attachBotWorkspace as registerBotWorkspace } from './workspace.js';
 import { inspectNativeIdle } from './idle.js';
 import { registerWorkspaceSessions } from './sessions.js';
+import { activityKey, registerContextActivity, nativeActivity, nativeSessionBusy } from './context.js';
 
 export const name = 'worldlinebox-bridge';
 export const inject = ['loader', 'sessionController', 'workspaceRegistry', 'agents', 'sessions', 'tools', 'agentPresets', 'llm'];
@@ -13,6 +14,7 @@ const protocol = 'worldlinebox-native-web-host-v1';
 // This resource is distributed independently; keep the default template aligned
 // with src/shared/model-budget.ts without importing application-only modules.
 const defaultContextWindow = 100000, maxContextChars = 100000;
+const contextHostId = randomUUID(); let contextRevision = 0;
 const textOf = message => (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question'];
@@ -65,16 +67,17 @@ export function workerOutputFromEvents(events, { eventId, startMessageId, maxCha
   return { text, totalChars: text.length, truncated: false, messages,outputs };
 }
 /** Public DSH meter projections only: no prompts, tools or credentials. */
-export function nativeContextSample(sessionId,result,now=new Date().toISOString()){
+export function nativeContextSample(sessionId,result,now=new Date().toISOString(),agent){
   const values=result?.values??{},pick=(value,keys)=>{
     if(!value||typeof value!=='object')return;
     return Object.fromEntries(keys.filter(key=>Number.isSafeInteger(value[key])&&value[key]>=0).map(key=>[key,value[key]]));
   };
   const pressure=pick(values.contextPressure,['pressureTokens','projectedTokens','contextWindow']);if(pressure?.contextWindow===0)delete pressure.contextWindow;
   const breakdown=pick(values.contextBreakdown,['systemTokens','toolsTokens','messageTokens']),usage=pick(values.tokenUsage,['uncachedInputTokens','outputTokens','cacheReadTokens','cacheWriteTokens']);
-  return{source:'dsh-native-projections',sessionId,state:result?.kind==='unsupported'?'unsupported':!result?'empty':result.kind==='migration-required'?'migration-required':'ready',sampledAt:now,
+  return{source:'dsh-native-projections',sessionId,observation:{hostId:contextHostId,revision:++contextRevision},state:result?.kind==='unsupported'?'unsupported':!result?'empty':result.kind==='migration-required'?'migration-required':'ready',sampledAt:now,
     ...(Number.isSafeInteger(result?.asOfSeq)?{asOfSeq:result.asOfSeq}:{}),...(pressure?{pressure}:{}),
-    ...(breakdown&&Object.keys(breakdown).length===3?{breakdown}:{}),...(usage&&Object.keys(usage).length===4?{usage}:{})};
+    ...(breakdown&&Object.keys(breakdown).length===3?{breakdown}:{}),...(usage&&Object.keys(usage).length===4?{usage}:{}),
+    ...(nativeActivity(values,agent)?{activity:nativeActivity(values,agent)}:{})};
 }
 /** Reference data is selected from actual native registrations, never from
  * installed-package counts. Schemas are disclosed only by the detail query. */
@@ -314,6 +317,7 @@ export async function apply(ctx) {
   // Register before a Web user resumes persisted sessions, including direct CLI startup.
   const registeredPreset = await registerCompanionPreset(ctx);
   ctx.effect(() => registeredPreset.release);
+  await registerContextActivity(ctx);
   const bridgeOwnedAgents = new WeakSet();
   ctx.on('agent/created', ({ agent }) => {
     if (!bridgeOwnedAgents.has(agent)) restoreWorkbenchModel(ctx, agent);
@@ -338,6 +342,15 @@ export async function apply(ctx) {
   let pluginMutations = 0;
   let botProvider;
   let closing = false;
+  const contextSubscribers = new Map();
+  const publishNativeContext = session => {
+    const subscribers = contextSubscribers.get(String(session.id)); if (!subscribers?.size) return;
+    const registry = ctx.get('sessionProjections'); if (!registry) return;
+    const result = { kind: 'sequenced', ...registry.snapshot(session, ['contextPressure', 'contextBreakdown', 'tokenUsage', activityKey]) };
+    const value = nativeContextSample(String(session.id), result, undefined, ctx.agents.get(String(session.id)));
+    for (const subscriber of subscribers) if (!subscriber.destroyed) subscriber.write(JSON.stringify(value) + '\n');
+  };
+  ctx.on('agent/status', ({ agent }) => publishNativeContext(agent.session));
   const authorized = request => {
     const value = request.headers.authorization;
     return typeof value === 'string' && /^Bearer [a-f0-9]{64}$/.test(value)
@@ -457,13 +470,14 @@ export async function apply(ctx) {
     clearTimeout(record.contextTimer);record.contextTimer=undefined;
     try{
       const registry=ctx.get('sessionProjections');if(!registry)return;
-      const snapshot=registry.snapshot(record.agent.session,['contextPressure','contextBreakdown','tokenUsage']);
-      emit(record,{type:'context',context:nativeContextSample(record.id,{kind:'sequenced',...snapshot}),nativeSessionId:record.id});
+      const snapshot=registry.snapshot(record.agent.session,['contextPressure','contextBreakdown','tokenUsage',activityKey]);
+      emit(record,{type:'context',context:nativeContextSample(record.id,{kind:'sequenced',...snapshot},undefined,record.agent),nativeSessionId:record.id});
     }catch(error){ctx.logger?.warn('WorldlineBox native context read failed: '+String(error?.message??error).slice(0,500));}
   };
   const projectionRegistry=ctx.get('sessionProjections');
   if(typeof projectionRegistry?.onChanged==='function'){const dispose=projectionRegistry.onChanged((session,key)=>{
-    if(!['contextPressure','contextBreakdown','tokenUsage'].includes(key))return;
+    if(!['contextPressure','contextBreakdown','tokenUsage',activityKey].includes(key))return;
+    publishNativeContext(session);
     const record=sessions.get(String(session.id));if(!record?.bot||record.bot.role!=='worker'||record.contextTimer)return;
     record.contextTimer=setTimeout(()=>publishContext(record),100);record.contextTimer.unref?.();
   });ctx.effect(()=>dispose);}
@@ -598,7 +612,7 @@ export async function apply(ctx) {
       case 'step/start': publish({ type: 'status', stage: 'step_start', summary: `开始第 ${data.step} 步处理` }); break;
       case 'step/end': publish({ type: 'status', stage: 'step_end', summary: `第 ${data.step} 步处理结束` }); break;
       case 'compaction/start': publish({ type: 'status', stage: 'compaction_start', summary: '正在整理当前会话上下文' }); break;
-      case 'compaction/end': record.compactions = (record.compactions ?? 0) + 1; publish({ type: 'status', stage: 'compaction_end', summary: '当前会话上下文整理完成' }); break;
+      case 'compaction/end': record.compactions = (record.compactions ?? 0) + 1; publish({ type: 'status', stage: data.error ? 'compaction_failed' : 'compaction_end', summary: data.error ? '上下文整理失败，保留原会话' : '当前会话上下文整理完成' }); break;
       case 'turn/end': if (rootSession) record.reason = data.reason; publish({ type: 'status', stage: 'turn_end', summary: '本轮处理结束' }); break;
       case 'approval/asked':
         publish({ type: 'approval_required', stage: 'message', toolName: data.toolName, callId: data.callId,
@@ -642,7 +656,7 @@ export async function apply(ctx) {
     const callback = owner.bot.callback, endpoint = new URL(callback.url);
     if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.pathname !== '/bot/tool'
       || !/^[a-f0-9]{64}$/.test(callback.token)) throw new Error('Invalid worker callback.');
-    const response = await fetch(callback.url, { method: 'POST', signal: name === 'chat_ask_user' ? signal : AbortSignal.any([signal, AbortSignal.timeout(120000)]),
+    const response = await fetch(callback.url, { method: 'POST', signal: name === 'chat_ask_user' ? signal : AbortSignal.any([signal, AbortSignal.timeout(name === 'asset_manager' ? 660000 : 120000)]),
       headers: { authorization: 'Bearer ' + callback.token, 'content-type': 'application/json' },
       body: JSON.stringify({ laneId: owner.bot.laneId, eventId: owner.bot.eventId, name, args, callId,
         ...(native?{nativeSessionId:native.nativeSessionId,nativeCallId:native.nativeCallId,rootSessionId:owner.id,rootSequence:owner.agent.session.seq}:{}) }) });
@@ -651,17 +665,29 @@ export async function apply(ctx) {
     return body.result;
   };
   const registerWorkerHostTools = (record, agent) => {
-    record.workerToolAgents ??= new WeakSet(); if (record.workerToolAgents.has(agent)) return;
-    record.workerToolAgents.add(agent);
-    for (const schema of record.bot.workerTools ?? []) record.disposers.push(agent.ctx.tools.register({ ...schema,
-      output: { schema: { type: 'object', properties: { result: {} }, required: ['result'], additionalProperties: false },
-        render: (_args, value) => [{ type: 'text', text: JSON.stringify(value.result) }] },
-      async execute(args, exec) {
-        if (recordFor(exec.agent) !== record || exec.signal.aborted) throw new Error('The host tool is outside this worker task.');
-        const ref = nativeCallRef(record.callbackOwner ?? record, exec.agent, exec.callId);
-        return { result: await workerCallback(record, schema.name, args, ref.callId, exec.signal, ref) };
-      },
-    }));
+    record.workerToolAgents ??= new Map();
+    let registrations = record.workerToolAgents.get(agent);
+    if (!registrations) { registrations = new Map(); record.workerToolAgents.set(agent, registrations); record.disposers.push(() => { for (const entry of registrations.values()) entry.dispose(); registrations.clear(); record.workerToolAgents.delete(agent); }); }
+    const schemas = (record.callbackOwner ?? record).bot.workerTools ?? [];
+    for (const [name, entry] of registrations) {
+      if (!schemas.some(schema => schema.name === name && JSON.stringify(schema) === entry.schema)) { entry.dispose(); registrations.delete(name); }
+    }
+    for (const schema of schemas) {
+      if (registrations.has(schema.name)) continue;
+      const unregister = agent.ctx.tools.register({ ...schema,
+        output: { schema: { type: 'object', properties: { result: {} }, required: ['result'], additionalProperties: false },
+          render: (_args, value) => [{ type: 'text', text: JSON.stringify(value.result) }] },
+        async execute(args, exec) {
+          if (recordFor(exec.agent) !== record || exec.signal.aborted) throw new Error('The host tool is outside this worker task.');
+          if (!(record.callbackOwner ?? record).bot.workerTools?.some(tool => tool.name === schema.name)) throw new Error('This application has been disconnected.');
+          const ref = nativeCallRef(record.callbackOwner ?? record, exec.agent, exec.callId);
+          return { result: await workerCallback(record, schema.name, args, ref.callId, exec.signal, ref) };
+        },
+      });
+      let live = true;
+      const dispose = () => { if (live) { live = false; unregister(); } };
+      registrations.set(schema.name, { schema: JSON.stringify(schema), dispose });
+    }
   };
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     const id = String(agent.session.id), record = sessions.get(id) ?? workerOwners.get(id);
@@ -730,7 +756,6 @@ export async function apply(ctx) {
           variables: { ...value.variables, ...(record.agent.model?.current?.() ?? record.bot.selection) } };
       }, { prepend: true }));
     if (record.bot.role === 'brain' || record.bot.workerAccess !== 'full') {
-      const allow = record.bot.role === 'brain' ? record.bot.tools.map(tool => tool.name) : [...scopedWorkerTools, ...(record.bot.workerTools ?? []).map(tool => tool.name)];
       // restrict() addresses global/inherited tools only. Callback tools are
       // Agent-local registrations, and naming them here rejects lane creation.
       accessDisposers.push(record.agent.ctx.tools.restrict({ allow: record.bot.role === 'brain' ? [] : scopedWorkerTools }));
@@ -739,7 +764,7 @@ export async function apply(ctx) {
         // Newer DSH presents text/contexts only in this waterfall; declarations
         // are provider-owned and already scoped by tools.restrict above.
         // Older runtimes also expose tools here, so keep that narrow projection.
-        return Array.isArray(value.tools) ? { ...value, tools: value.tools.filter(tool => allow.includes(tool.name)) } : value;
+        return Array.isArray(value.tools) ? { ...value, tools: value.tools.filter(tool => (record.bot.role === 'brain' ? record.bot.tools.map(tool => tool.name) : [...scopedWorkerTools, ...(record.bot.workerTools ?? []).map(tool => tool.name)]).includes(tool.name)) } : value;
       }, { prepend: true }));
     }
     if (record.bot.role === 'worker' && record.bot.workerAccess !== 'full') accessDisposers.push(record.agent.ctx.on('tools/pre-execute', async (execution, next) => {
@@ -804,11 +829,12 @@ export async function apply(ctx) {
     record.setup = setup;
     const adopt = async agent => {
       validateSession(agent);
-      if (agent.status !== 'idle') throw new Error('Companion lane is busy.');
+      if (nativeSessionBusy(ctx, agent)) throw new Error('Companion lane is busy.');
       // The Web controller already owns the writer and mounted preset. Attach
       // to that exact Agent under native maintenance; never resume a second
       // writer or remount its plugins. Detaching releases only our decorators.
-      await agent.runMaintenance(() => setup(agent.ctx, agent, true));
+      try { await agent.runMaintenance(() => setup(agent.ctx, agent, true)); }
+      catch (error) { if (/already has active work/.test(String(error?.message))) throw new Error('Companion lane is busy.'); throw error; }
       return { agent, dispose: async () => { for (const dispose of record.disposers.splice(0)) dispose(); } };
     };
     try {
@@ -870,12 +896,20 @@ export async function apply(ctx) {
     void (async () => {
       if (!authorized(request)) { json(response, { error: 'Unauthorized' }, 401); return; }
       const url = new URL(request.url, 'http://127.0.0.1');
-      if(request.method==='POST'&&url.pathname==='/bot/topic-context'){
-        const input=await body(request);
+      if(request.method==='POST'&&url.pathname==='/bot/topic-context'||request.method==='GET'&&url.pathname==='/bot/topic-context-events'){
+        const input=request.method==='GET'?Object.fromEntries(url.searchParams):await body(request);
         if(typeof input.laneId!=='string'||!input.laneId||input.laneId.length>300||input.sessionId!=='wlb-bot-'+createHash('sha256').update(input.laneId).digest('hex'))throw Error('Invalid native context identity.');
         const record=sessions.get(input.sessionId);if(record&&record.bot?.laneId!==input.laneId)throw Error('Native context Session ownership differs.');
         const result=typeof ctx.sessionController.projections==='function'?await ctx.sessionController.projections({sessionId:input.sessionId},AbortSignal.timeout(15000)):{kind:'unsupported'};
-        json(response,nativeContextSample(input.sessionId,result));return;
+        const sample=nativeContextSample(input.sessionId,result,undefined,ctx.agents.get(input.sessionId));
+        if(request.method==='POST'){json(response,sample);return;}
+        const subscribers=contextSubscribers.get(input.sessionId)??new Set();contextSubscribers.set(input.sessionId,subscribers);
+        subscribers.add(response);clients.add(response);
+        response.writeHead(200,{'content-type':'application/x-ndjson','cache-control':'no-store'});response.write(JSON.stringify(sample)+'\n');
+        // Close the gap between an awaited cold read and live subscription.
+        const live=ctx.agents.get(input.sessionId);if(live)publishNativeContext(live.session);
+        const heartbeat=setInterval(()=>{if(!response.destroyed)response.write('\n');},15000);heartbeat.unref();
+        response.once('close',()=>{clearInterval(heartbeat);subscribers.delete(response);clients.delete(response);if(!subscribers.size)contextSubscribers.delete(input.sessionId);});return;
       }
       if (request.method === 'GET' && url.pathname === '/health') { json(response, { protocol, pid: process.pid, profile: ctx.get('profileContext')?.name, home: process.env.DSH_HOME,
         botLanes: [...sessions.values()].filter(record => record.bot).length, botCompactions: [...sessions.values()].reduce((sum, record) => sum + (record.compactions ?? 0), 0),
@@ -1059,20 +1093,44 @@ export async function apply(ctx) {
             json(response, { sessionId: record.id, cursor: record.next - 1 }); return;
           }
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
-          if (record.agent.status !== 'idle') throw new Error('Companion lane is busy.');
-          if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(record.bot.workerTools ?? []) !== JSON.stringify(input.workerTools)) throw new Error('Companion tool selection changed; create a new lane epoch.');
-          record.bot.system = input.system; record.bot.callback = input.callback; record.bot.audience = input.audience;
+          if (nativeSessionBusy(ctx, record.agent)) throw new Error('Companion lane is busy.');
+          const withoutApps = tools => (tools ?? []).filter(tool => !['browser', 'asset_manager'].includes(tool.name));
+          if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(withoutApps(record.bot.workerTools)) !== JSON.stringify(withoutApps(input.workerTools))) throw new Error('Companion tool selection changed; create a new lane epoch.');
           // Newer native loops freeze model identity before agent/request.
           // A cold suspend may have attached with the inert cancel-only model;
           // select the real model before resuming that same native Session.
           // Inspection/stop must not persist a dummy model selection into a
           // real Session, or trigger model-switch compaction during resume.
-          if (input.cancelIntent !== true) { record.bot.selection = selection; record.agent.model?.select?.(selection); }
+          record.admissions++;
+          try {
+            await record.agent.runMaintenance(async () => {
+              record.bot.system = input.system; record.bot.callback = input.callback; record.bot.audience = input.audience;
+              record.bot.workerTools = input.workerTools;
+              if (record.bot.role !== 'brain') registerWorkerHostTools(record, record.agent);
+              if (record.policy.tools && record.bot.role !== 'brain') record.policy.tools = [...scopedWorkerTools, ...input.workerTools.map(tool => tool.name)];
+              if (input.cancelIntent !== true) { record.bot.selection = selection; record.agent.model?.select?.(selection); }
+            });
+          } catch (error) { if (/already has active work/.test(String(error?.message))) throw new Error('Companion lane is busy.'); throw error; }
+          finally { record.admissions--; }
           record.lastUsed = Date.now();
         }
         if (input.workspaceTitle !== undefined) { await prepareBotWorkspace(ctx, record, input); record.workspace = await registerBotWorkspace(ctx, record, input); }
         json(response, { sessionId: record.id, cursor: record.next - 1,
           ...(record.workspace ? { workspace: { id: record.workspace.id, title: record.workspace.title, path: record.workspace.path, sessionIds: record.workspace.sessionIds } } : {}) }); return;
+      }
+      if (request.method === 'POST' && url.pathname === '/bot/app-revoke') {
+        const input = await body(request);
+        if (typeof input.laneId !== 'string' || input.sessionId !== 'wlb-bot-' + createHash('sha256').update(input.laneId).digest('hex')
+          || !Array.isArray(input.names) || input.names.length > 2 || input.names.some(name => !['browser', 'asset_manager'].includes(name))
+          || typeof input.system !== 'string' || input.system.length > 96000) throw new Error('Invalid application revocation.');
+        const record = sessions.get(input.sessionId);
+        if (record?.bot) {
+          if (record.bot.laneId !== input.laneId) throw new Error('Application revocation lane changed.');
+          record.bot.workerTools = (record.bot.workerTools ?? []).filter(tool => !input.names.includes(tool.name)); record.bot.system = input.system;
+          for (const agent of record.workerToolAgents?.keys() ?? []) registerWorkerHostTools(record, agent);
+          for (const child of sessions.values()) if (child.callbackOwner === record) for (const agent of child.workerToolAgents?.keys() ?? []) registerWorkerHostTools(child, agent);
+        }
+        json(response, { revoked: true }); return;
       }
       const botMatch = /^\/bot\/lanes\/([A-Za-z0-9_-]+)\/(turn|cancel|input|archive|compact)$/.exec(url.pathname);
       if (request.method === 'POST' && botMatch) {
@@ -1183,7 +1241,7 @@ export async function apply(ctx) {
           json(response, { accepted: true }); return;
         }
         if (record.admissions) throw new Error('The companion lane has an active maintenance admission.');
-        if (record.agent.status !== 'idle') throw new Error('Companion lane is busy.');
+        if (nativeSessionBusy(ctx, record.agent)) throw new Error('Companion lane is busy.');
         const pendingFile = path.join(record.cwd, '.worldlinebox-brain', record.id + '-pending.json');
         let pending;
         try { pending = JSON.parse(await readFile(pendingFile, 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }

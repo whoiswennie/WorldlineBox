@@ -57,7 +57,7 @@ function addScope(scope) {
 function columns(db, name) { return db.prepare(`PRAGMA table_info(${quote(name)})`).all().map(column => column.name); }
 const mappings = {
   conversation_id:'rooms', source_conversation_id:'rooms', peer_conversation_id:'rooms', target_conversation_id:'rooms',
-  event_id:'events', source_event_id:'events', causation_id:'events', authorizing_event_id:'events',
+  event_id:'events', source_event_id:'events', result_event_id:'events', return_event_id:'events', causation_id:'events', authorizing_event_id:'events',
   message_id:'messages', source_record_id:'messages', reply_message_id:'messages', target_message_id:'messages',
   task_id:'tasks', proxy_task_id:'tasks', lane_id:'lanes', domain_key:'domains', owner_key:'owners',
   job_id:'jobs', brain_id:'brains', delegation_id:'delegations', workflow_id:'workflows', plan_id:'workflows',
@@ -72,6 +72,9 @@ function predicate(db, table, all = job.all) {
     if (field === 'companion_id') clauses.push(`${quote(field)}=${quoteLiteral(job.companionId)}`);
   }
   if (table === 'bot_deferred_task_notices') clauses.push("json_valid(payload_json) AND json_extract(payload_json,'$.conversationId') IN (SELECT id FROM cleanup.rooms)");
+  if (table === 'bot_inbox') clauses.push('id IN (SELECT id FROM cleanup.events)');
+  if (table === 'bot_messages') clauses.push('id IN (SELECT id FROM cleanup.messages)');
+  if (table === 'bot_memory_jobs') clauses.push("json_valid(payload_json) AND (json_extract(payload_json,'$.sourceEventId') IN (SELECT id FROM cleanup.events) OR json_extract(payload_json,'$.prepared.requestId') IN (SELECT id FROM cleanup.events))");
   return clauses.length ? '(' + clauses.join(' OR ') + ')' : '0';
 }
 const quoteLiteral = value => "'" + value.replaceAll("'", "''") + "'";
@@ -99,6 +102,16 @@ async function planCleanup() {
   else plan.prepare('INSERT OR IGNORE INTO rooms SELECT conversation_id FROM source.bot_members WHERE member_id=?').run(job.companionId);
   for (const [kind, table] of [['messages','bot_messages'],['events','bot_inbox'],['tasks','bot_tasks'],['lanes','bot_lanes']]) {
     if (has(table)) plan.exec(`INSERT OR IGNORE INTO ${kind} SELECT id FROM source.${table} WHERE conversation_id IN (SELECT id FROM rooms)`);
+  }
+  // Returned results reference the actual peer publication in another room.
+  // Remove only those dependent notifications/replies, not that room's other
+  // conversations, credentials, personas or native DSH workspace.
+  for (;;) {
+    const added=plan.prepare(`INSERT OR IGNORE INTO events SELECT id FROM source.bot_inbox WHERE source_instance_id='peer-return-v1'
+      AND source_record_id IN (SELECT id FROM messages)`).run().changes;
+    plan.exec('INSERT OR IGNORE INTO messages SELECT reply_message_id FROM source.bot_inbox WHERE id IN (SELECT id FROM events)');
+    if(!added)break;
+    await pause();
   }
   for (const kind of ['messages','events','tasks','lanes','rooms']) plan.exec(`INSERT OR IGNORE INTO tokens SELECT id FROM ${kind}`);
   for (const raw of database.prepare('SELECT DISTINCT m.member_id AS companionId,c.id AS conversationId,c.domain_id AS securityDomainId FROM bot_members m JOIN bot_conversations c ON c.id=m.conversation_id WHERE m.member_id<>?').iterate('user')) {

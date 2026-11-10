@@ -44,6 +44,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
   const f=await fixture(), before=new BotStore(path.join(f.root,'bot.sqlite'));
   const event=before.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string};
   const topics=new BotTopics(before),topic=topics.create(f.a.id,'old-topic','旧话题');topics.bind([before.getEvent(event.id)!],topic);
+  expect(before.contactPeer(before.getEvent(event.id)!,'bob','cleanup-return-route','请协作').accepted).toBe(true);
   before.taskTransaction(sql=>{
     sql.prepare("INSERT INTO bot_topic_title_sync(topic_id,conversation_id,native_lane_id,companion_id,revision,title,status) VALUES(?,?,?,?,1,'待同步旧话题','pending')").run(topic.id,f.a.id,'old-lane','alice');
     sql.prepare('INSERT INTO bot_reply_parts(message_id,event_id,conversation_id,id,sequence,payload_json) VALUES(?,?,?,?,1,?)').run(before.getEvent(event.id)!.replyMessageId,event.id,f.a.id,'old-native-part',JSON.stringify({id:'old-native-part',kind:'text',sequence:1,text:'OLD_REPLY_PART'}));
@@ -60,6 +61,7 @@ it('clears the selected companion and shared room history and VCP stores, retain
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
   try {
     expect(store.messagesPage(f.a.id).items).toEqual([]); expect(store.messagesPage(f.group.id).items).toEqual([]);
+    expect(store.taskTransaction(sql=>sql.prepare('SELECT count(*) AS count FROM bot_peer_returns').get())).toMatchObject({count:0});
     expect(store.getMetadata('native-context:'+f.a.id+':session')).toBeUndefined();
     expect(store.getMetadata('browser-context:' + event.id)).toBeUndefined(); expect(store.getMetadata('browser-context-ingress:' + f.a.id + ':old-request')).toBeUndefined(); expect(store.getMetadata('native-interrupted:' + event.id)).toBeUndefined();
     for(const table of ['bot_native_topics','bot_topic_bindings','bot_topic_events','bot_guidance','bot_topic_title_sync','bot_reply_parts'])expect(store.taskTransaction(sql=>sql.prepare(`SELECT count(*) AS count FROM ${table} WHERE conversation_id=?`).get(f.a.id))).toMatchObject({count:0});
@@ -82,6 +84,16 @@ it('resumes a saved pending erasure after restart and never resumes old memory j
   await until(async()=> (await f.cleaner.status('alice'))?.status==='completed');
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
   try {expect(store.listPendingMemory().every(job=>(job.payload.scope as {companionId:string;conversationId:string}).companionId==='bob'&&(job.payload.scope as {conversationId:string}).conversationId===f.b.id)).toBe(true);}finally{store.close();}
+});
+it('removes cross-room peer return notifications when clearing their source partner without erasing the coordinator original request',async()=>{
+  const f=await fixture(),store=new BotStore(path.join(f.root,'bot.sqlite'));
+  const sourceRow=store.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string},source=store.getEvent(sourceRow.id)!;
+  const contact=store.contactPeer(source,'bob','clear-return','请说近况');if(!contact.accepted)throw Error(contact.reason);
+  const finish=(id:string)=>{const event=store.getEvent(id)!,exclude=store.taskTransaction(sql=>sql.prepare("SELECT DISTINCT lane_id FROM bot_inbox WHERE lane_id<>?").all(event.laneId)) as Array<{lane_id:string}>;const claim=store.claim({workerId:'fixture',excludeLaneIds:exclude.map(row=>row.lane_id)})!;expect(claim.event.id).toBe(id);store.settle({eventId:id,leaseToken:claim.leaseToken,status:'done',content:'已完成'});};
+  finish(source.id);finish(contact.events[0]!.id);
+  const notification=store.taskTransaction(sql=>sql.prepare("SELECT id,reply_message_id FROM bot_inbox WHERE source_instance_id='peer-return-v1'").get()) as {id:string;reply_message_id:string};expect(notification).toBeTruthy();store.close();
+  await f.cleaner.begin('bob','clear-peer-origin');await until(async()=>(await f.cleaner.status('bob'))?.status==='completed');
+  const cleaned=new BotStore(path.join(f.root,'bot.sqlite'));try{expect(cleaned.getEvent(notification.id)).toBeUndefined();expect(cleaned.getMessage(notification.reply_message_id)).toBeUndefined();expect(cleaned.getMessage(source.sourceMessageRecordId)).toBeDefined();expect(cleaned.getMessage(source.replyMessageId)).toBeDefined();expect(cleaned.taskTransaction(sql=>sql.prepare('SELECT count(*) AS n FROM bot_inbox WHERE source_record_id NOT IN (SELECT id FROM bot_messages)').get())).toEqual({n:0});}finally{cleaned.close();}
 });
 it('erases a large history on the worker while the main event loop remains responsive',async()=>{
   const f=await fixture(),store=new BotStore(path.join(f.root,'bot.sqlite'));

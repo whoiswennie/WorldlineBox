@@ -3,7 +3,7 @@
 /* global AbortSignal */
 import http from 'node:http';
 import { writeFile } from 'node:fs/promises';
-export const inject = ['sessionController', 'agents', 'sessions', 'agentDefaultModel'];
+export const inject = ['sessionController', 'agents', 'sessions', 'agentDefaultModel', 'commands', 'agentPresets'];
 const addressFile = '__ADDRESS_FILE__';
 export async function apply(ctx) {
   let nativeDefault;
@@ -19,6 +19,9 @@ export async function apply(ctx) {
       }
       const found = await ctx.sessionController.resolveAgent(input.sessionId); if (found.error) throw found.error;
       const agent = found.agent;
+      if (input.action === 'command') return ctx.commands.execute(agent, input.text, [], AbortSignal.timeout(60000));
+      if (input.action === 'preset') return ctx.agentPresets.readDocument(agent.session.header.agentPreset);
+      if (input.action === 'projections') return ctx.sessionController.projections({ sessionId: input.sessionId }, AbortSignal.timeout(10000));
       if (input.action === 'default') nativeDefault = agent.model.current();
       if (input.action === 'select') agent.model.select(input.selection);
       if (input.action === 'wait') { await agent.whenIdle(); await ctx.sessions.flush(agent.session); }

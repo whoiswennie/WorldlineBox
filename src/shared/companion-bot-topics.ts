@@ -1,3 +1,5 @@
+import type { BrowserPageContext } from './browser-page-context';
+import type { BotAppId } from './companion-apps';
 import type {BotNativeContext} from './companion-native-context';
 export interface BotNativeTopic {
   id: string; conversationId: string; title: string; createdAt: string; updatedAt: string;
@@ -9,6 +11,8 @@ export interface BotQueuedInput {
   state: 'queued' | 'guiding' | 'attention'; error?: string;
 }
 export interface BotChatRuntime {
+  browserContext?: BrowserPageContext;
+  apps?: BotAppId[];
   contexts?:Record<string,BotNativeContext>;
   topic?: BotNativeTopic;
   running: Array<{ messageId: string; companionId: string; companionName: string; topicId?: string }>;

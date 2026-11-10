@@ -10,6 +10,7 @@ import './bot-message-body.css';
 import { BotVoiceMessage } from './BotVoiceMessage';
 import { BotExecutionDetails, type BotExecutionAnswer, type BotExecutionContinue } from './BotExecutionDetails';
 import {botReplyPresentation} from '../../shared/companion-bot-reply';
+import { BotAssetAppCard } from './BotApps';
 import { BotBrowserContextCard } from './BotBrowserContext';
 
 const ignoreLink = () => undefined;
@@ -43,6 +44,7 @@ function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOp
   if (!hasText && !attachments.length) return null;
   return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !files.length ? ' is-inline-media-only' : ''}${!hasText && files.length === 1 && !stickers.length ? ' is-single-file-only' : ''}`}>
     {hasText && <div className="bot-message-text">{message.senderId === 'user' ? message.content || statusText : <BrowserMarkdown text={text} pending={pending} open={onOpenUrl} linkAppearance="chat" locale={locale} />}</div>}
+    {message.apps?.includes('asset-manager') && <BotAssetAppCard locale={locale} connected />}
     {message.browserContext && <BotBrowserContextCard context={message.browserContext} locale={locale} onOpen={onOpenBrowserContext ? () => onOpenBrowserContext(message.browserContext!.tabId) : undefined} />}
     {!!stickers.length && <div className="bot-message-attachments bot-message-inline-stickers">{stickers.map((media,index) => <BotAttachment key={media.id+':'+index} media={media} {...common} />)}</div>}
     {voices.map(media => <BotVoiceMessage key={media.id} media={media} conversationId={message.conversationId} locale={locale} />)}

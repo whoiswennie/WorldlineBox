@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { BotChatRuntime, BotNativeTopic, BotTopicListMode } from '../../shared/companion-bot-topics';
 import type { BotEvent } from './types';
 import type { BotStore } from './store';
-import {botNativeContextSchema,type BotNativeContext} from '../../shared/companion-native-context';
+import {botContextIsNewer,botNativeContextSchema,type BotNativeContext} from '../../shared/companion-native-context';
 
 type TopicRow = { id: string; conversation_id: string; acl_revision: number; title: string; created_at: string; updated_at: string;activity_at?:string;pinned?:number;favorite?:number;rename_pending?:number };
 export interface BotTopicTitleSync {topic_id:string;conversation_id:string;native_lane_id:string;companion_id:string;revision:number;title:string}
@@ -71,7 +71,8 @@ export class BotTopics {
   rememberContext(conversationId:string,laneId:string,sample:BotNativeContext):boolean{
     const key='native-context:'+conversationId+':'+laneId,prior=this.cachedContext(conversationId,laneId);
     if(prior&&prior.sessionId===sample.sessionId&&prior.asOfSeq!==undefined&&(sample.asOfSeq===undefined||prior.asOfSeq>sample.asOfSeq))return false;
-    if(prior&&JSON.stringify({...prior,sampledAt:''})===JSON.stringify({...sample,sampledAt:''}))return false;
+    if(prior&&prior.sessionId===sample.sessionId&&botContextIsNewer(prior,sample))return false;
+    if(prior&&JSON.stringify({...prior,sampledAt:'',observation:undefined})===JSON.stringify({...sample,sampledAt:'',observation:undefined}))return false;
     this.store.setMetadata(key,JSON.stringify(sample));return true;
   }
   constructor(private readonly store: BotStore) {}

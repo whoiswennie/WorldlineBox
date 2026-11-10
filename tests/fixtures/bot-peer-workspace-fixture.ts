@@ -30,8 +30,9 @@ export function seedPeerWorkspace(profile: string) {
     let userDirectReplyId = '';
     const settle = (entries: Array<{ id: string; content: string }>, userReplyEventId?: string) => {
       const pending = new Map(entries.map(entry => [entry.id, entry.content]));
-      while (pending.size) {
-        const claim = store.claim({ workerId: 'human-authored-peer-presentation' }), content = claim && pending.get(claim.event.id);
+      while (pending.size || store.taskTransaction(sql=>sql.prepare("SELECT 1 FROM bot_inbox WHERE source_instance_id='peer-return-v1' AND status='queued' LIMIT 1").get())) {
+        const claim = store.claim({ workerId: 'human-authored-peer-presentation' }), content = claim && (pending.get(claim.event.id)
+          ?? (claim.event.sourceInstanceId==='peer-return-v1'?'大肥鱼已完成这次回应，我这边也收到结果了。':undefined));
         if (!claim || content === undefined) throw Error('Could not claim the human-authored peer presentation fixture.');
         if (claim.event.id === userReplyEventId) userDirectReplyId = store.replyPeerToUser(claim.event, 'human-authored-user-reply', '晚安呀，我们在自己的私聊里继续聊。').messageId;
         if (!store.settle({ eventId: claim.event.id, leaseToken: claim.leaseToken, status: 'done', content })) throw Error('Could not settle the human-authored peer presentation fixture.');

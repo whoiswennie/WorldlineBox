@@ -44,7 +44,7 @@ for (const bundle of ['embedding-models', 'speech-models', 'speech-runtime']) {
 }
 
 const requiredPaths = [
-  ...['package.json', 'index.js', 'workspace.js', 'idle.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
+  ...['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'context.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
   path.join(resourcesPath, 'embedding-models', 'manifest.json'),
   path.join(resourcesPath, 'speech-models', 'manifest.json'),
   path.join(resourcesPath, 'speech-runtime', 'worker.cjs'),

@@ -130,6 +130,11 @@ export class BotDshBrain {
   }
   static sessionId(laneId: string): string { return 'wlb-bot-' + createHash('sha256').update(laneId).digest('hex'); }
 
+  async revokeApplications(laneId: string, names: string[], system: string): Promise<void> {
+    const signal = AbortSignal.timeout(5000);
+    await this.withHost(undefined, signal, laneId, host => host.client.request('/bot/app-revoke', { sessionId: BotDshBrain.sessionId(laneId), laneId, names, system }, signal).then(() => undefined));
+  }
+
   async run(input: BotDshRun): Promise<BotDshResult> {
     input.signal?.throwIfAborted();
     if (input.model.apiFormat !== 'openai_chat') throw new Error('伙伴主脑目前需要 OpenAI Chat Completions 协议，请在模型设置中选择兼容端点。');
@@ -337,6 +342,15 @@ export class BotDshBrain {
   }
   async topicContext(laneId:string):Promise<BotNativeContext>{
     return this.withHost(undefined,undefined,laneId,async({client})=>botNativeContextSchema.parse(await client.request('/bot/topic-context',{laneId,sessionId:BotDshBrain.sessionId(laneId)})));
+  }
+  async watchTopicContext(laneId:string,onSample:(sample:BotNativeContext)=>void,signal:AbortSignal):Promise<void>{
+    return this.withHost(undefined,signal,laneId,async({client})=>{
+      for await(const value of client.contextEvents(BotDshBrain.sessionId(laneId),laneId,signal)){
+        const sample=botNativeContextSchema.parse(value);
+        if(sample.sessionId!==BotDshBrain.sessionId(laneId))throw Error('Native context stream identity changed.');
+        signal.throwIfAborted();onSample(sample);
+      }
+    });
   }
   /** Release a completed encoder/worker from RAM while retaining its native
    * log and durable receipts. Never cancels an active task. */

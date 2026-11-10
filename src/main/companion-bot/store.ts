@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { isBotParticipantRequest } from './participant-request';
+import { BotPeerReturns } from './peer-returns';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotReplyPart, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
 import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
@@ -87,6 +88,7 @@ const developmentDefault = 'default-companion', defaultCleanupKey = 'development
 
 /** One small SQLite database owns bot ingress and UI projections; no legacy registry reads. */
 export class BotStore {
+  readonly peerReturns = new BotPeerReturns(this);
   private readonly db: Connection;
   private readonly activityBudget: BotActivityBudget;
   constructor(readonly filename: string, options: { activityBudget?: Partial<BotActivityBudgetPolicy> } = {}) {
@@ -112,6 +114,8 @@ export class BotStore {
       CREATE TABLE IF NOT EXISTS bot_native_topics(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),acl_revision INTEGER NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS bot_native_topics_page ON bot_native_topics(conversation_id,updated_at DESC,id DESC);
       CREATE TABLE IF NOT EXISTS bot_topic_events(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id) ON DELETE CASCADE,conversation_id TEXT NOT NULL,topic_id TEXT NOT NULL REFERENCES bot_native_topics(id));
+      CREATE TABLE IF NOT EXISTS bot_peer_returns(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id) ON DELETE CASCADE,source_event_id TEXT NOT NULL REFERENCES bot_inbox(id) ON DELETE CASCADE,source_epoch INTEGER NOT NULL,target_epoch INTEGER NOT NULL,result_event_id TEXT,return_event_id TEXT);
+      CREATE INDEX IF NOT EXISTS bot_peer_returns_source ON bot_peer_returns(source_event_id);
       CREATE INDEX IF NOT EXISTS bot_topic_events_topic ON bot_topic_events(topic_id,event_id);
       CREATE TABLE IF NOT EXISTS bot_topic_bindings(topic_id TEXT NOT NULL REFERENCES bot_native_topics(id),conversation_id TEXT NOT NULL,companion_id TEXT NOT NULL,native_lane_id TEXT NOT NULL,lane_epoch INTEGER NOT NULL,PRIMARY KEY(topic_id,companion_id));
       CREATE UNIQUE INDEX IF NOT EXISTS bot_topic_bindings_native ON bot_topic_bindings(native_lane_id);
@@ -598,7 +602,8 @@ export class BotStore {
       const room = this.openPeer(sender.id, target.id);
       const result = this.tryEnqueueAutomatic({ conversationId: room.id, source: 'companion', senderId: sender.id, recipientIds: [targetId],
         content: text(content, '转达内容', 8000), sourceMessageId: `peer-contact:${source.id}:${callId}`, correlationId: source.correlationId, causationId: source.id,
-        payload: { hop: source.source === 'user' ? 1 : Number(source.payload.hop ?? 0) + 1, userRequestedContact: true, contactRequester: source.senderType === 'companion' ? 'companion' : 'user', originalSenderName: source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer' }, attachments, sourceIds: transferSources });
+        payload: { hop: source.source === 'user' ? 1 : Number(source.payload.hop ?? 0) + 1, userRequestedContact: true, contactRequester: source.senderType === 'companion' ? 'companion' : 'user', originalSenderName: source.senderType === 'user' ? '用户' : source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer',
+          peerAssignment: { requesterId: sender.id, requesterName: sender.name, originalSenderId: source.senderId, originalSenderType: source.senderType, originalSenderName: source.senderType === 'user' ? '用户' : source.senderName } }, attachments, sourceIds: transferSources, peerReturnSourceEventId: source.id });
       if (result.accepted && destination === 'user') for (const event of result.events) this.setMetadata(`peer-user-reply-grant:${event.id}`,
         JSON.stringify({ sourceEventId: source.id, relayMessageId: result.message.id, peerConversationId: room.id, recipientId: target.id,
           requesterId: sender.id, correlationId: source.correlationId, sourceAclRevision: source.aclRevision }));
@@ -965,6 +970,11 @@ export class BotStore {
       if (senderType === 'companion' && input.causationId) {
         const cause = this.getEvent(input.causationId); if (cause) this.recordEmissionTiming(messageId, cause);
       }
+      if (input.peerReturnSourceEventId) {
+        const owner = this.getEvent(input.peerReturnSourceEventId);
+        if (!owner) throw Error('伙伴委托缺少原始事件。');
+        this.peerReturns.register(owner,events);
+      }
       return { message: this.getMessage(messageId)!, events };
     }).immediate();
   }
@@ -973,6 +983,7 @@ export class BotStore {
   observeGroupReply(eventId: string): BotEvent[] {
     return this.db.transaction(() => {
       const cause = this.getEvent(eventId); if (!cause || cause.status !== 'done') return [];
+      if (this.peerReturns.isDirected(cause)) return [];
       const room = this.getConversation(cause.conversationId), message = this.getMessage(cause.replyMessageId);
       if (!room || room.dissolvedAt || !['group', 'peer'].includes(room.kind) || room.participationMode !== 'automatic'
         || room.revision !== cause.aclRevision || !room.memberIds.includes(cause.companionId)
@@ -1195,16 +1206,18 @@ export class BotStore {
         .run(event.replyMessageId, event.id, event.conversationId, event.replyMessageId, nowIso());
       for (const job of input.memoryJobs ?? []) this.enqueueMemoryJob(job);
       for (const entry of input.metadata ?? []) this.setMetadata(entry.key, entry.value);
+      this.peerReturns.settled(this.getEvent(event.id)!);
       return true;
     }).immediate();
   }
-  cancelEvent(eventId: string, clearContent = false): boolean {
+  cancelEvent(eventId: string, clearContent = false, notifyPeer = true): boolean {
     return this.db.transaction(() => {
       const event = this.getEvent(eventId); if (!event) return false;
       const result = this.db.prepare("UPDATE bot_inbox SET status='cancelled',lease_token=NULL,lease_until=NULL WHERE id=? AND status IN ('queued','running')").run(eventId);
       if (result.changes) {
         this.finishReplyTiming(event);
         this.db.prepare("UPDATE bot_messages SET status='cancelled',content=CASE WHEN ? THEN '' ELSE content END WHERE id=?").run(clearContent ? 1 : 0, event.replyMessageId);
+        if (notifyPeer) this.peerReturns.settled(this.getEvent(event.id)!);
       }
       return !!result.changes;
     }).immediate();
@@ -1212,7 +1225,7 @@ export class BotStore {
   interruptNativeReply(eventId: string): boolean {
     return this.db.transaction(() => {
       const event = this.getEvent(eventId);
-      if (!event || !this.cancelEvent(eventId)) return false;
+      if (!event || !this.cancelEvent(eventId,false,false)) return false;
       const key = 'execution:' + event.replyMessageId, raw = this.getMetadata(key);
       const execution = raw ? JSON.parse(raw) : { steps: [] };
       const stopping = !!this.getMetadata('native-input:' + eventId);

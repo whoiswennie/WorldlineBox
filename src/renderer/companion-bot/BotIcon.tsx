@@ -1,4 +1,6 @@
 const paths = {
+  apps: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
+  assets: 'M3 6l9-4 9 4v12l-9 4-9-4zM3 6l9 4 9-4M12 10v12',
   check: 'M5 12l4 4L19 6',
   close: 'M6 6l12 12M18 6L6 18',
   microphone: 'M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8',

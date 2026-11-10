@@ -47,7 +47,13 @@ export class NativeHostClient {
   }
   /** Server pushes session events; a task never polls or creates another CLI. */
   async *events(sessionId: string, after: number, signal: AbortSignal): AsyncGenerator<NativeHostEvent> {
-    const response = await this.response(`/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, undefined, signal);
+    yield* this.frames<NativeHostEvent>(`/sessions/${encodeURIComponent(sessionId)}/events?after=${after}`, signal);
+  }
+  async *contextEvents(sessionId: string, laneId: string, signal: AbortSignal): AsyncGenerator<BotNativeContext> {
+    yield* this.frames<BotNativeContext>(`/bot/topic-context-events?${new URLSearchParams({ sessionId, laneId })}`, signal);
+  }
+  private async *frames<T>(endpoint: string, signal: AbortSignal): AsyncGenerator<T> {
+    const response = await this.response(endpoint, undefined, signal);
     if (!response.body) throw new Error('Native Host event stream is unavailable.');
     const reader = response.body.getReader(), decoder = new TextDecoder(); let pending = '';
     try {
@@ -58,7 +64,7 @@ export class NativeHostClient {
         let boundary: number;
         while ((boundary = pending.indexOf('\n')) >= 0) {
           const line = pending.slice(0, boundary); pending = pending.slice(boundary + 1);
-          if (line) yield JSON.parse(line) as NativeHostEvent;
+          if (line) yield JSON.parse(line) as T;
         }
       }
       if (!signal.aborted) throw new Error('The native Web Host event stream disconnected.');

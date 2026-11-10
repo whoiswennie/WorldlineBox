@@ -80,7 +80,7 @@ test('native context menu captures the full page and connects a companion to the
     await stage('follow-up-uses-same-session-and-application');
     const second = await send('继续刚才的网页任务。仍使用相同的内置浏览器标签页，把筛选关键词改成“星海”，核实页面显示后回复实际结果。不要开新网页。');
     expect(second.execution!.sessionId).toBe(first.execution!.sessionId); expect((await native()).document.filter).toBe('星海'); expect((await native()).id).toBe(original.id);
-    await page.getByRole('button', { name: '附加内置浏览器页面', exact: true }).click(); await expect(page.getByRole('button', { name: '移除网页上下文', exact: true })).toBeVisible(); await page.getByRole('button', { name: '移除网页上下文', exact: true }).click();
+    await page.getByRole('button', { name: '应用', exact: true }).click(); await page.getByRole('dialog', { name: '连接应用', exact: true }).getByRole('button', { name: /内置浏览器/ }).click(); await expect(page.getByRole('button', { name: '移除网页上下文', exact: true })).toBeVisible(); await page.getByRole('button', { name: '移除网页上下文', exact: true }).click();
     report.passed = true; report.fullPageImagePath = output; report.sameNativeWebContents = original.id; report.tabId = tabId; report.noNewTab = true; report.sessionId = first.execution!.sessionId; report.nativeBrowserCalls = first.execution!.steps.filter(step => step.toolName === 'browser').length; report.sameSessionFollowup = true; report.existingLoginUsed = true;
     await writeFile(path.join(evidence, 'result.json'), JSON.stringify(report, null, 2));
   } catch (error) { report.error = error instanceof Error ? error.message : String(error); await writeFile(path.join(evidence, 'failure.json'), JSON.stringify(report, null, 2)); await capture('failure').catch(() => undefined); throw error; }

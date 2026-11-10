@@ -571,3 +571,22 @@ it('routes an inline DSH answer to that exact native execution without sending a
   expect(requests).toContainEqual({ type: 'execution.answer', messageId: 'reply-a', questionId: 'question-a', text: '当前工作区' });
   expect(sends()).toHaveLength(0);
 });
+
+it('removes a connected app from the next input immediately while native detach acknowledgement is still pending', async () => {
+  snapshots.a!.chatRuntime = { topic: { id: 'topic-a', conversationId: 'a', title: '当前任务', createdAt: at, updatedAt: at }, apps: ['asset-manager'], running: [], queued: [], hiddenMessageIds: [] };
+  await mount(); const pending = deferred<BotResponse>();
+  override = request => request.type === 'app.detach' ? pending.promise : request.type === 'message.send' ? Promise.resolve({ ok: true }) : undefined;
+  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="移除资产管理器"]')!.click());
+  expect(host.querySelector('.bot-composer-dock [data-app-id="asset-manager"]')).toBeNull();
+  await input(composer(), '继续当前任务'); await click('发送 ↑');
+  expect(sends().at(-1)?.apps).toEqual([]);
+  await act(() => pending.resolve({ ok: true }));
+});
+it('activates an app only on selection and carries it on the outgoing input', async () => {
+  await mount(); expect(requests.filter(request => request.type === 'app.connect')).toHaveLength(0);
+  await click('应用');
+  await act(() => host.querySelectorAll<HTMLButtonElement>('.bot-app-choice')[1]!.click());
+  expect(requests.filter(request => request.type === 'app.connect')).toHaveLength(1);
+  await input(composer(), '请整理这些资产'); await click('发送 ↑');
+  expect(sends().at(-1)?.apps).toEqual(['asset-manager']);
+});

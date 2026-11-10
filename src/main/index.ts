@@ -369,6 +369,7 @@ import {
   projectAutomationExecutionStatus,
 } from './automation-execution-journal';
 import { createJsonFileAutomationIdempotencyStore } from './automation-idempotency-store';
+import { BotAssetManagerApp } from './companion-bot/asset-manager-app';
 import { EmbeddedMcpServer, EmbeddedMcpServerError } from './embedded-mcp-server';
 import { McpCredentialStoreError } from './mcp-client-credentials';
 import { McpPermissionBroker } from './mcp-permission-broker';
@@ -979,6 +980,7 @@ let appLogPath: string | undefined;
 let appUpdateService: AppUpdateService | undefined;
 let automationExecutionJournal: AutomationExecutionJournal | undefined;
 let embeddedMcpServer: EmbeddedMcpServer | undefined;
+const companionAssetManagerApp = new BotAssetManagerApp(() => embeddedMcpServer);
 let embeddedMcpInitializationFailure: McpCredentialStoreError | undefined;
 let automationCommandGateway: AutomationCommandGateway | undefined;
 let mcpPermissionPolicyStore: McpPermissionPolicyStore | undefined;
@@ -1914,7 +1916,7 @@ function releaseLoopbackListeners(): Promise<void> {
     logger?.error("extension-server", error);
   }
   extensionServer = undefined;
-  const mcpClose = embeddedMcpServer?.close() ?? Promise.resolve();
+  const mcpClose = companionAssetManagerApp.close().then(() => embeddedMcpServer?.close());
   loopbackRelease = mcpClose.catch((error: unknown) => {
     logger?.error("automation.mcp.close", error);
   });
@@ -5158,7 +5160,7 @@ async function startApplication(): Promise<void> {
         ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
         getHost: getWorkerHost });
       const brain = worker;
-      botService = new BotService({ root, brain, prewarmMemory: true, memory, media,
+      botService = new BotService({ root, brain, prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
         resolveBrowserContext: id => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.resolveCompanionContext(id); },
         browserTool: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },
         ensureCompanionBindings: async ids => {
