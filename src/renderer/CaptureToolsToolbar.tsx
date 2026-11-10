@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CaptureToolTask, WorldlineBoxCaptureToolsApi } from '../shared/capture-tools';
-import { CAPTURE_TOOL_MENU_LABELS, CAPTURE_TOOL_MENU_TASKS } from '../shared/capture-tools-menu';
-import { Icon, type IconName } from './Icons';
+import { CAPTURE_TOOL_MENU_LABELS } from '../shared/capture-tools-menu';
+import { Icon } from './Icons';
+import { CaptureToolsMenuList } from './CaptureToolsMenuList';
 import { useLocale } from './i18n';
 import { isImeKeyboardEvent } from './ime-safe-dismiss';
 import { createShellPortal } from './ui/ShellStyleScope';
@@ -41,14 +42,6 @@ export function CaptureToolsToolbar({ onOpen, nativeMenu, onError }: { onOpen(ta
     <button ref={trigger} className="application-capture-more" type="button" aria-label={labels.more} title={labels.more} aria-haspopup="menu" aria-expanded={open || nativeOpen} onClick={showMenu}><Icon name="chevron-right" size={12} /></button>
     <button className="application-navigation-item" type="button" aria-label={labels.recording} title={labels.recording} onClick={() => choose('recording')}><Icon name="video" size={22} /><span className="application-navigation-item-label">{labels.recording}</span></button>
     {/* Keep the global menu above dialogs and let it own Escape before Settings. */}
-    {open ? createShellPortal(<div className="application-capture-menu" ref={menu} role="menu" data-modal-popover="true" data-escape-owned-popover="true" aria-label={labels.more} onKeyDown={event => {
-      if (event.key === 'Tab') { setOpen(false); return; }
-      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) || isImeKeyboardEvent(event.nativeEvent)) return;
-      event.preventDefault();
-      const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button')];
-      const index = items.indexOf(document.activeElement as HTMLButtonElement);
-      const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowUp' ? -1 : 1) + items.length) % items.length;
-      items[next]?.focus();
-    }}>{CAPTURE_TOOL_MENU_TASKS.map(task => <button key={task} role="menuitem" type="button" onClick={() => choose(task)}><Icon name={({ screenshot: 'camera', recording: 'video', 'long-screenshot': 'fit-window', ocr: 'scan-text', translate: 'languages', selection: 'message-circle' } as Record<CaptureToolTask, IconName>)[task]} size={17} />{labels[task]}</button>)}</div>, document.body) : null}
+    {open ? createShellPortal(<CaptureToolsMenuList locale={locale === 'zh-CN' ? 'zh-CN' : 'en'} menuRef={menu} onChoose={choose} onDismiss={() => { setOpen(false); trigger.current?.focus(); }} />, document.body) : null}
   </div>;
 }

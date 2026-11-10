@@ -46,7 +46,7 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     application = await launch(); application.process().stderr?.on('data', data => { electronErrors = (electronErrors + String(data)).slice(-12000); }); let main = await application.firstWindow();
     await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 30000 });
     const initial = (await request(main, { type: 'state' })).state!;
-    expect(initial.downloadPath).toBe(downloads); expect(initial.settings).toMatchObject({ systemAudio: true, microphone: false, format: 'mp4', hideApp: true });
+    expect(initial.downloadPath).toBe(downloads); expect(initial.settings).toMatchObject({ systemAudio: true, microphone: false, format: 'mp4' }); expect(initial.settings).not.toHaveProperty('hideApp');
     expect(initial.shortcuts).toHaveLength(6);
     for (const shortcut of initial.shortcuts) { expect(shortcut.accelerator).not.toBe(''); if (!shortcut.registered) expect(shortcut.error).toBeTruthy(); }
     const denied = await main.evaluate(async () => {
@@ -57,7 +57,7 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     expect(denied.every(result => !result.ok)).toBe(true);
     const duplicate = structuredClone(initial.settings); duplicate.shortcuts.screenshot = 'Control+Alt+F11'; duplicate.shortcuts.ocr = 'Control+Alt+F11';
     const duplicateResult = await raw(main, { type: 'settings.save', settings: duplicate }); expect(duplicateResult.ok).toBe(false);
-    const settings = { ...initial.settings, hideApp: false, shortcuts: { screenshot: '', recording: '', ocr: '', translate: '', 'long-screenshot': '', selection: '' } };
+    const settings = { ...initial.settings, shortcuts: { screenshot: '', recording: '', ocr: '', translate: '', 'long-screenshot': '', selection: '' } };
     const savedSettings = await request(main, { type: 'settings.save', settings }); expect(savedSettings.state!.shortcuts.every(item => !item.registered && item.accelerator === '')).toBe(true);
     expect(JSON.parse(readFileSync(path.join(profile, 'capture-tools', 'settings.json'), 'utf8'))).toEqual(settings);
     expect(await application.evaluate(({ globalShortcut }, shortcuts) => shortcuts.some(value => globalShortcut.isRegistered(value)), initial.shortcuts.map(item => item.accelerator))).toBe(false);
@@ -139,8 +139,8 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     // real-monitor region-overlay scenario.
     await request(tool, { type: 'screenshot.capture', sourceId: fixture.sourceId }); await tool.reload();
     await expect(tool.getByRole('combobox', { name: '选择屏幕或窗口', exact: true })).toBeVisible();
-    await expect.poll(() => tool.locator('select option').allTextContents()).toContain('窗口 · WorldlineBox Capture Fixture');
-    await tool.getByRole('combobox', { name: '选择屏幕或窗口', exact: true }).selectOption(fixture.sourceId);
+    await tool.getByRole('combobox', { name: '选择屏幕或窗口', exact: true }).click();
+    await tool.getByRole('option', { name: '窗口 · WorldlineBox Capture Fixture', exact: true }).click();
     await expect(tool.getByLabel('录制系统声音', { exact: true })).toBeChecked(); await expect(tool.getByLabel('录制麦克风', { exact: true })).not.toBeChecked();
     await tool.evaluate(() => {
       const original = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
@@ -243,7 +243,8 @@ test('global screenshot tools isolate privileges, flatten edits, persist shortcu
     // recording restart, and FFmpeg's animated-image conversion together.
     expect(playback.width).toBe(inspected.streams.find(stream => stream.codec_type === 'video')!.width);
     await tool.getByRole('button', { name: '再次录制', exact: true }).click();
-    await tool.getByRole('combobox', { name: '输出格式', exact: true }).selectOption('gif');
+    await tool.getByRole('combobox', { name: '输出格式', exact: true }).click();
+    await tool.getByRole('option', { name: 'GIF', exact: true }).click();
     await expect(tool.getByLabel('录制系统声音', { exact: true })).not.toBeChecked();
     await expect(tool.getByLabel('录制系统声音', { exact: true })).toBeDisabled();
     await tool.getByLabel('仅录制选定区域', { exact: true }).check();

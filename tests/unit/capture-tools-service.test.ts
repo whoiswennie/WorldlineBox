@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BrowserWindow, clipboard, desktopCapturer, globalShortcut, session, shell, type IpcMainInvokeEvent } from 'electron';
@@ -56,8 +56,9 @@ const services: CaptureToolsService[] = [];
 beforeEach(async () => { mock.windows.length = 0; mock.scope = {}; mock.callbacks.clear(); mock.boundaryLoad = undefined; vi.clearAllMocks(); mock.png = await sharp({ create: { width: 64, height: 64, channels: 3, background: '#123456' } }).png().toBuffer(); });
 afterEach(async () => { for (const service of services.splice(0)) await service.shutdown(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 function event(window: BrowserWindow, frame = window.webContents.mainFrame) { return { sender: window.webContents, senderFrame: frame } as IpcMainInvokeEvent; }
-async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => void, onStateChanged?: CaptureToolsServiceOptions['onStateChanged']) {
+async function fixture(validateShortcuts?: (settings: CaptureToolsSettings) => void, onStateChanged?: CaptureToolsServiceOptions['onStateChanged'], storedSettings?: unknown) {
   const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-capture-service-')); roots.push(root);
+  if (storedSettings) await writeFile(path.join(root, 'settings.json'), JSON.stringify(storedSettings));
   const main = new BrowserWindow({}); const saveToLibrary = vi.fn<() => Promise<void>>(async () => undefined);
   const source: CaptureImageSource = { dataUrl: 'data:image/png;base64,' + mock.png.toString('base64'), width: 64, height: 64, title: 'Provided browser', url: 'https://actual.example/page' };
   const captureBrowser = vi.fn(async () => source);
@@ -186,20 +187,32 @@ describe('isolated capture tools authorization and settings', () => {
 
   it('persists settings immediately and rejects bare keys and equivalent duplicate accelerators', async () => {
     const { service, main, root } = await fixture(); const settings = structuredClone(DEFAULT_CAPTURE_TOOLS_SETTINGS);
-    settings.hideApp = false; settings.shortcuts.screenshot = 'Control+Alt+P';
+    settings.shortcuts.screenshot = 'Control+Alt+P';
     expect((await service.handle(event(main), { type: 'settings.save', settings })).ok).toBe(true);
-    expect(JSON.parse(await readFile(path.join(root, 'settings.json'), 'utf8')).hideApp).toBe(false);
+    expect(JSON.parse(await readFile(path.join(root, 'settings.json'), 'utf8')).hideApp).toBeUndefined();
     expect(globalShortcut.unregister).toHaveBeenCalled(); expect(globalShortcut.register).toHaveBeenCalledWith('Control+Alt+P', expect.any(Function));
     settings.shortcuts.ocr = 'Alt+Ctrl+P'; expect((await service.handle(event(main), { type: 'settings.save', settings })).ok).toBe(false);
     settings.shortcuts.ocr = 'X'; expect((await service.handle(event(main), { type: 'settings.save', settings })).ok).toBe(false);
     expect(canonicalCaptureShortcut('Control+Alt+P')).toBe(canonicalCaptureShortcut('Alt+Ctrl+P'));
   });
+  it('migrates the retired hide setting without losing shortcuts and never shows a manually hidden main window', async () => {
+    const legacy = { ...DEFAULT_CAPTURE_TOOLS_SETTINGS, hideApp: true, shortcuts: { ...DEFAULT_CAPTURE_TOOLS_SETTINGS.shortcuts, screenshot: 'Control+Alt+P' } };
+    const { service, main, tool, root } = await fixture(undefined, undefined, legacy);
+    const migrated = JSON.parse(await readFile(path.join(root, 'settings.json'), 'utf8'));
+    expect(migrated).not.toHaveProperty('hideApp'); expect(migrated.shortcuts.screenshot).toBe('Control+Alt+P');
+    expect((await service.handle(event(main), { type: 'settings.save', settings: { ...service.state().settings, hideApp: true } })).ok).toBe(true);
+    expect(service.state().settings).not.toHaveProperty('hideApp');
+    main.hide(); await service.open('screenshot'); expect(main.isVisible()).toBe(false);
+    const actualTool = mock.windows.at(-1) as BrowserWindow;
+    await service.handle(event(actualTool), { type: 'close' }); expect(main.isVisible()).toBe(false);
+    expect(tool.isDestroyed()).toBe(true);
+  });
 
-  it('routes the retired browser capture request to the real desktop overlay and hides the application', async () => {
+  it('routes the retired browser capture request to the real desktop overlay and preserves the application', async () => {
     const { service, main, captureBrowser } = await fixture();
     const opened = await service.handle(event(main), { type: 'open', task: 'screenshot', source: 'browser' });
     expect(opened.ok && opened.source?.desktop).toBeTruthy(); expect(opened.ok && opened.source?.url).toBe('');
-    expect(captureBrowser).not.toHaveBeenCalled(); expect(desktopCapturer.getSources).toHaveBeenCalled(); expect(main.isVisible()).toBe(false);
+    expect(captureBrowser).not.toHaveBeenCalled(); expect(desktopCapturer.getSources).toHaveBeenCalled(); expect(main.isVisible()).toBe(true);
   });
 
   it('opens a real screen as a frameless display overlay including the taskbar and remains remotely capturable', async () => {
@@ -213,7 +226,7 @@ describe('isolated capture tools authorization and settings', () => {
       x: 0, y: 0, width: 2160, height: 1354, minWidth: 1, minHeight: 1 });
     expect(tool.setBounds).toHaveBeenLastCalledWith({ x: 0, y: 0, width: 2160, height: 1354 });
     expect(tool.setContentProtection).toHaveBeenCalledWith(false); expect(tool.setContentProtection).not.toHaveBeenCalledWith(true);
-    expect(main.isVisible()).toBe(false);
+    expect(main.isVisible()).toBe(true);
     await service.handle(event(tool), { type: 'close' }); expect(main.isVisible()).toBe(true);
   });
 
@@ -529,7 +542,7 @@ describe('desktop recording grants', () => {
   it('hides a controller for full monitor recording and restores it after stopping instead of excluding it from sharing', async () => {
     const { service, main } = await fixture(); await service.open('recording'); const tool = mock.windows.at(-1) as BrowserWindow;
     const prepared = await service.handle(event(tool), { type: 'recording.prepare', sourceId: 'screen:1:0', format: 'webm', systemAudio: false, microphone: false });
-    expect(prepared.ok && prepared.recordingControls).toEqual({ hidden: true }); expect(tool.isVisible()).toBe(false); expect(main.isVisible()).toBe(false);
+    expect(prepared.ok && prepared.recordingControls).toEqual({ hidden: true }); expect(tool.isVisible()).toBe(false); expect(main.isVisible()).toBe(true);
     if (!prepared.ok || !prepared.id) throw Error('No prepared recording');
     await service.handle(event(tool), { type: 'recording.cancel', id: prepared.id });
     expect(tool.isVisible()).toBe(true); expect(main.isVisible()).toBe(true);

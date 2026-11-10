@@ -5077,6 +5077,11 @@ async function startApplication(): Promise<void> {
       },
       downloadPath: process.env.WORLDLINEBOX_E2E === '1' && process.env.WORLDLINEBOX_E2E_CAPTURE_DOWNLOAD_PATH ? process.env.WORLDLINEBOX_E2E_CAPTURE_DOWNLOAD_PATH : path.join(app.getPath('downloads'), 'WorldlineBox'),
       getFfmpeg: () => resolveHostMediaBinaries()?.ffmpegPath,
+      loadMenu: async view => {
+        if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+          const url = new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL); url.searchParams.set('window', 'capture-tools-menu'); await view.webContents.loadURL(url.toString());
+        } else await view.webContents.loadFile(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`), { query: { window: 'capture-tools-menu' } });
+      },
       loadWindow: async window => {
         attachRendererDiagnostics(window);
         if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {

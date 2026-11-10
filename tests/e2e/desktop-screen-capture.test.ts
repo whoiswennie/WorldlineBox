@@ -139,7 +139,7 @@ async function nativeRecordingBorders(application: ElectronApplication) {
 // desktop PNG/MP4 locally so the user can inspect them. This verifies ordinary
 // Windows desktop capture; it does not claim an actual Sunlogin session was run.
 // eslint-disable-next-line no-empty-pattern
-test('the real monitor screenshot is edited in place and regional recording controls remain visible outside the recorded pixels while the main window hides', async ({}, testInfo) => {
+test('the real monitor screenshot is edited in place and regional recording controls remain outside recorded pixels while the main window stays visible', async ({}, testInfo) => {
   test.skip(process.platform !== 'win32', 'This test verifies native Windows monitor capture and display affinity.');
   test.setTimeout(180000);
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-desktop-screen-'));
@@ -147,8 +147,8 @@ test('the real monitor screenshot is edited in place and regional recording cont
   const artifacts = path.resolve('artifacts/desktop-screen-capture'); mkdirSync(artifacts, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
   const beforePath = path.join(artifacts, `${stamp}-before-main-visible.png`);
-  const screenshotPath = path.join(artifacts, `${stamp}-desktop-main-hidden.png`);
-  const videoPath = path.join(artifacts, `${stamp}-desktop-main-hidden.mp4`);
+  const screenshotPath = path.join(artifacts, `${stamp}-desktop-main-visible.png`);
+  const videoPath = path.join(artifacts, `${stamp}-desktop-main-visible.mp4`);
   const framePath = path.join(artifacts, `${stamp}-recording-final-frame.png`);
   const overlayPath = path.join(artifacts, `${stamp}-inline-overlay-visible-in-monitor.png`);
   const controllerPath = path.join(artifacts, `${stamp}-recording-controller-visible-in-monitor.png`);
@@ -164,7 +164,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
     const main = await application.firstWindow();
     await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 30000 });
     const state = (await request(main, { type: 'state' })).state!;
-    expect(state.settings).toMatchObject({ hideApp: true, systemAudio: true, microphone: false, format: 'mp4' });
+    expect(state.settings).toMatchObject({ systemAudio: true, microphone: false, format: 'mp4' }); expect(state.settings).not.toHaveProperty('hideApp');
     expect(state.ai.configured).toBe(false); expect(state.downloadPath).toBe(downloads);
 
     // Put the real, fully opaque application on the monitor the product will
@@ -225,13 +225,13 @@ test('the real monitor screenshot is edited in place and regional recording cont
     const trace = await application.evaluate(() => Reflect.get(globalThis, '__desktopScreenProof') as NativeCaptureTrace);
     const screenshotCall = trace.captures.find(call => call.types.length === 1 && call.types[0] === 'screen' && call.requested.width > 1);
     if (screenshotCall) {
-      expect(screenshotCall).toBeTruthy(); expect(screenshotCall!.mainVisible).toBe(false); expect(screenshotCall!.toolVisible).toBe(false);
+      expect(screenshotCall).toBeTruthy(); expect(screenshotCall!.mainVisible).toBe(true); expect(screenshotCall!.toolVisible).toBe(false);
       const genuineScreen = screenshotCall!.sources.find(source => source.id === before.sourceId); expect(genuineScreen).toBeTruthy();
       expect(createHash('sha256').update(Buffer.from(captured.dataUrl.split(',')[1]!, 'base64')).digest('hex')).toBe(genuineScreen!.hash);
     } else {
       // The fast Win32 path need not enumerate Chromium sources. Independently
       // compare its actual monitor pixels against an unmodified Chromium
-      // capture with both app windows hidden; tolerate small live UI changes.
+      // capture with only the tool overlay hidden; tolerate small live UI changes.
       const reference = await application.evaluate(async ({ BrowserWindow, desktopCapturer }, input) => {
         const overlay = BrowserWindow.getAllWindows().find(window => window.webContents.getURL().includes('window=capture-tools'))!;
         overlay.hide();
@@ -241,7 +241,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
           return { png: source.thumbnail.toPNG().toString('base64'), mainVisible: BrowserWindow.fromId(input.mainId)?.isVisible() };
         } finally { overlay.showInactive(); }
       }, { ...monitor, physical: { width: captured.width, height: captured.height } });
-      expect(reference.mainVisible).toBe(false);
+      expect(reference.mainVisible).toBe(true);
       const actual = await sharp(Buffer.from(captured.dataUrl.split(',')[1]!, 'base64')).removeAlpha().raw().toBuffer();
       const pixels = await sharp(Buffer.from(reference.png, 'base64')).removeAlpha().raw().toBuffer();
       writeFileSync(path.join(artifacts, 'native-monitor.png'), Buffer.from(captured.dataUrl.split(',')[1]!, 'base64'));
@@ -254,11 +254,10 @@ test('the real monitor screenshot is edited in place and regional recording cont
       for (let index = captured.width * Math.max(0, captured.height - 32) * 3; index < pixels.length; index += 29 * 3) { samples++; if (Math.abs(actual[index]! - pixels[index]!) < 12 && Math.abs(actual[index + 1]! - pixels[index + 1]!) < 12 && Math.abs(actual[index + 2]! - pixels[index + 2]!) < 12) match++; }
       expect(match / samples, 'Native monitor colors and scale should match the real desktop').toBeGreaterThan(.8);
     }
-    nearPhysicalScreen(captured, monitor.physical); expect(await mainNative.evaluate(window => window.isVisible())).toBe(false);
+    nearPhysicalScreen(captured, monitor.physical); expect(await mainNative.evaluate(window => window.isVisible())).toBe(true);
     const saved = await request(tool, { type: 'screenshot.save', dataUrl: captured.dataUrl, filename: 'Actual-desktop.png', destination: 'downloads' });
     expect(path.dirname(saved.path!)).toBe(downloads); copyFileSync(saved.path!, screenshotPath, constants.COPYFILE_EXCL);
     nearPhysicalScreen(await nonemptyScreen(screenshotPath), monitor.physical);
-    expect(createHash('sha256').update(readFileSync(screenshotPath)).digest('hex')).not.toBe(createHash('sha256').update(readFileSync(beforePath)).digest('hex'));
     const toolNative = await application.browserWindow(tool); expect(await toolNative.evaluate(window => window.isContentProtected())).toBe(false);
     expect(captured.desktop).toMatchObject({ displayId: monitor.id, bounds: monitor.bounds });
     const windowGeometry = await toolNative.evaluate(async window => ({ bounds: window.getBounds(), contentBounds: window.getContentBounds(), fullScreen: window.isFullScreen(), frame: window.getNormalBounds(),
@@ -296,7 +295,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
     const overlayVisibility = await visibleInActualMonitor(application, tool, monitor, toolbarBounds, overlayPath);
     await Promise.all([tool.waitForEvent('close'), tool.getByRole('button', { name: '关闭截图', exact: true }).click()]);
     await expect.poll(() => mainNative.evaluate(window => window.isVisible())).toBe(true);
-    proof.mainHiddenAtNativeScreenshot = true; proof.mainRestoredAfterScreenshotClose = true;
+    proof.mainVisibleAtNativeScreenshot = true; proof.mainVisibleAfterScreenshotClose = true;
 
     const recordingSource = (await request(main, { type: 'open', task: 'recording' })).source!; tool = await toolPage(application);
     expect(recordingSource.desktop).toMatchObject({ displayId: monitor.id, bounds: monitor.bounds });
@@ -316,7 +315,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
     await expect(tool.getByRole('combobox', { name: '录制画质', exact: true })).toHaveValue('original');
     await expect(tool.getByLabel('录制系统声音', { exact: true })).toBeChecked();
     await expect(tool.getByLabel('录制麦克风', { exact: true })).not.toBeChecked();
-    expect(await mainNative.evaluate(window => ({ visible: window.isVisible(), opacity: window.getOpacity() }))).toEqual({ visible: false, opacity: 1 });
+    expect(await mainNative.evaluate(window => ({ visible: window.isVisible(), opacity: window.getOpacity() }))).toEqual({ visible: true, opacity: 1 });
     await tool.evaluate(() => {
       const actualDisplay = navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
       let display: MediaStream | undefined;
@@ -349,8 +348,8 @@ test('the real monitor screenshot is edited in place and regional recording cont
     });
     await tool.getByRole('button', { name: '开始录制', exact: true }).click();
     await expect(tool.locator('.capture-recording-status')).toHaveClass(/is-recording/u, { timeout: 30000 });
-    const started = Date.now(); const hiddenSamples: boolean[] = [];
-    hiddenSamples.push(await mainNative.evaluate(window => !window.isVisible()));
+    const started = Date.now(); const visibleSamples: boolean[] = [];
+    visibleSamples.push(await mainNative.evaluate(window => window.isVisible()));
     const nativeTracks = await tool.evaluate(() => Reflect.get(globalThis, '__nativeScreenRecording') as NativeRecordingTrace);
     expect(nativeTracks).toMatchObject({ video: 1, requestedAudio: true, readyState: 'live', sameNativeDisplayTrack: false, sameNativeAudioTracks: true, nativeRecorder: true,
       recorderVideoSettings: outputSize });
@@ -361,9 +360,9 @@ test('the real monitor screenshot is edited in place and regional recording cont
     nearPhysicalScreen({ width: nativeTracks.settings.width!, height: nativeTracks.settings.height! }, monitor.physical);
     const recordingTrace = await application.evaluate(() => Reflect.get(globalThis, '__desktopScreenProof') as NativeCaptureTrace);
     expect(recordingTrace.grants).toHaveLength(1);
-    expect(recordingTrace.grants[0]).toMatchObject({ sourceId: before.sourceId, mainVisible: false, protected: false, videoRequested: true, audioRequested: true, loopback: true });
+    expect(recordingTrace.grants[0]).toMatchObject({ sourceId: before.sourceId, mainVisible: true, protected: false, videoRequested: true, audioRequested: true, loopback: true });
     await expect.poll(async () => (await request(main, { type: 'state' })).state?.recording?.bytes ?? 0, { timeout: 10000 }).toBeGreaterThan(0);
-    hiddenSamples.push(await mainNative.evaluate(window => !window.isVisible()));
+    visibleSamples.push(await mainNative.evaluate(window => window.isVisible()));
     const recordingNative = await application.browserWindow(tool);
     const control = await recordingNative.evaluate(window => { const bytes = window.getNativeWindowHandle(); return { protected: window.isContentProtected(), bounds: window.getBounds(),
       visible: window.isVisible(), topmost: window.isAlwaysOnTop(),
@@ -384,7 +383,7 @@ test('the real monitor screenshot is edited in place and regional recording cont
     expect(overlap.width * overlap.height, 'The visible controls must be entirely outside the recorded desktop rectangle').toBe(0);
     // Keep the native display stream running for at least three full seconds.
     if (Date.now() - started < 3200) await tool.waitForTimeout(3200 - (Date.now() - started));
-    hiddenSamples.push(await mainNative.evaluate(window => !window.isVisible())); expect(hiddenSamples.every(Boolean)).toBe(true);
+    visibleSamples.push(await mainNative.evaluate(window => window.isVisible())); expect(visibleSamples.every(Boolean)).toBe(true);
     const recordingVisibility = await visibleInActualMonitor(application, tool, monitor,
       { x: 0, y: 0, width: control.bounds.width, height: control.bounds.height }, controllerPath);
     const borderWindows = await nativeRecordingBorders(application);
@@ -488,9 +487,9 @@ test('the real monitor screenshot is edited in place and regional recording cont
     const scaledPath = path.join(artifacts, `${stamp}-full-monitor-720p.webm`); copyFileSync(fullRecording.path!, scaledPath, constants.COPYFILE_EXCL);
     await testInfo.attach('actual-full-monitor-720p-recording', { path: scaledPath, contentType: 'video/webm' });
     await Promise.all([tool.waitForEvent('close'), tool.getByRole('button', { name: '关闭', exact: true }).click()]);
-    Object.assign(proof, { success: true, screenshotCall, recordingGrant: recordingTrace.grants[0], nativeTracks, hiddenSamples,
+    Object.assign(proof, { success: true, screenshotCall, recordingGrant: recordingTrace.grants[0], nativeTracks, visibleSamples,
       control: { ...control, affinity, overlapPixels: 0 }, overlayVisibility, recordingVisibility, borderVisibility, recordCrop, recordDesktopRect, outputSize,
-      decodedFrameVsNativeDesktopMeanError: frameMeanError, media, mainRestoredAfterRecording: true, mainRestoredAfterRecordingClose: true,
+      decodedFrameVsNativeDesktopMeanError: frameMeanError, media, mainVisibleAfterRecording: true, mainVisibleAfterRecordingClose: true,
       fullScreen720p: { dimensions: scaledVideo, hiddenControls: displayCount === 1, trayStopSaved: true, path: scaledPath } });
     for (const [name, file, contentType] of [['actual-monitor-before', beforePath, 'image/png'], ['actual-monitor-screenshot', screenshotPath, 'image/png'],
       ['actual-monitor-recording', videoPath, 'video/mp4'], ['actual-monitor-recording-final-frame', framePath, 'image/png'],

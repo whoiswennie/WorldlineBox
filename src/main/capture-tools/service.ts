@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open } from 'node:fs/promises';
 import sharp from 'sharp';
 import { app, BrowserWindow, clipboard, desktopCapturer, globalShortcut, ipcMain, nativeImage, powerMonitor, screen, session, shell,
-  type DesktopCapturerSource, type IpcMainInvokeEvent, type Session } from 'electron';
+  type DesktopCapturerSource, type IpcMainInvokeEvent, type Session, type WebContentsView } from 'electron';
 import { CAPTURE_TOOLS_ARGUMENT, CAPTURE_TOOLS_CHANGED, CAPTURE_TOOLS_REQUEST, CAPTURE_TOOLS_STOP_RECORDING,
   DEFAULT_CAPTURE_TOOLS_SETTINGS, captureToolsRequestSchema, captureToolsSettingsSchema, type CaptureDesktopSource,
   type CaptureImageSource, type CaptureToolsRequest, type CaptureToolsResponse, type CaptureToolsSettings,
@@ -26,6 +26,7 @@ export interface CaptureToolsServiceOptions {
   getMainWindow(): BrowserWindow | null | undefined;
   preloadPath: string;
   loadWindow(window: BrowserWindow): Promise<void>;
+  loadMenu?(view: WebContentsView): Promise<void>;
   getModelConfig(): AiConnectionConfig;
   saveToLibrary(bytes: Uint8Array, filename: string): Promise<void>;
   getFfmpeg(): string | undefined | Promise<string | undefined>;
@@ -54,7 +55,7 @@ export function canonicalCaptureShortcut(value: string): string {
 
 /** An isolated, ephemeral utility. Web pages never receive desktop or model APIs. */
 export class CaptureToolsService {
-  private readonly menu = new CaptureToolsMenu();
+  private readonly menu: CaptureToolsMenu;
   private settings: CaptureToolsSettings = structuredClone(DEFAULT_CAPTURE_TOOLS_SETTINGS);
   private shortcuts: CaptureToolsState['shortcuts'] = [];
   private registered = new Set<string>();
@@ -86,7 +87,6 @@ export class CaptureToolsService {
   private initialized?: Promise<void>;
   private ipcRegistered = false;
   private revision = 0;
-  private hidden = new Set<BrowserWindow>();
   private knownFiles = new Set<string>();
   private readonly recordingPreview = new RecordingPreview();
   private recordingResultId?: string;
@@ -106,12 +106,13 @@ export class CaptureToolsService {
   private readonly downloadPath: string;
   private readonly recordings: RecordingStore;
   constructor(private readonly options: CaptureToolsServiceOptions) {
+    this.menu = new CaptureToolsMenu({ preloadPath: options.preloadPath, load: view => options.loadMenu ? options.loadMenu(view) : Promise.reject(Error('工具列表加载器不可用。')) });
     this.root = options.root ?? path.join(app.getPath('userData'), 'capture-tools');
     this.downloadPath = path.resolve(options.downloadPath ?? app.getPath('downloads'));
     this.recordings = new RecordingStore({ downloadPath: this.downloadPath, getFfmpeg: options.getFfmpeg,
       changed: state => {
         if (state.path) this.rememberFile(state.path);
-        if (['saved', 'failed', 'cancelled'].includes(state.status)) { this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.restoreApp(); this.resizeTool(false, true); for (const listener of this.terminalListeners) listener(); }
+        if (['saved', 'failed', 'cancelled'].includes(state.status)) { this.recordingGrant = undefined; this.recordingControls = undefined; this.clearRecordingBoundaries(); this.resizeTool(false, true); for (const listener of this.terminalListeners) listener(); }
         this.changed();
       }, onLimit: () => this.stopRecording() });
   }
@@ -120,7 +121,7 @@ export class CaptureToolsService {
       try { const stored = await readJson<unknown>(path.join(this.root, 'settings.json'));
         if (stored !== undefined) {
           this.settings = captureToolsSettingsSchema.parse(stored);
-          if (stored && typeof stored === 'object' && 'shortcuts' in stored && stored.shortcuts && typeof stored.shortcuts === 'object' && !('selection' in stored.shortcuts)) {
+          if (stored && typeof stored === 'object' && ('hideApp' in stored || 'shortcuts' in stored && stored.shortcuts && typeof stored.shortcuts === 'object' && !('selection' in stored.shortcuts))) {
             await atomicJson(path.join(this.root, 'settings.json'), this.settings);
           }
         }
@@ -187,13 +188,6 @@ export class CaptureToolsService {
     this.options.validateShortcuts?.(settings);
     await atomicJson(path.join(this.root, 'settings.json'), settings);
     this.settings = settings; this.settingsWarning = undefined; this.registerShortcuts(); this.changed();
-  }
-  private hideApp(exceptSourceId?: string): void {
-    if (!this.settings.hideApp) return;
-    for (const window of BrowserWindow.getAllWindows()) if (window !== this.tool && !this.recordingBoundaries.has(window) && !window.isDestroyed() && window.isVisible() && window.getMediaSourceId() !== exceptSourceId) { this.hidden.add(window); window.hide(); }
-  }
-  private restoreApp(): void {
-    for (const window of this.hidden) if (!window.isDestroyed()) window.showInactive(); this.hidden.clear();
   }
   private resizeTool(compact: boolean, result = false): void {
     const tool = this.tool; if (!tool || tool.isDestroyed()) return;
@@ -280,9 +274,14 @@ export class CaptureToolsService {
     ipcMain.handle(CAPTURE_TOOLS_REQUEST, (event, input: unknown) => this.handle(event, input));
   }
   async handle(event: IpcMainInvokeEvent, input: unknown): Promise<CaptureToolsResponse> {
+    if (this.menu.owns(event)) {
+      const request = captureToolsRequestSchema.safeParse(input); if (!request.success) return { ok: false, error: '无效的工具列表请求。' };
+      try { return await this.menu.handle(event, request.data); } catch (error) { return { ok: false, error: String(error).slice(0, 2000) }; }
+    }
     const own = this.ownSender(event, this.tool); const main = this.ownSender(event, this.options.getMainWindow());
     if (!own && !main) return { ok: false, error: '无权访问截图工具。' };
     const parsed = captureToolsRequestSchema.safeParse(input); if (!parsed.success) return { ok: false, error: '无效的截图工具请求。' };
+    if (parsed.data.type.startsWith('menu.') && parsed.data.type !== 'menu.popup') return { ok: false, error: '请在工具列表中执行此操作。' };
     if (parsed.data.type === 'shortcuts.capture' && !main) return { ok: false, error: '请在主窗口设置中修改快捷键。' };
     if (parsed.data.type === 'menu.popup' && !main) return { ok: false, error: '请在主窗口打开工具列表。' };
     const openDownloads = parsed.data.type === 'reveal' && path.resolve(parsed.data.path) === this.downloadPath;
@@ -414,7 +413,6 @@ export class CaptureToolsService {
         const id = await this.recordings.prepare(request.format, request.quality); this.recordingResultId = undefined; this.recordingPreview.clear();
         this.recordingGrant = { source, id, systemAudio: request.systemAudio && request.format !== 'gif', microphone: request.microphone && request.format !== 'gif', videoUsed: false, desktopPreflightUsed: false, microphoneUsed: false };
         this.recordingControls = controls;
-        this.hideApp(source.id);
         const tool = this.tool;
         if (tool && !tool.isDestroyed()) {
           tool.hide(); tool.setAlwaysOnTop(true, 'screen-saver'); tool.setResizable(true); tool.setMinimumSize(280, 44); tool.setMovable(false);
@@ -521,11 +519,10 @@ export class CaptureToolsService {
     if (this.captureBusy) throw Error('正在截图，请稍后。'); this.captureBusy = true;
     const tool = this.tool; const visible = !!tool && !tool.isDestroyed() && tool.isVisible();
     try {
-      const hiddenBefore = this.hidden.size;
-      if (visible) tool!.hide(); this.hideApp(id);
+      if (visible) tool!.hide();
       // ShowWindow's hide animation can outlive DwmFlush. Only when a window
       // was actually removed, allow its compositor transition to finish.
-      if (visible || this.hidden.size > hiddenBefore) await new Promise(resolve => setTimeout(resolve, 120));
+      if (visible) await new Promise(resolve => setTimeout(resolve, 120));
       const displays = screen.getAllDisplays();
       const windowSource = !!id?.startsWith('window:');
       const cursor = screen.getCursorScreenPoint();
@@ -661,9 +658,9 @@ export class CaptureToolsService {
         if (!this.closed && ['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) { event.preventDefault(); this.stopRecording(); }
       });
       tool.once('closed', () => { if (this.tool === tool) { this.tool = undefined; this.image = undefined; this.selectedText = ''; this.selectionPinned = false; this.provider = undefined; this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
-        this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.restoreApp(); } });
+        this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); } });
       tool.webContents.once('render-process-gone', () => {
-        const recording = this.recordings.state(); this.recordingGrant = undefined; this.clearRecordingBoundaries(); this.restoreApp();
+        const recording = this.recordings.state(); this.recordingGrant = undefined; this.clearRecordingBoundaries();
         if (recording && ['recording', 'paused'].includes(recording.status)) void this.recordings.finish(recording.id).catch(() => undefined);
         if (!tool.isDestroyed()) tool.destroy();
       });
@@ -703,13 +700,13 @@ export class CaptureToolsService {
       tool.setOpacity(1); tool.focus();
       this.changed();
       return { ok: true, state: this.state(), ...(this.image ? { source: this.image } : {}), ...(task === 'selection' ? { text: this.selectedText } : {}) };
-    } catch (error) { this.restoreApp(); if (this.tool && !this.tool.isDestroyed()) this.tool.destroy(); throw error; }
+    } catch (error) { if (this.tool && !this.tool.isDestroyed()) this.tool.destroy(); throw error; }
   }
   private async closeTool(): Promise<void> {
     if (['recording', 'paused', 'finalizing'].includes(this.recordings.state()?.status ?? '')) throw Error('请先停止或取消当前录屏。');
     for (const controller of this.asks.values()) controller.abort(); this.asks.clear(); this.longGeneration++; this.long?.cancel(); this.long = undefined; this.longProvider = undefined;
     this.recordingGrant = undefined; this.recordingControls = undefined; this.recordingResultId = undefined; this.recordingPreview.clear(); this.clearRecordingBoundaries(); this.selectedText = ''; this.selectionPinned = false;
-    const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
+    const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy();
   }
   shutdown(): Promise<void> { return this.shuttingDown ??= this.shutdownTool(); }
   private async shutdownTool(): Promise<void> {
@@ -726,7 +723,7 @@ export class CaptureToolsService {
     // dataavailable and finish messages reach disk before its renderer closes.
     this.menu.close(); await this.recordings.shutdown(); this.closed = true;
     if (this.ipcRegistered) { ipcMain.removeHandler(CAPTURE_TOOLS_REQUEST); this.ipcRegistered = false; }
-    const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy(); this.restoreApp();
+    const tool = this.tool; if (tool && !tool.isDestroyed()) tool.destroy();
     this.scope?.setDisplayMediaRequestHandler(null); this.scope?.setPermissionRequestHandler(null); this.scope?.setPermissionCheckHandler(null);
     this.recordingResultId = undefined; this.recordingPreview.clear(); this.scope?.protocol.unhandle(CAPTURE_RECORDING_SCHEME);
   }

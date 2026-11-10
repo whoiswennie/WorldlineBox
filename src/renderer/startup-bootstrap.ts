@@ -5,7 +5,8 @@ import { notifyStartupState } from './startup-lifecycle';
 const shell = document.getElementById('startup-shell');
 // Screen tools have their own native readiness handshake. Never draw the main
 // application's launch shell into a desktop-sized capture overlay.
-if (new URLSearchParams(location.search).get('window') === 'capture-tools') shell?.remove();
+const surface = new URLSearchParams(location.search).get('window');
+if (surface === 'capture-tools' || surface === 'capture-tools-menu') shell?.remove();
 const started = performance.now();
 try {
   const preference = JSON.parse(localStorage.getItem('worldlinebox.theme-prefs.v1') ?? 'null');
@@ -16,7 +17,14 @@ const tick = setInterval(() => {
   if (elapsed) elapsed.textContent = `${((performance.now() - started) / 1000).toFixed(1)} 秒`;
   if (!shell?.isConnected) clearInterval(tick);
 }, 250);
-void (new URLSearchParams(location.search).get('window') === 'capture-tools' ? import('./capture-tools/entry') : import('./main')).catch(error => {
+// Each callback owns its CSS preload dependencies. A conditional import
+// callback can otherwise be merged by the bundler and lose utility styles.
+const surfaces: Record<string, () => Promise<unknown>> = {
+  'capture-tools': () => import('./capture-tools/entry'),
+  'capture-tools-menu': () => import('./capture-tools/menu-entry'),
+  main: () => import('./main'),
+};
+void (surfaces[surface ?? 'main'] ?? surfaces.main)!().catch(error => {
   clearInterval(tick);
   if (!shell) return;
   shell.querySelector('.boot-shell')?.classList.add('is-error');

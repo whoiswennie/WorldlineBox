@@ -150,7 +150,7 @@ test('a real global hotkey reads external desktop selection, keeps a compact nor
     const main = await application.firstWindow(); await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 30000 });
     expect((await main.evaluate(baseUrl => (globalThis as unknown as Bridge).worldlinebox.llm.setConfig({ apiFormat: 'openai_chat', model: 'native-selection-fixture', baseUrl, apiKey: 'native-selection-fixture-key' }), `http://127.0.0.1:${address.port}/native-model`)).ok).toBe(true);
     const settings = (await request(main, { type: 'state' })).state!.settings;
-    const updated = await request(main, { type: 'settings.save', settings: { ...settings, hideApp: true, shortcuts: { ...settings.shortcuts, selection: 'Control+Alt+Shift+F11' } } });
+    const updated = await request(main, { type: 'settings.save', settings: { ...settings, shortcuts: { ...settings.shortcuts, selection: 'Control+Alt+Shift+F11' } } });
     expect(updated.state!.shortcuts.find(value => value.task === 'selection')).toMatchObject({ registered: true });
     const clipboardBefore = await application.evaluate(({ clipboard }) => clipboard.readText());
     fixture = nativeFixture(root); let stderr = ''; fixture.stderr?.on('data', data => { stderr += String(data); });

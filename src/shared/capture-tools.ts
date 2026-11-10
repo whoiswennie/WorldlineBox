@@ -13,15 +13,19 @@ export type CaptureRecordingQuality = z.infer<typeof captureRecordingQualitySche
 export const captureToolTaskSchema = z.enum(['screenshot', 'recording', 'ocr', 'translate', 'long-screenshot', 'selection']);
 export type CaptureToolTask = z.infer<typeof captureToolTaskSchema>;
 const accelerator = z.string().max(100);
-export const captureToolsSettingsSchema = z.strictObject({
+export const captureToolsSettingsSchema = z.preprocess(value => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  // Retired preference: keep all other saved preferences, regardless of its old value.
+  const copy = { ...value }; Reflect.deleteProperty(copy, 'hideApp'); return copy;
+}, z.strictObject({
   shortcuts: z.strictObject({ screenshot: accelerator, recording: accelerator, ocr: accelerator, translate: accelerator, 'long-screenshot': accelerator,
     selection: accelerator.default(CAPTURE_SELECTION_DEFAULT_SHORTCUT) }),
-  hideApp: z.boolean(), systemAudio: z.boolean(), microphone: z.boolean(), format: z.enum(['mp4', 'webm', 'gif']), quality: captureRecordingQualitySchema.default('original'),
-});
+  systemAudio: z.boolean(), microphone: z.boolean(), format: z.enum(['mp4', 'webm', 'gif']), quality: captureRecordingQualitySchema.default('original'),
+}));
 export type CaptureToolsSettings = z.infer<typeof captureToolsSettingsSchema>;
 export const DEFAULT_CAPTURE_TOOLS_SETTINGS: CaptureToolsSettings = {
   shortcuts: { screenshot: 'CommandOrControl+Alt+Shift+S', recording: 'CommandOrControl+Alt+Shift+R', ocr: 'CommandOrControl+Alt+Shift+O', translate: 'CommandOrControl+Alt+Shift+T', 'long-screenshot': 'CommandOrControl+Alt+Shift+L', selection: CAPTURE_SELECTION_DEFAULT_SHORTCUT },
-  hideApp: true, systemAudio: true, microphone: false, format: 'mp4', quality: 'original',
+  systemAudio: true, microphone: false, format: 'mp4', quality: 'original',
 };
 /** Desktop geometry is absolute Electron DIP; image width/height remain pixels. */
 export const captureScreenRectSchema = z.object({ x: z.number().finite(), y: z.number().finite(), width: z.number().positive().max(32768), height: z.number().positive().max(32768) });
@@ -56,6 +60,9 @@ const selectionText = z.string().max(CAPTURE_SELECTION_MAX_BYTES).refine(value =
 export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }), z.strictObject({ type: z.literal('context') }),
   z.strictObject({ type: z.literal('menu.popup'), locale: z.enum(['zh-CN', 'en']), x: z.number().finite().min(0).max(32768), y: z.number().finite().min(0).max(32768) }),
+  z.strictObject({ type: z.literal('menu.context') }),
+  z.strictObject({ type: z.literal('menu.ready') }),
+  z.strictObject({ type: z.literal('menu.choose'), task: captureToolTaskSchema.optional() }),
   z.strictObject({ type: z.literal('surface.ready') }),
   z.strictObject({ type: z.literal('recording.controls.ready'), id: z.string().min(1).max(100) }),
   z.strictObject({ type: z.literal('settings.save'), settings: captureToolsSettingsSchema }),
@@ -88,7 +95,7 @@ export const captureToolsRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('reveal'), path: z.string().min(1).max(8192) }),
 ]);
 export type CaptureToolsRequest = z.infer<typeof captureToolsRequestSchema>;
-export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), menuTask: captureToolTaskSchema.optional(), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), preview: captureRecordingPreviewSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
+export const captureToolsResponseSchema = z.discriminatedUnion('ok', [z.object({ ok: z.literal(true), menuContext: z.object({ locale: z.enum(['zh-CN', 'en']) }).optional(), menuTask: captureToolTaskSchema.optional(), state: captureToolsStateSchema.optional(), source: captureSourceSchema.optional(), sources: z.array(desktopSourceSchema).optional(), recordingControls: captureRecordingControlsSchema.optional(), preview: captureRecordingPreviewSchema.optional(), long: z.object({ frames: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive() }).optional(), id: z.string().optional(), path: z.string().optional(), text: z.string().optional() }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
 export type CaptureToolsResponse = z.infer<typeof captureToolsResponseSchema>;
 export interface WorldlineBoxCaptureToolsApi {
   request(request: CaptureToolsRequest): Promise<CaptureToolsResponse>;

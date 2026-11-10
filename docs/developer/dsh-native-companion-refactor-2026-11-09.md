@@ -104,6 +104,8 @@ WorldlineBox 保存联系人、人设、消息、媒体授权和 VCP 记忆，�
 
 ## 11 月 10 日：全局工具列表保留背景页面
 
-浏览器的 WebContentsView 始终位于主窗口 HTML 之上。旧版全局工具列表使用 DOM portal，并触发浏览器的遮挡检测隐藏整个原生页面，留下白色区域。浏览器模块现在通过主窗口专用的 `menu.popup` 请求打开 Electron 原生菜单，原生页面保留可见性、视口、输入和滚动，并继续绘制；其他模块及设置对话框继续使用原来的 DOM 菜单。选中工具后等菜单关闭再分派原有 open 请求，不会仅因展开列表就截图或隐藏主窗口。
+浏览器的 WebContentsView 始终位于主窗口 HTML 之上。旧版 DOM portal 触发遮挡检测后隐藏了整个原生页面，之后临时使用的系统原生菜单又与其他模块样式不同。现在浏览器通过主窗口专用的 `menu.popup` 打开透明 WebContentsView，加载与其他模块共用的 `CaptureToolsMenuList`、主题与样式。原生页面保留可见性、视口、输入和滚动，并继续绘制。其他模块及设置对话框继续使用 DOM portal；选中工具后先关闭菜单再分派原有 open 请求。
 
-主进程限定调用者为主窗口主框架、校验并按窗口缩放转换坐标，菜单项来自固定枚举；关闭菜单不启动工具，窗口导航、退出与渲染进程结束会结清待处理请求。`browser-tools-menu-live.test.ts` 调用真实 `Menu.popup`，在菜单打开期间核对同一 WebContentsView 仍可见、计时器推进、原生截图像素随页面样式变化、输入与滚动不变，并验证启动器、网络与伙伴界面。`application-rail-layout.test.ts` 另覆盖三种窗口大小及四种缩放、设置对话框菜单、键盘关闭与实际工具分派。报告：`artifacts/tools-menu-live/result.json`。[Electron 原生菜单 API](https://www.electronjs.org/docs/latest/api/menu#menupopupoptions)。
+主进程限定弹出请求来自主窗口主框架，菜单自身仅可读取语言、报告就绪和选择固定枚举任务；菜单视图继承主窗口的尺寸与缩放，渲染就绪后才显示。关闭、主窗口导航、退出与渲染进程结束均结清请求并销毁视图。启动入口使用独立的动态导入回调，确保生产构建正确加载每个工具界面的 CSS。`browser-tools-menu-live.test.ts` 核对同一浏览器视图仍可见、计时器推进、页面像素更新、输入与滚动不变，并用真实桌面窗口捕获验证透明菜单与网页的合成画面；还逐项比对启动器、网络与伙伴菜单的计算样式和图标。`application-rail-layout.test.ts` 覆盖三种窗口大小及四种缩放、设置对话框菜单、键盘关闭与实际工具分派。报告：`artifacts/unified-capture-ui/result.json`。
+
+截图与录屏不再调用主窗口 hide/show，也不会恢复用户手动隐藏的窗口；旧 `hideApp` 设置在读取或保存时移除，保留其余偏好和快捷键。截图工具自身采集前临时隐藏，整屏录制必要时隐藏控制条，均不影响主窗口。`capture-main-window-visible.test.ts` 实际截图并录制 WorldlineBox 自身，检查暂停、继续和保存期间主窗口可见，解码生成的 MP4 验证有效画面，并检查手动隐藏后打开和关闭工具不会恢复主窗口。报告：`artifacts/unified-capture-ui/capture-window-result.json`。

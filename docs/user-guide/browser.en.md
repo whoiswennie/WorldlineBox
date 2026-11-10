@@ -52,7 +52,9 @@ After signing in with the default browser, continue using the website there. Its
 
 Screenshot and recording tools appear after their selection interface and captured desktop image are ready. Recording controls are also laid out before they become visible. Region recordings place controls outside the captured area; a full-display recording hides them when no outside area is available. Use the recording shortcut again to stop.
 
-Expanding the global tools list keeps the background page visible and live, preserving input and scroll position. The hide-app setting applies when you actually start capture or recording, rather than when you open the list.
+The browser uses the same global tools list design as the other modules. Expanding it keeps the background page visible and live, preserving input and scroll position.
+
+Screenshots and recording never automatically hide or restore the WorldlineBox main window, so you can capture the application itself. To capture other applications without WorldlineBox, minimize it manually and then use a global shortcut. The old hide-app preference no longer applies. Only the recording controls hide when a full-display capture leaves no room outside the recording area.
 
 ## Save to an asset library
 

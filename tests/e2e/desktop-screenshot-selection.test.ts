@@ -71,7 +71,7 @@ test('a real global shortcut opens inline desktop selection, smart window/workar
     const main = await application.firstWindow();
     await expect(main.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page', { timeout: 30000 });
     const state = (await request(main, { type: 'state' })).state!;
-    const configured = (await request(main, { type: 'settings.save', settings: { ...state.settings, hideApp: false,
+    const configured = (await request(main, { type: 'settings.save', settings: { ...state.settings,
       shortcuts: { ...state.settings.shortcuts, screenshot: 'Control+Alt+Shift+F10' } } })).state!;
     expect(configured.shortcuts.find(shortcut => shortcut.task === 'screenshot')).toMatchObject({ registered: true, accelerator: 'Control+Alt+Shift+F10' });
     const fixture = await application.evaluate(async ({ BrowserWindow, screen }) => {

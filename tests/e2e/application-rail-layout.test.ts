@@ -157,22 +157,15 @@ test('the application rail keeps capture, recording and settings aligned across 
       return { attached: !!view, visible: view?.getVisible() ?? false };
     }, browserUrl);
     await expect.poll(browserViewState).toEqual({ attached: true, visible: true });
-    // Intercept only this popup in the invisible geometry matrix. A separate
-    // native-menu acceptance uses the actual popup and live compositor pixels.
-    await application.evaluate(({ Menu }) => {
-      const original = Menu.prototype.popup;
-      Menu.prototype.popup = function (options) {
-        if (!this.getMenuItemById('capture-tool-screenshot')) return original.call(this, options);
-        Reflect.set(globalThis, 'railToolsMenu', { menu: this, options });
-      };
-    });
     await more.click();
-    await expect.poll(() => application!.evaluate(() => !!Reflect.get(globalThis, 'railToolsMenu'))).toBe(true);
+    await expect.poll(() => application!.context().pages().some(candidate => candidate.url().includes('window=capture-tools-menu'))).toBe(true);
+    const browserMenuPage = application.context().pages().find(candidate => candidate.url().includes('window=capture-tools-menu'))!;
+    await assertMenuInteraction(browserMenuPage, (await railGeometry(page)).viewport, 'native browser styled overlay');
     await expect(more).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('.application-capture-menu')).toHaveCount(0);
     expect(await browserViewState()).toEqual({ attached: true, visible: true });
     await snapshot('.tools/test-output/application-rail-expanded-browser.png');
-    await application.evaluate(() => { const value = Reflect.get(globalThis, 'railToolsMenu') as { options: Electron.PopupOptions }; value.options.callback?.(); Reflect.deleteProperty(globalThis, 'railToolsMenu'); });
+    await browserMenuPage.keyboard.press('Escape').catch(error => { if (!browserMenuPage.isClosed()) throw error; });
     await expect(more).toHaveAttribute('aria-expanded', 'false');
     await expect.poll(browserViewState).toEqual({ attached: true, visible: true });
     await expect(browser.getByRole('heading', { name: 'Real native browser view' })).toBeVisible();
@@ -186,8 +179,9 @@ test('the application rail keeps capture, recording and settings aligned across 
     });
     try {
       await more.click();
-      await expect.poll(() => application!.evaluate(() => !!Reflect.get(globalThis, 'railToolsMenu'))).toBe(true);
-      await application.evaluate(({ BrowserWindow }) => { const value = Reflect.get(globalThis, 'railToolsMenu') as { menu: Electron.Menu; options: Electron.PopupOptions }, item = value.menu.getMenuItemById('capture-tool-selection')!; item.click(item, BrowserWindow.getAllWindows()[0], {} as Electron.KeyboardEvent); value.options.callback?.(); Reflect.deleteProperty(globalThis, 'railToolsMenu'); });
+      await expect.poll(() => application!.context().pages().some(candidate => candidate.url().includes('window=capture-tools-menu'))).toBe(true);
+      const menuPage = application.context().pages().find(candidate => candidate.url().includes('window=capture-tools-menu'))!;
+      await menuPage.getByRole('menuitem', { name: '划词助手', exact: true }).click();
       await expect(page.locator('.application-capture-menu')).toHaveCount(0);
       await expect.poll(() => application!.windows().some(candidate => candidate.url().includes('window=capture-tools')), { timeout: 15000 }).toBe(true);
       const tool = application.windows().find(candidate => candidate.url().includes('window=capture-tools'))!;

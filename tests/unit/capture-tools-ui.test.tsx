@@ -34,9 +34,10 @@ it('loads global defaults and saves microphone changes without changing shortcut
   const { api, request } = bridge();
   await mount(<CaptureToolsSettingsPage api={api} />);
   const inputs = host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-  expect(inputs).toHaveLength(3);
-  expect(inputs[1]!.checked).toBe(true); expect(inputs[2]!.checked).toBe(false);
-  await act(() => inputs[2]!.click());
+  expect(inputs).toHaveLength(2);
+  expect(inputs[0]!.checked).toBe(true); expect(inputs[1]!.checked).toBe(false);
+  expect(host.textContent).not.toContain('截图或录制时隐藏主窗口');
+  await act(() => inputs[1]!.click());
   await act(() => button('保存设置').click());
   expect(request).toHaveBeenLastCalledWith({ type: 'settings.save', settings: { ...DEFAULT_CAPTURE_TOOLS_SETTINGS, microphone: true } });
 });
