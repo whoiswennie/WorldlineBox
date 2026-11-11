@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { BotDshOutputLimitError } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryMaintenance, type BotMemoryMaintenanceCandidate, type BotMemoryMaintenanceOptions, type BotMemoryMaintenancePlan, type BotMemoryMaintenancePrepareInput, type BotMemoryMaintenanceSnapshot } from '../../src/main/companion-bot/memory-maintenance';
 
 const ids = ['a'.repeat(64), 'b'.repeat(64), 'c'.repeat(64)];
@@ -26,6 +27,27 @@ function fixture(output = proposal()) {
 }
 
 describe('scoped memory maintenance planning', () => {
+  it('keeps long narrative and candidate bodies whole without imposing a candidate-count quota', async () => {
+    const output = proposal('insight'); output.narrative = '完整梦境叙事。'.repeat(2000);
+    output.candidates = Array.from({ length: 15 }, (_, index) => ({ ...output.candidates[0]!, content: '有来源的完整感悟。'.repeat(1600) + index }));
+    const f = fixture(output), result = await f.core.preparePlan({ ...f.input, kind: 'dream' });
+    expect(result.candidates).toHaveLength(15); expect(result.narrative).toBe(output.narrative);
+    expect(result.candidates[14]!.content).toBe(output.candidates[14]!.content);
+  });
+  it('continues every native output fragment on the same event until a complete sourced plan is available', async () => {
+    const f = fixture(), body = JSON.stringify(proposal()), fragments = Array.from({ length: 6 }, (_, index) => body.slice(Math.floor(body.length * index / 6), Math.floor(body.length * (index + 1) / 6)));
+    const saved: unknown[] = [];
+    f.brain.run.mockImplementation(async input => {
+      const index = input.continueAfterSeq === undefined ? 0 : input.continueAfterSeq;
+      if (index < 5) throw new BotDshOutputLimitError(input.eventId, input.laneId, index + 1, fragments[index]!);
+      return { text: fragments[5]!, status: 'succeeded', eventId: input.eventId, sessionId: input.laneId };
+    });
+    const result = await f.core.preparePlan({ ...f.input, admissionAttempt: 8, onContinuation: async checkpoint => { saved.push(checkpoint); } });
+    expect(result.candidates).toHaveLength(1); expect(saved).toHaveLength(5);
+    expect(new Set(f.brain.run.mock.calls.map(([input]) => input.eventId)).size).toBe(1);
+    expect(f.brain.run.mock.calls.slice(1).every(([input]) => input.continuationPrompt?.includes('剩余字符'))).toBe(true);
+    expect(f.memory.catalog).toHaveBeenCalledOnce(); expect(f.brain.archive).toHaveBeenCalledOnce();
+  });
   it('freezes full sources before an independent action-free AppBrain turn and never writes while planning', async () => {
     const f = fixture(); f.brain.run.mockImplementationOnce(async () => { expect(f.getSnapshot().sources[0]!.content).toContain('尚未出发'); return { text: JSON.stringify(proposal()), sessionId: 'app', eventId: 'e', status: 'succeeded' }; });
     const diagnostic = vi.fn(async () => undefined), plan = await f.core.preparePlan({ ...f.input, onDiagnostic: diagnostic });
@@ -39,6 +61,21 @@ describe('scoped memory maintenance planning', () => {
     const f = fixture(proposal('insight')); const plan = await f.core.preparePlan({ ...f.input, kind: 'dream' });
     expect(f.memory.dreamRecall).toHaveBeenCalledWith(scope, { sources: f.notes.map(note => ({ id: note.id, expectedChecksum: note.checksum })), expectedSourceRevision: '0' }, undefined);
     expect(f.memory.tool).not.toHaveBeenCalled(); expect(plan.retrieval.engine).toBe('DreamWaveEngine'); expect(plan.candidates[0]!.type).toBe('insight');
+  });
+  it('uses a new version as the seed and reads only explicitly associated old notes as complete context', async () => {
+    const f = fixture(), associate = vi.fn(async () => [{ id: ids[1]!, checksum: '2'.repeat(32) }]);
+    const selectBatch = vi.fn(async () => ({ mode: 'incremental-v1' as const, revision: '0', state: 'processing', items: [{ id: ids[0]!, checksum: '1'.repeat(32) }] }));
+    const plan = await f.core.preparePlan({ ...f.input, selectBatch, associate });
+    expect(plan.scan).toMatchObject({ incremental: true, examined: 1, selected: 2, context: 1 });
+    expect(plan.sources.map(source => source.role)).toEqual(['seed', 'context']); expect(plan.sources[1]!.content).toBe(f.notes[1]!.content);
+    expect(f.memory.catalog).not.toHaveBeenCalled(); expect(f.memory.readNote).toHaveBeenCalledTimes(2);
+    await f.core.preparePlan({ ...f.input, selectBatch, associate, snapshot: f.getSnapshot() }); expect(selectBatch).toHaveBeenCalledOnce(); expect(associate).toHaveBeenCalledOnce();
+  });
+  it('does not accept a candidate that only rewrites historical context without a new source', async () => {
+    const output = proposal('update'); output.candidates[0]!.sourceIds = [ids[1]!]; output.candidates[0]!.quotes = [{ sourceId: ids[1]!, text: '改为博物馆' }];
+    const f = fixture(output);
+    await expect(f.core.preparePlan({ ...f.input, selectBatch: async () => ({ mode: 'incremental-v1', revision: '0', state: 'processing', items: [{ id: ids[0]!, checksum: '1'.repeat(32) }] }), associate: async () => [{ id: ids[1]!, checksum: '2'.repeat(32) }] })).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_INVALID_PLAN' });
+    expect(f.memory.update).not.toHaveBeenCalled();
   });
   it('replays the frozen checkpoint without rescanning changed catalogs and retains a stable model event', async () => {
     const f = fixture(); await f.core.preparePlan(f.input); const snapshot = f.getSnapshot();
@@ -85,17 +122,38 @@ describe('scoped memory maintenance planning', () => {
     const f = fixture(), unknown = Object.assign(new Error('delivery not confirmed'), { code: 'BOT_DELIVERY_UNKNOWN' }); f.brain.run.mockRejectedValueOnce(unknown);
     await expect(f.core.preparePlan(f.input)).rejects.toBe(unknown); expect(f.brain.run).toHaveBeenCalledOnce(); expect(f.memory.organize).not.toHaveBeenCalled();
   });
-  it.each(['foreign-source', 'invented-quote', 'missing-source-quote', 'overlapping-actions'])('rejects unsupported evidence: %s', async problem => {
+  it.each(['foreign-source', 'invented-quote', 'missing-source-quote'])('rejects unsupported evidence: %s', async problem => {
     const output = proposal();
     if (problem === 'foreign-source') output.candidates[0]!.sourceIds = ['f'.repeat(64), ids[1]!];
     if (problem === 'invented-quote') output.candidates[0]!.quotes[0]!.text = '已经订票并出发';
     if (problem === 'missing-source-quote') output.candidates[0]!.quotes.pop();
-    if (problem === 'overlapping-actions') output.candidates.push({ ...output.candidates[0]! });
     const f = fixture(output); await expect(f.core.preparePlan(f.input)).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_INVALID_PLAN' }); expect(f.memory.organize).not.toHaveBeenCalled();
+  });
+  it('isolates malformed or overlapping individual candidates while preserving fully validated work', async () => {
+    const output = proposal(), invalid = { ...output.candidates[0]! } as Record<string, unknown>; delete invalid.quotes;
+    output.candidates.push(invalid as unknown as typeof output.candidates[number], { ...output.candidates[0]! });
+    const f = fixture(output), result = await f.core.preparePlan(f.input);
+    expect(result.candidates).toHaveLength(1); expect(result.validationIssues).toHaveLength(2); expect(result.scan.deferred).toEqual([]);
+    expect(result.validationIssues?.map(issue => issue.candidateIndex)).toEqual([1, 2]);
+  });
+  it('isolates a paraphrased quote while retaining independently valid candidates and leaving its original for later work', async () => {
+    const output = proposal('update'); output.candidates.push({ ...proposal('update').candidates[0]!, sourceIds: [ids[2]!], quotes: [{ sourceId: ids[2]!, text: '凭空还原的聊天原话' }] });
+    const f = fixture(output), diagnostic = vi.fn<(phase: string, value: unknown) => Promise<void>>(async () => undefined), plan = await f.core.preparePlan({ ...f.input, onDiagnostic: diagnostic });
+    expect(plan.candidates).toHaveLength(1); expect(plan.candidates[0]!.sourceIds).toEqual([ids[0]]);
+    expect(plan.validationIssues).toEqual([{ candidateIndex: 1, sourceIds: [ids[2]], reason: expect.stringContaining('原件保留') }]);
+    expect(plan.scan.deferred).toContainEqual({ id: ids[2], code: 'invalid_candidate', retryable: true, reason: expect.any(String) });
+    expect(diagnostic.mock.calls.some(([phase]) => phase === 'candidate-validation')).toBe(true); expect(f.memory.update).not.toHaveBeenCalled();
   });
 });
 
 describe('reviewed maintenance application', () => {
+  it('does not impose a character ceiling on an individually approved complete output', async () => {
+    const output = proposal(); output.candidates[0]!.content = '用户原计划周六去湖边，后改为博物馆，尚未订票。\n'.repeat(1500);
+    const f = fixture(output), plan = await f.core.preparePlan(f.input);
+    expect(output.candidates[0]!.content.length).toBeGreaterThan(24000);
+    expect((await f.core.applyCandidate({ scope, plan, candidateId: plan.candidates[0]!.id, contextEpoch: plan.contextEpoch, approval: 'review' })).status).toBe('indexed');
+    expect(f.memory.organize.mock.calls[0]![1].content).toBe(output.candidates[0]!.content);
+  });
   async function ready(type: BotMemoryMaintenanceCandidate['type'] = 'organize') { const f = fixture(proposal(type)); const plan = await f.core.preparePlan({ ...f.input, kind: type === 'insight' ? 'dream' : 'organize' }); return { ...f, plan }; }
   const apply = (plan: BotMemoryMaintenancePlan, approval: 'review' | 'lossless' = 'review') => ({ scope, plan, candidateId: plan.candidates[0]!.id, contextEpoch: 1, approval });
   it('uses source CAS/revision and a stable operation ID, and keeps pending receipts visibly pending', async () => {

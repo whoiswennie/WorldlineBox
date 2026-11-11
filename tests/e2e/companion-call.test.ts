@@ -11,7 +11,8 @@ test('companion meeting loads real Live2D and native actions, shares the origina
   test.setTimeout(240000);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-companion-call-'));
   if (path.dirname(path.resolve(profile)) !== path.resolve(tmpdir()) || !path.basename(profile).startsWith('wlb-companion-call-')) throw Error('Unexpected call profile');
-  const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
+  const launch = resolveElectronLaunchOptions();
+  const app = await electron.launch({ ...launch, args: [...launch.args, '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'], env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
   const errors: string[] = [];
   try {
     const page = await app.firstWindow(); page.on('pageerror', error => errors.push(error.message));

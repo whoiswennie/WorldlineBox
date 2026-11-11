@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const require = createRequire(path.resolve('resources/vcp-memory/package.json'));
 const { BotHost } = require('./lib/bot-host.cjs');
@@ -72,6 +73,118 @@ it('runs the preserved DreamWaveEngine against only verified owned sources and r
   expect(hits.some(hit => hit.id === a.id)).toBe(true); expect(hits.every(hit => [a.id, b.id].includes(hit.id))).toBe(true); expect(hits.some(hit => hit.id === outside.id)).toBe(false);
   expect(hits.filter(hit => hit.score !== undefined).every(hit => [0.81, 0.8].some(score => Math.abs(score - hit.score!) < 1e-9))).toBe(true);
   expect(wave.omitted.filteredCandidates).toBeGreaterThan(0); expect(JSON.stringify(wave)).not.toContain(f.home);
+});
+
+it('claims each unchanged indexed version once per maintenance kind and persists coverage across reopening', async () => {
+  const f = await fixture(), a = await f.seed('incremental-a', '用户计划先去博物馆。'), b = await f.seed('incremental-b', '用户尚未订票。');
+  const work = f.host.maintenanceWork;
+  const first = work.claim({ kind: 'organize', jobId: 'job-one', limit: 24 }); expect(first.items.map((n: { id: string }) => n.id).sort()).toEqual([a.id, b.id].sort());
+  expect(work.claim({ kind: 'organize', jobId: 'job-one', limit: 24 }).items).toEqual(first.items);
+  expect(work.claim({ kind: 'organize', jobId: 'parallel-job', limit: 24 }).items).toEqual([]);
+  work.complete({ kind: 'organize', jobId: 'job-one', sources: first.items });
+  expect(work.stats({ kind: 'organize' }).ready).toBe(0); expect(work.stats({ kind: 'dream' }).ready).toBe(2);
+  f.host.close(); hosts.splice(hosts.indexOf(f.host), 1); const reopened = new BotHost(f.home); hosts.push(reopened);
+  expect(reopened.maintenanceWork.claim({ kind: 'organize', jobId: 'after-restart', limit: 24 }).items).toEqual([]);
+  const update = await reopened.update(f.rt, { operationId: 'user-edits-note', id: a.id, expectedChecksum: a.checksum, content: '用户改为周日去博物馆，仍未订票。', sourceEventId: 'user-edits-note', expectedSourceRevision: '0' });
+  expect(update.state).toBe('indexed'); expect(reopened.maintenanceWork.stats({ kind: 'organize' }).ready).toBe(1);
+  expect(reopened.maintenanceWork.claim({ kind: 'organize', jobId: 'changed-version', limit: 24 }).items).toEqual([{ id: a.id, checksum: update.checksum }]);
+});
+
+it('classifies completed maintenance outputs as context without feeding another cycle, while later user edits become pending', async () => {
+  const f = await fixture(), a = await f.seed('derived-a', '用户原计划去湖边，尚未出发。'), b = await f.seed('derived-b', '用户改去博物馆，尚未订票。');
+  const work = f.host.maintenanceWork, batch = work.claim({ kind: 'organize', jobId: 'organize-cycle', limit: 24 });
+  work.complete({ kind: 'organize', jobId: 'organize-cycle', sources: batch.items });
+  const organized = await f.host.organize(f.rt, { operationId: 'maintenance-derived-organize', sourceEventId: 'maintenance-derived-organize', sources: [a, b].map(n => ({ id: n.id, expectedChecksum: n.checksum })), content: '用户原计划去湖边，后改为博物馆，尚未订票。', expectedSourceRevision: '0' });
+  expect(organized.state).toBe('indexed'); expect(work.stats({ kind: 'organize' }).ready).toBe(0); expect(work.stats({ kind: 'dream' }).ready).toBe(0);
+  expect(f.host.db.prepare('SELECT kind,state FROM maintenance_work WHERE note_id=?').all(organized.id)).toEqual([{ kind: 'organize', state: 'derived' }, { kind: 'dream', state: 'derived' }]);
+  await f.seed('new-after-organize', '用户今天补充：已经预约，明天出发。'); expect(work.stats({ kind: 'organize' }).ready).toBe(1);
+  const edited = await f.host.update(f.rt, { operationId: 'explicit-user-correction', sourceEventId: 'explicit-user-correction', id: organized.id, expectedChecksum: organized.checksum, content: '用户已确认博物馆预约成功，明天出发。', expectedSourceRevision: '0' });
+  expect(edited.state).toBe('indexed'); expect(work.stats({ kind: 'organize' }).ready).toBe(2);
+});
+it('preserves an approved long organization body without an artificial character ceiling', async () => {
+  const f = await fixture(), a = await f.seed('long-body-a', '完整来源甲。'), b = await f.seed('long-body-b', '完整来源乙。'), content = '完整来源甲，完整来源乙，保持全部细节与限定。\n'.repeat(2500);
+  const receipt = await f.host.organize(f.rt, { operationId: 'maintenance-long-approved-body', sourceEventId: 'maintenance-long-approved-body', sources: [a, b].map(note => ({ id: note.id, expectedChecksum: note.checksum })), content, expectedSourceRevision: '0' });
+  expect(content.length).toBeGreaterThan(24000); expect(receipt.state).toBe('indexed'); expect((await f.host.readNote({ id: receipt.id })).content).toBe(content);
+});
+
+it('imports historical analysis only for the exact current version and keeps failed versions retryable without blocking new notes', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const f = await fixture(), a = await f.seed('old-reviewed', '已分析但无需改写的日记。'), b = await f.seed('old-changed', '这一版本尚未分析。');
+    const work = f.host.maintenanceWork;
+    work.seed({ records: [{ kind: 'organize', sources: [{ id: a.id, checksum: a.checksum }, { id: b.id, checksum: 'f'.repeat(32) }] }] });
+    expect(work.stats({ kind: 'organize' }).ready).toBe(1);
+    const failed = work.claim({ kind: 'organize', jobId: 'failure', limit: 24 }); expect(failed.items.map((n: { id: string }) => n.id)).toEqual([b.id]);
+    work.release({ kind: 'organize', jobId: 'failure', reason: '模型证据无效。' });
+    expect(work.stats({ kind: 'organize' })).toMatchObject({ ready: 0, retrying: 1 });
+    const c = await f.seed('new-not-blocked', '另一篇新增日记，正常继续。'); expect(work.claim({ kind: 'organize', jobId: 'other-work', limit: 24 }).items.map((n: { id: string }) => n.id)).toEqual([c.id]);
+    vi.setSystemTime(Date.now() + 300001); expect(work.stats({ kind: 'organize' }).ready).toBe(1);
+    expect(work.claim({ kind: 'organize', jobId: 'retry-failed-version', limit: 24 }).items).toEqual(failed.items);
+  } finally { vi.useRealTimers(); }
+});
+
+it('does not acknowledge a changed version using an older batch, and rejects unclaimed completion', async () => {
+  const f = await fixture(), a = await f.seed('racing-edit', '最初的日记。'), work = f.host.maintenanceWork;
+  const first = work.claim({ kind: 'organize', jobId: 'old-snapshot', limit: 24 });
+  const changed = await f.host.update(f.rt, { operationId: 'user-edits-during-planning', sourceEventId: 'user-edits-during-planning', id: a.id, expectedChecksum: a.checksum, content: '用户刚刚明确更正了安排。', expectedSourceRevision: '0' });
+  work.complete({ kind: 'organize', jobId: 'old-snapshot', sources: first.items });
+  expect(work.claim({ kind: 'organize', jobId: 'new-snapshot', limit: 24 }).items).toEqual([{ id: a.id, checksum: changed.checksum }]);
+  expect(() => work.complete({ kind: 'organize', jobId: 'new-snapshot', sources: [{ id: a.id, checksum: a.checksum }] })).toThrow('unclaimed');
+});
+
+it('keeps incremental selection on its pending index with 100,000 retained diary records', async () => {
+  const f = await fixture(), work = f.host.maintenanceWork;
+  const insert = f.host.db.prepare('INSERT INTO mutations(id,hash,state,checksum,created_at,source_event,content,tags_json) VALUES(?,?,?,?,?,?,?,?)');
+  f.host.db.transaction(() => {
+    for (let i = 0; i < 100000; i++) { const id = createHash('sha256').update('scale-' + i).digest('hex'); insert.run(id, id, i < 90000 ? 'archived' : 'indexed', 'a'.repeat(32), '2026-10-01T00:00:00Z', 'scale-' + i, '历史日记。', '[]'); }
+    f.host.db.prepare("UPDATE maintenance_work SET state='reviewed'").run();
+  })();
+  const a = await f.seed('only-new-a', '今天新增的第一篇。'), b = await f.seed('only-new-b', '今天新增的第二篇。');
+  expect(work.stats({ kind: 'organize' }).ready).toBe(2);
+  const batch = work.claim({ kind: 'organize', jobId: 'large-history', limit: 24 }); expect(batch.items.map((n: { id: string }) => n.id).sort()).toEqual([a.id, b.id].sort());
+  work.complete({ kind: 'organize', jobId: 'large-history', sources: batch.items }); expect(work.claim({ kind: 'organize', jobId: 'large-history-again', limit: 24 }).items).toEqual([]);
+  const explain = f.host.db.prepare(`EXPLAIN QUERY PLAN SELECT w.note_id FROM maintenance_work w JOIN mutations m ON m.id=w.note_id WHERE w.kind=? AND w.state='pending' AND w.available_at<=? AND ${work.eligible()} ORDER BY w.available_at,w.sequence LIMIT 24`).all('organize', Date.now());
+  expect(JSON.stringify(explain)).toContain('maintenance_work_ready'); expect(JSON.stringify(explain)).not.toMatch(/SCAN [mw](?:\b| )/u);
+});
+
+it('reserves semantically related historical context and pending reviews across both maintenance kinds', async () => {
+  const f = await fixture(), old = await f.seed('historical-context', '用户原计划去湖边，尚未出发。'), unrelated = await f.seed('unrelated-history', '另一件不相关的往事。'), work = f.host.maintenanceWork;
+  work.seed({ records: [{ kind: 'organize', sources: [old, unrelated] }] });
+  const fresh = await f.seed('new-seed', '用户改为博物馆，尚未订票。');
+  const batch = work.claim({ kind: 'organize', jobId: 'with-context', limit: 24 }); expect(batch.items.map((n: { id: string }) => n.id)).toEqual([fresh.id]);
+  const oldPath = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(old.id).note_path;
+  const related = work.associate({ kind: 'organize', jobId: 'with-context', retrieval: { result: { content: [{ type: 'text', text: `[路径: ${pathToFileURL(path.join(f.home, 'dailynote', oldPath)).href}]\n[路径: file:///C:/outside/Companion/private.txt]` }] } } });
+  expect(related.items).toEqual([{ id: old.id, checksum: old.checksum }]);
+  work.complete({ kind: 'organize', jobId: 'with-context', sources: [...batch.items, ...related.items], reserved: [old.id, fresh.id] });
+  expect(work.claim({ kind: 'organize', jobId: 'duplicate-plan', limit: 24 }).items).toEqual([]);
+  expect(work.claim({ kind: 'dream', jobId: 'other-kind', limit: 24 }).items.map((n: { id: string }) => n.id)).toEqual([unrelated.id]);
+  work.complete({ kind: 'organize', jobId: 'with-context', sources: [...batch.items, ...related.items], reserved: [] });
+  expect(work.stats({ kind: 'organize' }).ready).toBe(0); expect(work.stats({ kind: 'dream' }).ready).toBe(2);
+});
+
+it('restores omitted historical context without turning it into new maintenance work', async () => {
+  const f = await fixture(), old = await f.seed('omitted-context', '只作关联背景的旧记忆。'), work = f.host.maintenanceWork;
+  work.seed({ records: [{ kind: 'organize', sources: [old] }] });
+  await f.seed('omitted-new', '本批新日记。'); const batch = work.claim({ kind: 'organize', jobId: 'omit-context', limit: 24 });
+  const oldPath = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(old.id).note_path;
+  expect(work.associate({ kind: 'organize', jobId: 'omit-context', retrieval: { results: [{ fullPath: oldPath }] } }).items).toHaveLength(1);
+  work.complete({ kind: 'organize', jobId: 'omit-context', sources: batch.items });
+  expect(work.stats({ kind: 'organize' }).ready).toBe(0); expect(f.host.db.prepare("SELECT state FROM maintenance_work WHERE kind='organize' AND note_id=?").get(old.id).state).toBe('reviewed');
+});
+
+it('does not leave unchanged surviving sources claimed after another source is withdrawn', async () => {
+  const f = await fixture(), a = await f.seed('withdrawn-in-batch', '这篇随后撤回。'), b = await f.seed('surviving-in-batch', '独立来源仍然保留。'), work = f.host.maintenanceWork;
+  work.claim({ kind: 'organize', jobId: 'expired-snapshot', limit: 24 }); f.host.stageWithdrawal({ noteIds: [a.id] });
+  expect(work.stats({ kind: 'organize' }).ready).toBe(1); expect(work.claim({ kind: 'organize', jobId: 'fresh-after-withdrawal', limit: 24 }).items).toEqual([{ id: b.id, checksum: b.checksum }]);
+});
+it('releases obsolete pending reviews after withdrawal without requeueing their historical context', async () => {
+  const f = await fixture(), old = await f.seed('review-context', '旧记忆只作背景。'), work = f.host.maintenanceWork; work.seed({ records: [{ kind: 'organize', sources: [old] }] });
+  const fresh = await f.seed('review-new', '本批新增日记。'), batch = work.claim({ kind: 'organize', jobId: 'review-expired', limit: 24 });
+  const oldPath = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(old.id).note_path, related = work.associate({ kind: 'organize', jobId: 'review-expired', retrieval: { results: [{ fullPath: oldPath }] } });
+  work.complete({ kind: 'organize', jobId: 'review-expired', sources: [...batch.items, ...related.items], reserved: [old.id, fresh.id] });
+  const withdrawn = await f.seed('unrelated-withdrawal', '随后撤回的独立日记。'); f.host.stageWithdrawal({ noteIds: [withdrawn.id] });
+  expect(work.claim({ kind: 'organize', jobId: 'after-review-expired', limit: 24 }).items).toEqual([{ id: fresh.id, checksum: fresh.checksum }]);
+  expect(f.host.db.prepare("SELECT state FROM maintenance_work WHERE kind='organize' AND note_id=?").get(old.id).state).toBe('reviewed');
 });
 it('fences maintenance mutations at the host FIFO with the real tombstone revision and preserves legacy callers', async () => {
   const f = await fixture(), note = await f.seed('a', '旧内容仍有效。');

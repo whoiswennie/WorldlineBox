@@ -8,6 +8,15 @@ import { BotStore } from '../../src/main/companion-bot/store';
 const roots: Array<{ path: string; store: BotStore }> = [];
 afterEach(async () => { for (const root of roots.splice(0)) { root.store.close(); await rm(root.path, { recursive: true, force: true }); } });
 const base = { requestId: 'inspection-1', query: '决定是什么', totalMs: 321.4 };
+it('recovers diary heading date and time when VCP omitted date metadata without guessing dates mentioned in prose', () => {
+  const result = buildBotMemoryInspection({ ...base, mode: 'passive', result: { events: [{ type: 'RAG_RETRIEVAL_DETAILS', results: [
+    { text: '[2026-11-10] - Companion\n[10:30]\n用户提到明年旅行。' },
+    { text: '用户计划在2026-12-01出发。' },
+    { text: '[2026-02-31] - Companion\n[10:00]\n无效日期。' },
+    { date: '2026-11-09', text: '[2026-11-10] - Companion\n[10:30]' },
+  ] }] } });
+  expect(result.hits.map(hit => hit.date)).toEqual(['2026-11-10 10:30', undefined, undefined, '2026-11-09']);
+});
 it('preserves final LightMemo order and original scores, including zero and negative values', () => {
   const report = buildBotMemoryInspection({ ...base, mode: 'semantic', result: { content: '原格式结果' }, telemetry: { vcp: { spans: [
     { id: 1, stage: 'native.lightmemo', raw: { candidates: [{ text: '候选池不是最终命中' }] }, status: 'completed', hostTiming: { durationMs: 12 } },

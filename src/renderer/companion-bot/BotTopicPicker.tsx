@@ -7,9 +7,12 @@ export function BotTopicPicker({conversationId,currentId,locale,request,refresh,
   const zh=locale==='zh-CN',[mode,setMode]=useState<BotTopicListMode>('recent'),[query,setQuery]=useState(''),[topics,setTopics]=useState<BotNativeTopic[]>([]),[next,setNext]=useState<string>(),[cursors,setCursors]=useState<string[]>([]),[revision,setRevision]=useState(0),[loading,setLoading]=useState(false),[busy,setBusy]=useState(''),[menu,setMenu]=useState('');
   const [rename,setRename]=useState<{topic:BotNativeTopic;draft:string;requestId:string}>(),host=useRef<HTMLDivElement>(null),working=useRef(false);
   const cursor=cursors.at(-1),pending=topics.some(topic=>topic.renamePending);
+  const [stale,setStale]=useState(false);
   useEffect(()=>{
-    let cancelled=false;const timer=setTimeout(()=>{setLoading(true);void request({type:'topic.list',conversationId,query,mode,before:cursor}).then(result=>{if(cancelled)return;if(result.ok){setTopics(result.topics??[]);setNext(result.nextTopicCursor);}}).finally(()=>{if(!cancelled)setLoading(false);});},query?150:0);
-    return()=>{cancelled=true;clearTimeout(timer);};
+    let cancelled=false,reading=false;
+    const read=()=>{if(reading||working.current)return;reading=true;void request({type:'topic.list',conversationId,query,mode,before:cursor}).then(result=>{if(cancelled)return;if(result.ok){setTopics(result.topics??[]);setNext(result.nextTopicCursor);setStale(!!result.topicListStale);}else setStale(true);}).catch(()=>{if(!cancelled)setStale(true);}).finally(()=>{reading=false;if(!cancelled)setLoading(false);});};
+    const timer=setTimeout(()=>{setLoading(true);read();},query?150:0),poll=setInterval(read,1500);
+    return()=>{cancelled=true;clearTimeout(timer);clearInterval(poll);};
   },[conversationId,query,mode,cursor,revision,request]);
   useEffect(()=>{if(!pending)return;const timer=setTimeout(()=>setRevision(value=>value+1),1200);return()=>clearTimeout(timer);},[pending,topics]);
   useEffect(()=>{
@@ -23,6 +26,7 @@ export function BotTopicPicker({conversationId,currentId,locale,request,refresh,
   };
   return <div className="bot-topic-picker" ref={host} role="dialog" aria-label={zh?'接入之前的话题':'Earlier topics'} onKeyDown={event=>{if(event.key==='Escape'){event.stopPropagation();if(rename)setRename(undefined);else if(menu)setMenu('');else onClose();}}}>
     <header><strong>{zh?'话题':'Topics'}</strong><button type="button" aria-label={zh?'关闭话题列表':'Close topic list'} onClick={onClose}>×</button></header>
+    {stale&&<small role="status">{zh?'DSH 暂未连接，显示上次确认的会话':'DSH unavailable; showing last confirmed sessions'}</small>}
     <div className="bot-topic-tabs" role="tablist" aria-label={zh?'话题分类':'Topic categories'}>{(['recent','all','favorites'] as const).map(value=><button type="button" key={value} role="tab" aria-selected={mode===value} onClick={()=>{setMode(value);setCursors([]);setMenu('');}}>{value==='favorites'&&<BotIcon name="star"/>}{value==='recent'?(zh?'最近':'Recent'):value==='all'?(zh?'全部':'All'):(zh?'收藏夹':'Favorites')}</button>)}</div>
     <input aria-label={zh?'搜索话题':'Search topics'} placeholder={mode==='favorites'?(zh?'模糊搜索收藏话题':'Search favorite topics'):(zh?'模糊搜索话题':'Search topics')} value={query} onChange={event=>{setQuery(event.target.value);setCursors([]);setMenu('');}}/>
     {rename&&<form className="bot-topic-rename" role="dialog" aria-label={zh?'重命名话题':'Rename topic'} onSubmit={event=>{event.preventDefault();void mutate({type:'topic.rename',conversationId,topicId:rename.topic.id,title:rename.draft.trim(),requestId:rename.requestId},rename.topic.id);}}>

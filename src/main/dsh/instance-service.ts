@@ -280,7 +280,7 @@ export class InstanceService {
   private async initializeProfile(instance: DshInstance, signal: AbortSignal) {
     const profile = path.join(instance.homePath, 'profiles', 'web');
     if (!await readJson(path.join(profile, 'package.json'))) await this.command(instance, ['web', '--dump-default-config'], signal);
-    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'context.js', 'cordis.patch.yml'];
+    const names = ['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'context.js', 'topics.js', 'cordis.patch.yml'];
     const sources = await Promise.all(names.map(name => readFile(path.join(this.options.bridgePackagePath, name))));
     const digest = createHash('sha256'); for (const source of sources) digest.update(source);
     const hash = digest.digest('hex'), target = path.join(instance.homePath, '.worldlinebox', 'bridge', hash);
@@ -366,6 +366,12 @@ export class InstanceService {
     };
     const instance = this.require(id); instance.status = 'starting'; delete instance.lastError; await this.changed();
     let host: Host | undefined;
+    let startupCheck = '校验运行文件', hostOutput = false;
+    const logPath = path.join(this.getRoot(id), 'logs', 'host.log');
+    const logStartup = async (message: string) => {
+      await mkdir(path.dirname(logPath), { recursive: true })
+        .then(() => appendFile(logPath, `[${new Date().toISOString()}] ${sanitizeOutput(message)}\n`)).catch(() => undefined);
+    };
     try {
       progress('verifying-runtime');
       await assertOwnedDirectory(this.options.rootPath, this.getRoot(id));
@@ -375,8 +381,11 @@ export class InstanceService {
         }
       });
       progress('preparing-profile');
+      startupCheck = '准备实例配置和插件';
       await this.initializeProfile(instance, signal); signal.throwIfAborted();
       progress('starting-host');
+      startupCheck = '等待 DSH Web 地址和伙伴桥接服务就绪（最长 120 秒）';
+      await logStartup('Starting DSH Web Host. Waiting for Web and bridge readiness.');
       const token = randomBytes(32).toString('hex');
       const child = await launchCli(this.launchPlan(id), ['web', '--no-open', '--host', '127.0.0.1', '--port', '0'],
         { ...await this.environment(instance), WORLDLINEBOX_DSH_BRIDGE_TOKEN: token }, instance.workspacePath);
@@ -387,11 +396,12 @@ export class InstanceService {
       void readiness.catch(() => undefined);
       const decoders = [new StringDecoder('utf8'), new StringDecoder('utf8')]; const pending = ['', ''];
       const line = (value: string) => {
+        hostOutput ||= !!value.trim();
         owned.url ??= parseReadyUrl(value);
         const port = /^WORLDLINEBOX_DSH_BRIDGE_READY (\d+)\s*$/.exec(value)?.[1];
         if (port && child.pid) owned.client = new NativeHostClient(Number(port), token, child.pid);
         if (owned.url && owned.client) ready();
-        void appendFile(path.join(this.getRoot(id), 'logs', 'host.log'), sanitizeOutput(value) + '\n').catch(() => undefined);
+        void appendFile(logPath, sanitizeOutput(value) + '\n').catch(() => undefined);
       };
       [child.stdout, child.stderr].forEach((stream, index) => stream.on('data', (chunk: Buffer) => {
         pending[index] += decoders[index]!.write(chunk); let boundary: number;
@@ -419,11 +429,23 @@ export class InstanceService {
       const timeout = AbortSignal.any([signal, AbortSignal.timeout(120000)]);
       await new Promise<void>((resolve, reject) => { const abort = () => reject(timeout.reason); timeout.addEventListener('abort', abort, { once: true });
         readiness.then(resolve, reject).finally(() => timeout.removeEventListener('abort', abort)); if (timeout.aborted) abort(); });
-      await owned.client!.health(timeout); await verifyReadyUrl(owned.url!, timeout);
+      startupCheck = '验证伙伴桥接服务身份';
+      await owned.client!.health(timeout);
+      startupCheck = '验证 DSH 工作台登录';
+      await verifyReadyUrl(owned.url!, timeout);
       instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); progress('ready'); this.scheduleIdle(id); return owned.client!;
     } catch (error) {
+      let failure = error;
+      if (error instanceof Error && error.name === 'TimeoutError') {
+        const readiness = host && startupCheck.startsWith('等待')
+          ? !hostOutput ? '启动进程尚未输出就绪信息。'
+            : `未收到${[!host?.url && '工作台地址', !host?.client && '伙伴桥接就绪信号'].filter(Boolean).join('、')}。`
+          : '';
+        failure = new Error(`DSH 启动超时：${startupCheck}。${readiness}请重试；若仍失败，请查看实例日志：${logPath}`, { cause: error });
+      }
+      await logStartup(`Startup failed while ${startupCheck}: ${failure instanceof Error ? failure.message : String(failure)}`);
       if (host) { host.stopping = true; await terminateOwnedProcess(host.child); await host.finished; }
-      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(error)); await this.changed(); progress('failed', undefined, instance.lastError); throw error;
+      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(failure)); await this.changed(); progress('failed', undefined, instance.lastError); throw failure;
     }
   }
   async stop(id: string, options: { automatic?: boolean } = {}): Promise<void> {

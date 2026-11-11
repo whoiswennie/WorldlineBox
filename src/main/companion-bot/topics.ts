@@ -3,6 +3,7 @@ import type { BotChatRuntime, BotNativeTopic, BotTopicListMode } from '../../sha
 import type { BotEvent } from './types';
 import type { BotStore } from './store';
 import {botContextIsNewer,botNativeContextSchema,type BotNativeContext} from '../../shared/companion-native-context';
+import type { BotNativeTopicState } from '../../shared/companion-native-topics';
 
 type TopicRow = { id: string; conversation_id: string; acl_revision: number; title: string; created_at: string; updated_at: string;activity_at?:string;pinned?:number;favorite?:number;rename_pending?:number };
 export interface BotTopicTitleSync {topic_id:string;conversation_id:string;native_lane_id:string;companion_id:string;revision:number;title:string}
@@ -113,6 +114,45 @@ export class BotTopics {
     });
     return this.get(id, conversationId);
   }
+  newDraft(conversationId: string, requestId: string): BotNativeTopic {
+    const current = this.current(conversationId);
+    if (current && !this.store.taskTransaction(sql => sql.prepare('SELECT 1 FROM bot_topic_events WHERE topic_id=? LIMIT 1').get(current.id))) return current;
+    return this.create(conversationId, requestId);
+  }
+  nativeBindings(conversationId: string): Array<{ laneId: string; companionId: string }> {
+    const room = this.room(conversationId);
+    return this.store.taskTransaction(sql => sql.prepare(`SELECT DISTINCT b.native_lane_id AS laneId,b.companion_id AS companionId
+      FROM bot_topic_bindings b JOIN bot_native_topics t ON t.id=b.topic_id JOIN bot_lanes l ON l.conversation_id=b.conversation_id AND l.companion_id=b.companion_id
+      WHERE b.conversation_id=? AND t.acl_revision=? AND b.lane_epoch=l.epoch
+      AND (EXISTS(SELECT 1 FROM bot_metadata host WHERE host.key='native-host:'||b.native_lane_id)
+        OR EXISTS(SELECT 1 FROM bot_topic_events e JOIN bot_inbox i ON i.id=e.event_id WHERE e.topic_id=t.id AND i.companion_id=b.companion_id AND i.dsh_event_id IS NOT NULL))
+      UNION SELECT 'turn-'||i.id,i.companion_id FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id
+      LEFT JOIN bot_metadata epoch ON epoch.key='event-native-epoch:'||i.id
+      WHERE i.conversation_id=? AND i.acl_revision=? AND i.source='user' AND i.dsh_event_id IS NOT NULL
+      AND (epoch.value IS NULL OR CAST(epoch.value AS INTEGER)=l.epoch) AND NOT EXISTS(SELECT 1 FROM bot_topic_events e WHERE e.event_id=i.id)`)
+      .all(conversationId, room.revision, conversationId, room.revision)) as Array<{ laneId: string; companionId: string }>;
+  }
+  rememberNative(states: readonly BotNativeTopicState[]): void {
+    this.store.taskTransaction(sql => {
+      for (const state of states) {
+        const key = 'native-topic-state:' + state.laneId, value = JSON.stringify(state);
+        if (this.store.getMetadata(key) !== value) this.store.setMetadata(key, value);
+      }
+      // A group can bind several native Sessions. Pick its latest native
+      // activity once, independently of response order or a queued local turn.
+      const affected = new Set(states.flatMap(state => (sql.prepare('SELECT topic_id FROM bot_topic_bindings WHERE native_lane_id=?').all(state.laneId) as Array<{topic_id:string}>).map(row => row.topic_id)));
+      for (const id of affected) {
+        const latest = sql.prepare(`SELECT json_extract(m.value,'$.title') AS title,json_extract(m.value,'$.updatedAt') AS activity
+          FROM bot_topic_bindings b JOIN bot_metadata m ON m.key='native-topic-state:'||b.native_lane_id
+          WHERE b.topic_id=? AND json_extract(m.value,'$.exists')=1
+          ORDER BY activity DESC,b.native_lane_id LIMIT 1`).get(id) as {title:string|null;activity:string|null}|undefined;
+        if (latest) sql.prepare(`UPDATE bot_native_topics SET title=CASE WHEN ? IS NOT NULL AND NOT EXISTS(
+          SELECT 1 FROM bot_topic_title_sync s WHERE s.topic_id=bot_native_topics.id AND s.status='pending') THEN ? ELSE title END,
+          activity_at=COALESCE(?,activity_at) WHERE id=? AND (title IS NOT ? OR activity_at IS NOT COALESCE(?,activity_at))`)
+          .run(latest.title, latest.title, latest.activity, id, latest.title, latest.activity);
+      }
+    });
+  }
   select(conversationId: string, id: string): BotNativeTopic {
     const selected = this.get(id, conversationId); this.store.setMetadata('native-topic-active:' + conversationId, id); return selected;
   }
@@ -128,10 +168,15 @@ export class BotTopics {
       const rows=sql.prepare(`WITH candidates AS (
         SELECT id,conversation_id,acl_revision,title,created_at,updated_at,activity_at,pinned,favorite,
           EXISTS(SELECT 1 FROM bot_topic_title_sync s WHERE s.topic_id=t.id AND s.status='pending') AS rename_pending FROM bot_native_topics t WHERE conversation_id=? AND acl_revision=?
-        UNION ALL SELECT 'legacy-'||i.id,i.conversation_id,i.acl_revision,substr(trim(i.content),1,60),i.received_at,i.received_at,i.received_at,0,0,0
+          AND NOT EXISTS(SELECT 1 FROM bot_topic_bindings b JOIN bot_lanes l ON l.conversation_id=b.conversation_id AND l.companion_id=b.companion_id WHERE b.topic_id=t.id AND b.lane_epoch<>l.epoch)
+          AND EXISTS(SELECT 1 FROM bot_topic_bindings b LEFT JOIN bot_metadata native ON native.key='native-topic-state:'||b.native_lane_id WHERE b.topic_id=t.id
+            AND COALESCE(json_extract(native.value,'$.exists'),EXISTS(SELECT 1 FROM bot_topic_events e JOIN bot_inbox i ON i.id=e.event_id WHERE e.topic_id=t.id AND i.companion_id=b.companion_id AND i.dsh_event_id IS NOT NULL))=1)
+        UNION ALL SELECT 'legacy-'||i.id,i.conversation_id,i.acl_revision,COALESCE(json_extract(native.value,'$.title'),substr(trim(i.content),1,60)),i.received_at,i.received_at,COALESCE(json_extract(native.value,'$.updatedAt'),i.received_at),0,0,0
           FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id LEFT JOIN bot_metadata epoch ON epoch.key='event-native-epoch:'||i.id
+          LEFT JOIN bot_metadata native ON native.key='native-topic-state:turn-'||i.id
           WHERE i.conversation_id=? AND i.acl_revision=? AND i.source='user' AND i.dsh_event_id IS NOT NULL AND (epoch.value IS NULL OR CAST(epoch.value AS INTEGER)=l.epoch)
-          AND NOT EXISTS(SELECT 1 FROM bot_topic_events t WHERE t.event_id=i.id))
+          AND NOT EXISTS(SELECT 1 FROM bot_topic_events t WHERE t.event_id=i.id)
+          AND COALESCE(json_extract(native.value,'$.exists'),1)=1)
         SELECT * FROM candidates WHERE 1 ${mode==='favorites'?'AND favorite=1':''} ${patterns.map(()=>"AND title LIKE ? ESCAPE '\\'").join(' ')}
         ${cursor?'AND (pinned,activity_at,id)<(?,?,?)':''} ORDER BY pinned DESC,activity_at DESC,id DESC LIMIT ?`)
         .all(conversationId,room.revision,conversationId,room.revision,...patterns,...cursor??[],limit+1) as TopicRow[];

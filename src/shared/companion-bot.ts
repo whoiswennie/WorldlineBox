@@ -36,7 +36,7 @@ export interface BotTaskFollowupReceipt {
   taskId: string; title?: string;
   state: 'queued' | 'delivered' | 'needs-attention' | 'failed' | 'cancelled';
 }
-export interface BotConversation { id: string; title: string; kind: 'direct' | 'group' | 'world' | 'peer'; memberIds: string[]; createdAt: string; participationMode?: BotParticipationMode; peerConversation?: boolean; userRole?: 'observer'; ownerId?:'user';dissolvedAt?:string; announcement?: BotGroupAnnouncement }
+export interface BotConversation { id: string; title: string; kind: 'direct' | 'group' | 'world' | 'peer'; memberIds: string[]; createdAt: string; pinned?: boolean; participationMode?: BotParticipationMode; peerConversation?: boolean; userRole?: 'observer'; ownerId?:'user';dissolvedAt?:string; announcement?: BotGroupAnnouncement }
 /** Native DSH execution events belong to one reply in its selected topic Session. */
 export interface BotExecution {
   sessionId?: string;
@@ -145,6 +145,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('conversation.announcement'), conversationId: id, content: z.string().max(4000).refine(value => !value.includes('\0')),
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
+  z.strictObject({ type: z.literal('conversation.pin'), conversationId: id, pinned: z.boolean() }),
   z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(2).optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
@@ -183,7 +184,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.literal('asset-manager') }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
-export interface BotResponse { app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
+export interface BotResponse { app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topicListStale?: boolean; topicListError?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
 export type BotEvent = { type: 'changed'; conversationId?: string }
   | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }

@@ -12,6 +12,7 @@ export interface BotCompanion {
 export interface BotConversation {
   id: string; title: string; kind: BotConversationKind; memberIds: string[];
   audienceScopeId: string; securityDomainId: string; revision: number; createdAt: string;
+  pinned?: boolean;
   participationMode?: 'automatic' | 'all' | 'mentions';
   peerConversation?: boolean;
   userRole?: 'observer';

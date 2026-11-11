@@ -1,3 +1,4 @@
+const pinPath = 'M8 3h8l-1 6 3 3v2H6v-2l3-3-1-6ZM12 14v7';
 const paths = {
   apps: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
   assets: 'M3 6l9-4 9 4v12l-9 4-9-4zM3 6l9 4 9-4M12 10v12',
@@ -11,7 +12,8 @@ const paths = {
   image: 'M3 4h18v16H3zM3 15l5-5 5 5 3-3 5 5M15 8h.01',
   sparkles: 'M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3zM20 2v4M18 4h4',
   plus: 'M12 5v14M5 12h14',
-  pin:'M16 3l5 5-4 2-3 7-3-3-6 6M14 5l-4 1-4 6 6 6 6-4 1-4',
+  pin: pinPath,
+  'pin-filled': pinPath,
   star:'M12 3l2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9z',
   more:'M5 12h.01M12 12h.01M19 12h.01',
   edit:'M15 4l5 5M4 20l4-1 12-12-4-4L4 15z',
@@ -19,12 +21,14 @@ const paths = {
   users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 3a4 4 0 0 1 0 8M22 21v-2a4 4 0 0 0-3-3.87M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
   world: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M3 12h18M12 3a17 17 0 0 1 0 18 17 17 0 0 1 0-18',
   profile: 'M20 21v-2a6 6 0 0 0-6-6h-4a6 6 0 0 0-6 6v2M16 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
-  memory: 'M9 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-3M9 3v5l3-2 3 2V3M8 13h8M8 17h5',
+  memory: 'M12 18V5M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4M17.6 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.6 1.5M18 5.125a4 4 0 0 1 2.525 5.77M18 18a4 4 0 0 0 2-7.464M20 17.026A4 4 0 1 1 12 18a4 4 0 1 1-8-.974M4 10.536A4 4 0 0 0 6 18M3.475 10.895A4 4 0 0 1 6 5.125',
   tasks: 'M8 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3M8 3h8v4H8zM8 14l3 3 5-6',
   history: 'M3 11a9 9 0 1 1 2.4 7M3 4v7h7M12 7v5l3 2',
   clock: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2',
   smile: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M8 14s1.5 3 4 3 4-3 4-3M8.5 8.5h.01M15.5 8.5h.01',
   arrow: 'M12 19V5M5 12l7-7 7 7',
+  'arrow-left': 'M19 12H5M12 5l-7 7 7 7',
+  'chevron-left': 'M15 5l-7 7 7 7',
   'chevron-right': 'M9 5l7 7-7 7',
   'chevron-down': 'M6 9l6 6 6-6',
   settings: 'M4 7h16M4 17h16M8 4v6M16 14v6',
@@ -37,5 +41,5 @@ const paths = {
   notice: 'M3 10v4h4l11 5V5L7 10H3M7 14l2 6h3M21 9v6',
 } as const;
 export function BotIcon({ name }: { name: keyof typeof paths }) {
-  return <svg className="bot-icon" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
+  return <svg className="bot-icon" aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill={name === 'pin-filled' ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;
 }

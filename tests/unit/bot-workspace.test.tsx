@@ -6,6 +6,7 @@ import { BotWorkspace } from '../../src/renderer/companion-bot/BotWorkspace';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import type { BotEvent, BotMessage, BotPersonaTemplate, BotRequest, BotResponse, BotSnapshot, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
+import type { WorldlineBoxBrowserApi } from '../../src/shared/browser';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const at = '2026-11-02T10:00:00Z';
@@ -32,7 +33,7 @@ function boundLauncherState(): DshLauncherState {
   const runtime = { id: 'runtime-a', version: '0.2.2-rc.1', nodeVersion: '24', platform: 'win32-x64' as const, adapter: 'node-cli-web-v1' as const, source: '', sourceSha256: '0'.repeat(64), contentSha256: '0'.repeat(64), installedAt: '', fileCount: 1, byteLength: 1 };
   return { supported: true, rootPath: 'fixture', runtimes: [runtime], instances: [{ id: 'shared-instance', name: '共享 DSH', runtimeId: runtime.id, profile: 'web', status: 'stopped', isDefault: true, homePath: '', agentsPath: '', workspacePath: '', browserPartition: 'shared', createdAt: at, updatedAt: at }], snapshots: [], packs: [], operations: [] };
 }
-async function mount(launcherApi: WorldlineBoxDshLauncherApi = { request: async () => ({ ok: true, state: boundLauncherState() }), onChanged: () => () => undefined }) {
+async function mount(launcherApi: WorldlineBoxDshLauncherApi = { request: async () => ({ ok: true, state: boundLauncherState() }), onChanged: () => () => undefined }, browserApi?: WorldlineBoxBrowserApi) {
   const api: WorldlineBoxBotApi = {
     async request(request) {
       requests.push(request); const result = override?.(request); if (result) return result;
@@ -52,9 +53,65 @@ async function mount(launcherApi: WorldlineBoxDshLauncherApi = { request: async 
     onEvent(fn) { listener = fn; return () => { listener = undefined; }; },
   };
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} launcherApi={launcherApi} onOpenSettings={() => undefined} /></LocaleProvider>));
+  await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} launcherApi={launcherApi} browserApi={browserApi} onOpenSettings={() => undefined} /></LocaleProvider>));
 }
 const composer = () => host.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
+it('pins multiple chats without switching the open conversation, reorders them on messages and can unpin', async () => {
+  for (const state of Object.values(snapshots)) state.conversationActivity = {
+    a: { messageId: 'reply-a', sequence: 1, senderName: 'Alice', preview: '旧消息', updatedAt: at },
+    b: { messageId: 'reply-b', sequence: 2, senderName: 'Bob', preview: '最新消息', updatedAt: '2026-11-03T10:00:00Z' },
+  };
+  override = request => {
+    if (request.type !== 'conversation.pin') return undefined;
+    for (const state of Object.values(snapshots)) state.conversations = state.conversations.map(item => item.id === request.conversationId ? { ...item, pinned: request.pinned } : item);
+    return Promise.resolve({ ok: true });
+  };
+  await mount();
+  const chats = () => [...host.querySelectorAll<HTMLButtonElement>('.bot-conversation')];
+  const pin = (label: string) => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+  expect(pin('置顶聊天 · 私聊甲').querySelector('svg')?.getAttribute('fill')).toBe('none');
+  await act(() => pin('置顶聊天 · 私聊甲').click());
+  expect(pin('取消置顶聊天 · 私聊甲').querySelector('svg')?.getAttribute('fill')).toBe('currentColor');
+  expect(pin('取消置顶聊天 · 私聊甲').title).toBe('已置顶 · 点击取消置顶');
+  expect(chats()[0]!.querySelector('strong')?.textContent).toBe('私聊甲');
+  expect(host.querySelector('.bot-conversation[aria-current="page"] strong')?.textContent).toBe('私聊乙');
+  await act(() => pin('置顶聊天 · 私聊乙').click());
+  expect(host.querySelectorAll('.bot-conversation-pin[aria-pressed="true"]')).toHaveLength(2);
+  expect(chats()[0]!.querySelector('strong')?.textContent).toBe('私聊乙');
+  for (const state of Object.values(snapshots)) state.conversationActivity!.a = { ...state.conversationActivity!.a!, sequence: 3, updatedAt: '2026-11-04T10:00:00Z' };
+  await emit({ type: 'changed' }); await act(() => vi.advanceTimersByTimeAsync(100));
+  expect(chats()[0]!.querySelector('strong')?.textContent).toBe('私聊甲');
+  await act(() => pin('取消置顶聊天 · 私聊甲').click());
+  expect(pin('置顶聊天 · 私聊甲').querySelector('svg')?.getAttribute('fill')).toBe('none');
+  expect(chats()[0]!.querySelector('strong')?.textContent).toBe('私聊乙');
+  expect(requests).toContainEqual({ type: 'conversation.pin', conversationId: 'a', pinned: false });
+});
+
+it('keeps pin state unchanged when saving a pin fails', async () => {
+  override = request => request.type === 'conversation.pin' ? Promise.resolve({ ok: false, error: '置顶保存失败' }) : undefined;
+  await mount();
+  await act(() => host.querySelector<HTMLButtonElement>('.bot-conversation-pin')!.click());
+  expect(host.querySelectorAll('.bot-conversation-pin[aria-pressed="true"]')).toHaveLength(0);
+  expect(host.textContent).toContain('置顶保存失败');
+});
+
+it('opens the first chat by recent activity and preserves a later manual selection when activity changes', async () => {
+  for (const state of Object.values(snapshots)) state.conversationActivity = {
+    a: { messageId: 'reply-a', sequence: 1, senderName: 'Alice', preview: '旧消息', updatedAt: at },
+    b: { messageId: 'reply-b', sequence: 2, senderName: 'Bob', preview: '最新消息', updatedAt: at },
+  };
+  await mount();
+  const chats = () => [...host.querySelectorAll<HTMLButtonElement>('.bot-conversation')];
+  expect(chats()[0]!.querySelector('strong')?.textContent).toBe('私聊乙');
+  expect(chats()[0]!.getAttribute('aria-current')).toBe('page');
+  expect(host.querySelector('[data-bot-message="reply-b"]')?.textContent).toContain('乙的原文');
+  expect(requests.flatMap(request => request.type === 'state' && request.conversationId ? [request.conversationId] : [])).toEqual(['b']);
+  await act(() => chats()[1]!.click());
+  expect(chats()[1]!.getAttribute('aria-current')).toBe('page');
+  await emit({ type: 'changed' });
+  await act(() => vi.advanceTimersByTimeAsync(100));
+  expect(chats()[1]!.getAttribute('aria-current')).toBe('page');
+});
 it('requires one shared setup before the first chat or call, then unlocks every companion without extra bindings', async () => {
   let state = { ...boundLauncherState(), instances: [] as DshLauncherState['instances'] };
   const launcherRequest = vi.fn<WorldlineBoxDshLauncherApi['request']>(async request => {
@@ -589,4 +646,39 @@ it('activates an app only on selection and carries it on the outgoing input', as
   expect(requests.filter(request => request.type === 'app.connect')).toHaveLength(1);
   await input(composer(), '请整理这些资产'); await click('发送 ↑');
   expect(sends().at(-1)?.apps).toEqual(['asset-manager']);
+});
+
+it('replaces the one attached browser page and sends only the chosen reference with the user input', async () => {
+  const tabs = ['Alpha', 'Beta'].map((title, index) => ({ id: title, title, url: `https://example.com/${index}`, loading: false, muted: false, pinned: false, zoom: 1, canGoBack: false, canGoForward: false }));
+  const contexts = tabs.map(tab => ({ referenceId: crypto.randomUUID(), tabId: tab.id, title: tab.title, url: tab.url, selection: '', capturedAt: new Date().toISOString() }));
+  const browserRequest = vi.fn<WorldlineBoxBrowserApi['request']>(async request => request.type === 'state' ? { ok: true, state: { tabs, activeTabId: 'Beta', bookmarks: [], downloads: [], historyCount: 0, preferences: { homepage: 'about:blank', restoreSession: true, searchEngine: 'bing', askDownloadLocation: false }, permissions: [], fullscreen: false, revision: 0 } } : request.type === 'page.context' ? { ok: true, pageContext: contexts.find(context => context.tabId === request.id) } : { ok: false, error: 'Unexpected browser mutation' });
+  await mount(undefined, { request: browserRequest, onChanged: () => () => undefined } as unknown as WorldlineBoxBrowserApi);
+  const choose = async (index: number) => { await click('应用'); await click('浏览器'); await act(() => host.querySelectorAll<HTMLButtonElement>('.bot-browser-tab-list [role="option"]')[index]!.click()); };
+  await choose(0); expect(host.querySelector('.bot-composer-dock [data-browser-context-tab]')?.getAttribute('data-browser-context-tab')).toBe('Alpha');
+  await choose(1); expect(host.querySelectorAll('.bot-composer-dock [data-browser-context-tab]')).toHaveLength(1);
+  expect(host.querySelector('.bot-composer-dock [data-browser-context-tab]')?.getAttribute('data-browser-context-tab')).toBe('Beta');
+  await input(composer(), '请处理选择的网页'); await click('发送 ↑');
+  expect(sends().at(-1)).toMatchObject({ browserContextId: contexts[1]!.referenceId, apps: ['browser'] });
+  expect(sends().at(-1)).not.toHaveProperty('browserContextIds');
+  expect(browserRequest.mock.calls.filter(([request]) => request.type === 'page.context').map(([request]) => request)).toEqual([{ type: 'page.context', id: 'Alpha' }, { type: 'page.context', id: 'Beta' }]);
+});
+
+it('blocks sending while a replacement page is loading and retains the original page if selection is cancelled', async () => {
+  const old = { referenceId: crypto.randomUUID(), tabId: 'old-page', title: '原网页', url: 'https://example.com/old', selection: '', capturedAt: new Date().toISOString() };
+  snapshots.a!.chatRuntime = { apps: ['browser'], browserContext: old, running: [], queued: [], hiddenMessageIds: [] };
+  const pending = deferred<Awaited<ReturnType<WorldlineBoxBrowserApi['request']>>>();
+  const browser: WorldlineBoxBrowserApi = {
+    request: async request => request.type === 'state' ? { ok: true, state: { tabs: [{ id: 'new-page', title: '新网页', url: 'https://example.com/new', loading: true, pinned: false, muted: false, zoom: 1, canGoBack: false, canGoForward: false }], activeTabId: 'new-page', bookmarks: [], downloads: [], historyCount: 0, preferences: { homepage: 'about:blank', restoreSession: true, searchEngine: 'bing', askDownloadLocation: false }, permissions: [], fullscreen: false, revision: 0 } } : pending.promise,
+    onChanged: () => () => undefined, onFocus: () => () => undefined, onCaptureOpenAssets: () => () => undefined, capture: async () => ({ ok: false, error: 'Not used' }),
+  };
+  await mount(undefined, browser); await input(composer(), '读取当前网页'); await click('应用'); await click('浏览器');
+  await act(() => host.querySelector<HTMLButtonElement>('[role="option"]')!.click());
+  expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(true);
+  await act(() => host.querySelector('form.bot-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+  expect(sends()).toHaveLength(0);
+  await act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(false);
+  await act(() => pending.resolve({ ok: true, pageContext: { ...old, referenceId: crypto.randomUUID(), tabId: 'new-page' } }));
+  expect(host.querySelector('.bot-composer-dock [data-browser-context-tab]')?.getAttribute('data-browser-context-tab')).toBe('old-page');
+  await click('发送 ↑'); expect(sends().at(-1)?.browserContextId).toBe(old.referenceId);
 });

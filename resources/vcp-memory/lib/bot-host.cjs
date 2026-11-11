@@ -36,6 +36,8 @@ class BotHost {
     this.managed = new ManagedNotes(this);
     const { MaintenanceHost } = require('./maintenance-host.cjs');
     this.maintenance = new MaintenanceHost(this);
+    const { MaintenanceWork } = require('./maintenance-work.cjs');
+    this.maintenanceWork = new MaintenanceWork(this);
   }
   indexSources(row) {
     const insert = this.db.prepare('INSERT OR IGNORE INTO mutation_sources VALUES(?,?,?)');

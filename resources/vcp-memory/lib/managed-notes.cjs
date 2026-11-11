@@ -31,7 +31,7 @@ class ManagedNotes {
   validate(payload, kind) {
     this.assertSourceRevision(payload);
     for (const key of ['operationId', 'sourceEventId']) if (typeof payload[key] !== 'string' || !payload[key] || payload[key].length > 512 || payload[key].includes('\0')) throw new TypeError('Stable operation and source IDs are required.');
-    if (typeof payload.content !== 'string' || !payload.content.trim() || payload.content.length > 24000) throw new TypeError('Managed note content must contain 1..24000 characters.');
+    if (typeof payload.content !== 'string' || !payload.content.trim()) throw new TypeError('Managed note content must be a non-empty string.');
     if (payload.tags !== undefined && (typeof payload.tags !== 'string' || payload.tags.length > 4096)) throw new TypeError('Managed tags must be a bounded string.');
     if (payload.sourceRootEventId !== undefined && (typeof payload.sourceRootEventId !== 'string' || !payload.sourceRootEventId || payload.sourceRootEventId.length > 512 || payload.sourceRootEventId.includes('\0'))) throw new TypeError('Invalid source root ID.');
     const messages = payload.sourceMessageIds ?? [];

@@ -9,6 +9,16 @@ import { buildBotMemoryInspection } from './memory-inspection';
 import type { BotMemoryRecallMode, BotMemoryRecallReport } from '../../shared/companion-bot-memory';
 
 export interface BotMemoryScope { companionId: string; conversationId: string; securityDomainId: string }
+export interface BotMaintenanceWorkStats { mode: 'incremental-v1'; ready: number; retrying: number; processing: number; resumable?: number; oldestReadyAt?: string; retryAt?: number }
+export interface BotMaintenanceWorkBatch { mode: 'incremental-v1'; items: Array<{ id: string; checksum: string }>; revision: string; state: string; nextCursor?: string }
+export interface BotMaintenanceWorkProgress { mode: 'incremental-v1'; hasReady: boolean; retryAt?: number }
+export type BotMaintenanceWorkRequest = { action: 'stats'; kind: 'organize' | 'dream' }
+  | { action: 'identity' }
+  | { action: 'claim'; kind: 'organize' | 'dream'; jobId: string; limit: number }
+  | { action: 'complete'; kind: 'organize' | 'dream'; jobId: string; sources: Array<{ id: string; checksum: string }>; reserved?: string[] }
+  | { action: 'associate'; kind: 'organize' | 'dream'; jobId: string; retrieval: unknown }
+  | { action: 'release'; kind: 'organize' | 'dream'; jobId: string; reason?: string }
+  | { action: 'seed'; records: Array<{ kind: 'organize' | 'dream'; jobId?: string; sources: Array<{ id: string; checksum: string }>; reserved?: string[] }> };
 export interface BotMemoryMessage {
   id: string; role: 'system' | 'user' | 'assistant'; content: string; timestamp: number;
   senderId?: string; senderName?: string;
@@ -390,6 +400,9 @@ export class BotMemoryService {
   }
   async catalog(scope: BotMemoryScope, input: { query?: string; tag?: string; cursor?: string; limit?: number }): Promise<unknown> {
     return this.run(scope, entry => this.request(entry, 'bot.catalog', input), undefined, true, true);
+  }
+  async maintenanceWork(scope: BotMemoryScope, input: BotMaintenanceWorkRequest): Promise<BotMaintenanceWorkStats | BotMaintenanceWorkBatch | BotMaintenanceWorkProgress | { items: Array<{ id: string; checksum: string }> } | { imported: boolean } | { generation: string }> {
+    return this.run(scope, async entry => checked(await this.request(entry, 'bot.maintenance.work', input)) as unknown as BotMaintenanceWorkStats | BotMaintenanceWorkBatch | BotMaintenanceWorkProgress | { items: Array<{ id: string; checksum: string }> } | { imported: boolean } | { generation: string }, undefined, true, true);
   }
   async readNote(scope: BotMemoryScope, input: { id: string }): Promise<unknown> {
     return this.run(scope, entry => this.request(entry, 'bot.note.read', input), undefined, true, true);

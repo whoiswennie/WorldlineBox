@@ -32,3 +32,78 @@
 .bot-maintenance-toast>span{font-weight:650;color:var(--ui-content-accent)}.bot-maintenance-toast[data-kind=error]{border-color:var(--ui-status-danger-content)}.bot-maintenance-toast[data-kind=error]>span{color:var(--ui-status-danger-content)}.bot-maintenance-toast p{max-height:130px;overflow:auto;overflow-wrap:anywhere;margin:0!important;pointer-events:auto}.bot-workspace .bot-maintenance-toast button{grid-column:2;min-height:22px;justify-self:start;padding:2px 4px;border:0;background:transparent;color:var(--ui-content-secondary);font-size:11px;pointer-events:auto}.bot-workspace .bot-maintenance-toast .bot-maintenance-toast-close{grid-column:3;grid-row:1;width:22px;height:22px;padding:0;font-size:19px;line-height:1}
 @media(max-width:850px){.bot-memory-maintenance{--bot-maintenance-sidebar:220px}.bot-maintenance-detail{padding:16px 18px}.bot-maintenance-toolbar-actions{grid-template-columns:1fr;padding:0 10px 11px;gap:5px}.bot-maintenance-settings{margin-left:10px;margin-right:10px}.bot-maintenance-facts{gap:5px 12px}}
 @media(max-width:620px){.bot-memory-maintenance{--bot-maintenance-sidebar:190px}.bot-maintenance-detail{padding:13px}.bot-maintenance-toolbar-actions{grid-template-columns:1fr}.bot-maintenance-job>div{align-items:flex-start;flex-direction:column;gap:4px}.bot-maintenance-list-heading{padding:13px 11px 10px}.bot-workspace .bot-maintenance-job{padding:10px 7px}.bot-maintenance-detail-heading h3{font-size:14px}.bot-maintenance-facts{gap:5px 10px}.bot-maintenance-toast{width:min(300px,calc(100% - 16px))}}
+.bot-maintenance-detail{display:flex;flex-direction:column;overflow:hidden;padding:18px 20px 0}
+.bot-maintenance-detail-heading,.bot-maintenance-facts,.bot-maintenance-detail-tabs,.bot-maintenance-guidance{flex-shrink:0}
+.bot-maintenance-plan{display:flex;flex-direction:column;min-height:0;flex:1}
+.bot-maintenance-diagnostics-scroll{min-height:0;overflow:auto}
+.bot-maintenance-review-workbench{display:flex;flex-direction:column;min-height:0;flex:1;border-top:1px solid var(--ui-border-subtle);margin:0 -20px}
+.bot-review-candidate-list{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--ui-surface-raised)}
+.bot-review-candidate-list[hidden],.bot-review-reader [hidden]{display:none}
+.bot-maintenance-body:has(.bot-maintenance-review-workbench[data-reading=true]){grid-template-columns:minmax(0,1fr)}
+.bot-maintenance-body:has(.bot-maintenance-review-workbench[data-reading=true])>.bot-maintenance-jobs{display:none}
+.bot-maintenance-detail:has(.bot-review-reader){padding:0}
+.bot-maintenance-detail:has(.bot-review-reader)>.bot-maintenance-detail-heading,.bot-maintenance-detail:has(.bot-review-reader)>.bot-maintenance-facts,.bot-maintenance-detail:has(.bot-review-reader)>.bot-memory-alert{display:none}
+.bot-maintenance-review-progress{flex-shrink:0;font-size:11px;line-height:1.8;color:var(--ui-content-accent);margin-bottom:10px!important}
+.bot-maintenance-detail:has(.bot-review-reader)>.bot-maintenance-review-progress{display:none}
+.bot-maintenance-plan:has(.bot-review-reader)>.bot-maintenance-detail-tabs,.bot-maintenance-plan:has(.bot-review-reader)>.bot-maintenance-guidance{display:none}
+.bot-maintenance-review-workbench[data-reading=true]{margin:0;border:0}
+.bot-review-candidate-list>header{display:flex;justify-content:space-between;padding:15px 14px;font-size:12px;color:var(--ui-content-secondary)}
+.bot-review-candidate-list .bot-maintenance-candidates{min-height:0;flex:1;overflow:auto;padding:0 8px}
+.bot-review-candidate-list .bot-maintenance-candidate{border:0;margin-bottom:5px}
+.bot-workspace .bot-review-candidate-list .bot-maintenance-candidate-open{padding:16px 14px;border:1px solid transparent;border-bottom-color:var(--ui-border-subtle);border-radius:0}
+.bot-workspace .bot-review-candidate-list .bot-maintenance-candidate-open[aria-current=true]{background:var(--ui-surface-raised);border-color:var(--ui-border-selection)}
+.bot-review-candidate-list .bot-maintenance-candidate-open strong{font-size:12px}
+.bot-review-candidate-list .bot-maintenance-candidate-open>div{align-items:flex-start;flex-wrap:wrap}
+.bot-review-candidate-list .bot-maintenance-candidate-open p{font-size:11px;-webkit-line-clamp:2}
+.bot-review-reader{display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;padding:0;border:0;overflow:hidden;background:var(--ui-surface-raised)}
+.bot-review-reader-heading{display:flex;justify-content:space-between;align-items:center;padding:12px 24px 8px;gap:18px;flex-shrink:0}
+.bot-review-reader-heading h3{font-size:14px;font-weight:550;margin:0;flex:1}
+.bot-workspace .bot-review-reader-heading .bot-review-back{min-height:34px;padding:6px 10px;gap:7px;border:1px solid var(--ui-border-subtle);border-radius:8px;background:var(--ui-surface-raised);color:var(--ui-content-primary);font-size:12px;box-shadow:0 1px 2px #00000005}
+.bot-review-back .bot-icon{width:15px;height:15px}
+.bot-review-reader-heading .bot-review-pager{display:flex;align-items:center;gap:0;padding:2px;border:1px solid var(--ui-border-subtle);border-radius:9px;background:var(--ui-surface-pane)}
+.bot-review-pager>span{min-width:54px;text-align:center;font-size:11px;color:var(--ui-content-secondary);font-variant-numeric:tabular-nums;user-select:none}
+.bot-workspace .bot-review-pager button{width:30px;height:28px;min-height:28px;padding:5px;border:0;border-radius:6px;background:transparent}
+.bot-workspace .bot-review-pager button:hover:not(:disabled){background:var(--ui-surface-raised);box-shadow:0 1px 3px #0000000a}
+.bot-workspace .bot-review-pager button:disabled{opacity:.3}
+.bot-review-pager .bot-icon{width:16px;height:16px}
+.bot-review-reader-tabs{display:flex;gap:25px;padding:0 24px;border-bottom:1px solid var(--ui-border-subtle);flex-shrink:0}
+.bot-workspace .bot-review-reader-tabs button{padding:10px 0;border:0;border-radius:0;border-bottom:2px solid transparent;background:transparent;color:var(--ui-content-secondary)}
+.bot-workspace .bot-review-reader-tabs button[aria-pressed=true]{color:var(--ui-content-accent);border-bottom-color:var(--ui-content-accent)}
+.bot-review-content-panels{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.bot-review-content-scroll{flex:1;min-height:0;overflow:auto;scrollbar-width:thin}
+.bot-review-draft,.bot-review-sources{width:100%;max-width:960px;min-width:0;padding:26px 36px;margin:0 auto}
+.bot-review-content-scroll h4{font-size:12px;margin:0 0 14px;font-weight:550;color:var(--ui-content-secondary)}
+.bot-review-content-scroll h4:not(:first-child){margin-top:20px}
+.bot-review-content-scroll p,.bot-review-content-scroll li{font-size:13px;line-height:1.9;overflow-wrap:anywhere}
+.bot-review-reader .bot-maintenance-proposed{max-height:none;overflow:visible;margin:0;padding:0;border:0;border-radius:0;background:transparent;font:15px/2 var(--font-ui)}
+.bot-review-rationale{margin-top:28px;padding-top:18px;border-top:1px solid var(--ui-border-subtle);font-size:12px;line-height:1.9;color:var(--ui-content-secondary)}
+.bot-review-rationale summary{cursor:pointer;margin-bottom:14px}
+.bot-review-source-heading{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+.bot-review-source-heading select{min-width:0;max-width:100%;padding:7px;border:1px solid var(--ui-border-subtle);border-radius:6px;background:var(--ui-surface-raised);color:var(--ui-content-primary);font-size:11px}
+.bot-review-source-original,.bot-review-receipt{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.9 var(--font-ui);user-select:text}
+.bot-review-reader .bot-review-source-original{max-height:none;overflow:visible}
+.bot-review-reader-footer{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-shrink:0;flex-wrap:wrap;padding:13px 20px;border-top:1px solid var(--ui-border-subtle);background:var(--ui-surface-raised)}
+.bot-review-reader-footer>div:first-child{flex:1;min-width:160px}
+.bot-review-reader-footer p{font-size:11px;line-height:1.65;color:var(--ui-content-secondary);margin-top:5px!important}
+.bot-review-reader-footer .bot-maintenance-review-actions{border:0;margin:0;padding:0;flex-shrink:0}
+.bot-review-outcome{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.bot-review-approval{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--ui-content-accent)}
+.bot-review-approval .bot-icon{width:13px;height:13px}
+.bot-maintenance-status[data-state=superseded]{color:var(--ui-content-accent)}
+.bot-review-history{flex:1;min-height:0;overflow:auto;padding:0 max(36px,calc((100% - 888px)/2)) 24px}
+.bot-review-history>article{padding:18px 0;border-bottom:1px solid var(--ui-border-subtle)}
+.bot-review-history header{display:flex;justify-content:space-between;gap:12px;font-size:12px}
+.bot-review-history time,.bot-review-history small{display:block;font-size:11px;color:var(--ui-content-secondary);margin-top:7px}
+.bot-review-history>article>p{margin:12px 0!important;font-size:12px;line-height:1.9;white-space:pre-wrap}
+.bot-review-check{display:flex;gap:10px;padding:9px 0;font-size:12px}
+.bot-review-check>b{color:var(--ui-status-danger-content)}.bot-review-check[data-passed=true]>b{color:var(--ui-content-accent)}
+.bot-review-check p{font-size:11px;line-height:1.8;color:var(--ui-content-secondary);margin-top:3px!important}
+.bot-maintenance-auto-review{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 12px 12px;padding:12px 10px;border:1px solid var(--ui-border-subtle);border-radius:8px;background:var(--ui-surface-raised)}
+.bot-maintenance-auto-review strong{display:block;font-size:12px;font-weight:550}
+.bot-maintenance-auto-review small{display:block;font-size:10px;line-height:1.7;color:var(--ui-content-secondary);margin-top:5px}
+.bot-workspace .bot-maintenance-auto-review button[role=switch]{width:34px;min-width:34px;height:20px;min-height:20px;padding:2px;border:0;border-radius:20px;background:var(--ui-border-subtle)}
+.bot-maintenance-auto-review button[role=switch] span{display:block;width:16px;height:16px;border-radius:50%;background:var(--ui-surface-raised);box-shadow:0 1px 3px #0002;transform:translateX(-7px)}
+.bot-workspace .bot-maintenance-auto-review button[aria-checked=true]{background:var(--ui-action-accent)}
+.bot-maintenance-auto-review button[aria-checked=true] span{transform:translateX(7px)}
+@media(max-width:1050px){.bot-memory-maintenance{--bot-maintenance-sidebar:210px}}
+@media(max-width:620px){.bot-review-reader-heading{padding:10px 16px;gap:10px;flex-wrap:wrap}.bot-review-reader-heading h3{order:3;flex-basis:100%}.bot-review-reader-tabs{padding:0 16px;gap:20px}.bot-review-draft,.bot-review-sources{padding:22px 20px}.bot-review-history{padding:0 20px 20px}.bot-review-reader-footer{padding:12px 16px}.bot-review-reader .bot-maintenance-proposed{font-size:14px}}

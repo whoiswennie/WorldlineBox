@@ -15,6 +15,14 @@ const voice = vi.hoisted(() => ({ available: false, stop: vi.fn(), start: vi.fn(
 const speech = vi.hoisted(() => ({ available: false, enabled: true, state: { phase: 'idle' } as BotCallSpeechState, stop: vi.fn(), unlock: vi.fn(), toggle: vi.fn(), replay: vi.fn() }));
 vi.mock('../../src/renderer/companion-bot/useBotCallVoice', () => ({ useBotCallVoice: () => ({ ...voice, state: { phase: voice.available ? 'listening' : 'off', enabled: voice.available, turn: 0 }, level: 0 }) }));
 vi.mock('../../src/renderer/companion-bot/useBotCallSpeech', () => ({ useBotCallSpeech: () => ({ ...speech }) }));
+vi.mock('../../src/renderer/companion-bot/voice-recorder', () => ({
+  speechBase64: () => '',
+  VoiceRecorder: class {
+    private resolve?: (value: undefined) => void;
+    async start() { return { startedAt: performance.now(), finished: new Promise(resolve => { this.resolve = resolve; }) }; }
+    cancel() { this.resolve?.(undefined); }
+  },
+}));
 const sounds: Array<{ loop: boolean; muted: boolean; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; removeAttribute: ReturnType<typeof vi.fn> }> = [];
 let root: Root | undefined, host: HTMLDivElement;
 const companion = { id: 'gpt', name: 'GPT', persona: '', createdAt: '2026-11-05' };
@@ -60,7 +68,7 @@ it('hosts the original full composer at the bottom and registers its transport o
   await act(async () => document.querySelector<HTMLButtonElement>('.bot-send')!.click()); expect(f.send).toHaveBeenCalledExactlyOnceWith('原聊天的草稿');
   await act(() => root!.unmount()); root = undefined; expect(f.register).toHaveBeenLastCalledWith();
 });
-it('stops continuous listening and playback before standard dictation, blocks its continuous toggle until the panel closes', async () => {
+it('stops continuous listening and playback once when one-click dictation starts, until it closes', async () => {
   voice.available = true;
   vi.stubGlobal('worldlinebox', { localSpeech: { request: async () => ({ ok: true, status: { phase: 'ready' } }) } });
   await mount(); await act(() => button('接通').click());
@@ -68,7 +76,8 @@ it('stops continuous listening and playback before standard dictation, blocks it
   expect(toggle.disabled).toBe(false);
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="语音转文字"]')!.click());
   expect(voice.stop).toHaveBeenCalledOnce(); expect(speech.stop).toHaveBeenCalledOnce(); expect(toggle.disabled).toBe(true);
-  await act(() => button('开始录音').click()); expect(voice.stop).toHaveBeenCalledTimes(2); expect(speech.stop).toHaveBeenCalledTimes(2);
+  expect(document.querySelector('.bot-voice-panel')?.textContent).toBe('00:00');
+  expect(document.querySelector('[aria-label="语音转文字"]')?.getAttribute('aria-pressed')).toBe('true');
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭语音"]')!.click()); expect(toggle.disabled).toBe(false);
 });
 it('closes emoji then the standard composer before Escape hangs up, and leaves IME composition alone', async () => {

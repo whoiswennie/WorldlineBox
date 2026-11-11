@@ -15,14 +15,14 @@ interface Options { root: string; resources: string; appPath: string; ffmpeg?: (
 interface Worker { child: ChildProcessWithoutNullStreams; exited: Promise<void>; read?: { resolve(value: { text?: string; ready?: boolean; error?: string }): void; reject(error: Error): void } }
 const supportedPlatforms = ['win32-x64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
 
-/** Application-wide CPU service. One worker, at most three accepted operations, five-minute idle unload. */
+/** Application-wide CPU service. One resident worker, at most three accepted operations. */
 export class LocalSpeechService {
   private state: LocalSpeechStatus = { phase: 'unprepared' };
   private assets?: string;
   private preparing?: Promise<void>;
   private worker?: Worker;
   private stopping?: Promise<void>;
-  private idle?: ReturnType<typeof setTimeout>;
+  private warming?: Promise<void>;
   private tail: Promise<unknown> = Promise.resolve();
   private active = new Map<string, AbortController>();
   private disposed = false;
@@ -39,11 +39,19 @@ export class LocalSpeechService {
     const result = this.tail.catch(() => undefined).then(async () => { controller.signal.throwIfAborted(); return work(controller.signal); });
     this.tail = result;
     try { return await result; }
-    finally { clearTimeout(timeout); this.active.delete(id); this.scheduleIdle(); }
+    finally { clearTimeout(timeout); this.active.delete(id); if (!this.active.size && this.worker) this.state = { phase: 'ready' }; }
   }
-  private scheduleIdle(): void {
-    clearTimeout(this.idle);
-    if (!this.active.size && this.worker) { this.state = { phase: 'ready' }; this.idle = setTimeout(() => { void this.stop(); }, 300_000); this.idle.unref(); }
+  /** Background startup shares the inference queue; cancelling a UI request cannot cancel it. */
+  prewarm(): Promise<void> {
+    if (this.warming) return this.warming;
+    const warming = this.run('warmup-' + randomUUID(), signal => this.warmup(signal));
+    this.warming = warming;
+    void warming.finally(() => { if (this.warming === warming) this.warming = undefined; }).catch(() => undefined);
+    return warming;
+  }
+  async warmup(signal: AbortSignal): Promise<void> {
+    try { await this.start(signal); this.state = { phase: 'ready' }; }
+    catch (error) { if (!this.disposed) this.state = { phase: 'failed', error: error instanceof Error ? error.message : '语音模型加载失败。' }; throw error; }
   }
   private async verified(file: string, asset: Asset): Promise<boolean> {
     try {
@@ -109,7 +117,7 @@ export class LocalSpeechService {
     });
   }
   private async start(signal: AbortSignal): Promise<Worker> {
-    clearTimeout(this.idle); await this.stopping; await this.prepare(signal); signal.throwIfAborted();
+    await this.stopping; await this.prepare(signal); signal.throwIfAborted();
     if (this.worker) return this.worker;
     this.state = { phase: 'loading' };
     const modulePath = createRequire(path.join(this.options.appPath, 'package.json')).resolve('sherpa-onnx-node');
@@ -163,7 +171,7 @@ export class LocalSpeechService {
   }
   private async stop(): Promise<void> {
     if (this.stopping) return this.stopping;
-    clearTimeout(this.idle); const worker = this.worker; if (!worker) return;
+    const worker = this.worker; if (!worker) return;
     this.worker = undefined;
     const stopping = (async () => {
       worker.child.kill(); await worker.exited;

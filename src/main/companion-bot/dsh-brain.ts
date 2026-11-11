@@ -4,6 +4,7 @@ import type { NativeHostClient, NativeHostEvent } from '../dsh/native-host-clien
 import { DshHostUnavailableError, isDshHostUnavailableError } from '../dsh/host-errors';
 import type {BotNativeReplyOutput} from '../../shared/companion-bot';
 import {botNativeContextSchema,type BotNativeContext} from '../../shared/companion-native-context';
+import { botNativeTopicStatesSchema, type BotNativeTopicState } from '../../shared/companion-native-topics';
 
 export interface BotDshModel {
   apiFormat: AiApiFormat; model: string; baseUrl: string; apiKey: string;
@@ -31,6 +32,8 @@ export interface BotDshRun {
   sessionTitle?: string;
   /** Explicit user continuation of this exact durable output checkpoint. */
   continueAfterSeq?: number;
+  /** Action-free structured jobs resume the unfinished document verbatim. */
+  continuationPrompt?: string;
   /** Host-bound follow-up opens a new execution segment of the same task.
    * Its stable ID makes a retry distinct from replaying the original prompt. */
   taskContinuation?: { id: string; text: string };
@@ -200,7 +203,7 @@ export class BotDshBrain {
     let terminal = false, deliveryStage: 'turn' | 'stream' = 'turn';
     try {
       const admitted = await client.request<{ accepted: boolean; result?: BotDshResult }>(`/bot/lanes/${sessionId}/turn`, {
-        eventId: input.eventId, prompt: input.prompt, continueAfterSeq: input.continueAfterSeq, taskContinuation: input.taskContinuation,
+        eventId: input.eventId, prompt: input.prompt, continueAfterSeq: input.continueAfterSeq, continuationPrompt: input.continuationPrompt, taskContinuation: input.taskContinuation,
       }, input.signal);
       if (admitted.result) {
         terminal = true;
@@ -342,6 +345,32 @@ export class BotDshBrain {
   }
   async topicContext(laneId:string):Promise<BotNativeContext>{
     return this.withHost(undefined,undefined,laneId,async({client})=>botNativeContextSchema.parse(await client.request('/bot/topic-context',{laneId,sessionId:BotDshBrain.sessionId(laneId)})));
+  }
+  async nativeTopics(bindings: readonly { laneId: string; cwd: string; instanceId?: string }[], signal: AbortSignal): Promise<BotNativeTopicState[]> {
+    // Each lane resolves its own durable Host binding; a runtime switch cannot
+    // turn absence on a different Host into a deletion in the original one.
+    const groups = new Map<NativeHostClient, { laneId: string; cwd: string; sessionId: string }[]>();
+    const hosts = new Map<NativeHostClient, BotDshHost>();
+    const resolved = new Map<string, BotDshHost>();
+    for (const binding of bindings) {
+      signal.throwIfAborted(); const key = binding.instanceId ?? binding.laneId;
+      const host = resolved.get(key) ?? await this.options.getHost(binding.instanceId, signal, binding.laneId); resolved.set(key, host);
+      hosts.set(host.client, host); const group = groups.get(host.client) ?? [];
+      group.push({ laneId: binding.laneId, cwd: binding.cwd, sessionId: BotDshBrain.sessionId(binding.laneId) }); groups.set(host.client, group);
+    }
+    const states: BotNativeTopicState[] = [];
+    for (const [client, items] of groups) {
+      const release = this.options.acquireLease?.(hosts.get(client)!);
+      try {
+        for (let offset = 0; offset < items.length; offset += 200) {
+          const chunk = items.slice(offset, offset + 200);
+          const result = botNativeTopicStatesSchema.parse(await client.request('/bot/topics', { bindings: chunk }, signal));
+          if (result.length !== chunk.length || result.some((row, index) => row.laneId !== chunk[index]!.laneId || row.sessionId !== chunk[index]!.sessionId)) throw Error('Native topic catalogue identity changed.');
+          states.push(...result);
+        }
+      } finally { release?.(); }
+    }
+    return states;
   }
   async watchTopicContext(laneId:string,onSample:(sample:BotNativeContext)=>void,signal:AbortSignal):Promise<void>{
     return this.withHost(undefined,signal,laneId,async({client})=>{

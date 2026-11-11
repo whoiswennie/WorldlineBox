@@ -93,6 +93,11 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
   if (operation === 'bot.status') return bot().status();
   if (operation === 'bot.list') return bot().list();
   if (operation === 'bot.catalog') return bot().catalog(payload);
+  if (operation === 'bot.maintenance.work') {
+    if (!unlock) unlock = workspace.acquireLock(home);
+    if (!['stats','claim','complete','release','seed','associate','identity'].includes(payload.action)) throw new TypeError('Unknown maintenance work action.');
+    return bot().maintenanceWork[payload.action](payload);
+  }
   if (operation === 'bot.note.read') return bot().readNote(payload);
   if (operation === 'bot.operation.get') return bot().operationReceipt(payload);
   if (operation === 'bot.remember.receipt') return bot().rememberReceipt(payload);

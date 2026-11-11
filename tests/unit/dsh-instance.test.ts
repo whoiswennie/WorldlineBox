@@ -24,7 +24,7 @@ if(req.headers.authorization!=='Bearer '+token){res.writeHead(401).end();return;
 if(req.url==='/idle'){res.setHeader('content-type','application/json');const state=path.join(process.env.DSH_HOME,'idle-state.json');res.end(fs.existsSync(state)?fs.readFileSync(state):JSON.stringify({known:true,idle:true,activeTurns:0,backgroundJobs:0,pendingQuestions:0,pendingInbox:0,settling:0,activeSubagents:0}));return;}
 if(req.url==='/shutdown'){res.end('{}');setTimeout(()=>process.emit('SIGTERM'),5);return;}
 res.setHeader('content-type','application/json');res.end(JSON.stringify({protocol:'worldlinebox-native-web-host-v1',pid:process.pid,userProfile:process.env.USERPROFILE,home:process.env.DSH_HOME,version:process.env.FIXTURE_VERSION}));});
-server.listen(0,'127.0.0.1',()=>{console.log('dsh web: http://127.0.0.1:'+server.address().port+'/?fixture');console.log('WORLDLINEBOX_DSH_BRIDGE_READY '+server.address().port);});
+server.listen(0,'127.0.0.1',()=>{if(process.env.FIXTURE_READY_MODE==='silent')return;console.log('dsh web: http://127.0.0.1:'+server.address().port+'/?fixture');if(process.env.FIXTURE_READY_MODE!=='web-only')console.log('WORLDLINEBOX_DSH_BRIDGE_READY '+server.address().port);});
 if(fs.existsSync(path.join(process.env.DSH_HOME,'fail-version'))&&fs.readFileSync(path.join(process.env.DSH_HOME,'fail-version'),'utf8')===process.env.FIXTURE_VERSION){fs.writeFileSync(path.join(process.env.DSH_HOME,'migration-data.txt'),'damaged by failed migration');process.exit(9);}
 process.on('SIGTERM',()=>server.close(()=>process.exit(0)));}
 `);
@@ -214,6 +214,22 @@ it('classifies a definite startup failure separately from missing configuration 
   await f.service.shutdown();
   await expect(f.service.ensureHost(instance.id)).rejects.toMatchObject({ reason: 'closing' });
   expect(f.manualStop).not.toHaveBeenCalled();
+});
+it.each(['silent', 'web-only'])('records which startup signal was missing on a %s timeout and permits retry', async mode => {
+  const f = await fixture(), instance = await f.service.create('Stalled startup', 'runtime-a');
+  const plan = f.serviceOptions.runtimes.plan;
+  f.serviceOptions.runtimes.plan = id => ({ ...plan(id), env: { ...plan(id).env, FIXTURE_READY_MODE: mode } });
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(ms === 120000 ? 1000 : ms));
+  try {
+    await expect(f.service.ensureHost(instance.id)).rejects.toThrow(mode === 'silent' ? '启动进程尚未输出就绪信息' : '未收到伙伴桥接就绪信号');
+  } finally { deadline.mockRestore(); }
+  expect(f.service.get(instance.id).status).toBe('failed');
+  const log = await readFile(path.join(f.service.getRoot(instance.id), 'logs/host.log'), 'utf8');
+  expect(log).toContain('Starting DSH Web Host'); expect(log).toContain('Startup failed'); expect(log).not.toContain('/?fixture');
+  f.serviceOptions.runtimes.plan = plan;
+  await (await f.service.ensureHost(instance.id)).health();
+  expect(f.service.get(instance.id).status).toBe('running');
 });
 it('retains the real user environment and selects the native web profile in its user terminal', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a'); const selection = await f.service.prepareCli(instance.id);

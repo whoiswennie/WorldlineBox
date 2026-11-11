@@ -4,6 +4,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution } from '../../shared/companion-bot';
 import { appendBotExecutionStep } from '../../shared/companion-bot-execution';
+import { orderBotConversations } from '../../shared/bot-conversation-order';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import { BotDshBrain, type BotDshModel, type BotDshResult } from './dsh-brain';
@@ -82,6 +83,8 @@ export class BotService {
   private readonly guidanceRuns = new Map<string, Promise<void>>();
   private readonly titleRuns=new Map<string,Promise<void>>();
   private readonly contextReads=new Map<string,Promise<BotResponse>>();
+  private readonly topicReads = new Map<string, Promise<{ stale: boolean; error?: string }>>();
+  private readonly topicReadCache = new Map<string, { until: number; signature: string; result: { stale: boolean; error?: string } }>();
   private readonly contextWatches=new Map<string,{controller:AbortController;timer:ReturnType<typeof setTimeout>}>();
   private readonly loadedTombstones = new Map<string, true>();
   private readonly sourceWithdrawalRuns = new Map<string, Promise<void>>();
@@ -93,8 +96,7 @@ export class BotService {
   private readonly maintenanceAbort = new AbortController();
   private maintenance?: ReturnType<typeof setInterval>;
   private restoringCompanions?: Promise<void>;
-  private memoryWorking = false;
-  private memoryRun?: Promise<void>;
+  private readonly memoryRuns = new Map<string, { finished: Promise<void>; leaseToken: string }>();
   private closed = false;
   private closing?: Promise<void>;
   private ready = false;
@@ -179,6 +181,24 @@ export class BotService {
     const execution: BotExecution = { status: 'running', steps: [], ...(previous ? JSON.parse(previous) : {}), ...patch };
     this.store.setMetadata(key, JSON.stringify(execution));
   }
+  private async syncNativeTopics(conversationId: string): Promise<{ stale: boolean; error?: string }> {
+    const bindings = this.topics.nativeBindings(conversationId).map(binding => ({ laneId: binding.laneId, cwd: this.workspace(binding.companionId), instanceId: this.store.getMetadata('native-host:' + binding.laneId) }));
+    if (!bindings.length || !this.options.brain.nativeTopics) return { stale: false };
+    const signature = JSON.stringify(bindings), cached = this.topicReadCache.get(conversationId);
+    if (cached && cached.signature === signature && cached.until > Date.now()) return cached.result;
+    const pending = this.topicReads.get(conversationId); if (pending) return pending;
+    const reading = (async () => {
+      let result: { stale: boolean; error?: string };
+      try {
+        const states = await this.options.brain.nativeTopics!(bindings, AbortSignal.any([this.maintenanceAbort.signal, AbortSignal.timeout(5000)]));
+        if (this.closed) return { stale: true };
+        this.topics.rememberNative(states); result = { stale: false };
+      } catch (error) { result = { stale: true, error: errorText(error) }; }
+      this.topicReadCache.set(conversationId, { signature, until: Date.now() + (result.stale ? 5000 : 700), result }); return result;
+    })();
+    this.topicReads.set(conversationId, reading);
+    try { return await reading; } finally { if (this.topicReads.get(conversationId) === reading) this.topicReads.delete(conversationId); }
+  }
   private async topicContext(input:Extract<BotRequest,{type:'topic.context'}>):Promise<BotResponse>{
     const {conversationId,topicId,companionId}=input,binding=this.topics.contextBinding(topicId,conversationId,companionId);
     if(!binding)return{ok:true,topicContext:{topicId,companionId}};
@@ -224,7 +244,8 @@ export class BotService {
     if (conversationId) this.prewarmSelectedMemory(conversationId);
     const page = conversationId ? this.store.messagesPage(conversationId, { limit: 80, before }) : { items: [], hasMore: false };
     const companions = this.store.listCompanions();
-    return { companions, presence: this.store.companionPresence(companions, true), conversations: this.store.conversations(), conversationActivity: this.store.conversationActivity(),
+    const conversationActivity = this.store.conversationActivity();
+    return { companions, presence: this.store.companionPresence(companions, true), conversations: orderBotConversations(this.store.conversations(), conversationActivity), conversationActivity,
       messages: page.items.map(message => {
         const rawExecution = this.store.getMetadata('execution:' + message.id);
         const execution = rawExecution ? JSON.parse(rawExecution) as BotExecution : undefined;
@@ -302,7 +323,7 @@ export class BotService {
     await this.starting; if (this.closed) return { ok: false, error: '伙伴正在关闭。' };
     const archivedRoom = 'conversationId' in input && typeof input.conversationId === 'string' ? this.store.getConversation(input.conversationId) : undefined;
     if (archivedRoom?.dissolvedAt) throw new Error('群聊已解散。');
-    if (archivedRoom?.kind === 'peer' && !['state','history.search','conversation.peer.join'].includes(input.type)) throw new Error('伙伴私聊仅供旁观。');
+    if (archivedRoom?.kind === 'peer' && !['state','history.search','conversation.peer.join','conversation.pin'].includes(input.type)) throw new Error('伙伴私聊仅供旁观。');
     if (input.type.startsWith('memory.maintenance.')) {
       const request = input as BotMemoryMaintenanceRequest, room = this.store.getConversation(request.conversationId);
       if (!room?.memberIds.includes(request.companionId)) throw new Error('当前会话没有这位伙伴。');
@@ -347,10 +368,14 @@ export class BotService {
         })); this.changed(input.conversationId);
         return { ok: true };
       }
-      case 'topic.list': { const result=this.topics.list(input.conversationId,input.query,input.before,input.mode);return {ok:true,topics:result.items,nextTopicCursor:result.next}; }
+      case 'topic.list': {
+        const sync = await this.syncNativeTopics(input.conversationId);
+        const result=this.topics.list(input.conversationId,input.query,input.before,input.mode);
+        return {ok:true,topics:result.items,nextTopicCursor:result.next,topicListStale:sync.stale,topicListError:sync.error};
+      }
       case 'topic.flags':{const topic=this.topics.flags(input.conversationId,input.topicId,input);this.changed(input.conversationId);return{ok:true,topic};}
       case 'topic.rename':{const topic=this.topics.rename(input.conversationId,input.topicId,input.title,input.requestId);this.maintainSafely();this.changed(input.conversationId);return{ok:true,topic};}
-      case 'topic.new': { const topic=this.topics.create(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
+      case 'topic.new': { const topic=this.topics.newDraft(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
       case 'topic.select': { const topic=this.topics.select(input.conversationId,input.topicId);this.changed(input.conversationId);return {ok:true,topic}; }
       case 'topic.context': return this.topicContext(input);
       case 'topic.compact': {
@@ -420,6 +445,7 @@ export class BotService {
       }
       case 'conversation.create': { const conversation = this.store.createGroup({ title: input.title, kind: input.kind, memberIds: input.memberIds, participationMode: input.participationMode, reuseMembers: false }); this.changed(conversation.id); return { ok: true, conversationId: conversation.id }; }
       case 'conversation.policy': this.store.setConversationPolicy(input.conversationId, input.participationMode); this.changed(input.conversationId); return { ok: true };
+      case 'conversation.pin': this.store.setConversationPinned(input.conversationId, input.pinned); this.changed(input.conversationId); return { ok: true };
       case 'conversation.announcement': {
         this.store.setGroupAnnouncement({ ...input, actorId: 'user' }); this.changed(input.conversationId);
         return { ok: true, conversationId: input.conversationId };
@@ -1199,11 +1225,13 @@ export class BotService {
     }
     this.memoryMaintenance.poll();
     this.world.tick(); this.deliverWorldEvents();
-    if (this.memoryWorking) return;
+    // Model planning stays outside VCP's RPC/FIFO. Other memory domains can
+    // progress while SQL retains exclusion within each individual domain.
+    for (const [id, run] of this.memoryRuns) this.store.heartbeatMemoryJob(id, run.leaseToken, 120000);
+    if (this.memoryRuns.size >= 4) return;
     const claim = this.store.claimMemoryJob({ workerId: 'bot-memory', leaseMs: 120000 }); if (!claim) return;
-    this.memoryWorking = true;
     const heartbeat = setInterval(() => { if (!this.closed) this.store.heartbeatMemoryJob(claim.job.id, claim.leaseToken, 120000); }, 30000); heartbeat.unref?.();
-    this.memoryRun = (async () => { try {
+    const memoryRun = Promise.resolve().then(async () => { try {
       const payload = claim.job.payload;
       let resultMetadata: Array<{ key: string; value: string }> | undefined;
       if (claim.job.kind === 'response') await this.options.memory.finishTurn(payload.prepared as BotMemoryPrepared, String(payload.text ?? ''), payload.completed === true);
@@ -1249,8 +1277,9 @@ export class BotService {
       this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: !this.closed && !pendingIndex && claim.job.attempts >= 5 ? 'failed' : 'retry',
         error: this.closed ? undefined : errorText(error), retryDelayMs: this.closed ? 0 : Math.min(60000, claim.job.attempts * 5000) });
       if (!this.closed && (!pendingIndex || claim.job.attempts === 1)) this.options.report?.(error);
-    } finally { clearInterval(heartbeat); this.memoryWorking = false; this.changed(); } })();
-    await this.memoryRun;
+    } finally { clearInterval(heartbeat); this.memoryRuns.delete(claim.job.id); this.changed(); } });
+    this.memoryRuns.set(claim.job.id, { finished: memoryRun, leaseToken: claim.leaseToken });
+    await memoryRun;
   }
   private deliverWorldEvents(): void {
     // Drain the durable queue in order before applying a newer physical
@@ -1288,6 +1317,6 @@ export class BotService {
     await Promise.allSettled([...this.nativeStops.values()]);
     await Promise.allSettled([...this.companionControls.values(), ...this.memoryWarmRuns.values(), ...this.sourceWithdrawalRuns.values()]);
     await this.restoringCompanions; await this.toolServer.close();
-    await Promise.allSettled([brainClosing, memoryClosing, this.memoryRun]); this.store.close();
+    await Promise.allSettled([brainClosing, memoryClosing, ...[...this.memoryRuns.values()].map(run => run.finished)]); this.store.close();
   }
   }

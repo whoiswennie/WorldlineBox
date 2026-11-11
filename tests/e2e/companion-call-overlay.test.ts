@@ -22,7 +22,8 @@ test('galgame meeting keeps a centered full-bleed companion, card-free dialogue 
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-overlay-'));
   const fixtures = testInfo.outputPath('fixture'); await mkdir(fixtures, { recursive: true });
   await build({ configFile: false, envDir: false, publicDir: false, logLevel: 'warn', build: { ssr: 'tests/fixtures/bot-call-overlay-fixture.ts', target: 'node24', outDir: fixtures, emptyOutDir: false, rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'seed.cjs' } } } });
-  const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
+  const launch = resolveElectronLaunchOptions();
+  const app = await electron.launch({ ...launch, args: [...launch.args, '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'], env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
   const errors: string[] = [], checks: unknown[] = [], evidence = path.resolve('artifacts/superagent-bot-development/ui');
   await mkdir(evidence, { recursive: true });
   try {
@@ -257,7 +258,8 @@ test('small meeting layouts keep static portraits, paged captions and the origin
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-overlay-'));
   const fixtures = testInfo.outputPath('small-fixture'); await mkdir(fixtures, { recursive: true });
   await build({ configFile: false, envDir: false, publicDir: false, logLevel: 'warn', build: { ssr: 'tests/fixtures/bot-call-overlay-fixture.ts', target: 'node24', outDir: fixtures, emptyOutDir: false, rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'seed.cjs' } } } });
-  const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
+  const launch = resolveElectronLaunchOptions();
+  const app = await electron.launch({ ...launch, args: [...launch.args, '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'], env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
   const evidence = path.resolve('artifacts/superagent-bot-development/ui'), checks: unknown[] = [], errors: string[] = [];
   await mkdir(evidence, { recursive: true });
   try {

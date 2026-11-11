@@ -736,6 +736,7 @@ export class BotStore {
     const r = asRow(raw), memberIds = this.db.prepare('SELECT member_id FROM bot_members WHERE conversation_id=? ORDER BY member_id').all(id).map(raw => String(asRow(raw).member_id));
     return { id, title: String(r.title), kind: String(r.kind) as BotConversationKind, memberIds,
       audienceScopeId: String(r.scope_id), securityDomainId: String(r.domain_id), revision: Number(r.revision), createdAt: String(r.created_at),
+      ...(this.getMetadata(`conversation-pinned:${id}`) === '1' ? { pinned: true } : {}),
       ...(this.getMetadata(`peer-conversation:${id}`) === '1' ? { peerConversation: true } : {}),
       ...(r.kind === 'peer' && memberIds.length === 2 && !memberIds.includes('user') ? { userRole: 'observer' as const, participationMode: 'automatic' as const } : {}),
       ...(r.kind==='group'?{ownerId:'user' as const,...(this.getMetadata(`conversation-dissolved:${id}`)?{dissolvedAt:this.getMetadata(`conversation-dissolved:${id}`)}:{})}:{}),
@@ -747,6 +748,13 @@ export class BotStore {
     const result = routeGroupAttention([...actors.slice(offset), ...actors.slice(0, offset)], content, conversation.participationMode ?? 'automatic');
     if (result.candidate) this.setMetadata(key, String((offset + GROUP_CANDIDATE_LIMIT) % Math.max(1, actors.length)));
     return result;
+  }
+  setConversationPinned(id: string, pinned: boolean): void {
+    const conversation = this.getConversation(id);
+    if (!conversation || conversation.dissolvedAt) throw new Error('聊天不存在或已解散。');
+    const key = `conversation-pinned:${id}`;
+    if (pinned) this.setMetadata(key, '1');
+    else this.db.prepare('DELETE FROM bot_metadata WHERE key=?').run(key);
   }
   groupCandidates(sourceMessageId: string): string[] {
     return this.db.prepare('SELECT companion_id FROM bot_inbox WHERE source_record_id=? ORDER BY sequence LIMIT ?')
@@ -798,7 +806,7 @@ export class BotStore {
       WHERE c.kind<>'world' AND (EXISTS(SELECT 1 FROM bot_members member WHERE member.conversation_id=c.id AND member.member_id='user')
         OR c.kind='peer' AND (SELECT COUNT(*) FROM bot_members member WHERE member.conversation_id=c.id)=2)
         AND NOT EXISTS(SELECT 1 FROM bot_metadata d WHERE d.key='conversation-dissolved:'||c.id AND d.value<>'')
-      ORDER BY m.sequence DESC LIMIT 256`).all().map(asRow);
+      ORDER BY m.sequence DESC`).all().map(asRow);
     return Object.fromEntries(found.filter(value => !hidden.has(String(value.conversation_id))).map(value => [String(value.conversation_id), {
       messageId: String(value.id), sequence: Number(value.sequence), senderName: String(value.sender_name), preview: String(value.preview) || '[附件]', updatedAt: String(value.created_at),
     }]));
@@ -1579,7 +1587,10 @@ export class BotStore {
       const preferred = ['response', 'projection', 'response', 'capture'][slot]!;
       const raw = this.db.prepare(`SELECT j.* FROM bot_memory_jobs j WHERE j.status='queued' AND j.available_at<=?
         AND NOT EXISTS(SELECT 1 FROM bot_memory_jobs active WHERE active.domain_key=j.domain_key AND active.status='running')
-        ORDER BY CASE WHEN j.kind=? OR (?='response' AND j.kind='prepare') THEN 0 ELSE 1 END,j.sequence LIMIT 1`).get(now, preferred, preferred);
+        ORDER BY CASE WHEN j.kind=? OR (?='response' AND j.kind='prepare') THEN 0 ELSE 1 END,
+          CASE WHEN j.kind='maintenance' AND json_extract(j.payload_json,'$.operation')='apply' THEN -1
+            WHEN j.kind='maintenance' AND json_extract(j.payload_json,'$.operation')='plan' THEN 1 ELSE 0 END,
+          CASE WHEN j.kind='maintenance' THEN j.available_at ELSE 0 END,j.sequence LIMIT 1`).get(now, preferred, preferred);
       if (!raw) return;
       const job = this.memoryJob(raw), leaseToken = `${input.workerId}:${randomUUID()}`;
       this.db.prepare("UPDATE bot_memory_jobs SET status='running',attempts=attempts+1,lease_token=?,lease_until=?,updated_at=? WHERE id=?")

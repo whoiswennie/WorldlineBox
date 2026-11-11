@@ -5219,7 +5219,7 @@ async function startApplication(): Promise<void> {
     if (request.type === 'speech.cancel') { speech.cancel(request.requestId); return { ok: true, cancelled: true }; }
     try {
       return await speech.run(request.requestId, async signal => {
-        if (request.type === 'speech.prepare') { await speech.prepare(signal); return { ok: true, status: speech.status() }; }
+        if (request.type === 'speech.prepare') { await speech.warmup(signal); return { ok: true, status: speech.status() }; }
         if (request.type === 'speech.transcribe') return { ok: true, transcript: await speech.transcribeWave(Buffer.from(request.audio, 'base64'), signal) };
         const bot = await ensureBotService(), media = await ensureBotMediaService();
         const allowed = () => botCanImportConversationMedia(bot.store.getConversation(request.conversationId));
@@ -5255,12 +5255,16 @@ async function startApplication(): Promise<void> {
       if (failure?.status === 'rejected') throw failure.reason;
     }, resume: job => {
       retiringBotRuntime = undefined;
+      if (!applicationClosing) void ensureLocalSpeech().prewarm().catch(error => logger?.error('local-speech.prewarm', error));
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, { type: 'data-cleared', companionId: job.companionId });
     },
     changed: () => { if (!botDataCleanup?.busy && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, { type: 'changed' }); },
     report: error => logger?.error('companion-bot.data-cleanup', error),
   });
   await botDataCleanup.ready();
+  // Load and retain the local recognizer while startup continues. Never request
+  // microphone access or block the main window on a model download/load.
+  void ensureLocalSpeech().prewarm().catch(error => logger?.error('local-speech.prewarm', error));
   ipcMain.handle(BOT_CHANNEL, async (event, input: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame)
       return { ok: false, error: '无权访问伙伴服务。' };

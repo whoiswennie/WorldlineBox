@@ -1,3 +1,4 @@
+import { memoryRecallDate } from '../../shared/memory-recall-date';
 import type { BotMemoryRecallReport, BotMemoryRecallMode } from '../../shared/companion-bot-memory';
 
 type Row = Record<string, unknown>;
@@ -65,7 +66,7 @@ export function buildBotMemoryInspection(input: { requestId: string; query: stri
   }
   const hits = candidates.slice(0, 60).map((candidate, index) => ({ rank: index + 1,
     text: short(candidate.text) ?? '', source: short(candidate.source ?? candidate.sourceFile ?? candidate.fullPath ?? candidate.dbName, 600),
-    date: short(candidate.date, 100), score: finite(candidate.score), scores: scores(candidate),
+    date: memoryRecallDate(candidate), score: finite(candidate.score), scores: scores(candidate),
   }));
   const stages = spans.slice(0, 120).map(span => ({ name: String(span.stage ?? 'unknown'),
     durationMs: finite(row(span.hostTiming)?.durationMs), status: String(span.status ?? 'not-provided'),

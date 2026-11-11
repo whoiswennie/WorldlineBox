@@ -7,6 +7,7 @@ import { botProjectDirectory, prepareBotWorkspace, attachBotWorkspace as registe
 import { inspectNativeIdle } from './idle.js';
 import { registerWorkspaceSessions } from './sessions.js';
 import { activityKey, registerContextActivity, nativeActivity, nativeSessionBusy } from './context.js';
+import { nativeTopicStates } from './topics.js';
 
 export const name = 'worldlinebox-bridge';
 export const inject = ['loader', 'sessionController', 'workspaceRegistry', 'agents', 'sessions', 'tools', 'agentPresets', 'llm'];
@@ -14,6 +15,7 @@ const protocol = 'worldlinebox-native-web-host-v1';
 // This resource is distributed independently; keep the default template aligned
 // with src/shared/model-budget.ts without importing application-only modules.
 const defaultContextWindow = 100000, maxContextChars = 100000;
+const modelContextChars = model => Number.isSafeInteger(model?.contextWindow) && model.contextWindow > 0 ? model.contextWindow : defaultContextWindow;
 const contextHostId = randomUUID(); let contextRevision = 0;
 const textOf = message => (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -237,6 +239,7 @@ async function botWriteReceipt(record, value) { await botAtomicJson(botReceiptPa
 /** Explicit native continuation, bound to a durable terminal checkpoint. The
  * original user input is never re-enqueued, and retrying a command is idempotent. */
 export async function continueBotOutput(record,input,{read,write,flush,freezeMessage}) {
+  if(input.continuationPrompt!==undefined&&(record.bot?.role!=='brain'||record.bot.tools?.length!==0||typeof input.continuationPrompt!=='string'||!input.continuationPrompt.trim()))throw Error('Structured continuation requires an action-free brain lane.');
   const checkpoint=input.continueAfterSeq,receipt=await read(input.eventId);
   if(!Number.isSafeInteger(checkpoint)||checkpoint<0)throw Error('Invalid continuation checkpoint.');
   const same=receipt?.continuedFrom===checkpoint;
@@ -250,7 +253,7 @@ export async function continueBotOutput(record,input,{read,write,flush,freezeMes
   const queued=[...record.agent.inbox.nextTurn,...record.agent.inbox.nextStep].some(message=>message.id===id);
   record.revision++;record.status='running';record.cancelled=false;record.lastError=undefined;record.reason=undefined;record.outputCheckpoint=undefined;
   if(start<0&&!queued)record.agent.followup(freezeMessage({id,role:'user',source:{kind:'worldlinebox-bot-output-continuation',form:'notice',summary:'继续原任务',...(record.bot.audience?{worldlineboxAudience:record.bot.audience}:{})},content:[{type:'text',text:
-    '用户要求从已保存进展继续原任务。不要重放原始请求或重复已完成的工具与交付，先检查真实文件和回执；上轮输出达到单次限制，请分文件、分步骤生成内容，缩短单次工具参数，继续执行并核验后交付。'}]}));
+    input.continuationPrompt??'用户要求从已保存进展继续原任务。不要重放原始请求或重复已完成的工具与交付，先检查真实文件和回执；上轮输出达到单次限制，请分文件、分步骤生成内容，缩短单次工具参数，继续执行并核验后交付。'}]}));
   else if(start>=0){const end=events.slice(start+1).findLast(event=>event.type==='turn/end');if(end)record.reason=end.data.reason;}
   await flush(record.agent.session);await write({eventId:input.eventId,status:'accepted',continuedFrom:checkpoint});
   return {accepted:true};
@@ -834,7 +837,7 @@ export async function apply(ctx) {
       // to that exact Agent under native maintenance; never resume a second
       // writer or remount its plugins. Detaching releases only our decorators.
       try { await agent.runMaintenance(() => setup(agent.ctx, agent, true)); }
-      catch (error) { if (/already has active work/.test(String(error?.message))) throw new Error('Companion lane is busy.'); throw error; }
+      catch (error) { if (/already has active work/.test(String(error?.message))) throw new Error('Companion lane is busy.', { cause: error }); throw error; }
       return { agent, dispose: async () => { for (const dispose of record.disposers.splice(0)) dispose(); } };
     };
     try {
@@ -896,6 +899,9 @@ export async function apply(ctx) {
     void (async () => {
       if (!authorized(request)) { json(response, { error: 'Unauthorized' }, 401); return; }
       const url = new URL(request.url, 'http://127.0.0.1');
+      if (request.method === 'POST' && url.pathname === '/bot/topics') {
+        json(response, await nativeTopicStates(ctx, await body(request), AbortSignal.timeout(15000))); return;
+      }
       if(request.method==='POST'&&url.pathname==='/bot/topic-context'||request.method==='GET'&&url.pathname==='/bot/topic-context-events'){
         const input=request.method==='GET'?Object.fromEntries(url.searchParams):await body(request);
         if(typeof input.laneId!=='string'||!input.laneId||input.laneId.length>300||input.sessionId!=='wlb-bot-'+createHash('sha256').update(input.laneId).digest('hex'))throw Error('Invalid native context identity.');
@@ -1023,7 +1029,7 @@ export async function apply(ctx) {
           || !input.audience.allowedConversationIds.includes(input.audience.conversationId))) throw new Error('Invalid native Session audience.');
         if (!/^[A-Za-z0-9_-]{1,200}$/.test(input.sessionId) || typeof input.cwd !== 'string' || !path.isAbsolute(input.cwd) || typeof input.laneId !== 'string' || input.laneId.length > 600
           || !['brain', 'worker'].includes(input.role) || input.workerAccess !== undefined && !['scoped', 'full'].includes(input.workerAccess)
-          || typeof input.system !== 'string' || !input.system.trim() || input.system.length > maxContextChars
+          || typeof input.system !== 'string' || !input.system.trim() || input.system.length > modelContextChars(input.model)
           || !Array.isArray(input.tools) || input.tools.length > 24 || input.tools.some(tool => !tool || !/^[a-z][a-z0-9_]{0,63}$/.test(tool.name)
             || typeof tool.description !== 'string' || !tool.parameters || typeof tool.parameters !== 'object')
           || new Set(input.tools.map(tool => tool.name)).size !== input.tools.length
@@ -1108,9 +1114,9 @@ export async function apply(ctx) {
               record.bot.workerTools = input.workerTools;
               if (record.bot.role !== 'brain') registerWorkerHostTools(record, record.agent);
               if (record.policy.tools && record.bot.role !== 'brain') record.policy.tools = [...scopedWorkerTools, ...input.workerTools.map(tool => tool.name)];
-              if (input.cancelIntent !== true) { record.bot.selection = selection; record.agent.model?.select?.(selection); }
+              if (input.cancelIntent !== true) { record.bot.model = input.model; record.bot.selection = selection; record.agent.model?.select?.(selection); }
             });
-          } catch (error) { if (/already has active work/.test(String(error?.message))) throw new Error('Companion lane is busy.'); throw error; }
+          } catch (error) { if (/already has active work/.test(String(error?.message))) throw new Error('Companion lane is busy.', { cause: error }); throw error; }
           finally { record.admissions--; }
           record.lastUsed = Date.now();
         }
@@ -1227,7 +1233,7 @@ export async function apply(ctx) {
           if (pending?.eventId === input.eventId) await rm(pendingFile, { force: true });
           record.status = status; json(response, { accepted: true, result }); return;
         }
-        if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > maxContextChars) throw new Error('Invalid companion message.');
+        if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > modelContextChars(record.bot.model)) throw new Error('Invalid companion message.');
         const receipt = await botReadReceipt(record, input.eventId);
         if(input.continueAfterSeq!==undefined){
           const {freezeMessage}=await import('@deepseek-ai/dsh-llm');record.admissions++;

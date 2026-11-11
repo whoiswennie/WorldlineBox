@@ -6,6 +6,8 @@ import { BotService, type BotServiceOptions } from '../../src/main/companion-bot
 import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import { BotTopics } from '../../src/main/companion-bot/topics';
+import type { BotNativeTopicState } from '../../src/shared/companion-native-topics';
 
 class Memory extends BotMemoryService {
   prepared = 0;
@@ -60,6 +62,50 @@ async function tool(input: BotDshRun, name: string, args: Record<string, unknown
     body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId, name, args }) });
   return { status: response.status, body: await response.json() };
 }
+it('synchronizes one native catalogue read for concurrent pickers and retains confirmed history after a transport failure', async () => {
+  const f=await fixture(),topics=new BotTopics(f.service.store),selected=topics.create(f.conversationId,'native');
+  const sent=f.service.store.enqueue({conversationId:f.conversationId,senderId:'user',sourceMessageId:'native',content:'真实任务'});topics.bind(sent.events,selected);
+  const laneId=topics.lane(sent.events[0]!),state:BotNativeTopicState={laneId,sessionId:BotDshBrain.sessionId(laneId),exists:true,title:'原生名称',updatedAt:'2026-11-11T08:00:00.000Z'};
+  let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve;});
+  const read=vi.spyOn(f.brain,'nativeTopics').mockImplementation(async()=>{await held;return[state];});
+  expect(await f.service.handle({type:'topic.list',conversationId:f.conversationId})).toMatchObject({topics:[]});expect(read).not.toHaveBeenCalled();
+  f.service.store.setMetadata('native-host:'+laneId,'fixture-host');
+  const one=f.service.handle({type:'topic.list',conversationId:f.conversationId}),two=f.service.handle({type:'topic.list',conversationId:f.conversationId});
+  release();expect(await one).toMatchObject({ok:true,topicListStale:false,topics:[{id:selected.id,title:'原生名称'}]});await two;expect(read).toHaveBeenCalledTimes(1);
+  // A newly bound lane invalidates the short read cache immediately.
+  const next=topics.create(f.conversationId,'queued'),queued=f.service.store.enqueue({conversationId:f.conversationId,senderId:'user',sourceMessageId:'queued',content:'尚未执行'});topics.bind(queued.events,next);
+  f.service.store.setMetadata('native-host:'+topics.lane(queued.events[0]!),'fixture-host');
+  read.mockRejectedValue(new Error('Host temporarily disconnected'));
+  expect(await f.service.handle({type:'topic.list',conversationId:f.conversationId})).toMatchObject({ok:true,topicListStale:true,topics:[{id:selected.id,title:'原生名称'}]});
+  expect(read).toHaveBeenCalledTimes(2);expect(f.brain.calls).toEqual([]);
+});
+it('keeps another memory domain moving while one background job waits, retaining exclusion in the busy domain', async () => {
+  const f = await fixture(); let release!: () => void, calls = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  vi.spyOn(f.memory, 'finishTurn').mockImplementation(async () => { if (++calls === 1) await held; return { recorded: true }; });
+  const scope = { companionId: DEFAULT_BOT_COMPANION_ID, conversationId: f.conversationId, securityDomainId: f.conversationId };
+  const enqueue = (key: string, securityDomainId: string) => f.service.store.enqueueMemoryJob({ kind: 'response', key, payload: { scope: { ...scope, securityDomainId }, prepared: {}, text: '', completed: true } });
+  const first = enqueue('held-domain', 'one'), same = enqueue('same-domain', 'one'), other = enqueue('other-domain', 'two');
+  const maintain = () => (f.service as unknown as { maintain(): Promise<void> }).maintain();
+  const pending = maintain();
+  try {
+    await until(() => f.service.store.getMemoryJob(first.id)?.status === 'running');
+    await maintain(); expect(f.service.store.getMemoryJob(other.id)?.status).toBe('done');
+    expect(f.service.store.getMemoryJob(same.id)?.status).toBe('queued');
+  } finally { release(); await pending; }
+  await maintain(); expect(f.service.store.getMemoryJob(same.id)?.status).toBe('done');
+});
+it('releases worker slots after immediate legacy-job failures so later healthy work can finish', async () => {
+  const f = await fixture(), scope = { companionId: DEFAULT_BOT_COMPANION_ID, conversationId: f.conversationId, securityDomainId: f.conversationId };
+  const maintain = () => (f.service as unknown as { maintain(): Promise<void> }).maintain();
+  for (let index = 0; index < 5; index++) {
+    const job = f.service.store.enqueueMemoryJob({ kind: 'response', key: 'legacy-broken-' + index, payload: { scope } });
+    f.service.store.taskTransaction(sql => sql.prepare("UPDATE bot_memory_jobs SET kind='legacy-unknown' WHERE id=?").run(job.id));
+    await maintain(); expect(f.service.store.getMemoryJob(job.id)?.status).toBe('queued');
+  }
+  const job = f.service.store.enqueueMemoryJob({ kind: 'response', key: 'healthy-after-failures', payload: { scope, prepared: {}, text: '', completed: true } });
+  await maintain(); expect(f.service.store.getMemoryJob(job.id)?.status).toBe('done');
+});
 
 it('allows history but requests one shared setup before new chat, world input or transcription', async () => {
   const transcribe = vi.fn(), f = await fixture({ transcribeAttachments: transcribe, prewarmMemory: true });

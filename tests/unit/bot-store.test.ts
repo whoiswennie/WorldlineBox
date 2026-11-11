@@ -6,6 +6,17 @@ import { BotStore } from '../../src/main/companion-bot/store';
 import Database from 'better-sqlite3';
 
 let root: string, store: BotStore;
+it('persists multiple chat pins across reopening and unpins without changing conversation identity or permissions', () => {
+  const a = store.openDirect('alice'), b = store.openDirect('bob');
+  store.setConversationPinned(a.id, true); store.setConversationPinned(b.id, true);
+  store.close(); store = new BotStore(path.join(root, 'bot.sqlite'));
+  expect(store.getConversation(a.id)).toEqual({ ...a, pinned: true });
+  expect(store.getConversation(b.id)).toEqual({ ...b, pinned: true });
+  store.setConversationPinned(a.id, false);
+  expect(store.getConversation(a.id)).toEqual(a);
+  expect(store.getConversation(b.id)?.pinned).toBe(true);
+  expect(() => store.setConversationPinned('missing', true)).toThrow('不存在');
+});
 beforeEach(() => {
   root = mkdtempSync(path.join(tmpdir(), 'worldline-bot-store-'));
   // These SQL ordering fixtures deliberately exceed normal activity capacity.

@@ -11,6 +11,7 @@ function fixture(){store=new BotStore(':memory:');const companion=store.createCo
 it('reuses a selected topic, isolates new topics and restores an earlier topic after browsing',()=>{
   const f=fixture(),first=f.topics.create(f.room.id,'first','项目一'),one=f.send('设计项目一');f.topics.bind(one.events,first);
   const two=f.send('补充导出功能');f.topics.bind(two.events,f.topics.current(f.room.id)!);
+  const lane=f.topics.lane(one.events[0]!);f.topics.rememberNative([{laneId:lane,sessionId:BotDshBrain.sessionId(lane),exists:true}]);
   expect(f.topics.lane(one.events[0]!)).toBe(f.topics.lane(two.events[0]!));
   const second=f.topics.create(f.room.id,'second','项目二'),three=f.send('新任务');f.topics.bind(three.events,second);
   expect(f.topics.lane(three.events[0]!)).not.toBe(f.topics.lane(one.events[0]!));
@@ -110,6 +111,8 @@ it('bounds the recent view, paginates the full list, pins first and searches onl
   const f=fixture(),items=[];
   for(let index=0;index<32;index++){
     const value=f.topics.create(f.room.id,'item-'+index,index===0?'上海出行的天气资料':index===1?'上海另一份天气资料':'资料 '+index);items.push(value);
+    const sent=f.send(value.title);f.topics.bind(sent.events,value);const lane=f.topics.lane(sent.events[0]!);
+    f.topics.rememberNative([{laneId:lane,sessionId:BotDshBrain.sessionId(lane),exists:true}]);
     store.taskTransaction(sql=>sql.prepare('UPDATE bot_native_topics SET activity_at=? WHERE id=?').run(new Date(1000000+index*1000).toISOString(),value.id));
   }
   f.topics.flags(f.room.id,items[0]!.id,{pinned:true,favorite:true});
@@ -118,6 +121,41 @@ it('bounds the recent view, paginates the full list, pins first and searches onl
   expect(first.items).toHaveLength(12);expect(second.items).toHaveLength(12);expect(second.items.some(topic=>first.items.some(prior=>prior.id===topic.id))).toBe(false);
   expect(f.topics.list(f.room.id,'上海天气',undefined,'all').items).toHaveLength(2);
   expect(f.topics.list(f.room.id,'上海天气',undefined,'favorites').items.map(topic=>topic.id)).toEqual([items[0]!.id]);
+});
+it('keeps repeated new-topic clicks in one draft, hiding unstarted and failed local work until DSH confirms a session',()=>{
+  const f=fixture(),first=f.topics.newDraft(f.room.id,'click-one');
+  expect(f.topics.newDraft(f.room.id,'click-two').id).toBe(first.id);expect(f.topics.list(f.room.id).items).toEqual([]);
+  const sent=f.send('未开始的消息');f.topics.bind(sent.events,first);const lane=f.topics.lane(sent.events[0]!);
+  const claim=store.claim({workerId:'failed'})!;store.settle({eventId:claim.event.id,leaseToken:claim.leaseToken,status:'failed',content:'尚未连接 DSH'});
+  expect(f.topics.list(f.room.id).items).toEqual([]);
+  f.topics.rememberNative([{laneId:lane,sessionId:BotDshBrain.sessionId(lane),exists:true,title:'DSH 实际标题',updatedAt:'2026-11-11T08:00:00.000Z'}]);
+  expect(f.topics.list(f.room.id).items).toMatchObject([{id:first.id,title:'DSH 实际标题'}]);
+  f.topics.rememberNative([{laneId:lane,sessionId:BotDshBrain.sessionId(lane),exists:false}]);expect(f.topics.list(f.room.id).items).toEqual([]);
+  expect(store.getEvent(sent.events[0]!.id)?.status).toBe('failed');expect(f.topics.get(first.id,f.room.id).id).toBe(first.id);
+});
+it('uses native identity rather than matching titles, following native activity, deletion and rename in old and current sessions',()=>{
+  const f=fixture(),old=f.send('旧本地标题'),claim=store.claim({workerId:'legacy'})!;
+  store.markDispatched(claim.event.id,claim.leaseToken,claim.event.id);store.settle({eventId:claim.event.id,leaseToken:claim.leaseToken,status:'done',content:'完成'});
+  const fresh=f.topics.create(f.room.id,'actual'),sent=f.send('本地标题');f.topics.bind(sent.events,fresh);
+  const legacyLane='turn-'+old.events[0]!.id,lane=f.topics.lane(sent.events[0]!);
+  const freshClaim=store.claim({workerId:'fresh'})!;store.markDispatched(freshClaim.event.id,freshClaim.leaseToken,freshClaim.event.id);
+  expect(f.topics.nativeBindings(f.room.id).map(row=>row.laneId).sort()).toEqual([legacyLane,lane].sort());
+  const state=(laneId:string,updatedAt:string)=>({laneId,sessionId:BotDshBrain.sessionId(laneId),exists:true,title:'同名会话',updatedAt});
+  f.topics.rememberNative([state(legacyLane,'2026-11-11T08:00:00.000Z'),state(lane,'2026-11-11T07:00:00.000Z')]);
+  expect(f.topics.list(f.room.id).items.map(row=>row.id)).toEqual(['legacy-'+claim.event.id,fresh.id]);
+  f.topics.rememberNative([{...state(lane,'2026-11-11T09:00:00.000Z'),title:'在 DSH 中改名'}]);
+  expect(f.topics.list(f.room.id).items[0]).toMatchObject({id:fresh.id,title:'在 DSH 中改名'});
+  f.topics.rememberNative([{laneId:legacyLane,sessionId:BotDshBrain.sessionId(legacyLane),exists:false}]);
+  expect(f.topics.list(f.room.id).items.map(row=>row.id)).toEqual([fresh.id]);
+});
+it('chooses group native activity independently of response order while retaining pending explicit renames',()=>{
+  const f=fixture(),other=store.createCompanion({name:'另一个',persona:'另一个'}),room=store.createGroup({title:'群',memberIds:[f.companion.id,other.id],participationMode:'all'}),selected=f.topics.create(room.id,'group');
+  const sent=store.enqueue({conversationId:room.id,senderId:'user',content:'群话题',sourceMessageId:'shared'});f.topics.bind(sent.events,selected);
+  const states=sent.events.map((event,index)=>{const laneId=f.topics.lane(event);return{laneId,sessionId:BotDshBrain.sessionId(laneId),exists:true,title:index?'旧原生标题':'最新原生标题',updatedAt:index?'2026-11-11T07:00:00.000Z':'2026-11-11T08:00:00.000Z'};});
+  f.topics.rememberNative(states);expect(f.topics.get(selected.id,room.id)).toMatchObject({title:'最新原生标题',updatedAt:'2026-11-11T08:00:00.000Z'});
+  const claim=store.claim({workerId:'one'})!;store.markDispatched(claim.event.id,claim.leaseToken,claim.event.id);
+  f.topics.rename(room.id,selected.id,'人工改名','rename');f.topics.rememberNative(states.toReversed());
+  expect(f.topics.get(selected.id,room.id)).toMatchObject({title:'人工改名',renamePending:true,updatedAt:'2026-11-11T08:00:00.000Z'});
 });
 it('retains explicit renames and newest native title jobs across replay and out-of-order acknowledgements',()=>{
   const f=fixture(),selected=f.topics.create(f.room.id,'project'),sent=f.send('原始标题');f.topics.bind(sent.events,selected);

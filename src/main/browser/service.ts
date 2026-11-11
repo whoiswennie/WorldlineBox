@@ -851,7 +851,11 @@ export class BrowserService {
       case 'page.image.cancel': this.pageImage.cancel(request.jobId); break;
       case 'page.image.close': if (this.pageImage.state?.id === request.jobId) await this.pageImage.clear(); break;
       case 'page.image.tile': return { ok: true, pageImageTile: await this.pageImage.tile(request.jobId, request.index) };
-      case 'page.context': return { ok: true, pageContext: this.createPageContext(request.id) };
+      case 'page.context': {
+        const tab = request.id ? this.requireTab(request.id) : this.active();
+        await this.waitForPage(tab, AbortSignal.timeout(30_000));
+        return { ok: true, pageContext: this.createPageContext(tab.id) };
+      }
       case 'page.results.reset': {
         const tab = this.store.data.tabs.find(item => item.id === request.id);
         if (!tab || tab.url !== BROWSER_HOME || tab.nativeBlank) throw Error('当前标签页不是原生搜索结果页。');

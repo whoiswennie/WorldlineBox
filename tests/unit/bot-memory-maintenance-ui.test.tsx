@@ -44,6 +44,33 @@ async function openJob(index = 0) { await act(() => host.querySelectorAll<HTMLBu
 async function openCandidate(index = 0) { await act(() => host.querySelectorAll<HTMLButtonElement>('.bot-maintenance-candidate-open')[index]!.click()); }
 async function fill(label: string, value: string) { const input = host.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!; await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
 const maintenanceRequests = <T extends BotMemoryWorkspaceRequest['type']>(type: T) => requests.filter((request): request is Extract<BotMemoryWorkspaceRequest, { type: T }> => request.type === type);
+it('distinguishes new diary versions from related historical context in incremental tasks', async () => {
+  await mount(request => request.type === 'memory.maintenance.get' ? Promise.resolve({ ok: true, memory: job('job-1', { metrics: { examined: 2, selected: 5, deferred: 0, candidates: 1, applied: 0, rejected: 0, incremental: true, context: 3 } }) }) : undefined);
+  await openJob(); const facts = host.querySelector('.bot-maintenance-facts')!.textContent;
+  expect(facts).toContain('新增/变化2'); expect(facts).toContain('相关旧记忆3'); expect(host.textContent).toContain('已分析版本和待审来源不会重复排队');
+});
+it('saves the automatic review switch immediately and shows per-candidate model and human review history', async () => {
+  let enabled = false;
+  await mount(request => request.type === 'memory.maintenance.settings.get' ? Promise.resolve({ ok: true, memory: settings({ autoReview: enabled }) })
+    : request.type === 'memory.maintenance.settings.update' ? Promise.resolve({ ok: true, memory: settings({ autoReview: enabled = !!request.settings.autoReview }) })
+      : request.type === 'memory.maintenance.reviews' ? Promise.resolve({ ok: true, memory: { items: [{ id: 'review-1', jobId: 'job-1', candidateId: 'candidate-1', candidateRevision: revision, actor: 'model', model: 'global-model', promptVersion: 'worldlinebox-memory-review-v1', decision: 'manual', reason: '归档覆盖证据不足，需要人工核对。', checks: [{ criterion: 'evidence', passed: false, reason: '缺少原文证据。' }], createdAt: at }] } }) : undefined);
+  const toggle = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="自动审阅"]')!;
+  expect(toggle.getAttribute('aria-checked')).toBe('false'); await act(() => toggle.click());
+  expect(maintenanceRequests('memory.maintenance.settings.update')[0]).toMatchObject({ settings: { autoReview: true } });
+  expect(toggle.getAttribute('aria-checked')).toBe('true');
+  await openJob(); await openCandidate(); await click('审阅记录');
+  expect(host.textContent).toContain('global-model'); expect(host.textContent).toContain('归档覆盖证据不足'); expect(host.textContent).toContain('worldlinebox-memory-review-v1');
+  expect(maintenanceRequests('memory.maintenance.reviews')[0]).toMatchObject({ jobId: 'job-1', candidateId: 'candidate-1' });
+  await click('返回方案列表'); await act(() => toggle.click()); expect(toggle.getAttribute('aria-checked')).toBe('false');
+});
+
+it('shows real automatic-review progress and distinguishes a reviewed manual case from an unreviewed candidate', async () => {
+  await mount(request => request.type === 'memory.maintenance.get' ? Promise.resolve({ ok: true, memory: job('job-1', { autoReview: { state: 'queued', total: 8, reviewed: 2, manual: 1, busyJobId: 'older-job' } }) })
+    : request.type === 'memory.maintenance.candidates' ? Promise.resolve({ ok: true, memory: { items: [candidate('candidate-1', { autoReview: { state: 'manual', reason: '归档覆盖证据不足' } })] } }) : undefined);
+  await openJob(); expect(host.querySelector('.bot-maintenance-review-progress')?.textContent).toContain('正在处理此前的任务');
+  expect(host.querySelector('.bot-maintenance-review-progress')?.textContent).toContain('已审 2/8');
+  expect(host.querySelector('.bot-maintenance-candidate-open')?.textContent).toContain('已审阅 · 需人工');
+});
 
 it('loads bounded summaries first and reads candidate details and original notes only on demand', async () => {
   await mount(); expect(requests.map(request => request.type).sort()).toEqual(['memory.maintenance.list', 'memory.maintenance.settings.get']);
@@ -51,26 +78,50 @@ it('loads bounded summaries first and reads candidate details and original notes
   await openJob(); expect(maintenanceRequests('memory.maintenance.candidates')[0]).toMatchObject({ jobId: 'job-1', limit: 12 });
   expect(maintenanceRequests('memory.maintenance.candidate')).toHaveLength(0); await openCandidate();
   expect(host.textContent).toContain('归档冗余日记'); expect(host.textContent).toContain('候选不等于已改写'); expect(host.textContent).toContain('改为周六三点在南门见。');
-  expect(maintenanceRequests('memory.note')).toHaveLength(0); await click('查看原日记');
+  expect(maintenanceRequests('memory.note')).toHaveLength(0); await click('来源原文'); await click('查看原日记');
   expect(host.textContent).toContain('这是按需读取的完整原日记'); expect(maintenanceRequests('memory.note')[0]).toMatchObject({ id: 'source-1', companionId: 'alice' });
-  expect(host.textContent).toContain('未提供原始评分'); expect(host.textContent).not.toContain('可信度 100%');
+  expect(host.textContent).not.toContain('可信度 100%');
 });
 
-it('requires explicit per-candidate confirmation and never maps archiving to memory.forget', async () => {
+it('approves one candidate with an explicit single action and never maps archiving to forgetting', async () => {
   await mount(); await openJob(); await openCandidate(); expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
-  await click('审阅并批准'); expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
-  expect(host.querySelector('.bot-maintenance-review-confirm')?.textContent).toContain('保留原件');
-  await click('确认批准此项'); expect(maintenanceRequests('memory.maintenance.review')[0]).toMatchObject({ candidateId: 'candidate-1', jobId: 'job-1', revision, decision: 'approve' });
+  expect(host.querySelector('.bot-review-reader-footer')?.textContent).toContain('保留并可恢复');
+  await click('批准并应用'); expect(maintenanceRequests('memory.maintenance.review')[0]).toMatchObject({ candidateId: 'candidate-1', jobId: 'job-1', revision, decision: 'approve' });
   expect(requests.some(request => request.type === 'memory.forget')).toBe(false); expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).toContain('已应用');
 });
 
-it('moves keyboard focus into approval confirmation and Escape returns to the trigger without leaving the workspace', async () => {
-  await mount(); await openJob(); await openCandidate(); await click('审阅并批准');
-  expect(document.activeElement?.textContent).toBe('继续检查');
-  let escaped = 0; const outside = () => { escaped++; }; document.addEventListener('keydown', outside);
-  await act(() => document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-  document.removeEventListener('keydown', outside);
-  expect(escaped).toBe(0); expect(host.querySelector('.bot-maintenance-review-confirm')).toBeNull(); expect(document.activeElement?.textContent).toBe('审阅并批准');
+it('keeps human approval visible for an unknown execution and offers per-candidate verification', async () => {
+  const approval = { actor: 'user' as const, approvedAt: at };
+  await mount(request => request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: detail({ status: 'unknown', approval, receipt: { error: { code: 'MEMORY_NOTE_UNAVAILABLE' } } }) })
+    : request.type === 'memory.maintenance.resume' ? Promise.resolve({ ok: true, memory: detail({ status: 'unknown', approval, execution: { operation: 'reconcile', state: 'queued' } }) }) : undefined);
+  await openJob(); await openCandidate(); expect(host.querySelector('.bot-review-reader-footer')?.textContent).toContain('人工已批准');
+  expect(host.querySelector('.bot-review-reader-footer')?.textContent).toContain('执行结果待核实'); await click('核实并继续');
+  expect(maintenanceRequests('memory.maintenance.resume')[0]).toMatchObject({ candidateId: 'candidate-1', jobId: 'job-1', revision });
+  expect(host.querySelector('.bot-review-reader-footer')?.textContent).toContain('等待核实执行结果');
+  expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
+});
+
+it('shows the verified prior note when another proposal already organized the same sources', async () => {
+  await mount(request => request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: detail({ status: 'superseded', approval: { actor: 'user', approvedAt: at }, receipt: { resolution: { noteId: 'already-organized-note' } } }) }) : undefined);
+  await openJob(); await openCandidate(); expect(host.textContent).toContain('已由其他方案整理'); expect(host.textContent).toContain('人工已批准');
+  await click('查看已整理日记'); expect(maintenanceRequests('memory.note').at(-1)).toMatchObject({ id: 'already-organized-note' }); expect(host.textContent).toContain('已保存的整理结果');
+});
+
+it('opens a full-page reader, hides the candidate list, and returns to the same list without submitting decisions', async () => {
+  await mount(request => request.type === 'memory.maintenance.candidates' ? Promise.resolve({ ok: true, memory: { items: [candidate(), candidate('candidate-2', { title: '第二项候选' })] } }) : request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: detail({ id: request.candidateId, content: request.candidateId }) }) : undefined);
+  await openJob(); await openCandidate();
+  expect(host.querySelectorAll('.bot-maintenance-candidate-detail')).toHaveLength(1);
+  expect(host.querySelector('.bot-review-candidate-list')?.contains(host.querySelector('.bot-maintenance-candidate-detail'))).toBe(false);
+  expect(host.querySelector<HTMLElement>('.bot-review-candidate-list')?.hidden).toBe(true);
+  expect(host.querySelector('.bot-maintenance-review-workbench')?.getAttribute('data-reading')).toBe('true');
+  await click('下一项候选'); expect(host.querySelector('.bot-maintenance-proposed')?.textContent).toBe('candidate-2');
+  await click('上一项候选'); expect(host.querySelector('.bot-maintenance-proposed')?.textContent).toBe('candidate-1');
+  await click('返回方案列表'); expect(host.querySelector('.bot-review-reader')).toBeNull();
+  expect(host.querySelector<HTMLElement>('.bot-review-candidate-list')?.hidden).toBe(false);
+  expect(host.querySelectorAll('[data-maintenance-candidate]')).toHaveLength(2);
+  await openCandidate(1); expect(host.querySelector('.bot-maintenance-proposed')?.textContent).toBe('candidate-2');
+  await act(() => host.querySelector('.bot-review-reader')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(host.querySelector('.bot-review-reader')).toBeNull();
   expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
 });
 
@@ -96,14 +147,14 @@ it('keeps an error notification until explicit dismissal and does not turn reloa
 
 it('retains a stable decision request ID after transport failure and does not call a conflict applied', async () => {
   let calls = 0; await mount(request => request.type === 'memory.maintenance.review' ? ++calls === 1 ? Promise.reject(new Error('connection lost')) : Promise.resolve({ ok: true, memory: detail({ status: 'conflict' }) }) : undefined);
-  await openJob(); await openCandidate(); await click('审阅并批准'); await click('确认批准此项'); expect(host.textContent).toContain('connection lost');
-  await click('确认批准此项'); const decisions = maintenanceRequests('memory.maintenance.review'); expect(decisions).toHaveLength(2); expect(decisions[0]!.requestId).toBe(decisions[1]!.requestId);
+  await openJob(); await openCandidate(); await click('批准并应用'); expect(host.textContent).toContain('connection lost');
+  await click('批准并应用'); const decisions = maintenanceRequests('memory.maintenance.review'); expect(decisions).toHaveLength(2); expect(decisions[0]!.requestId).toBe(decisions[1]!.requestId);
   expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).toContain('来源已变化'); expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).not.toContain('已应用');
   expect(host.querySelector('.bot-maintenance-review-confirm')).toBeNull();
 });
 
 it('rejects a candidate independently without issuing any memory mutation or approval', async () => {
-  await mount(); await openJob(); await openCandidate(); await click('驳回候选');
+  await mount(); await openJob(); await openCandidate(); await click('驳回此项');
   expect(maintenanceRequests('memory.maintenance.review')[0]?.decision).toBe('reject'); expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).toContain('已驳回');
   expect(requests.some(request => ['memory.update', 'memory.organize', 'memory.forget', 'memory.remember'].includes(request.type))).toBe(false);
 });
@@ -116,15 +167,15 @@ it('offers a real reread after an incomplete candidate response without enabling
 
 it('disables approval when reading an original proves that its checksum changed', async () => {
   await mount(request => request.type === 'memory.note' ? Promise.resolve({ ok: true, memory: { id: request.id, checksum: 'c'.repeat(32), content: '日记刚刚有新的更正', tags: [], indexState: 'indexed', createdAt: at } }) : undefined);
-  await openJob(); await openCandidate(); await click('查看原日记'); expect(host.textContent).toContain('来源与方案快照已不同');
-  const approve = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '审阅并批准')!;
+  await openJob(); await openCandidate(); await click('来源原文'); await click('查看原日记'); expect(host.textContent).toContain('来源与方案快照已不同');
+  const approve = [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === '批准并应用')!;
   expect(approve.disabled).toBe(true); await act(() => approve.click()); expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
 });
 
 it('distinguishes a changed current original from historical quotes even after a candidate was applied', async () => {
   await mount(request => request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: detail({ status: 'applied' }) })
     : request.type === 'memory.note' ? Promise.resolve({ ok: true, memory: { id: request.id, checksum: 'c'.repeat(32), content: '应用后又发生的来源更正', tags: [], indexState: 'archived', createdAt: at } }) : undefined);
-  await openJob(); await openCandidate(); await click('查看原日记');
+  await openJob(); await openCandidate(); await click('来源原文'); await click('查看原日记');
   expect(host.textContent).toContain('下方是当前版本，上方引用保留方案生成时的摘录'); expect(host.textContent).toContain('此原件已归档，仍可读取');
   expect(host.querySelector('.bot-maintenance-quote')?.textContent).toBe('改为周六三点在南门见。'); expect(host.querySelector('.bot-maintenance-source-body')?.textContent).toBe('应用后又发生的来源更正');
   expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
@@ -136,7 +187,7 @@ it('refreshes an open candidate from approved to the actual indexed outcome afte
     : request.type === 'memory.maintenance.candidates' ? Promise.resolve({ ok: true, memory: { items: [candidate('candidate-1', { status })] } })
       : request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: detail({ status }) })
         : request.type === 'memory.maintenance.review' ? Promise.resolve({ ok: true, memory: detail({ status: status = 'approved' }) }) : undefined);
-  await openJob(); await openCandidate(); await click('审阅并批准'); await click('确认批准此项');
+  await openJob(); await openCandidate(); await click('批准并应用');
   expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).toContain('已批准，待执行');
   status = 'applied'; await act(() => { for (const listener of listeners) listener({ type: 'changed', conversationId: 'private-a' }); }); await act(async () => vi.advanceTimersByTimeAsync(600));
   expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).toContain('已应用');
@@ -145,10 +196,10 @@ it('refreshes an open candidate from approved to the actual indexed outcome afte
 it('labels an insight explicitly as a non-factual dream and still requires individual approval', async () => {
   await mount(request => request.type === 'memory.maintenance.get' ? Promise.resolve({ ok: true, memory: job(request.jobId, { kind: 'dream' }) })
     : request.type === 'memory.maintenance.candidates' ? Promise.resolve({ ok: true, memory: { items: [candidate('candidate-1', { type: 'insight' })] } })
-      : request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: detail({ type: 'insight', content: '梦境联想：下雨也可能是一种暂停。并非用户的真实经历。' }) }) : undefined);
+      : request.type === 'memory.maintenance.candidate' || request.type === 'memory.maintenance.review' ? Promise.resolve({ ok: true, memory: detail({ type: 'insight', status: request.type === 'memory.maintenance.review' ? 'applied' : 'pending', content: '梦境联想：下雨也可能是一种暂停。并非用户的真实经历。' }) }) : undefined);
   await openJob(); await openCandidate(); expect(host.textContent).toContain('梦境不是用户事实'); expect(host.textContent).toContain('拟保存的梦境感悟 · 非用户事实');
-  expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0); await click('审阅并批准');
-  expect(host.querySelector('.bot-maintenance-review-confirm')?.textContent).toContain('不作为用户事实'); expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
+  expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0); await click('批准并应用');
+  expect(host.querySelector('.bot-review-reader-footer')?.textContent).toContain('不作为用户事实'); expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(1);
 });
 
 it('maps the actual maintenance phases to human language without calling partial or unknown outcomes completed', async () => {
@@ -179,7 +230,7 @@ it('fences late task details and late approval receipts across selection and sco
         : request.type === 'memory.maintenance.review' ? oldApproval.promise : undefined);
   await openJob(0); await openJob(1); await act(() => oldTask.resolve({ ok: true, memory: job('slow-job') }));
   expect(host.querySelector('.bot-maintenance-detail-heading h3')?.textContent).toContain('梦境');
-  await openCandidate(); await click('审阅并批准'); await click('确认批准此项'); await render('bob', 'private-b');
+  await openCandidate(); await click('批准并应用'); await render('bob', 'private-b');
   await act(() => oldApproval.resolve({ ok: true, memory: detail({ content: '旧范围私密文本', status: 'applied' }) }));
   expect(host.textContent).not.toContain('旧范围私密文本'); expect(host.querySelector('.bot-maintenance-detail-heading')).toBeNull();
   expect(requests.at(-1)).toMatchObject({ companionId: 'bob', conversationId: 'private-b' });
@@ -192,7 +243,7 @@ it('keeps schedule changes local, preserves an edited draft during refresh, and 
   await act(() => { for (const listener of listeners) listener({ type: 'changed', conversationId: 'private-a' }); }); await act(async () => { await vi.advanceTimersByTimeAsync(600); });
   expect(host.querySelector<HTMLInputElement>('[aria-label="最短间隔（小时）"]')?.value).toBe('48'); expect(host.textContent).toContain('等待空闲');
   await click('保存后台设置'); expect(maintenanceRequests('memory.maintenance.settings.update')[0]).toMatchObject({ settings: { enabled: false, intervalHours: 48, autoApply: 'never', minNotes: 4, idleMinutes: 30 } });
-  expect(host.textContent).toContain('后台设置已保存'); expect(host.textContent).toContain('不保证准点执行');
+  expect(host.textContent).toContain('后台设置已保存'); expect(host.textContent).toContain('下次启动并空闲后补跑'); expect(host.textContent).toContain('不设每日次数或累计用量额度');
 });
 
 it('queues manual work with a stable request ID and provides real cancel and retry actions', async () => {

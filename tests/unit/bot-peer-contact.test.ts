@@ -148,6 +148,9 @@ it('runs the destination independently in a real peer private room, without eith
   expect(f.service.store.messagesPage(f.direct).items.some(item => item.senderId === targetId)).toBe(false);
   expect(f.service.store.messagesPage(roomId).items.filter(item => item.senderId === sourceId && item.content.includes('明确请求'))).toHaveLength(1);
   await expect(message(f.service, roomId, '谢谢你们', 'observer-cannot-speak')).rejects.toThrow('旁观');
+  expect(await f.service.handle({ type: 'conversation.pin', conversationId: roomId, pinned: true })).toEqual({ ok: true });
+  expect((await f.service.handle({ type: 'state' })).snapshot!.conversations[0]).toMatchObject({ id: roomId, pinned: true });
+  expect(f.service.store.getConversation(roomId)!.memberIds).toEqual([sourceId, targetId].sort());
   const joined = (await f.service.handle({ type: 'conversation.peer.join', conversationId: roomId })).conversationId!;
   expect(f.service.store.getConversation(joined)!.memberIds).toEqual(['user', sourceId, targetId].sort());
   expect(f.service.store.getConversation(roomId)!.memberIds).toEqual([sourceId, targetId].sort());
