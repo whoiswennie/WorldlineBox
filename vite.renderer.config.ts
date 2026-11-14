@@ -1,5 +1,5 @@
 import path from "node:path";
-import { rm } from "node:fs/promises";
+import { access, copyFile, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
@@ -145,11 +145,22 @@ export default defineConfig({
     harmonyosWindowsOnlyPlugin(),
     harmonyosFontFacePatchPlugin(),
     {
-      name: "worldlinebox-omit-local-live2d-model",
+      name: "worldlinebox-stage-call-assets",
       apply: "build",
-      writeBundle(options) {
-        if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === "1" || !options.dir) return;
-        return rm(path.resolve(options.dir, "companion-call", "deepseek"), { recursive: true, force: true });
+      async writeBundle(options) {
+        if (!options.dir) return;
+        const output = path.resolve(options.dir, "companion-call");
+        if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS !== "1") {
+          await rm(path.join(output, "deepseek"), { recursive: true, force: true });
+          return;
+        }
+        const originals = path.join(rendererDir, ".tools", "original-call-ringtones");
+        await access(path.join(output, "deepseek", "call.model3.json"));
+        await mkdir(path.join(output, "ringtones"), { recursive: true });
+        await Promise.all([
+          copyFile(path.join(originals, "ringtone.wav"), path.join(output, "ringtone.wav")),
+          copyFile(path.join(originals, "dafeiyu.wav"), path.join(output, "ringtones", "dafeiyu.wav")),
+        ]);
       },
     },
   ],

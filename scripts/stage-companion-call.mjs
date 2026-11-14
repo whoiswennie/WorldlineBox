@@ -24,7 +24,7 @@ if (reference) {
       lib: ['ES2022', 'DOM'], strict: true, skipLibCheck: true, declaration: true, outDir: 'dist', rootDir: 'src' }, include: ['src/**/*.ts'] }, null, 2));
   }
 }
-const archive = option('--model'), ringtone = option('--ringtone');
+const archive = option('--model');
 const assetRoot = path.resolve(project, 'public', 'companion-call');
 if (archive) {
   const modelRoot = path.join(assetRoot, 'deepseek'); await mkdir(modelRoot, { recursive: true });
@@ -56,8 +56,14 @@ if (archive) {
     license: 'MODEL-LICENSE.txt', sourceSha256: createHash('sha256').update(bytes).digest('hex'), redistribution: 'Original model license applies; local user-provided installation.' }, null, 2));
   process.stdout.write(`Model: ${expressions.length} expressions, ${motions.length} motions. PSD is excluded.\n`);
 }
-if (ringtone) {
-  await mkdir(assetRoot, { recursive: true });
-  execFileSync(path.join(project, 'resources', 'ffmpeg', 'win32-x64', 'ffmpeg.exe'), ['-hide_banner', '-loglevel', 'error', '-i', path.resolve(ringtone), '-t', '26', '-vn', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', '-y', path.join(assetRoot, 'ringtone.wav')], { windowsHide: true });
-  process.stdout.write('Ringtone: first 26 seconds, local PCM WAV.\n');
+const privateRingtones = path.join(project, '.tools', 'original-call-ringtones');
+for (const [argument, file, seconds] of [['--ringtone', 'ringtone.wav', '26'], ['--dafeiyu-ringtone', 'dafeiyu.wav', '60']]) {
+  const input = option(argument);
+  if (!input) continue;
+  await mkdir(privateRingtones, { recursive: true });
+  execFileSync(path.join(project, 'resources', 'ffmpeg', 'win32-x64', 'ffmpeg.exe'), [
+    '-hide_banner', '-loglevel', 'error', '-i', path.resolve(input), '-t', seconds,
+    '-vn', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', '-y', path.join(privateRingtones, file),
+  ], { windowsHide: true });
+  process.stdout.write(`Staged private call audio: ${file}\n`);
 }

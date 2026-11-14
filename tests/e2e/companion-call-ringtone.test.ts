@@ -5,7 +5,7 @@ import { _electron as electron, expect, test } from '@playwright/test';
 import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 import { electronLaunchEnv, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 
-test('plays the packaged ringtone from a fresh profile and stops it on hangup', async () => {
+test('plays the packaged ringtone from a fresh profile and stops it when ringing ends', async () => {
   test.setTimeout(90000);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-ringtone-'));
   const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
@@ -36,6 +36,23 @@ test('plays the packaged ringtone from a fresh profile and stops it on hangup', 
     await expect.poll(audio).toMatchObject({ paused: false, error: undefined, muted: false });
     await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
     expect((await audio())?.src).toMatch(/\/companion-call\/ringtones\/dafeiyu\.wav$/);
+    if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1') {
+      expect((await audio())?.duration).toBeCloseTo(60);
+      await meeting.getByRole('button', { name: '接通', exact: true }).click();
+      await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible({ timeout: 30000 });
+      await expect(meeting.getByText('正在准备形象…', { exact: true })).toBeHidden({ timeout: 30000 });
+      await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
+      await expect.poll(audio).toMatchObject({ paused: true, src: null });
+      await meeting.getByRole('button', { name: '挂断', exact: true }).click();
+      await page.locator('.bot-sidebar-tabs').getByRole('tab', { name: /联系人/u }).click();
+      await page.locator('.bot-contact').filter({ has: page.getByText('GPT', { exact: true }) }).click();
+      await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+      await expect.poll(audio).toMatchObject({ paused: false, error: undefined, muted: false });
+      await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
+      expect((await audio())?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
+      expect((await audio())?.duration).toBeCloseTo(26);
+      return;
+    }
     await meeting.getByRole('button', { name: '取消', exact: true }).click();
     await expect.poll(audio).toMatchObject({ paused: true, src: null });
   } finally {

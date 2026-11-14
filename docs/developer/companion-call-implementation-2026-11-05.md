@@ -53,11 +53,13 @@ Pixi 的严格 CSP 适配采用其官方提供的 [@pixi/unsafe-eval](https://ap
 
 ## 本地资源与复现
 
-SoulLink engine、live2d-pixi 的本地源码快照保留 Apache-2.0 许可，npm prepare 编译本地包。模型与铃声按原许可作为运行源资源纳入版本控制；MOC3 和 PNG 纹理使用 Git LFS，模型 JSON、许可及作者归属使用普通 Git。克隆后先运行 `git lfs pull`，再进行开发或打包；Vite 会复制这些运行资源。原下载包与 PSD 不属于运行依赖，不由资源准备脚本搬入仓库。Live2D Core 自带原许可头及链接。
+SoulLink engine、live2d-pixi 的本地源码快照保留 Apache-2.0 许可，`npm prepare` 编译本地包。私人构建使用用户已获取的模型 ZIP 和两段音频。Vite 在私人构建中复制 4096 纹理和模型运行文件，并使用菲比音频作为通用铃声、《Let Me Go》作为大肥鱼铃声。模型和两段音频存放在 Git 忽略的目录里。公开构建使用仓库提供的合成铃声，用户可在角色卡中导入作者 ZIP。Live2D Core 自带原许可头及链接。
 
 ```powershell
-node scripts/stage-companion-call.mjs --model "C:\Users\hp\Downloads\DeepSeek免费公皮.zip" --ringtone "C:\Users\hp\Downloads\菲比正在邀请你语音通话....mp4"
-node scripts/build-companion-call-sdk.mjs
+node scripts/stage-companion-call.mjs --model "DeepSeek免费公皮.zip" --ringtone "菲比.mp4" --dafeiyu-ringtone "Let Me Go.mp4"
+$env:WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS = '1'
+npm run package
+node scripts/inno-build.mjs --out out/private-call/installer
 ```
 
 入口为 BotWorkspace.tsx，窗口为 BotCallWindow.tsx，形象生命周期为 BotLive2DStage.tsx。SDK 编译产物由源码重建。模型原画及拆分：神宫凉子；Live2D 建模：霓虹猫_NeonNeko，界面和本地模型目录均保留署名与原许可。

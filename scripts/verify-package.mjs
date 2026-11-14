@@ -178,12 +178,29 @@ if (existsSync(sqliteNodePath)) {
 
 const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
+const callAssetPath = relative => path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
+const privateCallAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
 for (const relative of ['ringtone.wav', 'ringtones/dafeiyu.wav']) {
-  const file = path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
-  const wav = asar.extractFile(asarPath, file);
+  const wav = asar.extractFile(asarPath, callAssetPath(relative));
   if (wav.length < 44 || wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') {
     throw new Error(`Invalid bundled call ringtone: ${relative}`);
   }
+  const source = privateCallAssets
+    ? path.join(projectRoot, '.tools', 'original-call-ringtones', path.basename(relative))
+    : path.join(projectRoot, 'public', 'companion-call', relative);
+  if (!wav.equals(readFileSync(source))) throw new Error(`Wrong call audio in package: ${relative}`);
+}
+if (privateCallAssets) {
+  const modelRoot = 'deepseek/';
+  const model = JSON.parse(asar.extractFile(asarPath, callAssetPath(modelRoot + 'call.model3.json')));
+  const { Moc, Textures, Physics } = model.FileReferences;
+  if (!Moc || !Textures.length) throw new Error('Bundled Live2D manifest is missing its model or textures.');
+  for (const file of [Moc, ...Textures, Physics].filter(Boolean)) {
+    const asset = asar.statFile(asarPath, callAssetPath(modelRoot + file));
+    if (!asset.size) throw new Error(`Empty bundled Live2D file: ${file}`);
+  }
+} else if (asarFiles.some(file => file.replaceAll('\\', '/').includes('/companion-call/deepseek/'))) {
+  throw new Error('The public package contains a private Live2D asset.');
 }
 // Vendor-prefix optimization must not erase Chromium's actual fallback.
 // This checks emitted CSS rather than trusting the source declaration order.
