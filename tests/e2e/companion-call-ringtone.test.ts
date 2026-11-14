@@ -2,8 +2,6 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
-import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
-import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 import { electronLaunchEnv, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 
@@ -62,11 +60,12 @@ test('imports the creator ZIP and renders Live2D in the packaged call', async ()
     await app.evaluate(({ dialog }, file) => {
       Object.assign(dialog, { showOpenDialog: async () => ({ canceled: false, filePaths: [file] }) });
     }, archive!);
-    const imported = await page.evaluate(async companionId => {
-      const api = Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi };
-      return api.companionBot.request({ type: 'call.model.import', companionId });
-    }, DEFAULT_BOT_COMPANION_ID);
-    expect(imported).toMatchObject({ ok: true, callStage: { mode: 'live2d' } });
+    await page.getByRole('button', { name: '角色卡', exact: true }).click();
+    await page.getByRole('button', { name: '形象与表演', exact: true }).click();
+    const importButton = page.getByRole('button', { name: '导入 Live2D 模型', exact: true });
+    await importButton.click();
+    await expect(page.getByText('从当前 Live2D 模型读取。伙伴会根据语境选择并播放。', { exact: true })).toBeVisible({ timeout: 30000 });
+    await page.getByRole('dialog', { name: '角色卡 · 大肥鱼', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
     await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
     const meeting = page.getByRole('dialog', { name: '与大肥鱼会面', exact: true });
     await meeting.getByRole('button', { name: '接通', exact: true }).click();
