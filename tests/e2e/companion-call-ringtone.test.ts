@@ -37,7 +37,7 @@ test('plays the packaged ringtone from a fresh profile and stops it when ringing
     await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
     expect((await audio())?.src).toMatch(/\/companion-call\/ringtones\/dafeiyu\.wav$/);
     if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1') {
-      expect((await audio())?.duration).toBeCloseTo(60);
+      expect((await audio())?.duration).toBeCloseTo(127.147, 1);
       await meeting.getByRole('button', { name: '接通', exact: true }).click();
       await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible({ timeout: 30000 });
       await expect(meeting.getByText('正在准备形象…', { exact: true })).toBeHidden({ timeout: 30000 });
@@ -50,7 +50,7 @@ test('plays the packaged ringtone from a fresh profile and stops it when ringing
       await expect.poll(audio).toMatchObject({ paused: false, error: undefined, muted: false });
       await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
       expect((await audio())?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
-      expect((await audio())?.duration).toBeCloseTo(26);
+      expect((await audio())?.duration).toBeCloseTo(28.779, 1);
       return;
     }
     await meeting.getByRole('button', { name: '取消', exact: true }).click();

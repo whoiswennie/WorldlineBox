@@ -57,13 +57,13 @@ if (archive) {
   process.stdout.write(`Model: ${expressions.length} expressions, ${motions.length} motions. PSD is excluded.\n`);
 }
 const privateRingtones = path.join(project, '.tools', 'original-call-ringtones');
-for (const [argument, file, seconds] of [['--ringtone', 'ringtone.wav', '26'], ['--dafeiyu-ringtone', 'dafeiyu.wav', '60']]) {
+for (const [argument, file] of [['--ringtone', 'ringtone.wav'], ['--dafeiyu-ringtone', 'dafeiyu.wav']]) {
   const input = option(argument);
   if (!input) continue;
   await mkdir(privateRingtones, { recursive: true });
   execFileSync(path.join(project, 'resources', 'ffmpeg', 'win32-x64', 'ffmpeg.exe'), [
-    '-hide_banner', '-loglevel', 'error', '-i', path.resolve(input), '-t', seconds,
-    '-vn', '-ac', '1', '-ar', '44100', '-c:a', 'pcm_s16le', '-y', path.join(privateRingtones, file),
+    '-hide_banner', '-loglevel', 'error', '-i', path.resolve(input),
+    '-map', '0:a:0', '-vn', '-c:a', 'pcm_s16le', '-y', path.join(privateRingtones, file),
   ], { windowsHide: true });
   process.stdout.write(`Staged private call audio: ${file}\n`);
 }
