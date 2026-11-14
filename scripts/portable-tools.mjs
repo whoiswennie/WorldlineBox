@@ -157,9 +157,8 @@ async function prepareRelease() {
     await copyFile(path.join(root, file.path), destination);
   }
   await copyFile(lockPath, path.join(path.dirname(release), 'tool-lock.json'));
-  // These immutable bundles have their own Forge extraResource entries. Reused
-  // staging directories must not retain an older duplicate of either model.
-  const separateResources = new Set(['embedding-models', 'speech-models', 'speech-runtime']);
+  // These bundles have their own Forge extraResource entries.
+  const separateResources = new Set(['embedding-models', 'speech-models', 'speech-runtime', 'cabin-world', 'dsh-cabin-world']);
   for (const name of separateResources) await safeRemoveOwned(path.join(releaseResources, name), releaseResources);
   for (const entry of await readdir(path.join(projectRoot, 'resources'), { withFileTypes: true })) {
     if (entry.name === 'portable-tools' || separateResources.has(entry.name)) continue;

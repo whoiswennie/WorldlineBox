@@ -1,4 +1,6 @@
 import type { ExtensionFolderOption } from './folder-menu';
+import { segmentedManifestKind } from './segmented-manifest';
+import { saveSegmentedVideo } from './segmented-save';
 
 export const WORLDLINEBOX_PORTS = [19876, 19877, 19878] as const;
 
@@ -64,15 +66,17 @@ export interface FetchedMedia {
 }
 
 type FetchHeaders = { get(name: string): string | null };
-type FetchResponse = {
+export type FetchResponse = {
   status: number;
   ok: boolean;
+  url?: string;
+  body?: ReadableStream<Uint8Array> | null;
   headers: FetchHeaders;
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
   blob(): Promise<Blob>;
 };
-type FetchFunction = (
+export type FetchFunction = (
   input: string,
   init?: RequestInit,
 ) => Promise<FetchResponse>;
@@ -346,7 +350,10 @@ export async function fetchMediaInBrowser(
   if (!response.ok) {
     return { error: `HTTP ${response.status}` };
   }
+  return readFetchedMedia(intent, response);
+}
 
+async function readFetchedMedia(intent: SaveIntent, response: FetchResponse): Promise<FetchedMedia | { error: string }> {
   const contentTypeHeader = response.headers.get('content-type') ?? '';
   let contentType = contentTypeHeader.split(';')[0]?.trim().toLowerCase() ||
     (intent.kind === 'video' ? 'video/mp4' : 'image/jpeg');
@@ -448,6 +455,31 @@ export async function saveMediaViaBrowser(
   behavior: ExtensionSaveBehavior,
   fetchFn: FetchFunction = fetch,
 ): Promise<SaveOutcome> {
+  if (!isHttpUrl(intent.mediaUrl) || !isHttpUrl(intent.sourcePageUrl)) {
+    return { kind: 'fetch_failed', reason: '这个媒体或页面不是可下载的 HTTP(S) 地址。' };
+  }
+  if (intent.kind === 'video') {
+    const requestMedia = (url: string, range?: string) => fetchFn(url, {
+      credentials: 'include',
+      referrer: intent.sourcePageUrl,
+      referrerPolicy: 'unsafe-url',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(60_000),
+      ...(range ? { headers: { Range: range } } : {}),
+    });
+    try {
+      const response = await requestMedia(intent.mediaUrl);
+      if (!response.ok) return { kind: 'fetch_failed', reason: `HTTP ${response.status}` };
+      const kind = segmentedManifestKind(response.url || intent.mediaUrl, response.headers.get('content-type') ?? '');
+      if (kind) {
+        return saveSegmentedVideo({ intent, kind, behavior, response, ports: WORLDLINEBOX_PORTS, fetchFn, requestMedia });
+      }
+      const fetched = await readFetchedMedia(intent, response);
+      return 'error' in fetched ? { kind: 'fetch_failed', reason: fetched.error } : deliverSaveUpload(intent, fetched, behavior, fetchFn);
+    } catch (error) {
+      return { kind: 'fetch_failed', reason: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const fetched = await fetchMediaInBrowser(intent, fetchFn);
   if ('error' in fetched) {
     return { kind: 'fetch_failed', reason: fetched.error };

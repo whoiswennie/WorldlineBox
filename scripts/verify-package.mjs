@@ -37,6 +37,12 @@ const resourcesPath =
   packagePlatform === 'darwin'
     ? path.join(packageRoot, 'WorldlineBox.app', 'Contents', 'Resources')
     : path.join(packageRoot, 'resources');
+if (targetPlatform === 'win32-x64') {
+  const cabin = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/stage-cabin-world.mjs'), '--verify', path.join(resourcesPath, 'cabin-world')], { stdio: 'inherit' });
+  if (cabin.error || cabin.status !== 0) throw cabin.error ?? new Error('Cabin World release verification failed.');
+  const mobileTunnel = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/stage-mobile-tunnel.mjs'), '--verify', path.join(resourcesPath, 'mobile-cloudflared')], { stdio: 'inherit' });
+  if (mobileTunnel.error || mobileTunnel.status !== 0) throw mobileTunnel.error ?? new Error('Cloudflare Tunnel package verification failed.');
+}
 for (const bundle of ['embedding-models', 'speech-models', 'speech-runtime']) {
   if (existsSync(path.join(resourcesPath, 'resources', bundle))) {
     throw new Error(`${bundle} resources are duplicated inside the general resources payload. Ship the bundle only once.`);
@@ -44,6 +50,7 @@ for (const bundle of ['embedding-models', 'speech-models', 'speech-runtime']) {
 }
 
 const requiredPaths = [
+  ...['package.json', 'index.js', 'server.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-cabin-world', name)),
   ...['package.json', 'index.js', 'workspace.js', 'idle.js', 'sessions.js', 'context.js', 'cordis.patch.yml'].map(name => path.join(resourcesPath, 'dsh-bridge', name)),
   path.join(resourcesPath, 'embedding-models', 'manifest.json'),
   path.join(resourcesPath, 'speech-models', 'manifest.json'),

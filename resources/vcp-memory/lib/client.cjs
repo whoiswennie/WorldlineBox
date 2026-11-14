@@ -1,11 +1,17 @@
 'use strict';
 const { spawn } = require('node:child_process');
 const path = require('node:path');
+// Toolbox modules are copied into each memory workspace. Put the verified
+// package's dependencies on the worker's search path so a Windows junction
+// cannot become the only route to them during an upgrade or relocation.
+function workerEnvironment(env) {
+  return { ...process.env, ...env, NODE_PATH: path.join(__dirname, '..', 'node_modules') };
+}
 /** Each one-shot request runs in an isolated process because upstream uses env-bound singletons. */
 function request(operation, payload = {}, { home, env = {}, onLog, withTelemetry = false } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(__dirname, 'worker.cjs')], {
-      env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      env: workerEnvironment(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
     });
     let output = '', logs = '';
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
@@ -33,7 +39,7 @@ function request(operation, payload = {}, { home, env = {}, onLog, withTelemetry
 function createSession({ home, env = {}, onLog, onDiagnostic, withTelemetry = false, nodePath = process.execPath,
   closeTimeoutMs = 5000 } = {}) {
   const child = spawn(nodePath, [path.join(__dirname, 'worker.cjs'), '--serve'], {
-    env: { ...process.env, ...env }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    env: workerEnvironment(env), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   });
   const pending = new Map(); let sequence = 0, stopped = false, intentional = false, stderrTail = '';
   // Native aborts cannot return a JSON error. Keep only a bounded local tail,

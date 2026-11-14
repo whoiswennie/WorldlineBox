@@ -15,22 +15,16 @@ describe("asset-card media fallback layout", () => {
     );
   });
 
-  it("uses a thin pill progress bar for hover scrub", () => {
+  it("uses a thin accent rail at the bottom of the hover preview", () => {
     const styles = readFileSync(
       resolve(process.cwd(), "src/renderer/styles.css"),
       "utf8",
     );
     expect(styles).toMatch(
-      /\.asset-card-hover-progress\s*\{[\s\S]*?height:\s*10px;[\s\S]*?background:\s*rgb\(255 255 255 \/ 35%\);/,
+      /\.asset-card-hover-progress\s*\{[^}]*inset:\s*auto 0 0;[^}]*height:\s*3px;[^}]*pointer-events:\s*none;/,
     );
     expect(styles).toMatch(
-      /\.asset-card-hover-progress-fill\s*\{[\s\S]*?background:\s*rgb\(255 255 255 \/ 70%\);/,
-    );
-    expect(styles).toMatch(
-      /\[data-theme="light"\] \.asset-card-hover-progress\s*\{[\s\S]*?background:\s*rgb\(255 255 255 \/ 25%\);/,
-    );
-    expect(styles).toMatch(
-      /\[data-theme="light"\] \.asset-card-hover-progress-fill\s*\{[\s\S]*?background:\s*rgb\(255 255 255 \/ 50%\);/,
+      /\.asset-card-hover-progress-fill\s*\{[^}]*background:\s*var\(--accent\);/,
     );
     expect(styles).not.toMatch(/\.asset-card-hover-playhead\s*\{/);
   });

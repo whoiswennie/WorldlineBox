@@ -19,6 +19,7 @@ const modelContextChars = model => Number.isSafeInteger(model?.contextWindow) &&
 const contextHostId = randomUUID(); let contextRevision = 0;
 const textOf = message => (message?.content ?? []).filter(block => block.type === 'text').map(block => block.text).join('');
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+const peerWaitNoticeKind = 'worldlinebox-bot-peer-results';
 const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question'];
 /** One coherent observation per native model attempt. Frames are transport
  * fragments, not Agent Loop phases; publish cumulative snapshots at a UI rate. */
@@ -54,19 +55,42 @@ export function workerOutputFromEvents(events, { eventId, startMessageId, maxCha
   const messageId = startMessageId ?? 'worldlinebox-bot:' + eventId;
   const start = events.findIndex(event => event.type === 'user/message' && event.data.id === messageId);
   if (start < 0) return { text: '', totalChars: 0, truncated: false, messages: 0,outputs:[] };
-  const outputs=[];let messages=0;
+  const outputs=[], peerWaitCalls = new Set(), presentationCalls = new Set();
+  let messages=0, receivedPeerReceipt, peerResultsReceipt;
   for (const event of events.slice(start + 1)) {
     if (event.type === 'user/message' && (event.data.source?.kind === 'worldlinebox-bot'
       || startMessageId && ['worldlinebox-bot-task-continuation', 'worldlinebox-bot-guidance'].includes(event.data.source?.kind))) break;
+    if (event.type === 'tool/call' && event.data.name === 'companion_wait') peerWaitCalls.add(event.data.callId);
+    if (event.type === 'tool/call' && event.data.name === 'call_present') presentationCalls.add(event.data.callId);
+    if (event.type === 'tool/result' && event.data.message?.isError !== true && presentationCalls.has(event.data.message?.toolCallId)
+      && (event.surfaceOp === undefined || event.surfaceOp === 'append')) {
+      try {
+        const result = JSON.parse(textOf(event.data.message));
+        if (Number.isSafeInteger(result?.accepted) && result.accepted > 0 && Array.isArray(result.segmentIds) && result.segmentIds.length === result.accepted) {
+          peerResultsReceipt = receivedPeerReceipt ?? peerResultsReceipt;
+        }
+      } catch { /* Only a verified publication proves the peer results were used. */ }
+    }
+    const peerResultMessage = event.type === 'user/message' && event.data.source?.kind === peerWaitNoticeKind ? event.data
+      : event.type === 'tool/result' && event.data.message?.isError !== true && peerWaitCalls.has(event.data.message?.toolCallId) ? event.data.message : undefined;
+    if (peerResultMessage && (event.surfaceOp === undefined || event.surfaceOp === 'append')) {
+      try {
+        const result = JSON.parse(textOf(peerResultMessage));
+        if (result?.status === 'ready' && /^[a-f0-9]{64}$/.test(result.receipt)) receivedPeerReceipt = result.receipt;
+      } catch { /* A truncated or spilled tool result cannot prove delivery. */ }
+    }
     if (event.type === 'assistant/message' && event.data.interrupted !== true
       && (event.surfaceOp === undefined || event.surfaceOp === 'append')) {
       const body = textOf(event.data.message);
-      if (body.trim()) { outputs.push({id:'native-text-'+event.seq,sequence:event.seq,text:body}); messages++; }
+      if (body.trim()) {
+        outputs.push({id:'native-text-'+event.seq,sequence:event.seq,text:body}); messages++;
+        peerResultsReceipt = receivedPeerReceipt;
+      }
     }
     if(event.type==='deliverables/presented')outputs.push({id:'native-files-'+event.seq,sequence:event.seq,files:event.data.files});
   }
   const text=outputs.filter(part=>part.text).map(part=>part.text).join('\n\n');
-  return { text, totalChars: text.length, truncated: false, messages,outputs };
+  return { text, totalChars: text.length, truncated: false, messages, outputs, ...(peerResultsReceipt ? { peerResultsReceipt } : {}) };
 }
 /** Public DSH meter projections only: no prompts, tools or credentials. */
 export function nativeContextSample(sessionId,result,now=new Date().toISOString(),agent){
@@ -152,7 +176,7 @@ export async function createBotProvider(ctx) {
         compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false, maxTokensField: 'max_tokens' } };
       const piProvider = { id: provider, name: 'WorldlineBox companion', baseUrl,
         auth: { apiKey: { name: 'WorldlineBox', resolve: async ({ credential }) => ({ auth: credential?.key ? { apiKey: credential.key } : {}, source: 'WorldlineBox' }) } },
-        getModels: () => [descriptor], stream: (m, c, o) => api.stream(m, c, o), streamSimple: (m, c, o) => api.streamSimple(m, c, o) };
+        getModels: () => [descriptor], stream: api.stream, streamSimple: api.streamSimple };
       const profile = { provider, displayName: 'WorldlineBox companion', piProvider,
         modelErrors: new Map(), configuredMaxTokens: new Map([[model.model, output]]),
         streamIdleTimeoutMs: 120000, maxRequestImageBytes: 1024 * 1024, requestImagePixelBudget: 1048576, requestImageMaxBytes: 524288,
@@ -563,14 +587,16 @@ export async function apply(ctx) {
           if (terminal?.status === 'complete') {
             record.status = terminal.result.status; record.text = terminal.result.text;
             emit(record, { type: 'complete', status: record.status, text: record.text, artifacts: terminal.result.artifacts, error: terminal.result.error, inputContextCommitted: terminal.result.inputContextCommitted,
-              outputCheckpoint: terminal.result.outputCheckpoint,outputs:terminal.result.outputs }); break;
+              outputCheckpoint: terminal.result.outputCheckpoint,outputs:terminal.result.outputs,peerResultsReceipt:terminal.result.peerResultsReceipt }); break;
           }
         }
+        let peerResultsReceipt;
         if (record.bot?.role === 'worker') {
           const output=workerOutputFromEvents(record.agent.session.snapshotEvents(),{eventId:record.bot.eventId}),text=output.text;
           if (record.admissions || record.botMutationActive || revision !== record.revision || record.agent.status !== 'idle' || sequence !== record.agent.session.seq) continue;
           record.text = text;
           record.outputs=output.outputs;
+          peerResultsReceipt = output.peerResultsReceipt;
         }
         // The host combines this native terminal receipt with effect proofs
         // and any explicit incomplete-business report before closing its task.
@@ -578,10 +604,10 @@ export async function apply(ctx) {
         if(record.status==='failed'&&record.reason?.kind==='max-tokens')record.outputCheckpoint=record.agent.session.seq;
         if (record.bot?.eventId) await botWriteReceipt(record, { eventId: record.bot.eventId, status: 'complete',
           result: { eventId: record.bot.eventId, sessionId: record.id, status: record.status, text: record.text, artifacts: record.artifacts,outputs:record.outputs,
-            inputContextCommitted: record.bot.inputContextCommitted === true,
+            inputContextCommitted: record.bot.inputContextCommitted === true, peerResultsReceipt,
             ...(record.outputCheckpoint !== undefined ? { outputCheckpoint: record.outputCheckpoint } : {}),
             ...(record.status === 'failed' ? { error: botTerminalError(record) } : {}) } });
-        emit(record, { type: 'complete', status: record.status, text: record.text, reason: record.reason, artifacts: record.artifacts,outputs:record.outputs,
+        emit(record, { type: 'complete', status: record.status, text: record.text, reason: record.reason, artifacts: record.artifacts,outputs:record.outputs,peerResultsReceipt,
           ...(record.status === 'failed' ? { error: botTerminalError(record) } : {}),
           ...(record.outputCheckpoint !== undefined ? { outputCheckpoint: record.outputCheckpoint } : {}),
           ...(record.bot ? { inputContextCommitted: record.bot.inputContextCommitted === true } : {}) });
@@ -659,7 +685,8 @@ export async function apply(ctx) {
     const callback = owner.bot.callback, endpoint = new URL(callback.url);
     if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.pathname !== '/bot/tool'
       || !/^[a-f0-9]{64}$/.test(callback.token)) throw new Error('Invalid worker callback.');
-    const response = await fetch(callback.url, { method: 'POST', signal: name === 'chat_ask_user' ? signal : AbortSignal.any([signal, AbortSignal.timeout(name === 'asset_manager' ? 660000 : 120000)]),
+    const hostWait = name === 'chat_ask_user' || name === 'companion_wait';
+    const response = await fetch(callback.url, { method: 'POST', signal: hostWait ? signal : AbortSignal.any([signal, AbortSignal.timeout(name === 'asset_manager' ? 660000 : 120000)]),
       headers: { authorization: 'Bearer ' + callback.token, 'content-type': 'application/json' },
       body: JSON.stringify({ laneId: owner.bot.laneId, eventId: owner.bot.eventId, name, args, callId,
         ...(native?{nativeSessionId:native.nativeSessionId,nativeCallId:native.nativeCallId,rootSessionId:owner.id,rootSequence:owner.agent.session.seq}:{}) }) });
@@ -671,7 +698,9 @@ export async function apply(ctx) {
     record.workerToolAgents ??= new Map();
     let registrations = record.workerToolAgents.get(agent);
     if (!registrations) { registrations = new Map(); record.workerToolAgents.set(agent, registrations); record.disposers.push(() => { for (const entry of registrations.values()) entry.dispose(); registrations.clear(); record.workerToolAgents.delete(agent); }); }
-    const schemas = (record.callbackOwner ?? record).bot.workerTools ?? [];
+    const meetingTool = name => name === 'call_stage' || name === 'call_present';
+    const ownsStage = !record.callbackOwner && String(agent.session.id) === record.id;
+    const schemas = ((record.callbackOwner ?? record).bot.workerTools ?? []).filter(schema => ownsStage || !meetingTool(schema.name));
     for (const [name, entry] of registrations) {
       if (!schemas.some(schema => schema.name === name && JSON.stringify(schema) === entry.schema)) { entry.dispose(); registrations.delete(name); }
     }
@@ -682,8 +711,19 @@ export async function apply(ctx) {
           render: (_args, value) => [{ type: 'text', text: JSON.stringify(value.result) }] },
         async execute(args, exec) {
           if (recordFor(exec.agent) !== record || exec.signal.aborted) throw new Error('The host tool is outside this worker task.');
+          if (meetingTool(schema.name) && (!ownsStage || record.status !== 'running' || exec.agent !== record.agent)) throw new Error('Only the active meeting session can control the stage.');
           if (!(record.callbackOwner ?? record).bot.workerTools?.some(tool => tool.name === schema.name)) throw new Error('This application has been disconnected.');
           const ref = nativeCallRef(record.callbackOwner ?? record, exec.agent, exec.callId);
+          if (schema.name === 'call_present') {
+            const eventId = record.bot.eventId;
+            const publication = (record.presentationTail ?? Promise.resolve()).then(() => {
+              exec.signal.throwIfAborted();
+              if (record.bot.eventId !== eventId || record.status !== 'running') throw new Error('This meeting turn has ended.');
+              return workerCallback(record, schema.name, args, ref.callId, exec.signal, ref);
+            });
+            record.presentationTail = publication.then(() => undefined, () => undefined);
+            return { result: await publication };
+          }
           return { result: await workerCallback(record, schema.name, args, ref.callId, exec.signal, ref) };
         },
       });
@@ -711,6 +751,27 @@ export async function apply(ctx) {
   }));
   ctx.on('tools/execute', async (execution, next) => {
     const record = recordFor(execution.agent);
+    if (execution.name === 'wait_agent' && record?.bot?.role === 'worker' && record.status === 'running'
+      && execution.agent === record.agent && !record.callbackOwner
+      && record.bot.workerTools?.some(tool => tool.name === 'companion_contact' || tool.name === 'message_peer')) {
+      const teams = ctx.get('agentTeams');
+      if (teams?.tryMembership?.(execution.agent) && teams.listMembers(execution.agent).some(member =>
+        member.id !== execution.agent.id && ['running', 'provisioning'].includes(member.status))) return next();
+      const ref = nativeCallRef(record, execution.agent, execution.callId);
+      const result = await workerCallback(record, 'companion_wait', { timeout_ms: execution.arguments?.timeout_ms }, ref.callId, execution.signal, ref);
+      if (result.status !== 'unhandled') {
+        // DSH validates the native wait_agent result against its own schema.
+        // Carry the companion payload as context for the next model step.
+        const { freezeMessage } = await import('@deepseek-ai/dsh-llm');
+        const value = { timedOut: result.timedOut === true };
+        const notice = freezeMessage({
+          id: 'worldlinebox-bot-peer-results:' + record.bot.eventId + ':' + ref.callId,
+          role: 'user', source: { kind: peerWaitNoticeKind, form: 'notice', summary: '伙伴分工结果' },
+          content: [{ type: 'text', text: JSON.stringify({ kind: 'worldlinebox-peer-wait', ...result }) }],
+        });
+        return { isError: false, value, content: [{ type: 'text', text: JSON.stringify(value) }], additionalContexts: [notice] };
+      }
+    }
     if (!record?.bot || execution.name !== 'ask_user_question') return next();
     const questions = execution.arguments?.questions;
     if (!Array.isArray(questions) || !questions.length) throw new Error('Ask at least one question.');

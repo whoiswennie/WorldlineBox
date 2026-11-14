@@ -28,6 +28,9 @@ export class OperationStore {
     await this.save();
   }
   list(): DshOperation[] { return structuredClone(this.records); }
+  runningId(kind: string): string | undefined {
+    return this.records.find(record => record.kind === kind && record.status === 'running')?.id;
+  }
   /** A mutating operation may exclude only its own durable identity. Another
    * operation on the same instance still holds it, regardless of its kind. */
   isInstanceInUse(instanceId: string, exceptOperationId?: string): boolean {

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type RefObject, type SyntheticEvent } from "react";
 
 import { Icon } from "./Icons";
+import { MediaPlaybackModeButton } from "./MediaPlaybackModeButton";
+import type { MediaPlaybackMode } from "./media-playback-mode";
 import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import { createMediaSeekSession, type MediaSeekSession } from "./media-seek-session";
@@ -51,6 +53,9 @@ type RendererWindow = Window & {
 };
 
 export interface VideoPlayerControlsProps {
+  playbackMode?: MediaPlaybackMode;
+  onPlaybackModeChange?: (mode: MediaPlaybackMode) => void;
+  onEnded?: () => void;
   /** Optional probe fps for editorial frame steps (falls back to 30). */
   frameRateFps?: number | null;
   isFullscreen?: boolean;
@@ -109,6 +114,9 @@ function waitForVideoSeeked(video: HTMLVideoElement): Promise<void> {
  * on every pointermove (WorldlineBox-jh2).
  */
 export function VideoPlayerControls({
+  playbackMode = "repeat-one",
+  onPlaybackModeChange,
+  onEnded,
   frameRateFps = null,
   isFullscreen = false,
   autoPlay = true,
@@ -567,11 +575,11 @@ export function VideoPlayerControls({
         <video
           autoPlay={autoPlay}
           className="preview-video"
-          loop
+          loop={playbackMode === 'repeat-one'}
           onDurationChange={(event) =>
             setDuration(event.currentTarget.duration || 0)
           }
-          onEnded={() => setPaused(true)}
+          onEnded={() => { setPaused(true); if (autoPlay && playbackMode === 'sequential') onEnded?.(); }}
           onLoadedMetadata={(event) => {
             const video = event.currentTarget;
             video.playbackRate = playbackRate;
@@ -742,6 +750,7 @@ export function VideoPlayerControls({
           onInteract={onUserActivity}
           value={playbackRate}
         />
+        {onPlaybackModeChange && <MediaPlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange} onInteract={onUserActivity} />}
         <ViewerVolumeControls
           muted={muted}
           onInteract={onUserActivity}

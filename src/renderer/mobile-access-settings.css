@@ -1,0 +1,15 @@
+.mobile-access-settings { display: grid; gap: 14px; }
+.mobile-access-card { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--ui-border-subtle); border-radius: 10px; background: var(--ui-surface-raised); }
+.mobile-access-card h3, .mobile-access-card p { margin: 0; }
+.mobile-access-card p { color: var(--ui-content-secondary); font-size: 12px; line-height: 1.6; }
+.mobile-access-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.mobile-access-pairing { display: grid; gap: 12px; }
+.mobile-access-card :is(input, textarea, button) { font: inherit; color: var(--ui-content-primary); background: var(--ui-surface-pane); border: 1px solid var(--ui-border-subtle); border-radius: 7px; padding: 7px 10px; }
+.mobile-access-card button { cursor: pointer; }
+.mobile-access-card button:hover:not(:disabled) { background: var(--ui-surface-hover); }
+.mobile-access-card button:disabled { opacity: .5; cursor: default; }
+.mobile-access-device { padding-top: 9px; border-top: 1px solid var(--ui-border-subtle); }
+.mobile-access-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.mobile-access-card .mobile-access-error { color: var(--ui-status-danger-content); }
+
+.mobile-access-pairing img { max-width: 100%; height: auto; border-radius: 8px; }

@@ -1,6 +1,6 @@
 import { writeNativeRuntimeFixture } from '../helpers/dsh-runtime-fixture';
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { RuntimeService } from '../../src/main/dsh/runtime-service';
@@ -17,6 +17,59 @@ async function fixture(root: string, version: string) {
 }
 
 describe('fixed DSH runtime inventory', () => {
+  it.runIf(process.platform === 'win32' && process.arch === 'x64')('accepts a delete with a real Windows sharing lock, keeps it deleted after restart, and reclaims files once released', async () => {
+    const root = await temporary();
+    const manager = path.join(root, 'manager');
+    const service = new RuntimeService({ rootPath: manager, onChanged() {} });
+    const operations = new OperationStore(path.join(manager, 'operations'), () => undefined);
+    await service.init();
+    await operations.init();
+    await operations.run('import', 'fixture', undefined, async op => {
+      await service.import(await fixture(root, '0.9.0-locked'), 'directory', 'fixture', op);
+    });
+    await operations.settle();
+    const record = service.list()[0]!;
+    const runtimeRoot = path.dirname(service.directory(record.id));
+    const { default: koffi } = await import('koffi');
+    const kernel = koffi.load('kernel32.dll');
+    const openDirectory = kernel.func('uintptr_t __stdcall CreateFileW(const str16 file, uint32_t access, uint32_t share, uintptr_t security, uint32_t creation, uint32_t flags, uintptr_t template)');
+    const closeHandle = kernel.func('int __stdcall CloseHandle(uintptr_t handle)');
+    const lock = openDirectory(runtimeRoot, 0x80000000, 3, 0, 3, 0x02000000, 0);
+    expect(BigInt(lock)).not.toBe(0xffffffffffffffffn);
+    let open = true;
+    const cleanupFinished = vi.fn();
+    const reopened = new RuntimeService({ rootPath: manager, onChanged: cleanupFinished });
+    try {
+      await expect(rename(runtimeRoot, path.join(manager, 'locked-fixture-rename'))).rejects.toMatchObject({ code: expect.stringMatching(/^(EBUSY|EPERM|EACCES)$/) });
+      await service.delete(record.id, false);
+      expect(service.list()).toEqual([]);
+      expect(service.pendingDeletionVersions()).toEqual([record.version]);
+      expect((await lstat(runtimeRoot)).isDirectory()).toBe(true);
+      await service.close();
+      // Emulate interruption immediately after writing the deletion journal.
+      await writeFile(path.join(manager, 'runtimes.json'), JSON.stringify([record]));
+      await reopened.init();
+      expect(reopened.list()).toEqual([]);
+      expect(reopened.pendingDeletionVersions()).toEqual([record.version]);
+      expect(() => reopened.plan(record.id)).toThrow('not installed');
+      await vi.waitFor(() => expect(cleanupFinished).toHaveBeenCalled(), { timeout: 10_000 });
+      expect(reopened.pendingDeletionVersions()).toEqual([record.version]);
+      closeHandle(lock);
+      open = false;
+      await vi.waitFor(() => expect(reopened.pendingDeletionVersions()).toEqual([]), { timeout: 20_000 });
+      await expect(lstat(runtimeRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await readdir(path.join(manager, 'runtime-deletions'))).toEqual([]);
+      const final = new RuntimeService({ rootPath: manager, onChanged() {} });
+      await final.init();
+      expect(final.list()).toEqual([]);
+      await final.close();
+    } finally {
+      if (open) closeHandle(lock);
+      await service.close();
+      await reopened.close();
+    }
+  });
+
   it('deletes installed bytes without resurrection, cleans only runtime scratch, and recovers an interrupted removal before the index commit', async () => {
     const root = await temporary(); const manager = path.join(root, 'manager');
     const service = new RuntimeService({ rootPath: manager, onChanged() {} });
@@ -30,6 +83,8 @@ describe('fixed DSH runtime inventory', () => {
     const recovered = new RuntimeService({ rootPath: manager, onChanged() {} }); await recovered.init();
     expect(recovered.list()).toHaveLength(1); await recovered.verify(runtime.id);
     await recovered.delete(runtime.id, false); expect(recovered.list()).toHaveLength(0);
+    await vi.waitFor(() => expect(recovered.pendingDeletionVersions()).toHaveLength(0));
+    await recovered.close();
     const restarted = new RuntimeService({ rootPath: manager, onChanged() {} }); await restarted.init(); expect(restarted.list()).toHaveLength(0);
     for (const name of ['staging', 'quarantine', 'runtime-trash']) { await mkdir(path.join(manager, name, 'unused'), { recursive: true }); await writeFile(path.join(manager, name, 'unused', 'scratch'), 'discard'); }
     await mkdir(path.join(manager, 'cache'), { recursive: true }); await writeFile(path.join(manager, 'cache', `${'a'.repeat(64)}.exe`), 'installer'); await writeFile(path.join(manager, 'cache', 'unknown-user-file'), 'preserve');

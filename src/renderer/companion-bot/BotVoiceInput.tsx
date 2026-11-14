@@ -1,3 +1,4 @@
+import { useBotCallDocument } from './call-pet';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import type { WorldlineBoxLocalSpeechApi } from '../../shared/local-speech';
@@ -17,6 +18,7 @@ export function BotVoiceInput({ conversationId, locale, disabled, textOnly = fal
   onText(text: string): void; onVoice?(media: BotMediaRef): Promise<void>; api?: WorldlineBoxLocalSpeechApi;
   onStart?(): void; onActivityChange?(active: boolean): void;
 }) {
+  const surface = useBotCallDocument();
   const zh = locale === 'zh-CN', [mode, setMode] = useState<Mode>('text'), [phase, setPhase] = useState<Phase>('idle');
   const [seconds, setSeconds] = useState(0), [levels, setLevels] = useState(emptyLevels), [error, setError] = useState('');
   const [recording, setRecording] = useState<VoiceRecording>(), [media, setMedia] = useState<BotMediaRef>();
@@ -125,9 +127,11 @@ export function BotVoiceInput({ conversationId, locale, disabled, textOnly = fal
     };
     const up = (event: KeyboardEvent) => { if (event.code === 'Space' && held.current) { event.preventDefault(); controls.current.finish(); } };
     const blur = () => { if (held.current) controls.current.cancel(); };
-    window.addEventListener('keydown', down, true); window.addEventListener('keyup', up, true); window.addEventListener('blur', blur);
-    return () => { window.removeEventListener('keydown', down, true); window.removeEventListener('keyup', up, true); window.removeEventListener('blur', blur); };
-  }, [open]);
+    const view = surface.defaultView;
+    if (!view) return;
+    view.addEventListener('keydown', down, true); view.addEventListener('keyup', up, true); view.addEventListener('blur', blur);
+    return () => { view.removeEventListener('keydown', down, true); view.removeEventListener('keyup', up, true); view.removeEventListener('blur', blur); };
+  }, [open, surface]);
   if (!api) return null;
   const choose = (selected: Mode) => { if (mode === selected && ['starting', 'recording'].includes(currentPhase.current)) stop(); else void start(selected); };
   const time = `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;

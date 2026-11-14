@@ -41,27 +41,56 @@ test('executor status remains compact and theme-integrated while starting, stopp
       const baseline = await page.evaluate(async () => (Reflect.get(window, 'worldlinebox') as { dshLauncher: WorldlineBoxDshLauncherApi }).dshLauncher.request({ type: 'state' }));
       if (!baseline.ok || !baseline.state) throw Error('No validated launcher state');
       const stamp = new Date().toISOString();
-      const instance: DshInstance = { id: 'notice-only', name: '界面状态夹具', runtimeId: 'not-executed', createdAt: stamp, updatedAt: stamp,
+      const runtime = { id: 'notice-runtime', version: '0.2.2-rc.1', nodeVersion: '24', platform: 'win32-x64', adapter: 'node-cli-web-v1', source: 'ui-fixture', sourceSha256: '0'.repeat(64), contentSha256: '0'.repeat(64), installedAt: stamp, fileCount: 0, byteLength: 0 };
+      const instance: DshInstance = { id: 'notice-only', name: '界面状态夹具', runtimeId: runtime.id, createdAt: stamp, updatedAt: stamp,
         profile: 'web', status: 'stopped', homePath: profile, agentsPath: profile, workspacePath: profile, browserPartition: 'notice-fixture', isDefault: true };
-      for (const status of ['starting', 'stopped', 'failed'] as const) {
-        const state = dshLauncherStateSchema.parse({ ...baseline.state, supported: true, instances: [{ ...instance, status, ...(status === 'failed' ? { lastError: 'A presentation-only connection diagnostic.' } : {}) }], executionReadiness: undefined });
+      const header = page.locator('.bot-chat-header'), transcript = page.locator('.bot-transcript');
+      const notice = header.getByRole('complementary', { name: 'DSH 执行器状态' });
+      const publish = async (status: DshInstance['status']) => {
+        const state = dshLauncherStateSchema.parse({ ...baseline.state, supported: true, runtimes: [runtime], instances: [{ ...instance, status, ...(status === 'failed' ? { lastError: 'A presentation-only connection diagnostic.' } : {}) }], executionReadiness: undefined });
         await application.evaluate(({ BrowserWindow }, input) => BrowserWindow.getAllWindows()[0]!.webContents.send(input.channel, input.state), { channel: DSH_LAUNCHER_CHANGED_CHANNEL, state });
-        const notice = page.getByRole('complementary', { name: 'DSH 执行器状态' });
+      };
+      await expect(page.getByRole('dialog', { name: '连接共享 DSH' })).toBeVisible();
+      await publish('running');
+      await expect(page.locator('.bot-composer')).toBeVisible();
+      await expect(notice.locator('.bot-executor-status-label')).toHaveText('尚未配置 DSH');
+      await publish('running');
+      await expect(notice).toHaveCount(0);
+      const presence = header.locator('.bot-presence-summary');
+      await expect(presence).toBeVisible();
+      await expect(header.locator('.bot-avatar .bot-presence-dot')).toHaveCount(0);
+      const dot = (await presence.locator('.bot-presence-indicator').boundingBox())!;
+      const presenceText = (await presence.locator('.bot-presence-text').boundingBox())!;
+      expect(dot.x + dot.width).toBeLessThan(presenceText.x);
+      expect(Math.abs(dot.y + dot.height / 2 - presenceText.y - presenceText.height / 2)).toBeLessThan(1);
+      const chatBounds = await transcript.boundingBox();
+      for (const status of ['starting', 'stopped', 'failed', 'running'] as const) {
+        await publish(status);
+        if (status === 'running') {
+          await expect(notice).toHaveCount(0);
+          expect(await transcript.boundingBox()).toEqual(chatBounds);
+          continue;
+        }
         await expect(notice).toBeVisible();
         await expect(notice.locator('.bot-executor-status-label')).toHaveText(status === 'starting' ? 'DSH 正在启动…' : status === 'stopped' ? 'DSH 未启动' : 'DSH 启动失败');
-        const geometry = await notice.evaluate(element => { const bounds = element.getBoundingClientRect(), chat = element.closest('.bot-main')!.getBoundingClientRect(), style = getComputedStyle(element);
-          return { width: bounds.width, height: bounds.height, chatWidth: chat.width, background: style.backgroundColor, borderRadius: style.borderRadius, overflow: element.scrollWidth > element.clientWidth + 1 }; });
-        expect(geometry.height).toBeLessThanOrEqual(40); expect(geometry.width).toBeLessThan(geometry.chatWidth * .8);
-        expect(geometry.overflow).toBe(false); expect(geometry.borderRadius).toBe('10px');
-        await expect(notice.getByRole('button', { name: '前往启动器' })).toBeVisible();
-        if (status === 'starting') await expect(notice.getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
-        if (status === 'failed') { await expect(notice).not.toContainText('presentation-only'); await notice.getByRole('button', { name: '详情', exact: true }).click(); await expect(notice).toContainText('presentation-only'); }
+        const geometry = (await notice.boundingBox())!;
+        const headerBounds = (await header.boundingBox())!;
+        expect(geometry.height).toBeLessThanOrEqual(34);
+        expect(geometry.x + geometry.width).toBeLessThan(headerBounds.x + headerBounds.width);
+        expect(geometry.y + geometry.height).toBeLessThan(headerBounds.y + headerBounds.height);
+        expect(await transcript.boundingBox()).toEqual(chatBounds);
+        const trigger = notice.locator('summary'), panel = notice.locator('.bot-executor-panel');
+        await expect(panel).toBeHidden();
+        await trigger.press('Enter');
+        await expect(panel.getByRole('button', { name: '前往启动器' })).toBeVisible();
+        if (status === 'starting') await expect(panel.getByRole('button', { name: '启动', exact: true })).toHaveCount(0);
+        else await expect(panel.getByRole('button', { name: '启动', exact: true })).toBeVisible();
+        if (status === 'failed') await expect(panel.locator('.bot-executor-diagnostic')).toBeVisible();
+        expect(await transcript.boundingBox()).toEqual(chatBounds);
+        await trigger.press('Escape');
+        await expect(panel).toBeHidden();
+        await trigger.blur();
         measurements.push({ theme, preset, status, ...geometry });
-        if (status === 'failed') {
-          await notice.getByRole('button', { name: '详情', exact: true }).click();
-          await expect(notice).not.toContainText('presentation-only');
-          await expect(notice.getByRole('button', { name: '详情', exact: true })).toHaveAttribute('aria-expanded', 'false');
-        }
         await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
         const previous = await application.evaluate(({ BrowserWindow }) => { const count = (Reflect.get(globalThis, '__executorNoticeFrames') as { count: number }).count; BrowserWindow.getAllWindows()[0]!.webContents.invalidate(); return count; });
         await expect.poll(() => application.evaluate(() => (Reflect.get(globalThis, '__executorNoticeFrames') as { count: number }).count)).toBeGreaterThan(previous);

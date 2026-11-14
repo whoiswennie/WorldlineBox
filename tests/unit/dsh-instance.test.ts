@@ -5,6 +5,7 @@ import os from 'node:os';
 import { InstanceService } from '../../src/main/dsh/instance-service';
 import { OperationStore } from '../../src/main/dsh/operations';
 import { dshRuntimeSchema } from '../../src/shared/dsh-launcher';
+import { runtimeReferences } from '../../src/shared/dsh-runtime-references';
 import { TEST_NODE_EXECUTABLE, TEST_NODE_VERSION } from '../helpers/node-executable';
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -56,13 +57,57 @@ it('creates, selects, uses, stops and deletes through journaled operations witho
   const stopped = await f.service.handle({ type: 'instance.stop', instanceId: instance.id });
   expect(stopped.ok).toBe(true); await f.operations.settle();
   expect(f.service.get(instance.id).status).toBe('stopped');
-  const deleted = await f.service.handle({ type: 'instance.delete', instanceId: instance.id });
-  if (!deleted.ok) throw Error(deleted.error); await f.operations.settle();
-  expect(f.operations.list().find(value => value.id === deleted.operationId)).toMatchObject({ status: 'succeeded' });
+  const archived = await f.service.handle({ type: 'instance.delete', instanceId: instance.id });
+  if (!archived.ok) throw Error(archived.error); await f.operations.settle();
+  expect(f.operations.list().find(value => value.id === archived.operationId)).toMatchObject({ kind: 'instance.archive', status: 'succeeded' });
   expect(f.service.list().map(value => value.id)).toEqual([sibling.id]);
+  expect(f.service.archivedInstances()).toEqual([expect.objectContaining({ id: instance.id, runtimeVersion: '0.2.0' })]);
+  expect(await readdir(f.service.getRoot(instance.id))).toContain('home');
+  const purged = await f.service.handle({ type: 'instance.purge-archive', instanceId: instance.id });
+  if (!purged.ok) throw Error(purged.error); await f.operations.settle();
+  expect(f.operations.list().find(value => value.id === purged.operationId)).toMatchObject({ status: 'succeeded' });
   await expect(readdir(f.service.getRoot(instance.id))).rejects.toMatchObject({ code: 'ENOENT' });
   expect(JSON.parse(await readFile(path.join(f.root, 'native-instances.json'), 'utf8'))).toEqual([expect.objectContaining({ id: sibling.id, isDefault: true })]);
   await siblingHost.health();
+});
+
+it('restores the same archived instance after restart without copying it or clearing its browser partition', async () => {
+  const f = await fixture(), instance = await f.service.create('Original DSH', 'runtime-a');
+  const data = { 'sessions.json': 'existing chat', 'plugins.json': 'private plugins', 'sign-in.json': 'local test credential' };
+  for (const [filename, value] of Object.entries(data)) await writeFile(path.join(instance.homePath, filename), value);
+  const clear = vi.fn(async () => undefined); f.serviceOptions.clearBrowserData = clear;
+  const archive = await f.service.handle({ type: 'instance.archive', instanceId: instance.id });
+  expect(archive.ok).toBe(true); await f.operations.settle();
+  expect(f.service.list()).toEqual([]);
+  await f.service.shutdown();
+  const reopened = new InstanceService(f.serviceOptions); cleanup.unshift(() => reopened.shutdown()); await reopened.init();
+  expect(reopened.archivedInstances()).toEqual([expect.objectContaining({ id: instance.id, browserPartition: instance.browserPartition })]);
+  const restored = await reopened.handle({ type: 'instance.unarchive', instanceId: instance.id });
+  expect(restored.ok).toBe(true); await f.operations.settle();
+  expect(reopened.archivedInstances()).toEqual([]);
+  expect(reopened.list()).toEqual([expect.objectContaining({ id: instance.id, isDefault: true, browserPartition: instance.browserPartition, homePath: instance.homePath })]);
+  for (const [filename, value] of Object.entries(data)) expect(await readFile(path.join(instance.homePath, filename), 'utf8')).toBe(value);
+  expect(clear).not.toHaveBeenCalled();
+});
+
+it('requires archiving before permanent cleanup and fences an interrupted purge from restoration', async () => {
+  const f = await fixture(), instance = await f.service.create('Original DSH', 'runtime-a');
+  const clear = vi.fn(async () => undefined).mockRejectedValueOnce(new Error('Test storage failure'));
+  f.serviceOptions.clearBrowserData = clear;
+  const run = async (type: 'instance.archive' | 'instance.unarchive' | 'instance.purge-archive') => {
+    const result = await f.service.handle({ type, instanceId: instance.id });
+    if (!result.ok) throw Error(result.error);
+    await f.operations.settle();
+    return f.operations.list().find(operation => operation.id === result.operationId);
+  };
+  expect(await run('instance.purge-archive')).toMatchObject({ status: 'failed' });
+  expect(clear).not.toHaveBeenCalled();
+  expect(await run('instance.archive')).toMatchObject({ status: 'succeeded' });
+  expect(await run('instance.purge-archive')).toMatchObject({ status: 'failed' });
+  expect(f.service.archivedInstances()[0]).toMatchObject({ purgePending: true });
+  expect(await run('instance.unarchive')).toMatchObject({ status: 'failed' });
+  expect(await run('instance.purge-archive')).toMatchObject({ status: 'succeeded' });
+  expect(f.service.archivedInstances()).toEqual([]);
 });
 
 it('still refuses deletion while a real task lease, terminal or another operation holds the instance', async () => {
@@ -104,10 +149,10 @@ it('can snapshot, clone and export a stopped instance from its own journaled ope
 it('deduplicates concurrent starts and opens the same native Host for the user', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a');
   const clients = await Promise.all(Array.from({ length: 8 }, () => f.service.ensureHost(instance.id)));
-  expect(new Set(clients.map(value => value.pid)).size).toBe(1); expect(f.verify).toHaveBeenCalledTimes(1);
+  expect(new Set(clients.map(value => value.pid)).size).toBe(1); expect(f.verify).not.toHaveBeenCalled();
   expect((await f.service.handle({ type: 'instance.open', instanceId: instance.id })).ok).toBe(true); await f.operations.settle();
   expect(f.openWorkbench).toHaveBeenCalledWith(expect.objectContaining({ pid: clients[0]!.pid }), f.service.getUrl(instance.id));
-  expect(f.verify).toHaveBeenCalledTimes(1);
+  expect(f.verify).not.toHaveBeenCalled();
 });
 it('does not publish an early bridge client before the shared Web token exchange completes', async () => {
   const f = await fixture(true), instance = await f.service.create('Gated host', 'runtime-a');
@@ -121,8 +166,8 @@ it('does not publish an early bridge client before the shared Web token exchange
   await writeFile(f.readyGate, 'release');
   const clients = await Promise.all([first, second]);
   expect(clients[0].pid).toBe(clients[1].pid);
-  expect(f.verify).toHaveBeenCalledTimes(1);
-  expect(f.startup.mock.calls.map(([value]) => value.phase)).toEqual(['verifying-runtime', 'preparing-profile', 'starting-host', 'ready']);
+  expect(f.verify).not.toHaveBeenCalled();
+  expect(f.startup.mock.calls.map(([value]) => value.phase)).toEqual(['preparing-profile', 'starting-host', 'ready']);
 });
 it('runs multiple pinned versions concurrently with distinct native Homes', async () => {
   const f = await fixture(), first = await f.service.create('A', 'runtime-a'), second = await f.service.create('B', 'runtime-b');
@@ -155,9 +200,9 @@ it.each([false, true])('fences automatic starts after an explicit stop of an ord
   await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'stopped', instanceId: instance.id });
   await stop;
   await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ reason: 'stopped' });
-  expect(f.verify).toHaveBeenCalledTimes(1); expect(f.service.get(instance.id).status).toBe('stopped');
+  expect(f.verify).not.toHaveBeenCalled(); expect(f.service.get(instance.id).status).toBe('stopped');
   await f.service.ensureHost(instance.id);
-  expect(f.service.get(instance.id).status).toBe('running'); expect(f.verify).toHaveBeenCalledTimes(2);
+  expect(f.service.get(instance.id).status).toBe('running'); expect(f.verify).not.toHaveBeenCalled();
 });
 
 it('lets an explicit resume wait for the same instance shutdown and starts exactly one replacement', async () => {
@@ -166,7 +211,7 @@ it('lets an explicit resume wait for the same instance shutdown and starts exact
   const resumes = [f.service.ensureHost(instance.id), f.service.ensureHost(instance.id)];
   await stopping; const clients = await Promise.all(resumes);
   expect(clients[0]!.pid).toBe(clients[1]!.pid); expect(clients[0]!.pid).not.toBe(old.pid);
-  expect(f.verify).toHaveBeenCalledTimes(2); expect(f.service.list()).toHaveLength(1);
+  expect(f.verify).not.toHaveBeenCalled(); expect(f.service.list()).toHaveLength(1);
 });
 
 it('does not let a failing stop observer prevent the actual stop or clear its fence', async () => {
@@ -182,7 +227,7 @@ it('keeps a newer explicit stop authoritative over a resume already waiting for 
   const resume = f.service.ensureHost(instance.id), rejected = expect(resume).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'stopped' });
   const lastStop = f.service.stop(instance.id);
   await Promise.all([firstStop, lastStop, rejected]);
-  expect(f.service.get(instance.id).status).toBe('stopped'); expect(f.verify).toHaveBeenCalledTimes(1);
+  expect(f.service.get(instance.id).status).toBe('stopped'); expect(f.verify).not.toHaveBeenCalled();
 });
 
 it('stops a shared startup before readiness and leaves no automatic revival or false failed state', async () => {
@@ -193,7 +238,7 @@ it('stops a shared startup before readiness and leaves no automatic revival or f
   await f.service.stop(instance.id); await rejected;
   expect(f.service.get(instance.id).status).toBe('stopped');
   await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ reason: 'stopped' });
-  expect(f.verify).toHaveBeenCalledTimes(1);
+  expect(f.verify).not.toHaveBeenCalled();
 });
 
 it('recovers a crashed Host on demand without confusing it with a user stop', async () => {
@@ -202,14 +247,15 @@ it('recovers a crashed Host on demand without confusing it with a user stop', as
   await previous.request('/shutdown'); await vi.waitFor(() => expect(f.service.get(instance.id).status).toBe('failed'));
   const recovered = await f.service.ensureHost(instance.id, undefined, { automatic: true });
   expect(recovered.pid).not.toBe(previous.pid); expect(f.manualStop).not.toHaveBeenCalled();
-  expect(f.service.get(instance.id).status).toBe('running'); expect(f.verify).toHaveBeenCalledTimes(2);
+  expect(f.service.get(instance.id).status).toBe('running'); expect(f.verify).not.toHaveBeenCalled();
 });
 
 it('classifies a definite startup failure separately from missing configuration and shutdown', async () => {
   const f = await fixture(), instance = await f.service.create('Bad startup', 'runtime-a');
-  f.verify.mockRejectedValueOnce(new Error('runtime bytes changed'));
+  f.serviceOptions.runtimes.plan = () => { throw Object.assign(new Error('Missing executable'), { code: 'ENOENT' }); };
   await expect(f.service.ensureHost(instance.id, undefined, { automatic: true })).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'startup', instanceId: instance.id });
-  expect(f.service.get(instance.id).status).toBe('failed');
+  expect(f.service.get(instance.id)).toMatchObject({ status: 'failed', lastError: expect.stringContaining('完整性校验') });
+  expect(f.verify).not.toHaveBeenCalled();
   await expect(f.service.ensureHost('missing', undefined, { automatic: true })).rejects.toMatchObject({ reason: 'configuration', instanceId: 'missing' });
   await f.service.shutdown();
   await expect(f.service.ensureHost(instance.id)).rejects.toMatchObject({ reason: 'closing' });
@@ -391,7 +437,7 @@ it('does not revive an explicitly stopped companion when an automatic plugin res
   });
   const restart = f.service.recycleCompanionIfIdle(own.id); await reached;
   await f.service.stop(own.id); released(); expect(await restart).toBe(true);
-  expect(f.service.get(own.id).status).toBe('stopped'); expect(f.verify).toHaveBeenCalledTimes(1);
+  expect(f.service.get(own.id).status).toBe('stopped'); expect(f.verify).not.toHaveBeenCalled();
   await f.service.ensureHost(own.id); expect(f.service.get(own.id).status).toBe('running');
 });
 it('reclaims the least recently used idle private Host before warming a fourth environment', async () => {
@@ -442,6 +488,22 @@ it('blocks upgrades during active use and rolls a failed native migration back t
   expect(f.service.get(own.id)).toMatchObject({ runtimeId: 'runtime-a', status: 'stopped', homePath: own.homePath });
   expect(await readFile(path.join(own.homePath, 'migration-data.txt'), 'utf8')).toBe('original plugin state');
   expect(await (await f.service.ensureHost(own.id)).request('/health')).toMatchObject({ version: '0.2.0' });
+});
+it('keeps an independently restorable upgrade snapshot after removing the old runtime', async () => {
+  const f = await fixture(), instance = await f.service.create('Original', 'runtime-a');
+  await writeFile(path.join(instance.homePath, 'original-session.json'), 'before upgrade');
+  await f.service.upgradeCompanion(instance.id, 'runtime-b', upgradeOperation());
+  const snapshot = f.service.snapshots()[0]!;
+  expect(snapshot).toMatchObject({ runtimeId: 'runtime-a', upgradeFromVersion: '0.2.0' });
+  expect(runtimeReferences({ instances: f.service.list(), snapshots: [snapshot], packs: [] }, 'runtime-a')).toEqual([]);
+  f.serviceOptions.runtimes.list().splice(0, 1);
+  const restore = await f.service.handle({ type: 'snapshot.restore', snapshotId: snapshot.id, runtimeId: 'runtime-b', name: 'Restored' });
+  if (!restore.ok) throw Error(restore.error); await f.operations.settle();
+  expect(f.operations.list().find(value => value.id === restore.operationId)).toMatchObject({ status: 'succeeded' });
+  const restored = f.service.list().find(value => value.name === 'Restored')!;
+  expect(restored).toMatchObject({ runtimeId: 'runtime-b' });
+  expect(restored.id).not.toBe(instance.id);
+  expect(await readFile(path.join(restored.homePath, 'original-session.json'), 'utf8')).toBe('before upgrade');
 });
 it('recovers an interrupted upgrade from its verified snapshot while retaining the durable companion identity', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a'), own = await f.service.ensureCompanion('partner-a', '甲', base);

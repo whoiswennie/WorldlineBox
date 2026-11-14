@@ -204,6 +204,7 @@ import { useT, useLocale, translateForLocale, type AppLocale } from "./i18n";
 import type { AiApiFormat } from "../shared/ai-endpoints";
 import { DEFAULT_AI_API_FORMAT } from "../shared/ai-endpoints";
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
+import type { WorldlineBoxMobileAccessApi } from "../shared/mobile-access";
 import type { ExtensionSaveCompletedEvent, HistoryStatus } from "../shared/protocol/responses";
 import { isEditableTextTarget } from "../shared/edit-context-menu";
 import type { SearchQuery } from "../shared/asset-types";
@@ -441,7 +442,7 @@ import {
   MANAGED_FOLDERS_DRAG_TYPE,
   resolveDraggedFolderIds,
 } from "./folder-drag-drop";
-import { importSummaryMessage } from "./import-summary";
+import { importSummaryMessage, shouldNotifyImportCompletion } from "./import-summary";
 import { automationCommandToast } from "./automation-command-toast";
 import {
   resolveDialogEscapeAction,
@@ -682,6 +683,12 @@ import {
   captureBrowseViewSnapshot,
   type BrowseViewSnapshot,
 } from "./view-restore";
+import { tagRenameError } from "./tag-rename-error";
+import { readFocusedNavFolder } from "./folder-shortcut-dispatch";
+import { useAssetCutState } from "./use-asset-cut-state";
+import { clipboardSelectionIds } from "./clipboard-selection";
+import { useMediaPlayback } from "./use-media-playback";
+import { tagBrowseDefinition } from "./tag-browse-definition";
 import { scheduleBrowseViewRestore } from "./browse-view-restore-scheduler";
 import {
   canvasHasPreviewScrollHold,
@@ -732,6 +739,7 @@ type RendererWindow = Window & {
     automation?: WorldlineBoxAutomationScriptApi;
     plugins?: WorldlineBoxPluginManagerApi;
     mcp?: WorldlineBoxMcpSettingsApi;
+    mobileAccess?: WorldlineBoxMobileAccessApi;
     e2e?: {
       useNativeAssetDrag?: boolean;
       getRequestCount: (type: string) => number;
@@ -4522,6 +4530,17 @@ export function AssetManager({
     }
   }, [navHistoryRef, selectionAnchorRef, setNavHistoryUi, syncActiveWorkspaceTabLocation]);
 
+  const mediaPlayback = useMediaPlayback({
+    api: api ?? null,
+    libraryId: library?.libraryId ?? null,
+    current: previewAsset,
+    shuffleSeed,
+    getOrderedIds: fetchBrowseScopeAssetIds,
+    ensureLoaded: (rank) => ensureBrowseVisibleIndices([rank]),
+    navigate: navigateAssetPreview,
+    setError,
+  });
+
   useEffect(() => {
     const pendingPreview = pendingWorkspacePreviewRef.current;
     if (!pendingPreview) return;
@@ -7037,10 +7056,24 @@ export function AssetManager({
       const tagResult = await api.listTags({ libraryId: library.libraryId });
       if (!tagResult.ok) throw new LibraryOperationError(tagResult.error);
       setTags(tagResult.value);
+      const rename = (metadata: AssetMetadataResult) => ({ ...metadata,
+        tags: metadata.tags.map(tag => tag.id === tagId ? { ...tag, name } : tag),
+      });
+      for (const [id, metadata] of metadataByAssetRef.current) {
+        metadataByAssetRef.current.set(id, rename(metadata));
+      }
+      setAssetMetadata(current => current ? rename(current) : current);
+      if (selectedAssetIds.length >= 2) rebuildAndApplyMultiEdit(selectedAssetIds);
+      if (activeTagId === tagId) {
+        setTagFilter(name);
+        const expression = escapeTagExpressionName(name);
+        setTagFilterExpression(expression);
+        setTagFilterLastValidExpression(expression);
+      }
       setNotice(t("toast.tagRenamed", { name }), result.value.historyEntryId);
       return true;
     } catch (caught) {
-      setError(toMessage(caught, t("toast.renameTagFailed"), locale));
+      setError(tagRenameError(caught, locale));
       return false;
     }
   }
@@ -7205,14 +7238,9 @@ export function AssetManager({
     await closeAssetPreview(false);
     if (!request.isCurrent() || !isCurrentLibraryView(viewSession)) return;
     try {
-      const definition = request.browseState
+      const definition: SearchDefinition = request.browseState
         ? queryDefinitionForWorkspaceBrowseState(request.browseState)
-        : currentQueryDefinition({
-          tagFilter: tag.name,
-          tagFilterExpression: escapeTagExpressionName(tag.name),
-          excludeTagFilter: false,
-          excludedTagFilter: "",
-        });
+        : tagBrowseDefinition(tag.name, currentQueryDefinition());
       const includeIgnored =
         request.browseState?.showIgnoredItems ?? showIgnoredItems;
       const result = await api.openBrowseSession({
@@ -7242,9 +7270,11 @@ export function AssetManager({
       setAssetScope("all");
       clearAssetSelection();
       if (!request.browseState) {
+        clearDiscoveryControls();
+        const expression = escapeTagExpressionName(tag.name);
         setTagFilter(tag.name);
-        setTagFilterExpression(escapeTagExpressionName(tag.name));
-        setTagFilterLastValidExpression(escapeTagExpressionName(tag.name));
+        setTagFilterExpression(expression);
+        setTagFilterLastValidExpression(expression);
         setTagFilterMode("expression");
         setExcludeTagFilter(false);
         setExcludedTagFilter("");
@@ -8087,7 +8117,13 @@ export function AssetManager({
       });
     const tagSelectionOverridden = overrides.tagFilter !== undefined
       || overrides.excludedTagFilter !== undefined || overrides.excludeTagFilter !== undefined;
-    if (overrides.tagFilterExpression !== undefined || (filtersState.tagFilterMode === "expression" && !tagSelectionOverridden)) {
+    const exactTag = tags.find(tag => tag.tagId === activeTagId);
+    if (exactTag && !tagSelectionOverridden && overrides.tagFilterExpression === undefined
+      && filtersState.tagFilterMode === "expression"
+      && filtersState.tagFilterExpression === escapeTagExpressionName(exactTag.name)) {
+      filters.push({ field: "tag", values: [exactTag.name], exclude: false,
+        includeAi: filtersState.includeAiTagFilter });
+    } else if (overrides.tagFilterExpression !== undefined || (filtersState.tagFilterMode === "expression" && !tagSelectionOverridden)) {
       const tagExpression = overrides.tagFilterExpression ?? filtersState.tagFilterExpression ?? "";
       const parsedTags = parseSearchExpressionDetailed(tagExpression, "tags");
       if (!parsedTags.ok && filtersState.tagFilterLastValidExpression) {
@@ -8813,6 +8849,8 @@ export function AssetManager({
     },
   });
 
+  const assetCutState = useAssetCutState(api ?? null, library?.libraryId ?? null);
+
   const {
     handleOpenExternal,
     handleRevealInFolder,
@@ -8826,7 +8864,28 @@ export function AssetManager({
     library,
     setError,
     setNotice,
+    onClipboardChanged: assetCutState.refresh,
   });
+
+  const copyClipboardSelection = useCallback((operation: 'copy' | 'cut') => {
+    if (!isModuleActive || !library || showTrash || previewAsset || busy || hasActiveModalDialog()) return false;
+    const focused = readFocusedNavFolder(document.activeElement);
+    if (focused?.locationKind === 'linked' && operation === 'copy') {
+      void handleCopyFolder(focused.folderId);
+      return true;
+    }
+    const folderIds = focused
+      ? selectedFolderIds.includes(focused.folderId) ? selectedFolderIds : [focused.folderId]
+      : selectedFolderIds;
+    const managedIds = folderIds.filter(id => folders.some(folder => folder.folderId === id));
+    const assetIds = focused ? [] : clipboardSelectionIds(selectedAssetIds, selectedAssets, operation);
+    if (assetIds.length + managedIds.length === 0) return false;
+    void handleCopyAssetFiles(assetIds, operation, managedIds);
+    return true;
+  }, [busy, folders, handleCopyAssetFiles, handleCopyFolder, isModuleActive, library, previewAsset, selectedAssetIds, selectedAssets, selectedFolderIds, showTrash]);
+
+  const copyClipboardSelectionRef = useRef(copyClipboardSelection);
+  copyClipboardSelectionRef.current = copyClipboardSelection;
 
   const browsePasteDestination = resolveBrowsePasteDestination({
     libraryOpen: Boolean(library),
@@ -8860,15 +8919,9 @@ export function AssetManager({
       runImportRpc: runCurrentImportRpc,
     });
 
-  const osClipboardPasteAtRef = useRef(0);
   const pasteOsClipboardFiles = useCallback(
-    (folderId: string | null) => {
-      const now = Date.now();
-      if (now - osClipboardPasteAtRef.current < 400) return;
-      osClipboardPasteAtRef.current = now;
-      void pasteIntoFolder(folderId);
-    },
-    [pasteIntoFolder],
+    (folderId: string | null) => pasteIntoFolder(folderId).finally(assetCutState.refresh),
+    [pasteIntoFolder, assetCutState.refresh],
   );
 
   const {
@@ -8968,16 +9021,15 @@ export function AssetManager({
       handleAssetsDroppedOnFolder(folderId, assetIds, mode),
   });
 
-  // Paste-into-folder entry shared by the keyboard shortcut, Edit menu, and
-  // context menus: the clipboard may hold a bitmap image (invisible to the
-  // paste event on Windows) or OS file paths — try the image first and fall
-  // back to OS file paste. WorldlineBox-a3de58.
+  const clipboardPasteInFlight = useRef(false);
   const dispatchClipboardPaste = useCallback(
-    (destination: string | null) => {
+    (destination: string | null | undefined) => {
+      if (clipboardPasteInFlight.current) return;
+      clipboardPasteInFlight.current = true;
       void pasteClipboardImage({
         targetFolderId: destination ?? undefined,
-        onNoClipboardImage: () => pasteOsClipboardFiles(destination),
-      });
+        onNoClipboardImage: () => destination === undefined ? undefined : pasteOsClipboardFiles(destination),
+      }).finally(() => { clipboardPasteInFlight.current = false; });
     },
     [pasteClipboardImage, pasteOsClipboardFiles],
   );
@@ -9242,7 +9294,9 @@ export function AssetManager({
     selectedFolderCardIds: selectedFolderIds,
     selectedAssetCount: selectedAssetIds.length,
     resolveManagedFolderName,
+    canCutFolder: (id) => folders.some(folder => folder.folderId === id),
     canRenameFolder: (folderId) =>
+      (parseLinkedVirtualFolderId(folderId) !== null && linkedFolders.some(folder => folder.folderId === parseLinkedVirtualFolderId(folderId)?.linkedFolderId && folder.status === "available")) ||
       folders.some((folder) => folder.folderId === folderId) ||
       linkedFolders.some(
         (folder) => folder.folderId === folderId && folder.status === "available",
@@ -9262,6 +9316,7 @@ export function AssetManager({
       cancelInlineSmartCollectionEdit();
       openInlineFolderCreate(parentFolderId);
     },
+    cutFolders: (folderIds) => { void handleCopyAssetFiles([], "cut", folderIds); },
     copyFolder: (folderId) => {
       void handleCopyFolder(folderId);
     },
@@ -10142,7 +10197,7 @@ export function AssetManager({
         },
       });
       if (!completion) return;
-      setNotice(importSummaryMessage(completion, locale));
+      if (shouldNotifyImportCompletion(completion)) setNotice(importSummaryMessage(completion, locale));
       await revealAfterImport(completion);
       offerPostImportImageSequences(completion.assets);
       playTaskCompletionSound(startedAt);
@@ -10175,7 +10230,7 @@ export function AssetManager({
         }
         throw new LibraryOperationError(result.error);
       }
-      setNotice(importSummaryMessage(result.value, locale));
+      if (shouldNotifyImportCompletion(result.value)) setNotice(importSummaryMessage(result.value, locale));
       setFolderBrowseRefreshToken((token) => token + 1);
       await reloadCurrentContent({ blockingNavigation: true });
       playTaskCompletionSound(startedAt);
@@ -10207,7 +10262,7 @@ export function AssetManager({
         }
         throw new LibraryOperationError(result.error);
       }
-      setNotice(importSummaryMessage(result.value, locale));
+      if (shouldNotifyImportCompletion(result.value)) setNotice(importSummaryMessage(result.value, locale));
       setFolderBrowseRefreshToken((token) => token + 1);
       await reloadCurrentContent({ blockingNavigation: true });
       playTaskCompletionSound(startedAt);
@@ -10315,7 +10370,7 @@ export function AssetManager({
         },
       });
       if (!completion) return;
-      setNotice(importSummaryMessage(completion, locale));
+      if (shouldNotifyImportCompletion(completion)) setNotice(importSummaryMessage(completion, locale));
       await revealAfterImport(completion);
       const nextSequenceIndex = input.sequenceIndex + 1;
       if (
@@ -10362,7 +10417,7 @@ export function AssetManager({
       clearImportConflictsUi();
       setImportProgress(null);
       setLibraryTransferKind("import");
-      setNotice(importSummaryMessage(result.value, locale));
+      if (shouldNotifyImportCompletion(result.value)) setNotice(importSummaryMessage(result.value, locale));
       await revealAfterImport(result.value);
       playTaskCompletionSound(startedAt);
     } catch (caught) {
@@ -10429,7 +10484,7 @@ export function AssetManager({
       clearImportSourceFailureUi();
       setImportProgress(null);
       setLibraryTransferKind("import");
-      setNotice(importSummaryMessage(completion, locale));
+      if (shouldNotifyImportCompletion(completion)) setNotice(importSummaryMessage(completion, locale));
       await revealAfterImport(completion);
       playTaskCompletionSound(startedAt);
     } catch (caught) {
@@ -12509,6 +12564,7 @@ export function AssetManager({
     busy,
     selectedAsset: previewAsset ?? selectedAsset,
     selectedAssets: previewAsset ? [previewAsset] : selectedAssets,
+    selectedAssetIds: previewAsset ? [previewAsset.assetId] : selectedAssetIds,
     pasteDestinationFolderId: browsePasteDestination,
     diskDeleteAssetIds: diskDeleteKeyboardTargets.assetIds,
     diskDeleteFolderIds: diskDeleteKeyboardTargets.folderIds,
@@ -12523,8 +12579,10 @@ export function AssetManager({
       });
     },
     onRename: openAssetRename,
-    onCopyFiles: (assetIds) => {
-      void handleCopyAssetFiles(assetIds);
+    onCutFiles: (assetIds, folderIds) => { void handleCopyAssetFiles(assetIds, "cut", folderIds); },
+    selectedFolderIds: selectedFolderIds.filter(id => folders.some(folder => folder.folderId === id)),
+    onCopyFiles: (assetIds, folderIds) => {
+      void handleCopyAssetFiles(assetIds, "copy", folderIds);
     },
     onCopyFilePath: (assetId) => {
       void handleCopyFilePath(assetId);
@@ -12611,13 +12669,7 @@ export function AssetManager({
         void shellApi.nativeEditCopy();
         return;
       }
-      const copyIds = selectedAssets
-        .filter(
-          (asset) => asset.availability === "available" && !asset.deletedAt,
-        )
-        .map((asset) => asset.assetId);
-      if (copyIds.length > 0) {
-        void handleCopyAssetFiles(copyIds);
+      if (copyClipboardSelection("copy")) {
         return;
       }
       void shellApi.nativeEditCopy();
@@ -12629,7 +12681,9 @@ export function AssetManager({
     showTrash,
     library,
     selectedAssets,
+    selectedAssetIds,
     handleCopyAssetFiles,
+    copyClipboardSelection,
   ]);
 
   // Capture-phase Escape guard: when context menu is open, stop
@@ -12692,21 +12746,8 @@ export function AssetManager({
       }
       if (hasActiveModalDialog()) return;
 
-      // Windows clipboard images are frequently bitmap-only (CF_DIB) that the
-      // renderer's clipboardData never reports as an image item. Delegate
-      // classification to Main's clipboard.readImage(): image first, then OS
-      // file paths, and stay silent when the clipboard holds neither.
       event.preventDefault();
-      void pasteClipboardImage({
-        targetFolderId:
-          browsePasteDestination === undefined
-            ? managedImportTargetFolderIdRef.current
-            : (browsePasteDestination ?? undefined),
-        onNoClipboardImage: () => {
-          if (browsePasteDestination === undefined) return;
-          pasteOsClipboardFiles(browsePasteDestination);
-        },
-      });
+      dispatchClipboardPaste(browsePasteDestination);
     };
     document.addEventListener("paste", onPaste);
     return () => document.removeEventListener("paste", onPaste);
@@ -12716,9 +12757,7 @@ export function AssetManager({
     busy,
     showTrash,
     browsePasteDestination,
-    managedImportTargetFolderIdRef,
-    pasteClipboardImage,
-    pasteOsClipboardFiles,
+    dispatchClipboardPaste,
   ]);
 
   useEffect(() => {
@@ -13910,6 +13949,8 @@ export function AssetManager({
         ? undefined
         : t("shell.mainMenuRedoCount", { count: operationHistory.redoTop.affectedCount }),
       hasSelectedAssets: selectedAssetIds.length > 0,
+      hasSelectedFolders: selectedFolderIds.some(id => folders.some(folder => folder.folderId === id)),
+      editableTextFocused,
       hasPasteTarget: browsePasteDestination !== undefined,
       hasBrowseAssets: browseScopeAssetIds.length > 0,
       showMissingLinkedFiles,
@@ -13957,11 +13998,15 @@ export function AssetManager({
       },
       undo: () => void undoLastFileOp(),
       redo: () => void redoLastOperation(),
+      cutSelection: () => {
+        if (editableTextFocused) {
+          void shellApi?.nativeEditCommand("cut");
+          return;
+        }
+        copyClipboardSelection("cut");
+      },
       copySelection: () => {
-        const copyIds = selectedAssets
-          .filter((asset) => asset.availability === "available" && !asset.deletedAt)
-          .map((asset) => asset.assetId);
-        if (copyIds.length > 0) void handleCopyAssetFiles(copyIds);
+        copyClipboardSelection("copy");
       },
       paste: () => {
         if (browsePasteDestination !== undefined) {
@@ -14038,6 +14083,11 @@ export function AssetManager({
         command === "window.toggle-fullscreen" &&
         (textEditingFocused || hasActiveModalDialog())
       ) return;
+      if (command === "edit.cut") {
+        if (textEditingFocused) void shellApi.nativeEditCommand("cut");
+        else copyClipboardSelectionRef.current("cut");
+        return;
+      }
       if (textEditingFocused && command === "edit.paste") {
         void shellApi.nativeEditCommand("paste");
         return;
@@ -14212,8 +14262,13 @@ export function AssetManager({
     >
       {folderRowEntries.map((entry) => (
         <FolderCard
+          cut={assetCutState.cutFolderIds.has(entry.folderId)}
           draggable={!showTrash}
           entry={entry}
+          rename={inlineFolderEdit?.kind === 'rename' && inlineFolderEdit.folderId === entry.folderId ? inlineFolderEdit : null}
+          onRenameChange={changeInlineFolderEdit}
+          onRenameCommit={() => void commitInlineFolderEdit()}
+          onRenameCancel={cancelInlineFolderEdit}
           key={entry.folderId}
           libraryId={library.libraryId}
           trashed={showTrash}
@@ -14727,6 +14782,7 @@ export function AssetManager({
         </div>
       </header>
       <NavigationSidebar
+        cutFolderIds={assetCutState.cutFolderIds}
         library={library}
         assetScope={assetScope}
         showTrash={showTrash}
@@ -14885,7 +14941,7 @@ export function AssetManager({
           cancelInlineFolderEdit();
           openInlineSmartCollectionCreate();
         }}
-        inlineFolderEdit={inlineFolderEdit}
+        inlineFolderEdit={inlineFolderEdit?.kind === 'rename' && folderRowEntries.some(entry => entry.folderId === inlineFolderEdit.folderId) ? null : inlineFolderEdit}
         onInlineFolderEditChange={changeInlineFolderEdit}
         onInlineFolderEditCommit={(onCreateSuccess) =>
           void commitInlineFolderEdit((folderId, parentFolderId) => {
@@ -15581,7 +15637,7 @@ export function AssetManager({
                       aria-label={canvasPrefs.fields.name ? undefined : asset.displayName}
                       data-hover-tip={canvasPrefs.fields.name ? undefined : asset.displayName}
                       aria-pressed={selectedIdSet.has(asset.assetId)}
-                      className={`asset-card${selectedIdSet.has(asset.assetId) ? " is-selected" : ""}${asset.availability === "missing" ? " is-missing" : ""}${corruptAsset ? " is-corrupt" : ""}${asset.deletedAt ? " is-trashed" : ""}${renamingThisAsset ? " is-renaming" : ""}`}
+                      className={`asset-card${assetCutState.cutAssetIds.has(asset.assetId) ? " is-cut" : ""}${selectedIdSet.has(asset.assetId) ? " is-selected" : ""}${asset.availability === "missing" ? " is-missing" : ""}${corruptAsset ? " is-corrupt" : ""}${asset.deletedAt ? " is-trashed" : ""}${renamingThisAsset ? " is-renaming" : ""}`}
                       data-asset-id={asset.assetId}
                       data-asset-name={asset.displayName}
                       data-media-type={asset.mediaType}
@@ -16134,6 +16190,7 @@ export function AssetManager({
                             renderLayoutPreview={(entry, renderOptions) =>
                               library ? (
                                 <BrowseLayoutPreview
+                                  cut={assetCutState.cutAssetIds.has(entry.assetId)}
                                   entry={entry}
                                   fields={canvasPrefs.fields}
                                   libraryId={library.libraryId}
@@ -16171,6 +16228,7 @@ export function AssetManager({
                             renderLayoutPreview={(entry, renderOptions) =>
                               library ? (
                                 <BrowseLayoutPreview
+                                  cut={assetCutState.cutAssetIds.has(entry.assetId)}
                                   entry={entry}
                                   fields={canvasPrefs.fields}
                                   libraryId={library.libraryId}
@@ -16275,6 +16333,9 @@ export function AssetManager({
         {previewAsset && library && api && (
           <>
           <AssetPreviewModal
+            mediaPlaybackMode={mediaPlayback.mode}
+            onMediaPlaybackModeChange={mediaPlayback.changeMode}
+            onMediaEnded={mediaPlayback.ended}
             ref={previewModalRef}
             api={api}
             asset={previewAsset}
@@ -16393,7 +16454,9 @@ export function AssetManager({
             setError(t("toast.colorCopyUnavailable"));
           }
         }}
-        onRemoveTagFromAsset={(tagId) => void handleInspectorRemoveTag(tagId)}
+        onRemoveTagFromAsset={handleInspectorRemoveTag}
+        onFilterTag={(tagId) => void chooseTag(tagId)}
+        onRenameTag={handleRenameTagInManagement}
         selectedAsset={selectedAsset}
         selectedAssets={selectedAssets}
         multiEdit={multiEdit}
@@ -16731,6 +16794,7 @@ export function AssetManager({
         pluginContributionRefreshKey={pluginContributionRefreshKey}
         libraryId={library?.libraryId}
         mcpApi={(window as RendererWindow).worldlinebox?.mcp}
+        mobileAccessApi={(window as RendererWindow).worldlinebox?.mobileAccess}
         open={appSettingsOpen}
         showCardSyncStatus={canvasPrefs.fields.badgeSync}
         onShowCardSyncStatusChange={(checked) => {
@@ -17424,8 +17488,10 @@ export function AssetManager({
           void runFindSimilar(assetId);
         }}
         onCopyFilePath={(assetId) => { void handleCopyFilePath(assetId); }}
-        onCopyAssetFiles={(assetIds) => {
-          void handleCopyAssetFiles(assetIds);
+        onCutAssetFiles={(assetIds, folderIds) => { void handleCopyAssetFiles(assetIds, "cut", folderIds); }}
+        onCutFolders={(folderIds) => { void handleCopyAssetFiles([], "cut", folderIds); }}
+        onCopyAssetFiles={(assetIds, folderIds) => {
+          void handleCopyAssetFiles(assetIds, "copy", folderIds);
         }}
         pasteTargetFolderId={browsePasteDestination}
         onRenameAssetFile={(assetId) => { openAssetRename(assetId); }}

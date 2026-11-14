@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
+import { DSH_LAUNCHER_CHANGED_CHANNEL, type DshLauncherState, type WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import { electronLaunchEnv, preparePackagedCompanionLaunch, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 // eslint-disable-next-line no-empty-pattern -- Electron owns the page.
@@ -22,7 +23,24 @@ test('unifies companion persona, profile, meeting preferences and concurrency in
       const frames = { paints: 0 }; Reflect.set(globalThis, '__companionSettingsFrames', frames); window.webContents.on('paint', () => { frames.paints++; });
       return { appPath: app.getAppPath(), packaged: app.isPackaged, profile: app.getPath('userData') };
     }, profile);
+    const revealSettings = async () => {
+      const launcher = await page.evaluate(async () => {
+        const api = (Reflect.get(window, 'worldlinebox') as { dshLauncher: WorldlineBoxDshLauncherApi }).dshLauncher;
+        const result = await api.request({ type: 'state' });
+        return result.ok ? result.state : undefined;
+      });
+      const stamp = new Date().toISOString();
+      const state: DshLauncherState = { ...launcher!, supported: true,
+        runtimes: [{ id: 'settings-runtime', version: '0.2.2-rc.2', nodeVersion: '24', platform: 'win32-x64', adapter: 'node-cli-web-v1', source: 'ui-fixture', sourceSha256: '0'.repeat(64), contentSha256: '0'.repeat(64), installedAt: stamp, fileCount: 0, byteLength: 0 }],
+        instances: [{ id: 'settings-default', name: '角色卡验收', runtimeId: 'settings-runtime', profile: 'web', status: 'running', isDefault: true, homePath: profile, agentsPath: profile, workspacePath: profile, browserPartition: 'settings-ui-only', createdAt: stamp, updatedAt: stamp }],
+      };
+      const setup = page.getByRole('dialog', { name: '连接共享 DSH' });
+      await expect(setup).toBeVisible();
+      await application.evaluate(({ BrowserWindow }, payload) => BrowserWindow.getAllWindows()[0]!.webContents.send(payload.channel, payload.state), { channel: DSH_LAUNCHER_CHANGED_CHANNEL, state });
+      await expect(setup).toHaveCount(0);
+    };
     await page.locator('[data-application-module="companions"]').click();
+    await revealSettings();
     await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
     const before = await page.evaluate(() => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' }));
     expect(before.snapshot?.companions.find(person => person.id === 'builtin-dafeiyu')?.workerConcurrency).toBe(5);
@@ -33,26 +51,29 @@ test('unifies companion persona, profile, meeting preferences and concurrency in
     const persona = dialog.getByRole('textbox', { name: '人格与相处方式', exact: true });
     await expect(persona).not.toHaveValue('');
     const originalPersona = await persona.inputValue(), draft = originalPersona + '\n设置切区验收：保留未保存的这行草稿。';
-    await persona.fill(draft); await navigation.getByRole('button', { name: '基本资料', exact: true }).click();
+    await persona.fill(draft);
     await dialog.locator('input[name=name]').fill('大肥鱼 · 星海');
-    await navigation.getByRole('button', { name: '任务执行', exact: true }).click();
+    await dialog.locator('.bot-editor-advanced summary').click();
     await expect(dialog.getByRole('spinbutton', { name: '同时执行的任务数' })).toHaveValue('5');
     await dialog.getByRole('spinbutton', { name: '同时执行的任务数' }).fill('8');
-    await navigation.getByRole('button', { name: '人格提示词', exact: true }).click(); await expect(persona).toHaveValue(draft);
-    await navigation.getByRole('button', { name: '任务执行', exact: true }).click(); await dialog.locator('.bot-editor-execution').getByRole('button', { name: '保存', exact: true }).click();
-    await expect(dialog.locator('.bot-editor-execution [role=status]')).toHaveText('资料与任务设置已保存。');
-    await navigation.getByRole('button', { name: '人格提示词', exact: true }).click(); await expect(persona).toHaveValue(draft);
+    await navigation.getByRole('button', { name: '日程', exact: true }).click();
+    const fishSchedule = dialog.locator('.bot-schedule-item').filter({ hasText: '定时照顾小鱼' });
+    await fishSchedule.getByRole('button', { name: '编辑', exact: true }).click();
+    await dialog.locator('.bot-schedule-form').getByRole('button', { name: '保存', exact: true }).click();
+    await expect(fishSchedule).toContainText('定时照顾小鱼');
+    await navigation.getByRole('button', { name: '资料与人格', exact: true }).click(); await expect(persona).toHaveValue(draft);
+    await dialog.locator('.bot-editor-basics').getByRole('button', { name: '保存', exact: true }).click();
+    await expect(dialog.locator('.bot-editor-basics [role=status]')).toHaveText('资料与任务设置已保存。');
     const saved = await page.evaluate(() => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' }));
     expect(saved.snapshot?.companions.find(person => person.id === 'builtin-dafeiyu')).toMatchObject({ name: '大肥鱼 · 星海', workerConcurrency: 8, persona: originalPersona });
     expect(saved.snapshot?.companions.find(person => person.id === 'gpt')).toEqual(otherBefore);
-    await navigation.getByRole('button', { name: '形象与声音', exact: true }).click();
-    await dialog.getByRole('checkbox', { name: '自动朗读伙伴回复' }).uncheck();
+    await navigation.getByRole('button', { name: '形象与表演', exact: true }).click();
     await dialog.getByRole('checkbox', { name: '视线跟随鼠标' }).uncheck();
     await dialog.getByRole('button', { name: '进入会面', exact: true }).click();
     await expect(dialog).toBeHidden();
     await page.getByRole('dialog', { name: '与大肥鱼 · 星海会面', exact: true }).getByRole('button', { name: '结束并关闭会面' }).click();
-    await expect(dialog).toBeVisible(); await expect(navigation.getByRole('button', { name: '形象与声音' })).toHaveAttribute('aria-pressed', 'true');
-    await navigation.getByRole('button', { name: '人格提示词' }).click(); await expect(persona).toHaveValue(draft);
+    await expect(dialog).toBeVisible(); await expect(navigation.getByRole('button', { name: '形象与表演' })).toHaveAttribute('aria-pressed', 'true');
+    await navigation.getByRole('button', { name: '资料与人格' }).click(); await expect(persona).toHaveValue(draft);
     await dialog.getByRole('button', { name: '关闭', exact: true }).click();
     await expect(page.locator('.bot-chat-header').getByRole('button', { name: '能力', exact: true })).toHaveCount(0);
     await expect(page.locator('.bot-chat-header').getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeVisible();
@@ -60,8 +81,8 @@ test('unifies companion persona, profile, meeting preferences and concurrency in
     await expect(dialog).toBeVisible();
     await expect(navigation.getByRole('button', { name: '能力档案', exact: true })).toHaveCount(0);
     await expect(page.getByRole('dialog')).toHaveCount(1);
-    await navigation.getByRole('button', { name: '任务执行' }).click(); await expect(dialog.getByRole('spinbutton', { name: '同时执行的任务数' })).toHaveValue('8');
-    await navigation.getByRole('button', { name: '形象与声音' }).click(); await expect(dialog.getByRole('checkbox', { name: '自动朗读伙伴回复' })).not.toBeChecked();
+    await dialog.locator('.bot-editor-advanced summary').click(); await expect(dialog.getByRole('spinbutton', { name: '同时执行的任务数' })).toHaveValue('8');
+    await navigation.getByRole('button', { name: '形象与表演' }).click();
     await expect(dialog.getByRole('checkbox', { name: '视线跟随鼠标' })).not.toBeChecked();
     await dialog.getByRole('button', { name: '关闭', exact: true }).click();
     const capture = async (filename: string) => {
@@ -76,19 +97,19 @@ test('unifies companion persona, profile, meeting preferences and concurrency in
     for (const [theme, width, height] of [['light', 1440, 960], ['dark', 1440, 960], ['dark', 850, 720]] as const) {
       await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]!.setSize(size.width, size.height), { width, height });
       await page.evaluate(theme => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme })), theme);
-      await page.reload(); await page.locator('[data-application-module="companions"]').click(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
+      await page.reload(); await page.locator('[data-application-module="companions"]').click(); await revealSettings(); await page.getByRole('button', { name: '角色卡', exact: true }).click();
       await expect(dialog).toBeVisible(); await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-      await expect.poll(() => dialog.locator('.bot-settings-character-portrait img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
-      for (const [section, label] of [['persona', '人格提示词'], ['profile', '基本资料'], ['appearance', '形象与声音'], ['execution', '任务执行']] as const) {
+      await expect.poll(() => dialog.locator('.bot-editor-header img').evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0)).toBe(true);
+      for (const [section, label] of [['profile', '资料与人格'], ['appearance', '形象与表演'], ['schedule', '日程']] as const) {
         await navigation.getByRole('button', { name: label, exact: true }).click();
         const layout = await dialog.evaluate(element => {
-          const panel = element.querySelector<HTMLElement>('.bot-editor-tabpanel:not([hidden]),.bot-editor-basics:not([hidden])')!, sidebar = element.querySelector<HTMLElement>('.bot-settings-navigation')!;
-          const rect = element.getBoundingClientRect(), content = panel.getBoundingClientRect(), navigation = sidebar.getBoundingClientRect();
+          const panel = element.querySelector<HTMLElement>(':scope > .bot-editor-tabpanel:not([hidden])')!, tabs = element.querySelector<HTMLElement>('.bot-editor-tabs')!;
+          const rect = element.getBoundingClientRect(), content = panel.getBoundingClientRect(), navigation = tabs.getBoundingClientRect();
           return { width: element.clientWidth, scrollWidth: element.scrollWidth, panelWidth: panel.clientWidth, panelScrollWidth: panel.scrollWidth,
-            panelRight: content.right, right: rect.right, navigationRight: navigation.right, contentLeft: content.left, bottom: rect.bottom, panelBottom: content.bottom };
+            panelRight: content.right, right: rect.right, navigationBottom: navigation.bottom, contentTop: content.top, bottom: rect.bottom, panelBottom: content.bottom };
         });
         expect(layout.scrollWidth).toBeLessThanOrEqual(layout.width); expect(layout.panelScrollWidth).toBeLessThanOrEqual(layout.panelWidth + 1);
-        expect(layout.panelRight).toBeLessThanOrEqual(layout.right); expect(layout.navigationRight).toBeLessThanOrEqual(layout.contentLeft + 1); expect(layout.panelBottom).toBeLessThanOrEqual(layout.bottom + 1);
+        expect(layout.panelRight).toBeLessThanOrEqual(layout.right); expect(layout.navigationBottom).toBeLessThanOrEqual(layout.contentTop + 1); expect(layout.panelBottom).toBeLessThanOrEqual(layout.bottom + 1);
         layouts.push({ theme, viewportWidth: width, section, ...layout }); await capture(`companion-settings-${section}-${theme}${width < 1000 ? '-narrow' : ''}.png`);
       }
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();

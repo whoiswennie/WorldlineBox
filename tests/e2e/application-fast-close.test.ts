@@ -46,7 +46,7 @@ test('closing immediately after window creation exits promptly and the same prof
     application = await launch();
     const page = await application.firstWindow({ timeout: 10_000 });
     await expect(page.locator('[data-application-module="dsh"]')).toHaveAttribute('aria-current', 'page');
-    await expect(page.locator('.launcher-titlebar-heading').getByText('DSH 启动器', { exact: true })).toBeVisible();
+    await expect(page.locator('.launcher-titlebar-heading').getByText('启动器', { exact: true })).toBeVisible();
     await expect(page.locator('.launcher-banner.is-error')).toHaveCount(0);
     expect(await readFile(marker, 'utf8')).toBe('preserve this isolated profile');
     await closeWithin(application); application = undefined;

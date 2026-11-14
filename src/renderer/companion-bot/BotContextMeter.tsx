@@ -1,3 +1,4 @@
+import { useBotCallDocument } from './call-pet';
 import {useEffect,useRef,useState} from 'react';
 import type {BotRequest,BotResponse} from '../../shared/companion-bot';
 import type {BotNativeTopic} from '../../shared/companion-bot-topics';
@@ -6,7 +7,8 @@ import {BotIcon} from './BotIcon';
 import './bot-context-meter.css';
 
 const short=(value:number)=>value>=1_000_000?`${Number((value/1_000_000).toFixed(2))}M`:value>=1000?`${Number((value/1000).toFixed(1))}K`:String(value);
-export function BotContextMeter({conversationId,topic,companionId,companionName,cached,locale,request,busy,canCompact,onCompact,onNew}:{conversationId:string;topic:BotNativeTopic;companionId:string;companionName:string;cached?:BotNativeContext;locale:'zh-CN'|'en';request(input:BotRequest):Promise<BotResponse>;busy:boolean;canCompact:boolean;onCompact():void;onNew():void}){
+export function BotContextMeter({conversationId,topic,companionId,companionName,cached,locale,request,busy,canCompact,onCompact,onNew,onOpenChange}:{conversationId:string;topic:BotNativeTopic;companionId:string;companionName:string;cached?:BotNativeContext;locale:'zh-CN'|'en';request(input:BotRequest):Promise<BotResponse>;busy:boolean;canCompact:boolean;onCompact():void;onNew():void;onOpenChange?(open:boolean):void}){
+  const surface = useBotCallDocument();
   const zh=locale==='zh-CN',[open,setOpen]=useState(false),[report,setReport]=useState<BotTopicContext>(),[refresh,setRefresh]=useState(0),[loading,setLoading]=useState(false),root=useRef<HTMLDivElement>(null);
   useEffect(()=>{
     let stopped=false,timer:ReturnType<typeof setTimeout>;
@@ -18,13 +20,15 @@ export function BotContextMeter({conversationId,topic,companionId,companionName,
     };
     void read();return()=>{stopped=true;clearTimeout(timer);};
   },[conversationId,topic.id,companionId,request,open,refresh,zh]);
+  useEffect(()=>{onOpenChange?.(open);},[onOpenChange,open]);
+  useEffect(()=>()=>onOpenChange?.(false),[onOpenChange]);
   useEffect(()=>{
     if(!open)return;
-    const outside=(event:PointerEvent)=>{if(event.target instanceof Node&&!root.current?.contains(event.target))setOpen(false);};
+    const outside=(event:PointerEvent)=>{if(event.target && (event.target as Node).nodeType&&!root.current?.contains(event.target as Node))setOpen(false);};
     const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')setOpen(false);};
-    document.addEventListener('pointerdown',outside);document.addEventListener('keydown',escape);
-    return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape);};
-  },[open]);
+    surface.addEventListener('pointerdown',outside);surface.addEventListener('keydown',escape);
+    return()=>{surface.removeEventListener('pointerdown',outside);surface.removeEventListener('keydown',escape);};
+  },[open,surface]);
   const sample=cached&&(!report?.sample||botContextIsNewer(cached,report.sample))?cached:report?.sample;
   const stale=!!sample&&(!report||!!report.stale&&(!report.sample||sample===report.sample)),occupancy=botContextOccupancy(sample),breakdown=sample?.breakdown,usage=sample?.usage;
   const composition=breakdown?breakdown.systemTokens+breakdown.toolsTokens+breakdown.messageTokens:0;

@@ -52,20 +52,35 @@ test('terminal navigation is removed, background selection stays responsive, lau
       emit();
     }, fixture);
     await page.getByRole('button', { name: '刷新', exact: true }).click();
-    await expect(page.locator('[data-dsh-instance="instance-b"]')).toBeVisible();
-    await page.locator('[data-dsh-instance="instance-b"]').click();
+    const apps = page.getByRole('navigation', { name: '应用', exact: true });
+    const dsh = apps.getByRole('button', { name: 'DeepSeek Harness', exact: true });
+    const cabin = apps.getByRole('button', { name: '小屋世界', exact: true });
+    const management = page.getByRole('navigation', { name: 'DSH 管理', exact: true });
+    const instance = page.getByRole('combobox', { name: 'DSH 实例', exact: true });
+    await expect(apps.getByRole('button')).toHaveCount(2);
+    await expect(dsh).toHaveAttribute('aria-current', 'page');
+    await instance.selectOption('instance-b');
     await expect(page.locator('.launcher-instance-details h1')).toHaveText('环境 B');
     await expect(page.getByRole('button', { name: '启动实例', exact: true })).toBeEnabled();
     await expect(page.locator('.launcher-navigation').getByRole('button', { name: '实时终端', exact: true })).toHaveCount(0);
 
     await expect(page.locator('.launcher-navigation button')).toHaveCount(4);
+    await management.getByRole('button', { name: '运行版本', exact: true }).click();
+    await cabin.click();
+    await expect(cabin).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByRole('heading', { name: '小屋世界', level: 1 })).toBeVisible();
+    await expect(management).toHaveCount(0);
+    await dsh.click();
+    await expect(management.getByRole('button', { name: '运行版本', exact: true })).toHaveAttribute('aria-current', 'page');
+    await management.getByRole('button', { name: '实例', exact: true }).click();
+    await expect(instance).toHaveValue('instance-b');
 
     const defaults = await page.evaluate(() => (window as unknown as { worldlinebox: { llm: WorldlineBoxLlmApi } }).worldlinebox.llm.getConfig());
     expect(defaults).toMatchObject({ ok: true, value: { apiFormat: 'openai_chat', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', hasKey: false } });
     await page.getByRole('button', { name: '设置', exact: true }).click();
     const settings = page.getByRole('dialog', { name: '通用设置', exact: true });
     await settings.getByRole('tab', { name: '全局模型', exact: true }).click();
-    await expect(settings.locator('#ai-config-api-format')).toHaveValue('openai_chat');
+    await expect(settings.locator('#ai-config-api-format')).toHaveText('OpenAI Chat Completions');
     await expect(settings.locator('#ai-config-base-url')).toHaveValue('https://api.deepseek.com');
     await expect(settings.locator('#ai-config-model')).toHaveValue('deepseek-flash');
     await settings.getByRole('button', { name: '选择模型', exact: true }).click();

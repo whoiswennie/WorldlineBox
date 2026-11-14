@@ -14,7 +14,7 @@
 
 `InstanceService` 为每个实例提供原生 `DSH_HOME`、`DSH_AGENTS_HOME`、workspace 和浏览器 partition。`instanceEnvironment` 继承真实用户环境，仅清除上一 DSH 命名空间和启动器内部能力变量，再设置当前实例的原生命名空间。用户 PATH、HOME/USERPROFILE、APPDATA、Git、Python 和包管理器配置不伪装成另一个用户。
 
-Host 启动采用参数数组执行原封不动的官方 `web --no-open --host 127.0.0.1 --port 0`。完整性检查只在 Host 启动时进行，缓存依据实际文件身份失效；任务和重复选择不触发全文件扫描。首次通过原生 CLI 生成默认 profile、安装桥接 bundle，内容 stamp 避免每次安装。
+Host 启动采用参数数组执行官方 `web --no-open --host 127.0.0.1 --port 0`。启动和后台预热检查启动入口并等待工作台与桥接服务就绪。逐文件完整性检查可以在「运行版本」页手动触发，安装、升级和备份流程仍按各自的交付条件校验。首次通过原生 CLI 生成默认 profile、安装桥接 bundle，内容 stamp 避免每次安装。
 
 运行文件的完整性扫描上限为 15 分钟，给大型 SDK 依赖树、慢速磁盘和 Windows 杀毒扫描留出时间；等待者仍可单独取消。超时单独报告为「校验未完成」，不能据此判定文件损坏。
 

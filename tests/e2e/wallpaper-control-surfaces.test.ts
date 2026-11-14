@@ -49,13 +49,13 @@ test('launcher actions, selected instances and network fields share wallpaper su
         localStorage.setItem('worldlinebox.background-motion.v1', 'false');
         localStorage.setItem('worldlinebox.background-preferences.v3', JSON.stringify({ ...defaults, showInMainPanel: sample.panels, panelVisibilityVersion: 1, panelOpacity: .48, ...(sample.personal ? { imageDataUrl: wallpaper } : {}) }));
       }, { sample, defaults: DEFAULT_BACKGROUND_PREFERENCES, wallpaper });
-      await page.reload(); await page.locator('[data-application-module="dsh"]').click(); await expect(page.locator('[data-dsh-instance="instance-fixture"]')).toBeVisible();
+      await page.reload(); await page.locator('[data-application-module="dsh"]').click();
+      await expect(page.getByRole('combobox', { name: 'DSH 实例', exact: true })).toHaveValue('instance-fixture');
       await expect(page.locator('html')).toHaveAttribute('data-theme', sample.theme);
-      await page.locator('[data-dsh-instance="instance-fixture"]').click();
       const open = page.locator('[data-dsh-open-workbench]'), stop = page.getByRole('button', { name: '停止实例', exact: true }), rename = page.getByRole('button', { name: '重命名', exact: true });
       await expect(open).toBeVisible(); await expect(stop).toBeEnabled(); await expect(rename).toBeEnabled();
       await expect(page.locator('[data-execution-readiness="ready"]')).toContainText('共享 DSH 已就绪');
-      const paints = { open: await appearance(open), stop: await appearance(stop), rename: await appearance(rename), selected: await appearance(page.locator('.launcher-instance-item.is-active')) };
+      const paints = { open: await appearance(open), stop: await appearance(stop), rename: await appearance(rename), selected: await appearance(page.locator('.launcher-app-item[aria-current="page"]')) };
       const translucent = sample.panels && sample.name !== 'plain-theme';
       if(!translucent)for (const key of ['stop', 'rename', 'selected'] as const) expect(paints[key].alpha, sample.name + ':' + key).toBe(1);
       if (translucent) {

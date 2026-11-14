@@ -492,7 +492,7 @@ describe('run 委托到 actions 回调包', () => {
 });
 
 describe('注册表完整性', () => {
-  it('18 条定义全部注册且 id 唯一（createCommandRegistry 未抛错）', () => {
+  it('19 条定义全部注册且 id 唯一（createCommandRegistry 未抛错）', () => {
     expect(registry.list().map((def) => def.id)).toEqual([
       'asset.restore',
       'asset.delete-permanent',
@@ -504,6 +504,7 @@ describe('注册表完整性', () => {
       'asset.remove-from-current-collection',
       'asset.relink',
       'asset.move-to-folder',
+      'asset.cut',
       'asset.copy',
       'asset.paste',
       'asset.copy-file-path',

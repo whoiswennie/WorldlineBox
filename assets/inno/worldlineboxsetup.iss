@@ -11,6 +11,9 @@
   #define AppVersion "0.1.0"
 #endif
 #define AppExeName "WorldlineBox.exe"
+#ifndef AppSourceDir
+  #define AppSourceDir "..\..\out\WorldlineBox-win32-x64"
+#endif
 
 [Setup]
 AppId={{A2C67D80-AA1A-4100-B5B1-477AF2D20202}
@@ -48,7 +51,7 @@ Name: "chinesesimplified"; MessagesFile: "ChineseSimplified.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\..\out\WorldlineBox-win32-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "ChineseSimplified.LICENSE.txt"; DestDir: "{app}\resources"; Flags: ignoreversion
 
 [Icons]

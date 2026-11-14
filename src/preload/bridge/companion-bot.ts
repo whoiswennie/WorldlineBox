@@ -1,5 +1,5 @@
 import { ipcRenderer } from 'electron';
-import { BOT_CHANNEL, BOT_EVENT_CHANNEL, botRequestSchema, type BotEvent, type BotRequest, type BotResponse, type WorldlineBoxBotApi } from '../../shared/companion-bot';
+import { BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, type BotEvent, type BotRequest, type BotResponse, type BotSpeechEvent, type BotSpeechRequest, type WorldlineBoxBotApi } from '../../shared/companion-bot';
 
 export const companionBot: WorldlineBoxBotApi = Object.freeze({
   async request(input: BotRequest) {
@@ -11,5 +11,11 @@ export const companionBot: WorldlineBoxBotApi = Object.freeze({
     const handler = (_event: Electron.IpcRendererEvent, input: BotEvent) => listener(input);
     ipcRenderer.on(BOT_EVENT_CHANNEL, handler);
     return () => ipcRenderer.removeListener(BOT_EVENT_CHANNEL, handler);
+  },
+  speech: (input: BotSpeechRequest) => ipcRenderer.invoke(BOT_SPEECH_CHANNEL, input),
+  onSpeech(listener: (event: BotSpeechEvent) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, input: BotSpeechEvent) => listener(input);
+    ipcRenderer.on(BOT_SPEECH_EVENT_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(BOT_SPEECH_EVENT_CHANNEL, handler);
   },
 });

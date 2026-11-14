@@ -31,6 +31,8 @@ import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import type { WorldlineBoxPluginManagerApi } from "../shared/plugin-manager-api";
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
+import type { WorldlineBoxMobileAccessApi } from "../shared/mobile-access";
+import { MobileAccessSettingsPage } from './MobileAccessSettingsPage';
 import { DialogShell } from "./ui/patterns";
 import { MusicSettingsSlot } from './music/MusicProvider';
 import { CaptureToolsSettingsPage } from './capture-tools/CaptureToolsSettingsPage';
@@ -63,6 +65,7 @@ export interface AppSettingsDialogProps {
   pluginContributionRefreshKey?: string | null;
   libraryId?: string;
   mcpApi?: WorldlineBoxMcpSettingsApi;
+  mobileAccessApi?: WorldlineBoxMobileAccessApi;
   syncServerCallbacks: SyncServerSettingsCallbacks;
   embeddingServicesApi?: EmbeddingCatalogApi;
   showCardSyncStatus: boolean;
@@ -109,6 +112,7 @@ export function AppSettingsDialog({
   libraryId,
   embeddingServicesApi,
   mcpApi,
+  mobileAccessApi,
   syncServerCallbacks,
   showCardSyncStatus,
   onShowCardSyncStatusChange,
@@ -323,6 +327,7 @@ export function AppSettingsDialog({
               />
             ) : null}
             {!showingPluginSettings && activeCategory === "mcp" ? <McpSettingsPage api={mcpApi} onOpenAppLog={onOpenAppLog} /> : null}
+            {!showingPluginSettings && activeCategory === "mobile-access" ? <MobileAccessSettingsPage api={mobileAccessApi} /> : null}
             {!showingPluginSettings && activeCategory === "music" ? <MusicSettingsSlot /> : null}
             {!showingPluginSettings && activeCategory === "capture-tools" ? <CaptureToolsSettingsPage /> : null}
             {!showingPluginSettings && !showingCommunity && activeCategory === "plugins" ? (

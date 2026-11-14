@@ -2,16 +2,16 @@ import { watch, type FSWatcher } from 'node:fs';
 import path from 'node:path';
 import { lstat } from './disk';
 
-interface Entry { generation: number; epoch: number; verified?: number; watcher?: FSWatcher; parent?: FSWatcher; pending?: Promise<void>; monitoring?: Promise<void> }
+interface Entry { generation: number; epoch: number; controller: AbortController; verified?: number; watcher?: FSWatcher; parent?: FSWatcher; pending?: Promise<void>; monitoring?: Promise<void> }
 
 /** Reuse a complete verification only while a live recursive change monitor remains intact. */
 export class RuntimeIntegrity {
   private readonly entries = new Map<string, Entry>();
-  async verify(directory: string, check: () => Promise<void>, signal?: AbortSignal, force = false): Promise<void> {
+  async verify(directory: string, check: (signal: AbortSignal) => Promise<void>, signal?: AbortSignal, force = false): Promise<void> {
     signal?.throwIfAborted();
     let entry = this.entries.get(directory);
     if (!entry) {
-      entry = { generation: 0, epoch: 0 };
+      entry = { generation: 0, epoch: 0, controller: new AbortController() };
       this.entries.set(directory, entry);
     }
     const current = entry;
@@ -19,12 +19,14 @@ export class RuntimeIntegrity {
     // Drain notifications queued before this admission, including rename/write bursts.
     await new Promise<void>(resolve => setImmediate(resolve));
     if (force && current.pending) await this.wait(current.pending, signal);
+    current.controller.signal.throwIfAborted();
     if (force) current.verified = undefined;
     if (!current.pending && (!current.watcher || current.verified !== current.generation)) {
       const task = (async () => {
         for (let attempt = 0; attempt < 3; attempt++) {
           const generation = current.generation;
-          await check(); await new Promise<void>(resolve => setImmediate(resolve));
+          await check(current.controller.signal); await new Promise<void>(resolve => setImmediate(resolve));
+          current.controller.signal.throwIfAborted();
           if (!current.watcher || generation === current.generation) { current.verified = generation; return; }
         }
         throw new Error('运行文件持续发生变化，无法完成完整性检查。');
@@ -88,6 +90,13 @@ export class RuntimeIntegrity {
       })]);
     } finally { signal.removeEventListener('abort', abort); }
   }
-  forget(directory: string): void { const entry = this.entries.get(directory); this.entries.delete(directory); if (entry) this.invalidate(entry); }
-  close(): void { for (const key of this.entries.keys()) this.forget(key); }
+  async forget(directory: string): Promise<void> {
+    const entry = this.entries.get(directory);
+    if (!entry) return;
+    this.entries.delete(directory);
+    entry.controller.abort(new Error('运行版本已停止校验。'));
+    this.invalidate(entry);
+    await Promise.allSettled([entry.monitoring, entry.pending]);
+  }
+  close(): void { for (const key of this.entries.keys()) void this.forget(key); }
 }

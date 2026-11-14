@@ -133,6 +133,10 @@ export function mediaUrlFromVideo(video: HTMLVideoElement): string | undefined {
     video.dataset.src ||
     video.dataset.videoSrc ||
     '';
+  if (current.startsWith('blob:')) {
+    const manifest = manifestUrlForBlobVideo(video);
+    if (manifest) return manifest;
+  }
   if (isSupportedMediaUrl(current)) return current;
 
   for (const source of video.querySelectorAll('source')) {
@@ -146,6 +150,17 @@ export function mediaUrlFromVideo(video: HTMLVideoElement): string | undefined {
   }
 
   return undefined;
+}
+
+export function manifestUrlForBlobVideo(video: HTMLVideoElement): string | undefined {
+  const document = video.ownerDocument;
+  const activeVideos = Array.from(document.querySelectorAll('video'))
+    .filter(element => (element.currentSrc || element.src).startsWith('blob:'));
+  if (activeVideos.length !== 1 || activeVideos[0] !== video) return undefined;
+  const entries = document.defaultView?.performance?.getEntriesByType('resource') ?? [];
+  const candidates = [...new Set(entries.map(entry => entry.name).filter(url =>
+    isHttpUrl(url) && /\.(m3u8|mpd)$/i.test(new URL(url).pathname)))];
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 export function mediaFromElement(element: Element): MediaTarget | null {

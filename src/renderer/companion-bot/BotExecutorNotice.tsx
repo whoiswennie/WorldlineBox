@@ -1,11 +1,12 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
+import { useDismissibleDetails } from '../use-dismissible-details';
 import { BotIcon } from './BotIcon';
 import { sharedDshInstance } from './useBotDshBindings';
 
 export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { api?: WorldlineBoxDshLauncherApi; zh:boolean; companionIds?: readonly string[]; onOpenLauncher?():void }) {
   const [state,setState]=useState<DshLauncherState>(),[busy,setBusy]=useState(false),[error,setError]=useState(''),[refresh,setRefresh]=useState(0);
-  const [detailsOpen,setDetailsOpen]=useState(false),detailsId=useId();
+  const detailsRef=useDismissibleDetails<HTMLDetailsElement>();
   const revision=useRef(0),generation=useRef(0);
   useEffect(()=>{
     if(!api)return;
@@ -38,10 +39,12 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
     :preparing?(zh?'DSH 正在准备…':'DSH is preparing…')
     :stopping?(zh?'DSH 正在关闭…':'DSH is stopping…')
     :failed?(zh?'DSH 启动失败':'DSH could not start')
-    :instance?(zh?'共享 DSH 未启动':'Shared DSH is stopped')
+    :instance?(zh?'DSH 未启动':'DSH is stopped')
     :(zh?'尚未配置 DSH':'DSH is not configured');
   const diagnostic=error||(failed?instance?.lastError:undefined);
-  const hint=zh?'所有伙伴共用此 DSH，聊天时按需启动。停止共享实例会中断进行中的 DSH 会话。':'All companions share this DSH, which starts on demand. Stopping it interrupts active DSH sessions.';
+  const canStart=instance&&!unsupported&&!pending;
+  const label=<><span className="bot-executor-status-icon" aria-hidden="true"><BotIcon name="assets" /></span>
+    <span className="bot-executor-status-label">{text}</span></>;
   const start=async()=>{
     if(!instance||busy||starting||preparing||stopping||unsupported)return;
     const current=generation.current,requestedAt=revision.current;
@@ -56,14 +59,19 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
     finally{if(current===generation.current)setBusy(false);}
   };
   return <aside className="bot-executor-notice" data-state={error||failed?'failed':pending?'pending':'idle'} aria-label={zh?'DSH 执行器状态':'DSH executor status'}>
-    <div className="bot-executor-status-row">
-      <span className="bot-executor-status-icon" aria-hidden="true"><BotIcon name={pending?'history':'tasks'} /></span>
-      <span className="bot-executor-status-label" role={error||failed?'alert':'status'} title={hint}>{text}</span>
-      {instance&&!unsupported&&!pending&&<button className="bot-executor-primary" type="button" onClick={()=>void start()}>{zh?'启动':'Start'}</button>}
-      {error&&<button type="button" disabled={busy} onClick={()=>setRefresh(value=>value+1)}>{zh?'重试':'Retry'}</button>}
-      {diagnostic&&<button type="button" aria-expanded={detailsOpen} aria-controls={detailsId} onClick={()=>setDetailsOpen(value=>!value)}>{zh?'详情':'Details'}</button>}
-      {onOpenLauncher&&<button className="bot-executor-launcher" type="button" onClick={onOpenLauncher} title={zh?'前往启动器':'Open launcher'} aria-label={zh?'前往启动器':'Open launcher'}><BotIcon name="external" /></button>}
-    </div>
-    {diagnostic&&detailsOpen&&<p id={detailsId} className="bot-executor-diagnostic">{diagnostic}</p>}
+    <span className="bot-sr-only" role={error||failed?'alert':'status'}>{text}</span>
+    {canStart||diagnostic||onOpenLauncher?<details ref={detailsRef}>
+      <summary className="bot-executor-trigger" title={text}>{label}<BotIcon name="chevron-down" /></summary>
+      <div className="bot-executor-panel">
+        <p className="bot-executor-panel-title">{text}</p>
+        {diagnostic&&<p className="bot-executor-diagnostic">{diagnostic}</p>}
+        {canStart&&!diagnostic&&!failed&&<p className="bot-executor-description">{zh?'伙伴共用此 DSH，聊天时会按需启动。':'Companions share this DSH, which starts on demand.'}</p>}
+        {(canStart||error||onOpenLauncher)&&<div className="bot-executor-actions">
+          {canStart&&<button className="bot-executor-primary" type="button" onClick={()=>void start()}>{zh?'启动':'Start'}</button>}
+          {error&&<button type="button" disabled={busy} onClick={()=>setRefresh(value=>value+1)}>{zh?'重试':'Retry'}</button>}
+          {onOpenLauncher&&<button type="button" onClick={()=>{detailsRef.current?.removeAttribute('open');onOpenLauncher();}}>{zh?'前往启动器':'Open launcher'}<BotIcon name="external" /></button>}
+        </div>}
+      </div>
+    </details>:<span className="bot-executor-trigger">{label}</span>}
   </aside>;
 }

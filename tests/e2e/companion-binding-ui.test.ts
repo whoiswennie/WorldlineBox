@@ -75,7 +75,7 @@ test('configures DSH once for direct and group chats, reusing the shared executo
     await expect(page.locator('.bot-executor-notice')).toHaveCount(0);
     // Stopping the shared executor changes one common status, not the group’s setup or composer.
     await publish({ ...supplied, instances: [{ ...dshLauncherStateSchema.shape.instances.element.parse(base), status: 'stopped' }, legacyInstance] });
-    await expect(page.locator('.bot-composer')).toBeVisible(); await expect(page.locator('.bot-executor-notice')).toContainText('共享 DSH 未启动');
+    await expect(page.locator('.bot-composer')).toBeVisible(); await expect(page.locator('.bot-chat-header .bot-executor-status-label')).toHaveText('DSH 未启动');
     await writeFile(path.join(evidence, 'evidence.json'), JSON.stringify({ actualElectron: true, presentationOnlyLauncherEvents: true, initialSharedSetupRequired: true, explicitRuntimeChoice: true, cancelRemainsUnconfigured: true, oneSharedInstanceUnblocksGroup: true, legacyPrivateDoesNotBlockShared: true, stoppedSharedDoesNotRequireSetupAgain: true, measurements }, null, 2));
   } finally { await app.close(); removeCompanionTestDirectory(profile); }
 });

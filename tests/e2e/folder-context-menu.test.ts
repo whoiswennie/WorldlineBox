@@ -435,6 +435,60 @@ test("renames a folder inline from the context menu and keeps its assets visible
   }
 });
 
+test("renames a folder card and pastes a cut and a copy into managed folders", async () => {
+  test.skip(process.platform !== "win32", "Exercises the Windows native file clipboard.");
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), "worldlinebox-folder-clipboard-"));
+  const libraryName = "Folder Clipboard";
+  const libraryPath = path.join(temporaryRoot, libraryName);
+  const application = await launchApp(temporaryRoot, libraryPath);
+  try {
+    const window = await application.firstWindow();
+    await createLibrary(window, libraryName);
+    await createFolderViaSidebar(window, "原目录");
+    await createFolderViaSidebar(window, "目标");
+    const root = window.getByRole("button", { name: "资源库根目录", exact: true });
+    await root.click();
+    const source = window.locator(".folder-card").filter({ hasText: "原目录" });
+    await source.click();
+    const folderId = await source.getAttribute("data-folder-id");
+    expect(folderId).toBeTruthy();
+    await window.keyboard.press("F2");
+    const renamed = window.locator(`.folder-card[data-folder-id="${folderId}"]`);
+    const input = renamed.locator("input");
+    await expect(input).toBeFocused();
+    await input.fill("已改名");
+    await input.press("Enter");
+    await expect(renamed).toContainText("已改名");
+
+    await renamed.click();
+    await window.keyboard.press("Control+x");
+    await expect(renamed).toHaveClass(/\bis-cut\b/);
+    await window.keyboard.press("Control+v");
+    await expect(renamed).toHaveClass(/\bis-cut\b/);
+    await sidebarFolderRow(window, "目标").click();
+    await expect(window.locator(".scope-crumb-label.is-current")).toHaveText("目标");
+    await window.keyboard.press("Control+v");
+    await expect(renamed).toBeVisible();
+    await expect(renamed).not.toHaveClass(/\bis-cut\b/);
+    expect(existsSync(path.join(libraryPath, "Assets", "目标", "已改名"))).toBe(true);
+
+    await renamed.click();
+    await window.keyboard.press("Control+c");
+    await expect(window.locator(".workspace-notice")).toContainText("已复制");
+    await root.click();
+    await expect(window.locator(".scope-crumb-label.is-current")).toHaveText("资源库根目录");
+    await window.keyboard.press("Control+v");
+    const copied = window.locator(".folder-card").filter({ hasText: "已改名" });
+    await expect(copied).toBeVisible();
+    expect(await copied.getAttribute("data-folder-id")).not.toBe(folderId);
+    expect(existsSync(path.join(libraryPath, "Assets", "目标", "已改名"))).toBe(true);
+    expect(existsSync(path.join(libraryPath, "Assets", "已改名"))).toBe(true);
+  } finally {
+    await application.close();
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Test 3 — Sibling-name conflict renders inline under the row; retry works
 // ---------------------------------------------------------------------------

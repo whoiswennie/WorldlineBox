@@ -22,9 +22,9 @@ async function mount(handler:WorldlineBoxDshLauncherApi['request'],companionIds:
 async function click(label:string){const button=[...host.querySelectorAll('button')].find(value=>value.textContent===label||value.getAttribute('aria-label')===label)!;expect(button,label).toBeDefined();await act(async()=>button.click());}
 it('shows the stopped default instance with a working start button and accepts the returned running state',async()=>{
   const f=await mount(async request=>({ok:true,state:state(request.type==='instance.start'?'running':'stopped')}));
+  expect(host.querySelector('summary')?.textContent).toBe('DSH 未启动');
+  expect(host.querySelector('details')?.open).toBe(false);
   expect(host.textContent).toContain('DSH 未启动');await click('前往启动器');expect(f.open).toHaveBeenCalledOnce();
-  expect(host.querySelector('.bot-executor-status-label')?.getAttribute('title')).toContain('所有伙伴共用此 DSH');
-  expect(host.querySelector('small')).toBeNull();
   await click('启动');expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});expect(host.textContent).toBe('');
 });
 it('uses the same shared host for any companion and ignores stopped legacy private hosts',async()=>{
@@ -32,7 +32,7 @@ it('uses the same shared host for any companion and ignores stopped legacy priva
   const f=await mount(async()=>({ok:true,state:{...state('running'),instances:[{...instance,status:'running'},legacy]}}),['alice','bob']);
   expect(host.textContent).toBe('');
   await f.change({...state('stopped'),instances:[{...instance,status:'stopped'},{...legacy,status:'running'}]});
-  expect(host.textContent).toContain('共享 DSH 未启动');await click('启动');
+  expect(host.textContent).toContain('DSH 未启动');await click('启动');
   expect(f.request).toHaveBeenLastCalledWith({type:'instance.start',instanceId:'default'});
 });
 it('reports one shared failure in a group rather than starting individual member environments',async()=>{
@@ -57,7 +57,8 @@ it('keeps a newer subscription state when the original state request resolves la
 });
 it('shows read and start errors, permits retries and clears stale errors on a recovered subscription',async()=>{
   let reads=0;const f=await mount(async request=>request.type==='state'?++reads===1?{ok:false,error:'IPC 暂时断开'}:{ok:true,state:state()}:{ok:false,error:'端口占用'});
-  expect(host.textContent).not.toContain('IPC 暂时断开');await click('详情');expect(host.textContent).toContain('IPC 暂时断开');
+  expect(host.querySelector('summary')?.textContent).toBe('DSH 暂时不可用');
+  expect(host.querySelector('.bot-executor-diagnostic')?.textContent).toBe('IPC 暂时断开');
   await click('重试');expect(host.textContent).toContain('未启动');
   await click('启动');expect(host.textContent).toContain('端口占用');expect([...host.querySelectorAll('button')].some(value=>value.textContent==='启动')).toBe(true);
   await f.change(state('running'));expect(host.textContent).toBe('');

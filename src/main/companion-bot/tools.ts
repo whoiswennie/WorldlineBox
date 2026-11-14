@@ -1,6 +1,7 @@
 import type { BotDshTool } from './dsh-brain';
 import { COMPANION_ASSET_CAPABILITY_TOOL } from '../../shared/companion-apps';
 import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
+import { BOT_CALL_SEGMENT_LENGTH, BOT_CALL_MIN_DURATION_MS, BOT_CALL_MAX_DURATION_MS, botCallGestures } from '../../shared/companion-call';
 
 const object = (properties: Record<string, unknown>, required: string[]) => ({ type: 'object', properties, required, additionalProperties: false });
 const string = (description: string, maxLength = 16000) => ({ type: 'string', description, minLength: 1, maxLength });
@@ -8,9 +9,10 @@ const memoryConversation = { type: 'string', maxLength: 160, description: '可�
 /** Application interaction tools augment native DSH tools without another agent loop. */
 export const BOT_TOOLS: BotDshTool[] = [
 COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL,
+{ name: 'companion_schedule', description: '在用户私聊中按用户要求管理你自己的日程。list查看状态和ID；save新建或用原ID改写，修改前先读取并保留未要求修改的字段；toggle启停一项；settings控制该伙伴的日程总开关；delete移除一项。每天按电脑本地时间 HH:mm，或每隔指定分钟。首次使用按用户要求开启总开关。小屋世界计划设置 draft.cabinWorld 为 true，到点时游戏离线则跳过本次。日程触发时进入独立新话题。', parameters: object({ operation: { type: 'string', enum: ['list','settings','save','toggle','delete'] }, id: string('现有日程 ID',160), enabled: { type: 'boolean' }, draft: object({ title: string('日程名称',80), prompt: string('独立新会话能直接执行的任务说明',8000), enabled: { type: 'boolean' }, cabinWorld: { type: 'boolean' }, recurrence: { anyOf: [object({ kind: { const: 'daily', type: 'string' }, time: { type: 'string', pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d$' } }, ['kind','time']), object({ kind: { const: 'interval', type: 'string' }, minutes: { type: 'integer', minimum: 1, maximum: 10080 } }, ['kind','minutes'])] } }, ['title','prompt','enabled','recurrence']) }, ['operation']) },
 { name: 'companion_directory', description: '分页查找真实伙伴ID和姓名，用于联系伙伴；目录不包含私人提示词或记忆。', parameters: object({ query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 64 } }, []) },
 { name: 'agent_conversations', description: '实时回查你本人参与的已发布聊天，不等VCP记忆索引。用户私聊可查询自己与伙伴的私聊及自己参加的用户群；其它受众只读当前房间。list列会话与最新消息索引；read选conversationId读最近一页，沿nextBefore读旧页；message按messageId分页读完整正文；contacts核实自己先前联系是否投递、对方是否实际回复或已向用户发布，仅返回关联回执元数据。已发不等于已回复，事件queued不等于没发消息。不能读其它伙伴的用户私聊或内部任务回执。', parameters: object({ operation: { type: 'string', enum: ['list', 'read', 'message', 'contacts'] }, conversationId: string('本人获准会话编号，read/message需要', 160), messageId: string('真实已发布消息编号，message需要', 160), companionId: string('contacts可选的目标伙伴编号，不能改变当前身份', 160), cursor: string('list的稳定分页游标', 160), before: { type: 'integer', minimum: 1 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['operation']) },
-{ name: 'chat_read_message', description: '按本轮sourceMessageId或同会话已有消息ID分页读取原文。长消息预览不包含全部需求，读取时沿nextOffset继续；不能访问其他会话或未来消息。', parameters: object({ messageId: string('当前会话原消息ID', 160), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['messageId']) },
+{ name: 'chat_read_message', description: '按本轮sourceMessageId、同会话已有消息ID或本轮获准的伙伴分工结果ID分页读取原文。长消息预览不包含全部需求，读取时沿nextOffset继续。', parameters: object({ messageId: string('当前获准的原消息ID', 160), offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['messageId']) },
 { name: 'chat_list_stickers', description: '列出当前聊天可用的真实表情包和表情ID，可按名称查找；不要编造图片或表情ID。', parameters: object({ query: { type: 'string', maxLength: 200 }, packId: { type: 'string', maxLength: 160 } }, []) },
 { name: 'chat_send_sticker', description: '按已列出的表情ID向当前聊天发送一张真实图片或动图。可以只发表情或连续斗图，不必另造填充正文。caption仅是不会展示的元数据；需要用户看到的文字请写入最终正文。', parameters: object({ stickerId: string('真实表情ID', 160), caption: { type: 'string', maxLength: 24000 } }, ['stickerId']) },
 { name: 'chat_list_files', description: '分页查询本聊天已分享图片、音频、视频及文件，返回核验后的绝对路径、哈希和稳定ID；沿nextOffset读取完整清单，不访问其他聊天或未发送草稿。', parameters: object({ query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 80 } }, []) },
@@ -33,10 +35,24 @@ COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL,
 { name: 'companion_contact', description: '按当前用户或伙伴的请求联系真实伙伴。消息进入仅双方伙伴参加的独立私聊；群内分工或传递当前群已分享的附件使用message_peer，目标在自己的原生DSH会话中执行，不存在另外的任务中心。“让GPT跟我说下午好”用destination=user，目标获得一次以本人身份向用户回复的宿主授权；你不能在目标与用户的私聊里发言。“你和GPT私下讨论”用peer。发送即自然产生伙伴私聊消息，无需用户另选双方。message仅本次最小必要请求，不复制无关私聊、历史或秘密，不代替目标编台词。', parameters: object({ companionId: string('伙伴目录中的目标ID', 160), destination: { type: 'string', enum: ['user', 'peer'] }, message: string('本次明确转达的最小必要请求，排除无关私聊资料', 4000) }, ['companionId', 'destination', 'message']) },
 { name: 'companion_reply_user', description: '当前伙伴私聊带有peerContact.responseDestination=user-direct时，用自己的话向用户发出获准的一条真实消息。宿主绑定接收人、原始请求和你自己的用户私聊；不能指定其他会话或替其他伙伴发言。普通伙伴讨论没有此授权。成功即已送达用户，不在伙伴私聊里重复整段用户回复，也不假称只是转达。', parameters: object({ message: string('你本人对用户的自然回复，仅含本次请求必要内容', 24000) }, ['message']) },
 { name: 'message_peer', description: '显式向当前群或伙伴交流里另一位已有伙伴发送文字、真实表情或当前聊天已分享文件。私聊中用户想联系其他伙伴时用companion_contact。sent只表示已进入目标队列；宿主会将本次分工的真实结果自动回传到你发起委托的原话题，你仍负责最终向该话题受众交付。多位伙伴的结果会汇合，不能把发送成功当作任务完成。分工后可结束本轮并先完成独立工作，不用sleep轮询；不要为确认收信再互发收到/谢谢。可以只发attachmentIds。', parameters: object({ companionId: string('当前会话中的目标伙伴ID', 200), content: { type: 'string', maxLength: 8000 }, attachmentIds: { type: 'array', maxItems: 16, items: { type: 'string', maxLength: 160 } } }, ['companionId']) },
+{ name: 'companion_wait', description: '等待本轮通过 companion_contact 或 message_peer 发出的世界线盒子伙伴分工。全部结算即返回真实结果，已齐时立即返回。收到 deferred 就结束本轮，由宿主带着后续结果自动继续原话题。', parameters: object({ timeout_ms: { type: 'integer', minimum: 0, maximum: 3600000 } }, []) },
 { name: 'chat_ask_user', description: '在当前聊天向用户提问并等待回答；缺少必要信息或需要用户选择时使用。', parameters: object({ question: string('清楚说明问题及选项', 24000) }, ['question']) }
 ];
 
 /** Unselected app declarations never enter native model requests. */
-export function botToolsForApps(apps: readonly string[] = []): BotDshTool[] {
-  return BOT_TOOLS.filter(tool => tool.name === 'browser' ? apps.includes('browser') : tool.name === 'asset_manager' ? apps.includes('asset-manager') : true);
+export function botToolsForApps(apps: readonly string[] = [], meeting = false): BotDshTool[] {
+  const tools = BOT_TOOLS.filter(tool => tool.name === 'browser' ? apps.includes('browser') : tool.name === 'asset_manager' ? apps.includes('asset-manager') : true);
+  if (meeting) tools.push(
+    { name: 'call_stage', description: '查看当前伙伴的会面表情、动作及使用说明。Live2D 模式返回可播放的模型资源和手势，头像模式返回可显示的预设表演。', parameters: object({}, []) },
+    { name: 'call_present', description: '按顺序排入带台词、表情和动作的会面片段。根据当前语境配合角色的神态与动作。工具立即确认入队，第一句准备好就提交。', parameters: object({
+      segments: { type: 'array', minItems: 1, maxItems: 8, items: object({
+        text: string('自然口语，一小段一个语义，避免长篇 Markdown', BOT_CALL_SEGMENT_LENGTH),
+        expression: string('当前伙伴目录中的 expressions[].name。按当前台词选用，可与 motion 同时使用', 160),
+        motion: string('当前伙伴目录中的 motions[].id。Live2D 播放对应资源，头像模式显示预设动作提示', 160),
+        gesture: { type: 'string', enum: botCallGestures, description: '轻量手势。nod 点头，shake 摇头，blink 眨眼。' },
+        durationMs: { type: 'integer', minimum: BOT_CALL_MIN_DURATION_MS, maximum: BOT_CALL_MAX_DURATION_MS, description: '该片段至少展示多少毫秒。按语义、动作和停顿选择，短句通常 1800–3000，稍长可用 4000–7000。省略按阅读和动作时长自动推进。' },
+      }, ['text']) },
+    }, ['segments']) },
+  );
+  return tools;
 }

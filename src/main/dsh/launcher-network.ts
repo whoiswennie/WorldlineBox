@@ -52,6 +52,7 @@ export class LauncherNetwork {
   private scope?: Session;
   private lifetime = new AbortController();
   private metadataRoute?: { revision:number; expiresAt:number; result:Promise<NpmMetadataRoute> };
+  private readonly catalogueDocuments = new Map<string, { route: string; etag: string; value: unknown }>();
   private inspection?: DshNetworkState['inspection'];
   private checks?: DshNetworkState['checks'];
   private npmSelection?: NonNullable<DshNetworkState['inspection']>['npmSelection'];
@@ -105,6 +106,11 @@ export class LauncherNetwork {
   }
   setChildEnvironmentHandler(handler: (environment: NodeJS.ProcessEnv) => NodeJS.ProcessEnv | Promise<NodeJS.ProcessEnv>): void { this.childEnvironment = handler; }
   async resolveProxy(destination: string): Promise<string> { await this.queue; return this.proxyFor(destination); }
+  async deepSeekSpeechRequest(input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {
+    await this.queue;
+    if (!this.scope) throw new Error('Network service is not ready.');
+    return this.scope.fetch(input instanceof URL ? input.href : input, { ...init, redirect: 'error', credentials: 'omit' });
+  }
   private async applySession(scope: Session): Promise<void> {
     const settings = this.settings;
     await scope.setProxy(settings.proxyMode === 'custom'
@@ -153,7 +159,7 @@ export class LauncherNetwork {
       catch (error) { this.settings = previous; this.smartDirectHosts = previousHosts; this.smartRouteProxy = previousRouteProxy; await this.apply(); await Promise.all([...this.sessions].map(scope => scope.closeAllConnections())); throw error; }
       this.issue = undefined; this.revision++; this.lifetime.abort(new Error('Network settings changed.')); this.lifetime = new AbortController();
       this.inspection = undefined; this.checks = undefined; this.npmSelection = undefined; this.githubSelection = undefined;
-      this.metadataRoute = undefined; this.changed();
+      this.metadataRoute = undefined; this.catalogueDocuments.clear(); this.changed();
     });
     this.queue = work.catch(() => undefined); return work;
   }
@@ -195,21 +201,68 @@ export class LauncherNetwork {
     if (rejected) return rejected;
     throw new Error('The resource request could not connect.');
   };
-  async json(url: string, signal: AbortSignal = AbortSignal.timeout(30_000)): Promise<unknown> {
-    let status = 0;
-    for (const candidate of this.githubCandidates(url)) {
-      signal.throwIfAborted();
+  async json(url: string, signal = new AbortController().signal, revalidate = false): Promise<unknown> {
+    await this.queue;
+    const transport = this.transport;
+    if (!transport) throw new Error('Network service is not ready.');
+    const policySignal = AbortSignal.any([signal, this.lifetime.signal]);
+    const currentSignal = AbortSignal.any([policySignal, AbortSignal.timeout(20_000)]);
+    const cached = revalidate ? this.catalogueDocuments.get(url) : undefined;
+    const candidates = this.githubCandidates(url);
+    if (cached && this.settings.githubMirror === 'auto' && candidates.includes(cached.route)) {
+      candidates.splice(candidates.indexOf(cached.route), 1);
+      candidates.unshift(cached.route);
+    }
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      if (currentSignal.aborted) break;
       try {
-        const response = await this.fetch(candidate, { redirect: 'manual', signal: AbortSignal.any([signal, AbortSignal.timeout(25_000)]), headers: { Accept: 'application/json', 'User-Agent': 'WorldlineBox-DSH-Launcher' } });
-        status = response.status; if (!response.ok) { await response.body?.cancel(); continue; }
+        const validator = cached?.route === candidate ? cached.etag : undefined;
+        const attempt = AbortSignal.any([currentSignal, AbortSignal.timeout(candidates.length > 1 ? 5_000 : 12_000)]);
+        const response = await transport(candidate, {
+          redirect: 'manual', signal: attempt,
+          headers: { Accept: 'application/json', 'User-Agent': 'WorldlineBox-DSH-Launcher', ...(validator ? { 'If-None-Match': validator } : {}) },
+        });
+        if (response.status === 304 && cached && validator) {
+          currentSignal.throwIfAborted();
+          return cached.value;
+        }
+        if (!response.ok) {
+          const host = new URL(response.url || candidate).hostname;
+          const limited = response.status === 429 || (response.status === 403 &&
+            (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')));
+          const reason = limited ? '请求受限' : response.status === 403 ? '拒绝访问' : '请求失败';
+          failures.push(`${host} ${reason}（HTTP ${response.status}）`);
+          await response.body?.cancel().catch(() => undefined);
+          continue;
+        }
         const reader = response.body?.getReader(); if (!reader) throw new Error('Empty network response.');
         let size = 0; const chunks: Uint8Array[] = [];
         try { for (;;) { const item = await reader.read(); if (item.done) break; size += item.value.byteLength; if (size > 20 * 1024 * 1024) throw new Error('Metadata response exceeds size limit.'); chunks.push(item.value); } }
         finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      } catch { if (signal.aborted) signal.throwIfAborted(); }
+        attempt.throwIfAborted();
+        const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        if (revalidate) {
+          const etag = response.headers.get('etag');
+          if (etag) this.catalogueDocuments.set(url, { route: candidate, etag, value });
+          else this.catalogueDocuments.delete(url);
+        }
+        if (new URL(url).hostname === 'api.github.com') {
+          const previous = this.githubSelection?.url;
+          this.githubSelection = { url: candidate, checkedAt: new Date().toISOString() };
+          if (this.inspection) this.inspection.githubSelection = this.githubSelection;
+          if (!previous || new URL(previous).origin !== new URL(candidate).origin) {
+            void this.inspect().then(() => this.changed()).catch(() => undefined);
+          }
+        }
+        return value;
+      } catch {
+        policySignal.throwIfAborted();
+        failures.push(`${new URL(candidate).hostname} 未能返回有效的资源目录`);
+      }
     }
-    throw new Error(status === 403 || status === 429 ? '远端服务限流，请稍后重试或调整代理与镜像。' : `获取资源目录失败${status ? `（HTTP ${status}）` : ''}。`);
+    policySignal.throwIfAborted();
+    throw new Error(failures.length ? failures.join('；') : '获取资源目录超时。');
   }
   async request(url: string, input: PackPublishRequest): Promise<Response> {
     await this.queue;

@@ -9,7 +9,7 @@
 
 import path from "node:path";
 
-import { writeWin32FileClipboard, readWin32FileClipboard } from "./win32-file-clipboard";
+import { writeWin32FileClipboard, readWin32FileClipboard, readWin32FileClipboardSnapshot } from "./win32-file-clipboard";
 
 export type FileClipboardPlatform = "darwin" | "win32" | "other";
 
@@ -25,7 +25,8 @@ export type FileClipboardDeps = {
    * Windows-only native clipboard writer (standard CF_HDROP, ID 15). Injected
    * so unit tests can stub it; defaults to the koffi implementation.
    */
-  readonly writeNativeWin32?: (filePaths: readonly string[]) => boolean;
+  readonly writeNativeWin32?: (filePaths: readonly string[], operation?: 'copy' | 'cut') => boolean;
+  readonly readNativeWin32Snapshot?: typeof readWin32FileClipboardSnapshot;
   readonly readNativeWin32?: () => string[] | null;
 };
 
@@ -58,6 +59,7 @@ export function createFileClipboardDeps(): FileClipboardDeps {
     writeText: (text) => clipboard.writeText(text),
     writeNativeWin32: writeWin32FileClipboard,
     readNativeWin32: readWin32FileClipboard,
+    readNativeWin32Snapshot: readWin32FileClipboardSnapshot,
   };
 }
 
@@ -122,17 +124,18 @@ export function parseCfHdrop(buffer: Buffer): string[] {
   if (buffer.length < 20) return [];
   const pFiles = buffer.readUInt32LE(0);
   const fWide = buffer.readUInt32LE(16) !== 0;
-  if (pFiles >= buffer.length) return [];
+  if (pFiles < 20 || pFiles >= buffer.length) return [];
   const payload = buffer.subarray(pFiles);
   const text = fWide
     ? payload.toString("utf16le")
     : payload.toString("latin1");
-  return text.split("\0").filter((entry) => entry.length > 0);
+  return text.split("\0\0", 1)[0]?.split("\0").filter(Boolean) ?? [];
 }
 
 export function writeFilePathsToClipboard(
   filePaths: readonly string[],
   deps: FileClipboardDeps,
+  operation: 'copy' | 'cut' = 'copy',
 ): boolean {
   const absolute = filePaths
     .map((entry) => entry.trim())
@@ -171,16 +174,23 @@ export function writeFilePathsToClipboard(
       // Explorer/PureRef/Get-Clipboard -Format FileDropList can read it;
       // Electron's writeBuffer('CF_HDROP') registers a custom format with the
       // same name, which external apps cannot see.
-      if (deps.writeNativeWin32?.(absolute)) return true;
+      if (deps.writeNativeWin32?.(absolute, operation)) return true;
       deps.writeBuffer("CF_HDROP", buildCfHdrop(absolute));
       // FileNameW: first path, UCS-2, double-null terminated.
       const first = `${absolute[0]!}\0\0`;
       deps.writeBuffer("FileNameW", Buffer.from(first, "ucs2"));
+      const effect = Buffer.alloc(4);
+      effect.writeUInt32LE(operation === 'cut' ? 2 : 1);
+      deps.writeBuffer('Preferred DropEffect', effect);
       return true;
     }
-    // Unsupported platform: text-only fallback so paste-in-app can still work
-    // via explicit path list in E2E / rare Linux hosts.
-    deps.writeText(absolute.join("\n"));
+    if (process.platform === "linux") {
+      deps.writeBuffer("x-special/gnome-copied-files", Buffer.from(
+        [operation, ...absolute.map(pathToFileUrl)].join("\n"), "utf8",
+      ));
+    } else {
+      deps.writeText(absolute.join("\n"));
+    }
     return true;
   } catch {
     return false;
@@ -222,24 +232,52 @@ export function readFilePathsFromClipboard(deps: FileClipboardDeps): string[] {
       }
       return [];
     }
-    return [];
+    return readLinuxFileClipboard(deps).paths;
   } catch {
     return [];
   }
+}
+
+export function readFileClipboard(deps: FileClipboardDeps): { paths: string[]; operation: 'copy' | 'cut'; sequence?: number; unavailable?: boolean } {
+  if (deps.platform === 'win32') {
+    if (deps.readNativeWin32Snapshot) {
+      const snapshot = deps.readNativeWin32Snapshot();
+      if (!snapshot) return { paths: [], operation: 'copy', unavailable: true };
+      return { ...snapshot, paths: snapshot.paths.filter(entry => path.win32.isAbsolute(entry)) };
+    }
+    const effect = deps.readBuffer('Preferred DropEffect');
+    return {
+      paths: readFilePathsFromClipboard(deps),
+      operation: effect.length >= 4 && (effect.readUInt32LE(0) & 2) !== 0 ? 'cut' : 'copy',
+    };
+  }
+  if (deps.platform === 'other') return readLinuxFileClipboard(deps);
+  return { paths: readFilePathsFromClipboard(deps), operation: 'copy' };
+}
+
+function readLinuxFileClipboard(deps: FileClipboardDeps): { paths: string[]; operation: 'copy' | 'cut' } {
+  const format = 'x-special/gnome-copied-files';
+  const hasOperation = deps.hasFormat(format);
+  const lines = deps.readBuffer(hasOperation ? format : 'text/uri-list').toString('utf8').split(/\r?\n/);
+  const operation = hasOperation && lines.shift() === 'cut' ? 'cut' : 'copy';
+  return { paths: lines.flatMap(line => {
+    const candidate = fileUrlToPath(line.trim());
+    return candidate && path.posix.isAbsolute(candidate) ? [candidate] : [];
+  }), operation };
 }
 
 function pathToFileUrl(absolutePath: string): string {
   const normalized = absolutePath.replaceAll("\\", "/");
   const withLeading =
     normalized.startsWith("/") ? normalized : `/${normalized}`;
-  return `file://${encodeURI(withLeading)}`;
+  return `file://${encodeURI(withLeading).replaceAll("#", "%23").replaceAll("?", "%3F")}`;
 }
 
 function fileUrlToPath(fileUrl: string): string | null {
   if (!fileUrl.startsWith("file://")) return null;
   try {
     const url = new URL(fileUrl);
-    if (url.protocol !== "file:") return null;
+    if (url.protocol !== "file:" || url.hostname) return null;
     return decodeURIComponent(url.pathname);
   } catch {
     return null;

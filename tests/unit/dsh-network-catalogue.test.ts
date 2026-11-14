@@ -2,17 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { Session } from 'electron';
+import { app, type Session } from 'electron';
 import { removeManaged } from '../../src/main/dsh/files';
+import type { DshLauncherRequest, DshLauncherResponse } from '../../src/shared/dsh-launcher';
 
 const transport = vi.hoisted(() => vi.fn());
-vi.mock('electron', () => ({ session: { fromPartition: vi.fn() } }));
+vi.mock('electron', () => ({ app: { getPath: vi.fn(), getAppPath: () => process.cwd(), isPackaged: false }, session: { fromPartition: vi.fn() } }));
 vi.mock('../../src/main/dsh/electron-https-download', () => ({
   createElectronHttpsDownload: () => (url: string, input: unknown) => transport(url, input),
   createElectronPublicationRequest: () => (url: string, input: unknown) => transport(url, input),
 }));
 import { DEFAULT_LAUNCHER_NETWORK, LauncherNetwork, validateLauncherNetwork } from '../../src/main/dsh/launcher-network';
 import { DSH_NPM_METADATA, OfficialVersionCatalogue, parseOfficialNpmVersions } from '../../src/main/dsh/official-versions';
+import { DshLauncher } from '../../src/main/dsh/launcher';
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await removeManaged(tmpdir(), root); });
@@ -206,6 +208,39 @@ describe('hot launcher networking', () => {
     expect(service.githubCandidates(DSH_NPM_METADATA)).toEqual([DSH_NPM_METADATA]);
     expect((await service.environment()).HTTP_PROXY).toBe('http://127.0.0.1:7897');
   });
+  it('revalidates cached metadata on its working route and clears validators when global routing changes', async () => {
+    const proxy = scope();
+    const service = new LauncherNetwork(await temporary(), () => undefined, () => proxy as unknown as Session);
+    await service.init();
+    const github = 'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases';
+    transport.mockResolvedValueOnce(new Response(null, { status: 403 }))
+      .mockResolvedValueOnce(new Response('[{"release":1}]', { headers: { etag: '"catalogue-1"' } }));
+    expect(await service.json(github, undefined, true)).toEqual([{ release: 1 }]);
+    const working = transport.mock.calls[1]![0];
+    transport.mockClear();
+    transport.mockResolvedValueOnce(new Response(null, { status: 304 }));
+    expect(await service.json(github, undefined, true)).toEqual([{ release: 1 }]);
+    expect(transport).toHaveBeenCalledExactlyOnceWith(working, expect.objectContaining({ headers: expect.objectContaining({ 'If-None-Match': '"catalogue-1"' }) }));
+
+    await service.patch({ proxyMode: 'custom', proxyUrl: 'http://127.0.0.1:8888', githubMirror: 'direct' });
+    transport.mockClear();
+    transport.mockResolvedValueOnce(new Response('[{"release":2}]'));
+    expect(await service.json(github, undefined, true)).toEqual([{ release: 2 }]);
+    expect(transport.mock.calls[0]![0]).toBe(github);
+    expect(transport.mock.calls[0]![1].headers).not.toHaveProperty('If-None-Match');
+    expect(proxy.setProxy).toHaveBeenLastCalledWith(expect.objectContaining({ proxyRules: 'http://127.0.0.1:8888' }));
+  });
+  it('identifies the responding host and distinguishes an HTTP denial from a rate limit', async () => {
+    const service = new LauncherNetwork(await temporary(), () => undefined, () => scope() as unknown as Session);
+    await service.init();
+    const github = 'https://api.github.com/repos/deepseek-ai/deepseek-harness/releases/tags/dsh-v0.2.2-rc.2';
+    await service.patch({ githubMirror: 'gh-proxy' });
+    transport.mockResolvedValueOnce(new Response(null, { status: 403 }))
+      .mockResolvedValueOnce(new Response(null, { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    await expect(service.json(github)).rejects.toThrow('gh-proxy.com 拒绝访问（HTTP 403）；api.github.com 请求受限（HTTP 403）');
+    transport.mockResolvedValueOnce(new Response(null, { status: 429 }));
+    await expect(service.json(DSH_NPM_METADATA)).rejects.toThrow('registry.npmjs.org 请求受限（HTTP 429）');
+  });
   it('uses the selected npm mirror for tarball bytes, falls back on transport failure, and leaves official integrity metadata canonical', async () => {
     const service = new LauncherNetwork(await temporary(), () => undefined, () => scope() as unknown as Session); await service.init();
     await service.save({ ...DEFAULT_LAUNCHER_NETWORK, npmRegistry: 'https://registry.npmmirror.com' });
@@ -217,6 +252,44 @@ describe('hot launcher networking', () => {
   });
 });
 describe('official executable release catalogue', () => {
+  it('shares one journaled sync across callers, reports source progress, and automatically skips a fresh catalogue', async () => {
+    const root = await temporary();
+    vi.mocked(app.getPath).mockReturnValue(root);
+    const network = new LauncherNetwork(root, () => undefined, () => scope() as unknown as Session);
+    await network.init();
+    const launcher = new DshLauncher(() => undefined, undefined, network);
+    const request = Reflect.get(launcher, 'handle').bind(launcher) as (input: DshLauncherRequest) => Promise<DshLauncherResponse>;
+    let finishGithub!: (response: Response) => void;
+    const githubPending = new Promise<Response>(resolve => { finishGithub = resolve; });
+    transport.mockImplementation((url: string) => url === DSH_NPM_METADATA ? Promise.resolve(Response.json(npm)) : githubPending);
+    try {
+      await Reflect.get(launcher, 'initialization');
+      const responses = await Promise.all([
+        request({ type: 'versions.refresh', ifStale: true }), request({ type: 'versions.refresh' }), request({ type: 'versions.refresh' }),
+      ]);
+      const first = responses[0]!;
+      if (!first.ok || !first.operationId) throw Error('Expected a tracked refresh.');
+      expect(responses).toEqual([first, first, first]);
+      await vi.waitFor(() => expect(launcher.state().operations).toMatchObject([{ id: first.operationId, phase: 'catalogue-waiting-github', progress: 50 }]));
+      expect(await request({ type: 'versions.refresh', ifStale: true })).toEqual(first);
+      const version = '0.2.0-rc.2';
+      finishGithub(Response.json([{ tag_name: `dsh-v${version}`, html_url: `https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v${version}` }]));
+      await vi.waitFor(() => expect(launcher.state().operations).toMatchObject([{ id: first.operationId, status: 'succeeded' }]));
+      expect(launcher.state().versions).toMatchObject({ stale: false, entries: [{ version }] });
+      expect(await request({ type: 'versions.refresh', ifStale: true })).toEqual({ ok: true });
+      expect(transport).toHaveBeenCalledTimes(2);
+
+      transport.mockImplementation(async (url: string) => url === DSH_NPM_METADATA ? Response.json(npm) : new Response(null, { status: 503 }));
+      await request({ type: 'versions.refresh' });
+      await vi.waitFor(() => expect(launcher.state().operations[0]).toMatchObject({ status: 'failed', error: expect.stringContaining('GitHub') }));
+      expect(launcher.state().versions).toMatchObject({ stale: true, entries: [{ version }] });
+      expect(await request({ type: 'versions.refresh', ifStale: true })).toEqual({ ok: true });
+      expect(launcher.state().operations).toHaveLength(2);
+    } finally {
+      finishGithub(Response.json([]));
+      await launcher.shutdown();
+    }
+  });
   it('sorts actual prerelease versions numerically and rejects substituted tarballs without treating source archives as runtimes', () => {
     const result = parseOfficialNpmVersions(npm);
     expect(result.rows.map(row => row.version)).toEqual(['0.2.1-alpha.10', '0.2.1-alpha.2', '0.2.0-rc.2']);
@@ -229,7 +302,9 @@ describe('official executable release catalogue', () => {
     const json = vi.fn(async (url: string) => url === DSH_NPM_METADATA ? npm : [{ tag_name: 'dsh-v0.2.1-alpha.2', body: 'Official alpha notes', html_url: 'https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-alpha.2' }]);
     const service = new OfficialVersionCatalogue({ rootPath: root, json, onChanged: changed }); await service.init(); await service.refresh();
     expect(service.state().source).toBe('github-npm'); expect(service.state().entries.find(row => row.version === '0.2.1-alpha.2')?.notes).toBe('Official alpha notes');
-    const reopened = new OfficialVersionCatalogue({ rootPath: root, json: async () => { throw Error('offline'); }, onChanged: changed }); await reopened.init(); await reopened.refresh();
+    const reopened = new OfficialVersionCatalogue({ rootPath: root, json: async () => { throw Error('offline'); }, onChanged: changed }); await reopened.init();
+    expect(reopened.isFresh()).toBe(true);
+    await expect(reopened.refresh()).rejects.toThrow('offline');
     expect(reopened.state()).toMatchObject({ source: 'cache', stale: true }); expect(reopened.state().entries).toHaveLength(1);
     expect(service.state().entries.map(row => row.version)).toEqual(['0.2.1-alpha.2']);
   });
@@ -243,7 +318,7 @@ describe('official executable release catalogue', () => {
       return url.includes('/tags/') ? github : [github];
     });
     const service = new OfficialVersionCatalogue({ rootPath: root, json, onChanged: () => undefined }); await service.refresh();
-    offline = true; await service.refresh();
+    offline = true; await expect(service.refresh()).rejects.toThrow('GitHub unavailable');
     expect(service.state()).toMatchObject({ stale: true, entries: [{ version: '0.2.0-rc.2' }] });
     await expect(service.release('0.2.0-rc.2')).rejects.toThrow('GitHub unavailable');
     offline = false; json.mockClear();
@@ -251,6 +326,25 @@ describe('official executable release catalogue', () => {
     expect(json).toHaveBeenCalledOnce();
     github.tag_name = 'desktop-v0.2.0-rc.2';
     await expect(service.release('0.2.0-rc.2')).rejects.toThrow('GitHub Release');
+  });
+  it('installs from a recently verified exact catalogue entry and revalidates disk-only entries', async () => {
+    const version = '0.2.0-rc.2';
+    const root = await temporary();
+    const github = { tag_name: `dsh-v${version}`, html_url: `https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v${version}` };
+    const json = vi.fn(async (url: string) => url === DSH_NPM_METADATA ? npm : [github]);
+    const service = new OfficialVersionCatalogue({ rootPath: root, json, onChanged: () => undefined });
+    await service.refresh();
+    json.mockReset().mockRejectedValue(Error('HTTP 429'));
+    expect(await service.release(version)).toEqual({ version, tarball: release(version).dist.tarball, integrity: sri });
+    const cancelled = AbortSignal.abort(new Error('cancelled'));
+    await expect(service.release(version, cancelled)).rejects.toThrow('cancelled');
+    expect(json).not.toHaveBeenCalled();
+    await expect(service.release('0.2.1-alpha.2')).rejects.toThrow('GitHub: HTTP 429');
+    expect(json).toHaveBeenCalledOnce();
+    const reopened = new OfficialVersionCatalogue({ rootPath: root, json, onChanged: () => undefined });
+    await reopened.init();
+    await expect(reopened.release(version)).rejects.toThrow('GitHub: HTTP 429');
+    expect(json).toHaveBeenCalledTimes(2);
   });
   it('resolves the exact official Web package only after confirming its GitHub Release', async () => {
     const version = '0.2.0-rc.2'; const json = vi.fn(async (url: string) => url.includes('/releases/tags/')

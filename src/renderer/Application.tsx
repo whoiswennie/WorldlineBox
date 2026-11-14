@@ -23,7 +23,6 @@ import type { WorldlineBoxLibraryApi } from '../shared/library-api';
 import type { ExtensionSaveCompletedEvent } from '../shared/protocol/responses';
 import type { WorldlineBoxBotApi } from '../shared/companion-bot';
 import type { WorldlineBoxBotMediaApi } from '../shared/companion-bot-media';
-import type { WorldlineBoxBotSpeechApi } from '../shared/companion-bot-speech';
 import { featureLoader } from './feature-loader';
 import './feature-loading.css';
 
@@ -35,7 +34,7 @@ const networkFeature = featureLoader(() => import('./network/ApplicationNetworkP
 const Launcher = lazy(launcherFeature.load), Browser = lazy(browserFeature.load), Companions = lazy(companionsFeature.load);
 const Assets = lazy(assetsFeature.load), Network = lazy(networkFeature.load);
 const api = (window as Window & { worldlinebox?: { dshLauncher?: WorldlineBoxDshLauncherApi;
-  captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companionBot?: WorldlineBoxBotApi; companionBotMedia?: WorldlineBoxBotMediaApi; companionBotSpeech?: WorldlineBoxBotSpeechApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
+  captureTools?: WorldlineBoxCaptureToolsApi; network?: WorldlineBoxApplicationNetworkApi; companionBot?: WorldlineBoxBotApi; companionBotMedia?: WorldlineBoxBotMediaApi; music?: WorldlineBoxMusicApi; shell?: WorldlineBoxShellApi; browser?: WorldlineBoxBrowserApi; library?: WorldlineBoxLibraryApi } }).worldlinebox;
 
 function FeatureLoading() {
   return <div className="feature-loading" role="status"><span className="feature-loading-dot" aria-hidden="true" />正在打开…</div>;
@@ -45,6 +44,11 @@ function FeatureLoading() {
 export function App() {
   const t = useT();
   const [activeModuleId, setActiveModuleId] = useState('dsh');
+  const [desktopPet, setDesktopPet] = useState(false);
+  const reportDesktopPet = useCallback((active: boolean, returning?: boolean) => {
+    setDesktopPet(active);
+    if (returning) setActiveModuleId('companions');
+  }, []);
   const [browserContext, setBrowserContext] = useState<BrowserPageContext>();
   useEffect(() => api?.browser?.onCompanionRequest?.(context => { setBrowserContext(context); setActiveModuleId('companions'); }), []);
   useApplicationModuleShortcuts(api?.shell, activeModuleId !== 'assets');
@@ -107,7 +111,7 @@ export function App() {
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} speechApi={api?.companionBotSpeech} launcherApi={api?.dshLauncher} browserApi={api?.browser} browserContext={browserContext} onOpenBrowserContext={openAttachedBrowser} onOpenLauncher={() => setActiveModuleId('dsh')} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} isActive={activeModuleId === 'companions'} /></Suspense> },
+          { id: 'companions', keepEffectsActive: desktopPet, preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} launcherApi={api?.dshLauncher} browserApi={api?.browser} browserContext={browserContext} onOpenBrowserContext={openAttachedBrowser} onOpenLauncher={() => setActiveModuleId('dsh')} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} onDesktopPetChange={reportDesktopPet} isActive={activeModuleId === 'companions'} /></Suspense> },
           { id: 'assets', preload: assetsFeature.preload, label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
           { id: 'browser', preload: browserFeature.preload, label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
           { id: 'network', preload: networkFeature.preload, label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },

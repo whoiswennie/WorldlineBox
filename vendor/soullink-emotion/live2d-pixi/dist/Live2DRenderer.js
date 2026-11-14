@@ -17,6 +17,9 @@ export class Live2DRenderer {
     suppressedParamIds = new Set();
     viewScale = 1;
     viewOffset = { x: 0, y: 0 };
+    minimumResolution = 1;
+    fullBody = false;
+    figureBounds;
     beforeModelUpdate = () => {
         this.applyParametersNow();
         // Cubism restores saved values after updating geometry, so capture here.
@@ -28,17 +31,31 @@ export class Live2DRenderer {
         this.deps = deps;
         window.PIXI = PIXI;
         this.app = new PIXI.Application({
-            resizeTo: container,
             autoDensity: true,
-            resolution: Math.min(window.devicePixelRatio || 1, 2),
+            resolution: this.displayResolution(),
             antialias: true,
             backgroundAlpha: 0
         });
         container.appendChild(this.app.view);
-        this.resizeObserver = new ResizeObserver(() => this.fitModel());
+        this.resizeObserver = new ResizeObserver(() => this.syncViewport());
         this.resizeObserver.observe(container);
+        this.syncViewport();
     }
-    async load(modelUrl) {
+    displayResolution() {
+        return Math.min(3, Math.max(this.minimumResolution, this.container.ownerDocument.defaultView?.devicePixelRatio || 1));
+    }
+    /** Resample after a monitor DPI change or a move into another window. */
+    syncViewport(minimumResolution = this.minimumResolution) {
+        this.minimumResolution = minimumResolution;
+        const { clientWidth: width, clientHeight: height } = this.container;
+        const resolution = this.displayResolution(), renderer = this.app.renderer;
+        if (!width || !height || renderer.resolution === resolution && this.app.screen.width === width && this.app.screen.height === height)
+            return;
+        renderer.resolution = resolution;
+        renderer.resize(width, height);
+        this.fitModel();
+    }
+    async load(modelUrl, options) {
         if (!this.deps.cubismLoader) {
             throw new Error("[Live2DRenderer] No cubismLoader provided. Pass a CubismCoreLoader via the constructor deps " +
                 "(e.g. createScriptTagCubismLoader(coreUrl)) so the Cubism Core runtime can be loaded.");
@@ -47,11 +64,24 @@ export class Live2DRenderer {
         const { Live2DModel } = await import("pixi-live2d-display/cubism4");
         this.removeModel();
         const cdiMeta = await loadCDIParameterMeta(modelUrl);
-        const model = await Live2DModel.from(modelUrl, {
-            autoInteract: false,
-            autoUpdate: true
+        let source = modelUrl;
+        if (options?.animations) {
+            const response = await fetch(modelUrl);
+            if (!response.ok)
+                throw Error('Could not load the Live2D manifest.');
+            const manifest = await response.json();
+            source = { ...manifest, url: modelUrl, FileReferences: { ...manifest.FileReferences, ...options.animations } };
+        }
+        const model = await Live2DModel.from(source, {
+            autoHitTest: false,
+            autoFocus: false,
+            autoUpdate: true,
+            ticker: this.app.ticker,
         });
         this.model = model;
+        const motionGroups = this.model.internalModel?.motionManager?.groups;
+        if (options?.automaticIdle === false && motionGroups)
+            motionGroups.idle = '';
         // Complex rigs can exceed Cubism's 36-mask single-atlas limit. Packing
         // them into one atlas makes unrelated face layers share the same mask.
         const cubism = this.model.internalModel?.renderer;
@@ -64,6 +94,7 @@ export class Live2DRenderer {
         this.disableInternalEyeBlink();
         this.model.internalModel?.on?.("beforeModelUpdate", this.beforeModelUpdate);
         this.model.anchor?.set(0.5, 0.52);
+        this.figureBounds = this.measureFigure();
         this.app.stage.addChild(this.model);
         this.fitModel();
         return buildMotionParameters(this.model, cdiMeta);
@@ -78,17 +109,55 @@ export class Live2DRenderer {
     get suppressedParameterIds() {
         return this.suppressedParamIds;
     }
+    async prepareNativeAnimations(expressions, motions) {
+        const manager = this.model?.internalModel?.motionManager;
+        const expressionManager = manager?.expressionManager;
+        await Promise.allSettled([
+            ...motions.map(({ group, index }) => manager?.loadMotion?.(group, index)),
+            ...expressions.map(name => {
+                const index = expressionManager?.getExpressionIndex?.(name);
+                return index >= 0 ? expressionManager.loadExpression?.(index) : undefined;
+            }),
+        ]);
+    }
+    clearNativeAnimation() {
+        this.stopNativeMotion();
+        this.applyNativeAnimation(null);
+    }
+    stopNativeMotion() {
+        this.model?.internalModel?.motionManager?.stopAllMotions();
+    }
+    /** Motion values are saved by Cubism between frames, even after its queue stops. */
+    restoreMotionParameters(ids) {
+        const core = this.model?.internalModel?.coreModel;
+        const count = core?.getParameterCount?.() ?? 0;
+        for (const id of ids) {
+            const index = core?.getParameterIndex?.(id) ?? -1;
+            if (index < 0 || index >= count)
+                continue;
+            const value = core?.getParameterDefaultValue?.(index);
+            if (value !== undefined)
+                core?.setParameterValueByIndex?.(index, value, 1);
+        }
+        core?.saveParameters?.();
+    }
+    resetNativeExpression() {
+        const expressions = this.model?.internalModel?.motionManager?.expressionManager;
+        if (!expressions)
+            return;
+        expressions.reserveExpressionIndex = -1;
+        expressions.stopAllExpressions();
+        // resetExpression only updates the queue, leaving Cubism's duplicate check
+        // pointed at the old clip. Reset both so the same expression can play again.
+        expressions.currentExpression = expressions.defaultExpression;
+        expressions.resetExpression();
+    }
     applyNativeAnimation(directive) {
         this.suppressedParamIds = new Set(directive?.suppressParamIds ?? []);
         if (directive === null) {
             if (this.lastNativeAnimToken !== 0) {
                 // Ending a performance restores neutral; never select a random costume.
-                const expressions = this.model?.internalModel?.motionManager?.expressionManager;
-                if (expressions) {
-                    expressions.reserveExpressionIndex = -1;
-                    expressions.stopAllExpressions?.();
-                    expressions.resetExpression?.();
-                }
+                this.resetNativeExpression();
                 this.lastNativeAnimToken = 0;
             }
             return;
@@ -106,21 +175,15 @@ export class Live2DRenderer {
         this.lastNativeAnimToken = directive.token;
     }
     setViewScale(scale) {
-        this.viewScale = Math.min(2.2, Math.max(0.45, scale));
+        this.viewScale = Math.min(3, Math.max(0.4, scale));
         this.fitModel();
     }
     /** WorldlineBox integration: reset means neutral, never a random expression. */
     resetPose() {
-        const model = this.model;
-        model?.internalModel?.motionManager?.stopAllMotions?.();
-        const expressions = model?.internalModel?.motionManager?.expressionManager;
-        if (expressions) {
-            expressions.reserveExpressionIndex = -1;
-            expressions.stopAllExpressions?.();
-            expressions.resetExpression?.();
-        }
-        const core = model?.internalModel?.coreModel;
-        if (core?.getParameterCount && core?.setParameterValueByIndex)
+        this.stopNativeMotion();
+        this.resetNativeExpression();
+        const core = this.model?.internalModel?.coreModel;
+        if (core?.getParameterCount && core.setParameterValueByIndex && core.getParameterDefaultValue)
             for (let index = 0; index < core.getParameterCount(); index++) {
                 core.setParameterValueByIndex(index, core.getParameterDefaultValue(index), 1);
             }
@@ -132,6 +195,24 @@ export class Live2DRenderer {
     setViewOffset(offset) {
         this.viewOffset = { ...offset };
         this.fitModel();
+    }
+    setFullBody(enabled) {
+        if (this.fullBody === enabled)
+            return;
+        this.fullBody = enabled;
+        this.fitModel();
+    }
+    /** Figure bounds in CSS pixels, excluding the model's transparent canvas margins. */
+    getFigureBounds() {
+        const model = this.model, bounds = this.figureBounds;
+        if (!model || !bounds)
+            return;
+        return {
+            x: model.x + (bounds.x - model.pivot.x) * model.scale.x,
+            y: model.y + (bounds.y - model.pivot.y) * model.scale.y,
+            width: bounds.width * model.scale.x,
+            height: bounds.height * model.scale.y,
+        };
     }
     destroy() {
         this.resizeObserver.disconnect();
@@ -199,10 +280,41 @@ export class Live2DRenderer {
         const height = this.container.clientHeight;
         const originalWidth = (this.model.internalModel?.originalWidth ?? this.model.width) || 1;
         const originalHeight = (this.model.internalModel?.originalHeight ?? this.model.height) || 1;
+        if (this.fullBody) {
+            const bounds = this.figureBounds ?? new PIXI.Rectangle(0, 0, originalWidth, originalHeight);
+            const scale = Math.max(0, Math.min((width - 12) / bounds.width, (height - 12) / bounds.height)) * this.viewScale;
+            this.model.scale.set(scale);
+            this.model.x = width / 2 - (bounds.x + bounds.width / 2 - this.model.pivot.x) * scale + this.viewOffset.x;
+            this.model.y = height - 6 - (bounds.bottom - this.model.pivot.y) * scale + this.viewOffset.y;
+            return;
+        }
         const scale = Math.min(width / originalWidth, height / originalHeight) * 1.02 * this.viewScale;
         this.model.scale.set(scale);
         this.model.x = width * 0.5 + this.viewOffset.x;
         this.model.y = height * 0.56 + this.viewOffset.y;
+    }
+    measureFigure() {
+        const internal = this.model?.internalModel, core = internal?.coreModel;
+        if (!internal?.getDrawableVertices || !core?.getDrawableCount)
+            return;
+        const transform = internal.localTransform;
+        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        for (let index = 0; index < core.getDrawableCount(); index++) {
+            if ((core.getDrawableOpacity?.(index) ?? 1) <= .01)
+                continue;
+            const vertices = internal.getDrawableVertices(index);
+            for (let i = 0; i + 1 < vertices.length; i += 2) {
+                const vx = vertices[i], vy = vertices[i + 1];
+                const x = transform ? transform.a * vx + transform.c * vy + transform.tx : vx;
+                const y = transform ? transform.b * vx + transform.d * vy + transform.ty : vy;
+                left = Math.min(left, x);
+                top = Math.min(top, y);
+                right = Math.max(right, x);
+                bottom = Math.max(bottom, y);
+            }
+        }
+        if (Number.isFinite(left + top + right + bottom) && right > left && bottom > top)
+            return new PIXI.Rectangle(left, top, right - left, bottom - top);
     }
     applyParametersNow() {
         const coreModel = this.model?.internalModel?.coreModel;

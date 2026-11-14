@@ -1,3 +1,4 @@
+import { useBotCallDocument } from './call-pet';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
 import type { BotMediaRef, WorldlineBoxBotMediaApi, BotMediaTextPage } from '../../shared/companion-bot-media';
@@ -9,15 +10,16 @@ import './bot-attachment.css';
 const ignoreLink = () => undefined;
 interface Props { media: BotMediaRef; api?: WorldlineBoxBotMediaApi; conversationId: string; locale: 'zh-CN' | 'en'; kind: 'image' | 'video' | 'audio' | 'text'; imageUrl?: string; onClose(): void; onOpenUrl?(url: string): void; onSave?(): Promise<void>; onSystemOpen?(): Promise<void>; busy?: boolean; actionError?: string }
 export function BotMediaPreview({ media, api, conversationId, locale, kind, imageUrl, onClose, onOpenUrl = ignoreLink, onSave, onSystemOpen, busy, actionError }: Props) {
+  const surface = useBotCallDocument();
   const zh = locale === 'zh-CN', box = useRef<HTMLElement>(null), close = useRef<HTMLButtonElement>(null);
   const [cursors, setCursors] = useState([0]), [pageIndex, setPageIndex] = useState(0), [retry, setRetry] = useState(0);
   const [read, setRead] = useState<{ key: string; page?: BotMediaTextPage; error?: string }>(), [decodeFailed, setDecodeFailed] = useState(false);
   const offset = cursors[pageIndex] ?? 0, key = `${conversationId}:${media.id}:${offset}:${retry}`, loading = kind === 'text' && read?.key !== key;
   useEffect(() => {
-    const previous = document.activeElement; close.current?.focus();
+    const previous = surface.activeElement; close.current?.focus();
     const players=box.current?.querySelectorAll<HTMLMediaElement>('audio,video');
-    return () => { players?.forEach(player=>player.pause()); if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
-  }, []);
+    return () => { players?.forEach(player=>player.pause()); if (previous && previous.isConnected && typeof (previous as HTMLElement).focus === 'function') (previous as HTMLElement).focus(); };
+  }, [surface]);
   useEffect(() => {
     if (kind !== 'text') return;
     let current = true;
@@ -37,13 +39,13 @@ export function BotMediaPreview({ media, api, conversationId, locale, kind, imag
     if (event.key !== 'Tab') return;
     const controls = [...box.current?.querySelectorAll<HTMLElement>('button:not(:disabled),a[href],video,audio,[tabindex="0"]') ?? []];
     const first = controls[0], last = controls.at(-1);
-    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    if (event.shiftKey && surface.activeElement === first) { event.preventDefault(); last?.focus(); }
+    else if (!event.shiftKey && surface.activeElement === last) { event.preventDefault(); first?.focus(); }
   };
   const next = () => { if (!page?.nextOffset || loading) return; const nextOffset = page.nextOffset; setCursors(current => [...current.slice(0, pageIndex + 1), nextOffset]); setPageIndex(pageIndex + 1); };
   const openDocumentLink = useCallback((url: string) => { onClose(); onOpenUrl(url); }, [onClose, onOpenUrl]);
   const unavailable = decodeFailed || kind === 'image' && !imageUrl;
-  const play=(current:HTMLMediaElement)=>{for(const other of document.querySelectorAll<HTMLMediaElement>('[data-bot-attachment-player]'))if(other!==current)other.pause();};
+  const play=(current:HTMLMediaElement)=>{for(const other of surface.querySelectorAll<HTMLMediaElement>('[data-bot-attachment-player]'))if(other!==current)other.pause();};
   return createPortal(<div className="bot-attachment-viewer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className={`bot-attachment-viewer is-${kind}`} ref={box} role="dialog" aria-modal="true" aria-label={media.name} onKeyDown={keyboard}>
       <header className="bot-attachment-viewer-header"><span className="bot-attachment-viewer-icon"><BotIcon name="file" /></span><div><h2 title={media.name}>{media.name}</h2><span>{formatBotFileSize(media.size)}{kind === 'text' && (page?.format === 'markdown' ? ' · Markdown' : ' · TXT')}</span></div><nav aria-label={zh ? '文件操作' : 'File actions'}>{onSave && <button disabled={busy} onClick={() => void onSave()}><BotIcon name="download" />{zh ? '保存' : 'Save'}</button>}{onSystemOpen && <button disabled={busy} onClick={() => void onSystemOpen()}><BotIcon name="external" />{zh ? '系统打开' : 'System app'}</button>}<button ref={close} className="bot-attachment-viewer-close" aria-label={zh ? '关闭预览' : 'Close preview'} onClick={onClose}>×</button></nav></header>
@@ -56,5 +58,5 @@ export function BotMediaPreview({ media, api, conversationId, locale, kind, imag
       </div>}
       {actionError && <div className="bot-attachment-viewer-error" role="alert">{actionError}</div>}
     </section>
-  </div>, document.body);
+  </div>, surface.body);
 }

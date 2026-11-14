@@ -445,10 +445,23 @@ async function handleContextMenuClick(
   const targetFolderId = parseFolderMenuId(info.menuItemId);
   if (targetFolderId === undefined) return;
 
+  let mediaUrl = info.srcUrl;
+  if (info.mediaType === 'video' && mediaUrl?.startsWith('blob:') && info.tab?.id !== undefined) {
+    const blobUrl = mediaUrl;
+    const tabId = info.tab.id;
+    mediaUrl = await new Promise<string | undefined>(resolve => {
+      chrome.tabs.sendMessage(tabId, { type: 'worldlinebox-video-manifest-request', blobUrl },
+        { frameId: info.frameId ?? 0 }, response => {
+          if (chrome.runtime.lastError || !response || typeof response !== 'object') return resolve(undefined);
+          const candidate = Reflect.get(response, 'mediaUrl');
+          resolve(typeof candidate === 'string' ? candidate : undefined);
+        });
+    });
+  }
   const intent = saveIntentFromContextMenu({
     mediaType: info.mediaType,
     pageUrl: info.pageUrl,
-    srcUrl: info.srcUrl,
+    srcUrl: mediaUrl,
   });
   if (!intent) {
     if (info.tab?.id !== undefined && isFileUrl(info.srcUrl)) {

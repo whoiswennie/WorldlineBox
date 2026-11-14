@@ -1,6 +1,7 @@
 import type { RendererRequest } from "../../shared/protocol/requests";
 import type { RendererResult, WorkerResult } from "../../shared/protocol/responses";
 import { createPublicError } from "../../shared/protocol/errors";
+import { isLibraryRootFolderId } from "../../shared/library-root-folder";
 
 export type MediaShellResultRuntime = {
   logInfo: (scope: string, message: string, context?: Record<string, unknown>) => void;
@@ -8,7 +9,8 @@ export type MediaShellResultRuntime = {
   openPath: (absolutePath: string) => Promise<string>;
   showItemInFolder: (absolutePath: string) => void;
   writeClipboardText: (text: string) => void;
-  writeClipboardFilePaths: (absolutePaths: readonly string[]) => boolean;
+  writeClipboardFilePaths: (absolutePaths: readonly string[], operation?: 'copy' | 'cut') => boolean;
+  rememberAssetClipboard?: (libraryId: string, assetIds: string[], operation: 'copy' | 'cut', folderIds?: string[], absolutePaths?: readonly string[]) => void;
   openWith: (absolutePath: string) => Promise<"failed" | "cancelled" | "opened">;
 };
 
@@ -181,7 +183,7 @@ export async function tryHandleMediaShellWorkerResult(
     workerResult.type === "media.asset-paths"
   ) {
     try {
-      const wrote = runtime.writeClipboardFilePaths(workerResult.absolutePaths);
+      const wrote = runtime.writeClipboardFilePaths(workerResult.absolutePaths, request.operation ?? 'copy');
       if (!wrote) {
         runtime.logError(
           "main.copy-asset-files",
@@ -192,10 +194,15 @@ export async function tryHandleMediaShellWorkerResult(
           error: createPublicError("INTERNAL_ERROR"),
         } satisfies RendererResult;
       }
+      runtime.rememberAssetClipboard?.(
+        request.libraryId, workerResult.assetIds, request.operation ?? 'copy',
+        workerResult.folderIds, workerResult.absolutePaths,
+      );
       return {
         ok: true,
         type: "asset.copy-files.requested",
         assetIds: workerResult.assetIds,
+        ...(workerResult.folderIds?.length ? { folderIds: workerResult.folderIds } : {}),
       } satisfies RendererResult;
     } catch (error) {
       runtime.logError("main.copy-asset-files", error);
@@ -301,6 +308,9 @@ export async function tryHandleMediaShellWorkerResult(
           ok: false,
           error: createPublicError("INTERNAL_ERROR"),
         } satisfies RendererResult;
+      }
+      if (!isLibraryRootFolderId(request.folderId)) {
+        runtime.rememberAssetClipboard?.(request.libraryId, [], 'copy', [request.folderId], [workerResult.absolutePath]);
       }
       return {
         ok: true,

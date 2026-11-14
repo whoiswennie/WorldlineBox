@@ -42,12 +42,12 @@ it('installs another native release alongside the installed version and bounds v
   expect(container!.querySelectorAll('[data-dsh-version]')).toHaveLength(1);
 });
 
-it('shows a cached release offline and does not refetch or reinstall an already installed native version', async () => {
+it('shows a cached release offline while requesting freshness and keeps installed versions disabled', async () => {
   const request = vi.fn<LauncherRunRequest>().mockResolvedValue({ ok: true });
   const state: DshLauncherState = { ...base(), runtimes: [runtime('node-cli-web-v1', '0.2.1-alpha.2')], versions: { source: 'cache', stale: true, error: 'HTTP 403', entries: [{ version: '0.2.1-alpha.2', channel: 'alpha', recommended: true, nodeRange: '>=24', integrity: 'sha512-fixture', releaseUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases' }] } };
   await mount(<OfficialVersionPicker state={state} run={request} />);
   expect(button('已安装').disabled).toBe(true); expect(container!.textContent).toContain('缓存待刷新');
-  expect(request).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'versions.refresh', ifStale: true });
   await act(() => button('刷新版本').click()); expect(request).toHaveBeenCalledWith({ type: 'versions.refresh' });
 });
 
@@ -80,7 +80,7 @@ it('formats release headings, lists, code and tables while keeping anchors local
   const scroll = vi.fn(); panel.scrollTo = scroll;
   await act(() => button('English', article).click());
   expect(scroll).toHaveBeenCalledOnce();
-  expect(request).not.toHaveBeenCalled();
+  expect(request).toHaveBeenCalledExactlyOnceWith({ type: 'versions.refresh', ifStale: true });
 });
 
 function control<T extends HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(label: string): T {

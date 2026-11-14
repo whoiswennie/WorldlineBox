@@ -8,7 +8,7 @@ export default defineConfig({
       fileName: () => 'main.js',
     },
     rollupOptions: {
-      external: ['better-sqlite3', 'koffi', 'libarchive-wasm', '7zip-bin', 'sharp', 'node-edge-tts', 'node-edge-tts/dist/drm', 'ws'],
+      external: ['better-sqlite3', 'koffi', 'libarchive-wasm', '7zip-bin', 'sharp', 'node-edge-tts', 'node-edge-tts/dist/drm', 'ws', 'ssh2'],
     },
   },
 });

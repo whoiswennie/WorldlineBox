@@ -427,7 +427,7 @@ describe('run 委托到 actions 回调包', () => {
 });
 
 describe('注册表完整性', () => {
-  it('14 条定义全部注册且 id 唯一（createCommandRegistry 未抛错）', () => {
+  it('16 条定义全部注册且 id 唯一（createCommandRegistry 未抛错）', () => {
     expect(registry.list().map((def) => def.id)).toEqual([
       'assets.restore',
       'assets.delete-permanent',
@@ -436,6 +436,7 @@ describe('注册表完整性', () => {
       'assets.ai-analyze-pending',
       'assets.ai-analyze',
       'assets.clear-ai-content',
+      'assets.cut',
       'assets.copy',
       'assets.paste',
       'assets.move-to-folder',

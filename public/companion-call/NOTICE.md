@@ -4,4 +4,6 @@
 
 `scenes/evening.png` was generated with the built-in image generation tool for this project. Its prompt and usage are recorded in docs/developer/companion-call-implementation-2026-11-05.md.
 
-`deepseek/` and `ringtone.wav` are user-provided runtime source assets retained in version control. The model's MOC3 and PNG textures use Git LFS; its model JSON, original notice and creator credits remain ordinary Git files in `deepseek/MODEL-LICENSE.txt` and `catalog.json`. Run `git lfs pull` after cloning to materialize the model binaries before development or packaging. `scripts/stage-companion-call.mjs` can reconstruct these runtime files from the original local model archive and ringtone. Original download archives and PSD files are not runtime dependencies and are not staged.
+`deepseek/` is an optional local-only model directory. Obtain DeepSeek-chan and follow the original terms. Art and layer separation by 神宫凉子, Live2D rigging by 霓虹猫_NeonNeko. `node scripts/stage-companion-call.mjs --model <author ZIP>` prepares the files for local use. For a private Windows installer, set `WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS=1` before building. Public builds use the character portrait fallback. [Author's announcement](https://www.bilibili.com/video/BV1ALnw6YEGK)
+
+`ringtone.wav` and `ringtones/dafeiyu.ogg` are synthesized notification tones generated for WorldlineBox. 大肥鱼 uses its own tone.

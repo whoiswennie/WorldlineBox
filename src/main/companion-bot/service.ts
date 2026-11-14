@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution } from '../../shared/companion-bot';
-import { appendBotExecutionStep } from '../../shared/companion-bot-execution';
+import { appendBotExecutionStep, botCallReplyProgress } from '../../shared/companion-bot-execution';
 import { orderBotConversations } from '../../shared/bot-conversation-order';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
@@ -14,7 +14,7 @@ import { BotScheduler } from './scheduler';
 import { BotStore } from './store';
 import { botLocalTimestamp, buildNativeBotContext } from './context';
 import { BotToolServer, type BotToolCall } from './tool-server';
-import { BOT_TOOLS, botToolsForApps } from './tools';
+import { botToolsForApps } from './tools';
 import { BOT_MEMORY_CAPTURE_POLICY, captureBotMemory } from './memory-capture';
 import { BotMaintenanceRuntime } from './memory-maintenance-runtime';
 import type { BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
@@ -39,8 +39,13 @@ import { companionBrowserArgumentsSchema, type CompanionBrowserArguments, type C
 import type { CompanionBrowserResult } from '../browser/service';
 import { botAppIdSchema, companionAssetArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
 import type { BotAssetManagerApp } from './asset-manager-app';
+import { BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
+import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from './call-models';
+import { BotSchedules } from './schedules';
+import { scheduleCommand } from '../../shared/companion-schedule';
 
 export interface BotServiceOptions {
+  callAssetsRoot?: string;
   assetManagerApp?: Pick<BotAssetManagerApp, 'connect' | 'execute'>;
   resolveBrowserContext?(referenceId: string): BrowserPageContext;
   browserTool?(scope: CompanionBrowserScope, input: CompanionBrowserArguments, signal: AbortSignal): Promise<CompanionBrowserResult>;
@@ -55,6 +60,7 @@ export interface BotServiceOptions {
   ensureCompanionBindings?(companionIds: string[]): Promise<void>;
   companionRuntime?(companionId: string, name: string, operation: 'start' | 'stop', signal: AbortSignal): Promise<void>;
   restoreCompanionEnvironments?(companions: ReadonlyArray<{ id: string; name: string; enabled?: boolean }>, signal: AbortSignal): Promise<void>;
+  scheduledWorldOnline?(): Promise<boolean>;
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
@@ -76,10 +82,15 @@ export class BotService {
   private readonly memoryMaintenance: BotMaintenanceRuntime;
   private readonly starting: Promise<void>;
   private readonly replyProgress = new Map<string, BotReplyProgress>();
+  private readonly peerWaiters = new Set<() => void>();
+  private peerWaitCheck?: ReturnType<typeof setImmediate>;
   private readonly toolRuns = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
+  private readonly callModels = new Map<string, Promise<BotCallModel | undefined>>();
   private readonly questions = new Map<string, { eventId: string; resolve(value: unknown): void }>();
   private readonly nativeStops = new Map<string, Promise<void>>();
   private readonly topics: BotTopics;
+  private readonly schedules: BotSchedules;
+  private pollingSchedule = false;
   private readonly guidanceRuns = new Map<string, Promise<void>>();
   private readonly titleRuns=new Map<string,Promise<void>>();
   private readonly contextReads=new Map<string,Promise<BotResponse>>();
@@ -104,6 +115,7 @@ export class BotService {
   constructor(private readonly options: BotServiceOptions) {
     this.store = new BotStore(path.join(options.root, 'bot.sqlite'), { activityBudget: options.activityBudget });
     this.topics = new BotTopics(this.store);
+    this.schedules = new BotSchedules(this.store, this.topics);
     this.world = new BotWorld(this.store);
     this.toolServer = new BotToolServer((call, signal) => this.tool(call, signal));
     this.memoryMaintenance = new BotMaintenanceRuntime({ store: this.store, root: options.root, brain: options.brain, memory: options.memory,
@@ -111,7 +123,18 @@ export class BotService {
     this.historyProjector = new BotHistoryProjector({ store: this.store, memory: options.memory });
     this.scheduler = new BotScheduler(this.store, { handle: (claim, signal) => this.respond(claim, signal), concurrency: 3,
       turnTimeoutMs: 24 * 60 * 60 * 1000,
-      onChange: () => this.changed(), onError: error => { this.detail = errorText(error); options.report?.(error); this.changed(); } });
+      onChange: () => {
+        // Settlement frees a scheduler slot before its next claim. Check
+        // after that claim so queued peers do not look blocked during the gap.
+        if (this.peerWaiters.size && !this.peerWaitCheck) {
+          this.peerWaitCheck = setImmediate(() => {
+            this.peerWaitCheck = undefined;
+            for (const check of this.peerWaiters) check();
+          });
+          this.peerWaitCheck.unref?.();
+        }
+        this.changed();
+      }, onError: error => { this.detail = errorText(error); options.report?.(error); this.changed(); } });
     this.starting = this.start();
   }
   private async start(): Promise<void> {
@@ -158,7 +181,7 @@ export class BotService {
         await this.options.brain.cancelDurable({ laneId: this.topics.lane(event), eventId: event.id,
           cwd: this.workspace(event.companionId), system: context.system, model: this.options.model(),
           audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
-          callback: await this.toolServer.start(), tools: [], workerTools: BOT_TOOLS, role: 'worker', workerAccess: 'full',
+          callback: await this.toolServer.start(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), room.meeting), role: 'worker', workerAccess: 'full',
           signal: this.maintenanceAbort.signal }, intent.suspend === true);
         if (!this.closed && this.store.getMetadata('native-stop:' + eventId) === rawIntent) {
           if (intent.suspend) this.store.confirmNativeInterruption(eventId);
@@ -242,10 +265,13 @@ export class BotService {
   }
   private snapshot(conversationId?: string, before?: number): BotSnapshot {
     if (conversationId) this.prewarmSelectedMemory(conversationId);
-    const page = conversationId ? this.store.messagesPage(conversationId, { limit: 80, before }) : { items: [], hasMore: false };
+    const room = conversationId ? this.store.getConversation(conversationId) : undefined;
+    const chatRuntime = room?.memberIds.includes('user') ? this.chatRuntime(room.id) : undefined;
+    const page = conversationId && (!room?.meeting || chatRuntime?.topic) ? this.store.messagesPage(conversationId, { limit: 80, before,
+      topicId: room?.meeting ? chatRuntime?.topic?.id : undefined }) : { items: [], hasMore: false };
     const companions = this.store.listCompanions();
     const conversationActivity = this.store.conversationActivity();
-    return { companions, presence: this.store.companionPresence(companions, true), conversations: orderBotConversations(this.store.conversations(), conversationActivity), conversationActivity,
+    return { companions, presence: this.store.companionPresence(companions, true), conversations: orderBotConversations(this.store.conversations().filter(item => !item.meeting), conversationActivity), conversationActivity,
       messages: page.items.map(message => {
         const rawExecution = this.store.getMetadata('execution:' + message.id);
         const execution = rawExecution ? JSON.parse(rawExecution) as BotExecution : undefined;
@@ -256,12 +282,56 @@ export class BotService {
         const browserRaw = this.store.getMetadata('browser-context:' + message.id);
         const browserContext = browserRaw ? browserPageContextSchema.safeParse(JSON.parse(browserRaw)) : undefined;
         const apps = botAppIdSchema.array().safeParse(JSON.parse(this.store.getMetadata('message-apps:' + message.id) || '[]'));
-        return { ...message, ...(apps.success && apps.data.length ? { apps: apps.data } : {}), ...(browserContext?.success ? { browserContext: browserContext.data } : {}), ...(execution ? { execution } : {}),topic:message.senderId!=='user'?this.topics.reference(message.eventId):undefined,
-          ...(['queued','running'].includes(message.status) ? { progress: this.replyProgress.get(message.id) ?? { phase: 'queued' as const } } : {}) };
+        const active = message.status === 'queued' || message.status === 'running';
+        const progress = this.replyProgress.get(message.id) ?? { phase: 'queued' as const };
+        return { ...message, ...(apps.success && apps.data.length ? { apps: apps.data } : {}), ...(browserContext?.success ? { browserContext: browserContext.data } : {}),
+          ...(execution ? { execution: room?.meeting ? { status: execution.status, question: message.status === 'running' ? execution.question : undefined, steps: [] } : execution } : {}),topic:message.senderId!=='user'?this.topics.reference(message.eventId):undefined,
+          ...(active ? { progress: room?.meeting ? botCallReplyProgress(progress, execution) : progress } : {}) };
       }), tasks: [], hasMore: page.hasMore,
-      ...(conversationId && this.store.getConversation(conversationId)?.memberIds.includes('user') ? {chatRuntime:this.chatRuntime(conversationId)} : {}),
+      ...(chatRuntime ? { chatRuntime } : {}),
       runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: 'EmbeddingGemma 2 · 内置 768 维', activeLanes: this.scheduler.runningCount,
         ready: this.ready, detail: this.detail, dataRoot: this.options.root } };
+  }
+  private callModel(companionId: string): Promise<BotCallModel | undefined> {
+    let model = this.callModels.get(companionId);
+    if (!model) {
+      model = readBotCallModel(this.options.callAssetsRoot, companionId);
+      this.callModels.set(companionId, model);
+    }
+    return model;
+  }
+  private interruptMeeting(input: Extract<BotRequest, { type: 'call.interrupt' }>): BotResponse {
+    const { conversationId, requestId } = input, room = this.store.getConversation(conversationId);
+    if (!room?.meeting || !room.memberIds.includes('user')) throw Error('只能打断自己的视频会面。');
+    const receipt = 'call-interrupt:' + conversationId + ':' + requestId;
+    const previous = this.store.getMetadata(receipt);
+    if (previous) return { ok: true, interruptedReplyIds: JSON.parse(previous) };
+    const topic = input.topicId ? this.topics.get(input.topicId, conversationId) : this.topics.current(conversationId);
+    if (!topic) return { ok: true, interruptedReplyIds: [] };
+    const cursors = new Map(input.replies.map(item => [item.messageId, item.throughSegmentId]));
+    const events = this.store.taskTransaction(sql => {
+      const rows = sql.prepare(`SELECT i.id FROM bot_inbox i
+        LEFT JOIN bot_topic_events t ON t.event_id=i.id LEFT JOIN bot_topic_events cause ON cause.event_id=i.causation_id
+        WHERE i.conversation_id=? AND COALESCE(t.topic_id,cause.topic_id)=? AND i.status IN ('queued','running')`)
+        .all(conversationId, topic.id) as Array<{ id: string }>;
+      const targets = new Map(rows.map(({ id }) => [id, this.store.getEvent(id)!]));
+      for (const [messageId] of cursors) {
+        const event = this.store.eventForReply(messageId);
+        if (!event || event.conversationId !== conversationId || this.topics.reference(event.id)?.id !== topic.id)
+          throw Error('只能打断当前话题的回应。');
+        targets.set(event.id, event);
+      }
+      const interrupted = [...targets.values()];
+      for (const event of interrupted) this.store.interruptMeetingReply(event, cursors.get(event.replyMessageId));
+      this.store.setMetadata(receipt, JSON.stringify(interrupted.map(event => event.replyMessageId)));
+      return interrupted;
+    });
+    for (const event of events) {
+      if (this.store.getMetadata('native-stop:' + event.id)) void this.flushNativeStop(event.id);
+      this.scheduler.cancel(event.id);
+    }
+    this.changed(conversationId);
+    return { ok: true, interruptedReplyIds: events.map(event => event.replyMessageId) };
   }
   private async controlCompanion(companionId: string, operation: 'start' | 'stop', signal: AbortSignal): Promise<void> {
     const companion = this.store.getCompanion(companionId); if (!companion) throw new Error('伙伴不存在。');
@@ -310,16 +380,21 @@ export class BotService {
     const run = this.ensureConversationBindings(conversationId).then(() => this.options.memory.warm(scope, phase => {
       if (this.closed) return;
       this.memoryWarmPhases.set(key, phase);
-      for (const event of this.store.activeDomainEvents(companionId, room.securityDomainId)) this.replyProgress.set(event.replyMessageId, { phase });
+      for (const event of this.store.activeDomainEvents(companionId, room.securityDomainId)) this.setReplyProgress(event, { phase });
       this.changed(room.id);
     })).catch(error => { if (!this.closed && !['BOT_COMPANION_INSTANCE_REQUIRED', 'BOT_EXECUTION_INSTANCE_REQUIRED'].includes((error as { code?: string })?.code ?? '')) this.options.report?.(error); })
       .finally(() => { this.memoryWarmRuns.delete(key); this.memoryWarmPhases.delete(key); });
     this.memoryWarmRuns.set(key, run);
   }
+
+  private setReplyProgress(event: BotEvent, progress: BotReplyProgress) {
+    this.replyProgress.set(event.replyMessageId, progress);
+    this.emit({ type: 'progress', conversationId: event.conversationId, messageId: event.replyMessageId, progress });
+  }
   isCompanionStopping(companionId: string): boolean {
     return this.store.getCompanion(companionId)?.enabled === false && this.companionControls.has(companionId);
   }
-  async handle(input: BotRequest): Promise<BotResponse> {
+  async handle(input: BotRequest, origin?: import('../../shared/companion-bot').BotMessageOrigin): Promise<BotResponse> {
     await this.starting; if (this.closed) return { ok: false, error: '伙伴正在关闭。' };
     const archivedRoom = 'conversationId' in input && typeof input.conversationId === 'string' ? this.store.getConversation(input.conversationId) : undefined;
     if (archivedRoom?.dissolvedAt) throw new Error('群聊已解散。');
@@ -386,7 +461,7 @@ export class BotService {
         const context=JSON.parse(saved) as {system:string},room=this.store.getConversation(event.conversationId)!;
         let compacted:boolean;
         try{compacted=await this.options.brain.compact({laneId:this.topics.lane(event),eventId:event.id,cwd:this.workspace(event.companionId),system:context.system,
-          model:this.options.model(),callback:await this.toolServer.start(),tools:[],workerTools:BOT_TOOLS,role:'worker',workerAccess:'full',
+          model:this.options.model(),callback:await this.toolServer.start(),tools:[],workerTools:botToolsForApps(this.topicApps(input.topicId),room.meeting),role:'worker',workerAccess:'full',
           audience:{conversationId:room.id,kind:room.kind,allowedConversationIds:[room.id]}},input.requestId);}
         catch(error){if((error as {code?:string})?.code==='BOT_COMPACTION_FAILED')return{ok:false,error:errorText(error),compactionSettled:true};throw error;}
         await this.topicContext({type:'topic.context',conversationId:input.conversationId,topicId:input.topicId,companionId:input.companionId});
@@ -395,6 +470,25 @@ export class BotService {
       case 'message.guide': { await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
       case 'message.dequeue': this.topics.cancelQueued(input.conversationId,input.messageId);this.changed(input.conversationId);return {ok:true};
       case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before) };
+      case 'companion.schedule': return { ok: true, schedule: this.manageSchedule(input.companionId, input.command) };
+      case 'companion.call-performance': {
+        if (!this.store.getCompanion(input.companionId)) throw Error('伙伴不存在。');
+        return { ok: true, callStage: botCallCapabilities(await this.callModel(input.companionId), input.companionId) };
+      }
+      case 'call.open': {
+        const room = archivedRoom, companionId = room?.memberIds.find(id => id !== 'user');
+        if (!room || room.kind !== 'direct' || room.meeting || !room.memberIds.includes('user') || !companionId || this.store.getCompanion(companionId)?.enabled === false)
+          throw Error('只能从可用伙伴的私聊进入视频会面。');
+        const meeting = this.store.openDirect(companionId, true);
+        const callModel = await this.callModel(companionId);
+        return { ok: true, conversationId: meeting.id, callModel, callStage: botCallCapabilities(callModel, companionId), snapshot: this.snapshot(meeting.id) };
+      }
+      case 'call.interrupt': return this.interruptMeeting(input);
+      case 'user.identity': {
+        if (input.name) this.store.setMetadata('desktop-user-name', input.name);
+        if (input.bio !== undefined) this.store.setMetadata('user-profile-bio', input.bio);
+        return { ok: true, userName: this.store.getMetadata('desktop-user-name') ?? '', userBio: this.store.getMetadata('user-profile-bio') ?? '' };
+      }
       case 'history.search': return { ok: true, history: this.store.searchMessages(input.conversationId, input) };
       case 'companion.create': {
         const companion = this.store.createCompanion({ name: input.name, persona: input.persona.trim() || '作为真诚可靠的长期伙伴与用户相处。', workerConcurrency: input.workerConcurrency });
@@ -477,12 +571,33 @@ export class BotService {
         const selectedApps = input.type === 'message.send' ? [...new Set([...(input.apps ?? []), ...(browserContext ? ['browser' as const] : [])])].sort() : [];
         const previousApps = this.store.getMetadata(appIngressKey);
         if (previousApps && previousApps !== JSON.stringify(selectedApps)) throw Error('同一发送请求不能更换已附加的应用，请重新发送。');
+        const quoteKey = 'message-quote-ingress:' + input.conversationId + ':' + input.requestId;
+        const previousQuote = this.store.getMetadata(quoteKey);
+        const quoteId = input.type === 'message.send' ? input.quoteMessageId : undefined;
+        const source = quoteId && previousQuote === undefined ? this.store.getMessage(quoteId) : undefined;
+        if (quoteId && previousQuote === undefined && (!source || source.conversationId !== input.conversationId || source.status !== 'sent' || !source.content.trim())) throw Error('引用的消息在当前会话中不可用。');
+        const quote = previousQuote === undefined ? source && { id: source.id, senderName: source.senderName, excerpt: Array.from(source.content.trim()).slice(0, 360).join('') }
+          : JSON.parse(previousQuote) as import('../../shared/companion-bot').BotMessageQuote | null;
+        if (previousQuote !== undefined && (quote?.id ?? undefined) !== quoteId) throw Error('同一发送请求不能更换引用。');
         const result = this.store.taskTransaction(()=>{
+        const profileBio = this.store.getMetadata('user-profile-bio');
+        const profileKey = 'message-user-bio:' + input.conversationId + ':' + input.requestId;
+        const frozenProfile = input.type === 'message.send' && this.store.ingressExists(input.conversationId, input.requestId)
+          ? this.store.getMetadata(profileKey) : profileBio;
+        const isNew = !this.store.ingressExists(input.conversationId, input.requestId);
         const result = this.store.enqueue({ conversationId: input.conversationId, senderId: input.type === 'world.event' ? 'world' : 'user',
+          senderName: input.type === 'message.send' ? this.store.getMetadata('desktop-user-name') : undefined,
           source: input.type === 'world.event' ? 'world' : 'user', sourceMessageId: input.requestId, content: input.content,
-          payload:input.type==='message.send'?{topicId:input.topicId??null,newTopic:input.newTopic??false,delivery:input.delivery??'queue',userQueued:true,...(browserContext ? { browserContext } : {}), ...(input.apps?.length ? { apps: input.apps } : {})}:undefined,
+          payload:input.type==='message.send'?{topicId:input.topicId??null,newTopic:input.newTopic??false,delivery:input.delivery??'queue',userQueued:true,userBio:frozenProfile,...(quote ? { quote } : {}),...(browserContext ? { browserContext } : {}), ...(input.apps?.length ? { apps: input.apps } : {})}:undefined,
           attachments, kind: input.type === 'world.event' ? 'world_observation' : 'message' });
-        if (input.type === 'message.send') { this.store.setMetadata(appIngressKey, JSON.stringify(selectedApps)); if (selectedApps.length) this.store.setMetadata('message-apps:' + result.message.id, JSON.stringify(selectedApps)); }
+        if (input.type === 'message.send') {
+          this.store.setMetadata(appIngressKey, JSON.stringify(selectedApps));
+          if (selectedApps.length) this.store.setMetadata('message-apps:' + result.message.id, JSON.stringify(selectedApps));
+          if (isNew && frozenProfile !== undefined) this.store.setMetadata(profileKey, frozenProfile);
+          if (isNew && origin) this.store.setMetadata('message-origin:' + result.message.id, JSON.stringify(origin));
+          if (isNew) this.store.setMetadata(quoteKey, JSON.stringify(quote ?? null));
+          if (isNew && quote) this.store.setMetadata('message-quote:' + result.message.id, JSON.stringify(quote));
+        }
         if (browserContext) { this.store.setMetadata('browser-context:' + result.message.id, JSON.stringify(browserContext)); this.store.setMetadata(browserKey, JSON.stringify(browserContext)); }
         if(input.type==='message.send'&&!this.store.getMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId)){
           const topic=input.topicId?this.topics.get(input.topicId,input.conversationId):(!input.newTopic&&!running?this.topics.current(input.conversationId):undefined)
@@ -747,6 +862,9 @@ export class BotService {
     if (!companion || companion.enabled === false) { this.scheduler.cancel(event.id); return; }
     let nativeLaneId = this.topics.lane(event);
     const cwd = this.workspace(companion.id);
+    const room = this.store.getConversation(event.conversationId)!;
+    const meeting = room.meeting === true;
+    const presentationText = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.presentation && part.text ? [part.text] : []).join('\n\n');
     let prepared: BotMemoryPrepared | undefined, text = '';
     let lastDraftAt = 0, firstTextRecorded = false;
     let artifactProjection = Promise.resolve();
@@ -763,15 +881,16 @@ export class BotService {
       });
       void artifactProjection.catch(() => undefined);
     };
-    const progress = (value: BotReplyProgress) => { if (!this.closed) { this.replyProgress.set(event.replyMessageId, value); this.changed(event.conversationId); } };
+    const progress = (value: BotReplyProgress) => { if (!this.closed) { this.setReplyProgress(event, value); this.changed(event.conversationId); } };
     const persistKey = 'native-input:' + event.id;
     try {
+      if (event.source === 'schedule' && event.payload.cabinWorld === true && await this.skipOfflineSchedule(event)) return;
       this.topics.started(event);nativeLaneId=this.topics.lane(event);
       await this.ensureConversationBindings(event.conversationId); signal.throwIfAborted();
       if (event.payload.groupAttention === true) this.store.promoteGroupReply(event.id, claim.leaseToken);
       await mkdir(cwd, { recursive: true });
       progress({ phase: 'recalling-memory' });
-      await this.loadTombstones(scopeFor(event), event.id);
+      await this.loadTombstones(scopeFor(event), event.id, phase => progress({ phase }));
       this.topics.refreshBeforeDispatch(event);nativeLaneId=this.topics.lane(event);
       this.store.bindEventNativeEpoch(event.id, this.store.getLane(event.laneId)!.epoch);
       this.topics.assertCurrent(event);
@@ -790,17 +909,18 @@ export class BotService {
           onPhase: phase => progress({ phase }) });
       this.store.setMetadata(preparedKey, '1');
       signal.throwIfAborted();
+      const stage = meeting ? botCallCapabilities(await this.callModel(companion.id), companion.id) : undefined;
       const frozen = this.store.getMetadata(persistKey);
       const context = frozen ? JSON.parse(frozen) as {system:string;prompt:string} : buildNativeBotContext({ companion, event,
         memories: prepared.evidence, files: await this.verifiedAttachmentFiles(event, this.topics.inputAttachmentIds(event), undefined, signal),
-        apps: this.topicApps(this.topics.reference(event.id)?.id), conversation: this.store.getConversation(event.conversationId)!, companions: this.store.listCompanions() });
+        apps: this.topicApps(this.topics.reference(event.id)?.id), conversation: room, stage, companions: this.store.listCompanions() });
       if (frozen) {
         const apps = this.topicApps(this.topics.reference(event.id)?.id);
-        const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files: [], conversation: this.store.getConversation(event.conversationId)!, companions: this.store.listCompanions() });
+        const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files: [], conversation: room, stage, companions: this.store.listCompanions() });
         context.system = refreshed.system;
         const envelope = JSON.parse(context.prompt) as Record<string, unknown>;
         const identities = JSON.parse(refreshed.prompt) as Record<string, unknown>;
-        for (const key of ['identity','delivery','room','message','peerContact']) if (identities[key] !== undefined) envelope[key] = identities[key];
+        for (const key of ['identity','delivery','room','message','peerContact','stage']) if (identities[key] !== undefined) envelope[key] = identities[key];
         if (!apps.includes('browser')) delete envelope.browserContext;
         if (apps.length) envelope.apps = apps; else delete envelope.apps;
         context.prompt = JSON.stringify(envelope);
@@ -809,15 +929,16 @@ export class BotService {
       this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(nativeLaneId), interruption: undefined });
       progress({ phase: 'waiting-model' });
       const callback = await this.toolServer.forWorker(nativeLaneId, event.id);
-      const room = this.store.getConversation(event.conversationId)!;
       const allowedConversationIds = room.kind === 'direct' && room.memberIds.includes('user')
         ? this.store.conversations().filter(candidate => !candidate.dissolvedAt && candidate.memberIds.includes(event.companionId)
           && (candidate.memberIds.includes('user') || candidate.kind === 'peer' && candidate.userRole === 'observer')).map(candidate => candidate.id)
         : [room.id];
+      if (event.source === 'schedule' && event.payload.cabinWorld === true && await this.skipOfflineSchedule(event)) return;
+      signal.throwIfAborted();
       const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt,
         resumeHost: this.store.getMetadata('native-interrupted:' + event.id) === '1',
         continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
-        model: this.options.model(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id)), callback, signal, role: 'worker', workerAccess: 'full',
+        model: this.options.model(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), meeting), callback, signal, role: 'worker', workerAccess: 'full',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds },
         workspaceTitle: companion.name, sessionTitle:this.topics.reference(event.id)?.title??Array.from(event.content).slice(0, 60).join(''),
         onEvent: update => {
@@ -829,6 +950,7 @@ export class BotService {
           }
           this.store.markDispatched(event.id, claim.leaseToken, event.id);
           if (update.type === 'artifacts' && update.artifacts?.length) projectArtifacts(update.artifacts,Number.isSafeInteger(update.nativeSequence)?{id:update.nativeSessionId===BotDshBrain.sessionId(nativeLaneId)?'native-files-'+update.nativeSequence:'child-files-'+update.nativeSessionId+'-'+update.nativeSequence,sequence:update.rootSequence??update.nativeSequence!}:undefined);
+          if (meeting && ['text_stream', 'text', 'child_text'].includes(update.type)) return;
           if (['text_stream','text'].includes(update.type) && typeof update.text === 'string') {
             text = update.text;
             if(update.type==='text'&&text.trim()&&Number.isSafeInteger(update.nativeSequence))this.store.appendReplyPart(event.id,{id:'native-text-'+update.nativeSequence,sequence:update.nativeSequence,kind:'text',text});
@@ -855,18 +977,30 @@ export class BotService {
           }
         } });
       if(typeof result.inputContextCommitted==='boolean'||result.status==='succeeded')this.topics.recordInputFiles(event,context.prompt,result.inputContextCommitted??true);
-      text = result.text;
-      for(const output of result.outputs??[]){if(output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
+      text = meeting ? '' : result.text;
+      for(const output of result.outputs??[]){if(!meeting&&output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
       await Promise.allSettled([...this.guidanceRuns].filter(([key])=>key.endsWith(':'+event.id)).map(([,operation])=>operation));
       if (result.artifacts?.length) projectArtifacts(result.artifacts);
       await artifactProjection; signal.throwIfAborted();
-      if(text.trim()&&!result.outputs&&!this.store.replyParts(event.replyMessageId).some(part=>part.kind==='text'))this.store.appendReplyPart(event.id,{id:'legacy-final-text',kind:'text',text});
-      const visibleParts=botReplyDisplayParts(this.store.replyParts(event.replyMessageId));if(visibleParts.length)text=visibleParts.flatMap(part=>part.text?[part.text]:[]).join('\n\n');
+      if (meeting) {
+        text = presentationText();
+        if (result.status === 'succeeded' && !text.trim()) {
+          // The native result contains committed assistant text only. Convert its final
+          // answer through the same queue as call_present, with the default pose.
+          const answer = (result.outputs?.findLast(output => output.text?.trim())?.text ?? result.text).trim();
+          if (!answer) throw Error('伙伴没有生成可发布的会面回应。');
+          this.publishCallSegments(event, 'committed-meeting-answer', [{ text: answer }]);
+          text = answer;
+        }
+      }
+      if(!meeting&&text.trim()&&!result.outputs&&!this.store.replyParts(event.replyMessageId).some(part=>part.kind==='text'))this.store.appendReplyPart(event.id,{id:'legacy-final-text',kind:'text',text});
+      if (!meeting) { const visibleParts=botReplyDisplayParts(this.store.replyParts(event.replyMessageId));if(visibleParts.length)text=visibleParts.flatMap(part=>part.text?[part.text]:[]).join('\n\n'); }
       this.topics.touch(event);
       this.updateExecution(event, { status: result.status, question: undefined, continuation: undefined, interruption: undefined });
       // The searchable/history summary stays bounded; immutable native parts
       // retain the complete visible answer, including very long multi-step work.
       this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: result.status === 'succeeded' ? 'done' : result.status === 'cancelled' ? 'cancelled' : 'failed', content: text.slice(0,512000), dshEventId: event.id,
+        peerResultsReceipt: result.peerResultsReceipt,
         memoryJobs: [this.responseJob(event, prepared, text, result.status === 'succeeded'),
           { key: 'history-completed:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } },
           ...(result.status === 'succeeded' && ['user', 'companion', 'group', 'gateway'].includes(event.source) && this.store.getMetadata('skipCapture:' + event.id) !== 'true'
@@ -892,13 +1026,14 @@ export class BotService {
       // before the failing step. Reconcile cached receipts after reconnect too.
       const partial=(error as {result?:BotDshResult})?.result;
       if(!signal.aborted){
-        for(const output of partial?.outputs??[]){if(output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
+        for(const output of partial?.outputs??[]){if(!meeting&&output.text?.trim())this.store.appendReplyPart(event.id,{id:output.id,sequence:output.sequence,kind:'text',text:output.text});if(output.files?.length)projectArtifacts(output.files,output);}
         if(partial?.artifacts?.length)projectArtifacts(partial.artifacts);
         try{await artifactProjection;}catch(projectionError){this.options.report?.(projectionError);}
         const parts=botReplyDisplayParts(this.store.replyParts(event.replyMessageId));if(parts.length)text=parts.flatMap(part=>part.text?[part.text]:[]).join('\n\n');
       }
       const checkpoint=code==='BOT_OUTPUT_LIMIT'?(error as {checkpoint:number}).checkpoint:undefined;
-      if(checkpoint!==undefined&&!this.store.replyParts(event.replyMessageId).length)text=(error as {partialText?:string}).partialText||text;
+      if (meeting) text = presentationText();
+      else if(checkpoint!==undefined&&!this.store.replyParts(event.replyMessageId).length)text=(error as {partialText?:string}).partialText||text;
       this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed', question: undefined,
         continuation: !signal.aborted&&Number.isSafeInteger(checkpoint)?{checkpoint:checkpoint!}:undefined });
       this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: signal.aborted ? 'cancelled' : 'failed', content: text.slice(0,512000), error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
@@ -918,7 +1053,11 @@ export class BotService {
     const conversation = this.store.getConversation(event.conversationId);
     if (!conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)) throw new Error('会话权限已变化。');
     signal.throwIfAborted(); this.assertCurrentEvent(event);
-    if (!BOT_TOOLS.some(tool => tool.name === call.name)) throw new Error('主脑没有这项工具。');
+    if (call.name === 'companion_wait') {
+      const timeout = z.number().int().min(0).max(3600000).parse(call.args.timeout_ms ?? 30000);
+      return this.waitForPeerResults(event, timeout, AbortSignal.any([signal, this.maintenanceAbort.signal]));
+    }
+    if (!botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), conversation.meeting).some(tool => tool.name === call.name)) throw new Error('主脑没有这项工具。');
     const key = `effect:${event.id}:${call.callId}`, fingerprint = digest(JSON.stringify([call.name, call.args]));
     const previous = this.store.getMetadata(key);
     if (previous) {
@@ -929,6 +1068,35 @@ export class BotService {
     const running = this.toolRuns.get(key); if (running) { if (running.fingerprint !== fingerprint) throw new Error('运行中的工具调用标识对应其他参数。'); return running.promise; }
     const operation = this.executeTool(event, call, signal).then(result => { this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return result; });
     this.toolRuns.set(key, { fingerprint, promise: operation }); try { return await operation; } finally { this.toolRuns.delete(key); }
+  }
+  private waitForPeerResults(event: BotEvent, timeout: number, signal: AbortSignal) {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        this.peerWaiters.delete(check);
+        signal.removeEventListener('abort', abort);
+        clearTimeout(timer);
+      };
+      const abort = () => { cleanup(); reject(signal.reason); };
+      const check = (timedOut = false) => {
+        try {
+          signal.throwIfAborted();
+          this.assertCurrentEvent(event);
+          const batch = this.store.peerReturns.inlineResults(event);
+          if (batch.status !== 'pending') { cleanup(); resolve(batch); return; }
+          // Queued peers may need this very scheduler slot (or companion)
+          // to become free. Let the original turn yield in that case.
+          if (batch.running && !timedOut) return;
+          cleanup();
+          resolve({ status: 'deferred', pending: batch.pending, timedOut,
+            message: '请结束当前轮次，释放伙伴调度名额。已接收的分工全部结算后，宿主会带着结果自动继续原话题。' });
+        } catch (error) { cleanup(); reject(error); }
+      };
+      const timer = setTimeout(() => check(true), timeout);
+      timer.unref?.();
+      this.peerWaiters.add(check);
+      signal.addEventListener('abort', abort, { once: true });
+      check(timeout === 0);
+    });
   }
   private requireMedia(): BotMediaService {
     if (!this.options.media) throw new Error('聊天媒体服务尚未就绪。'); return this.options.media;
@@ -983,6 +1151,19 @@ export class BotService {
       }
     }
   }
+  private publishCallSegments(event: BotEvent, callId: string, segments: readonly BotCallSegment[]) {
+    this.assertCurrentEvent(event);
+    const batch = digest(callId);
+    const parts = segments.map(({ text, ...presentation }, index) => ({ id: `call-${batch}-${index}`, kind: 'text' as const, text, presentation }));
+    this.store.taskTransaction(() => {
+      const existing = this.store.replyParts(event.replyMessageId).filter(part => part.presentation);
+      const ids = new Set(existing.map(part => part.id));
+      if (existing.length + parts.filter(part => !ids.has(part.id)).length > BOT_CALL_SEGMENTS_PER_TURN) throw Error('本轮会面片段已达到上限。');
+      for (const part of parts) this.store.appendReplyPart(event.id, part);
+    });
+    this.changed(event.conversationId);
+    return { accepted: parts.length, segmentIds: parts.map(part => part.id) };
+  }
   private async executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> {
     const scope = scopeFor(event), args = call.args;
     if (['companion_contact', 'companion_reply_user', 'message_peer', 'chat_send_sticker'].includes(call.name)
@@ -997,6 +1178,24 @@ export class BotService {
       || call.name === 'world' && args.operation !== 'observe'
       || call.name === 'memory_maintenance' && args.operation === 'plan') this.store.reserveAutomaticAction(event.id, call.callId, call.name);
     switch (call.name) {
+      case 'companion_schedule': {
+        const command = scheduleCommand.parse(args);
+        const room = this.store.getConversation(event.conversationId);
+        if (room?.kind !== 'direct' || !room.memberIds.includes('user') || event.senderId !== 'user' || event.source !== 'user') {
+          throw Error('请在与用户的私聊中，由用户提出日程管理请求。');
+        }
+        return this.manageSchedule(event.companionId, command);
+      }
+      case 'call_stage':
+      case 'call_present': {
+        if (!call.nativeSessionId || call.nativeSessionId !== BotDshBrain.sessionId(call.laneId)) throw Error('只有当前会面话题能控制舞台。');
+        const stage = botCallCapabilities(await this.callModel(event.companionId), event.companionId);
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        if (call.name === 'call_stage') return stage;
+        const { segments } = z.strictObject({ segments: z.array(botCallSegmentSchema).min(1).max(8) }).parse(call.args);
+        validateBotCallPerformance(stage, segments);
+        return this.publishCallSegments(event, call.callId, segments);
+      }
       case 'asset_manager': {
         this.assertCurrentEvent(event);
         const topicId = this.topics.reference(event.id)?.id;
@@ -1212,9 +1411,40 @@ export class BotService {
       default: throw new Error('未知主脑工具。');
     }
   }
+  private manageSchedule(id: string, command: z.infer<typeof scheduleCommand>) {
+    const result = this.schedules.manage(id, command);
+    if (command.operation !== 'list') this.changed();
+    return result;
+  }
+  private worldOnline(): Promise<boolean> {
+    return this.options.scheduledWorldOnline?.().catch(() => false) ?? Promise.resolve(false);
+  }
+  private async skipOfflineSchedule(event: BotEvent): Promise<boolean> {
+    if (await this.worldOnline()) return false;
+    if (!this.closed) {
+      this.schedules.skipQueued(event.companionId, event.payload.scheduleId, event.id);
+      this.changed(event.conversationId);
+    }
+    return true;
+  }
+  private async pollSchedule() {
+    if (this.pollingSchedule) return;
+    this.pollingSchedule = true;
+    try {
+      let result = this.schedules.tick();
+      if (result?.kind === 'check-cabin') {
+        const online = await this.worldOnline();
+        if (this.closed) return;
+        result = this.schedules.tick(Date.now(), online);
+      }
+      if (result?.kind === 'queued') { this.scheduler.wake(); this.changed(result.room); }
+      if (result?.kind === 'skipped') this.changed();
+    } finally { this.pollingSchedule = false; }
+  }
   private maintainSafely(): void { void this.maintain().catch(error => this.options.report?.(error)); }
   private async maintain(): Promise<void> {
     if (this.closed) return;
+    void this.pollSchedule().catch(error => this.options.report?.(error));
     for(const job of this.topics.titleJobs()){if(this.titleRuns.size>=2)break;void this.flushTitle(job);}
     for(const command of this.topics.pendingGuidance())void this.flushGuidance(command);
     const stops = this.store.taskTransaction(sql => sql.prepare("SELECT value FROM bot_metadata WHERE key LIKE 'native-stop:%' AND value<>''").all() as Array<{ value: string }>);
@@ -1307,6 +1537,7 @@ export class BotService {
   shutdown(): Promise<void> { return this.closing ??= this.stop(); }
   private async stop(): Promise<void> {
     if (this.closed) return; this.closed = true; clearInterval(this.maintenance);
+    clearImmediate(this.peerWaitCheck);
     for(const watch of this.contextWatches.values())watch.controller.abort();
     await this.starting.catch(() => undefined);
     this.maintenanceAbort.abort(Object.assign(new Error('应用关闭，保留原会话。'), { code: 'BOT_SUSPEND' }));

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
-import { createCaptureDesktopContext, intersectCaptureRect, nativeCaptureRectToDisplayDip, placeCaptureRecordingControls, positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor, readWindowsDesktopRegions, recordingBoundaryPage, recordingBoundaryRectangles, type WindowsCaptureMonitorApi, type WindowsDesktopRegionsApi } from '../../src/main/capture-tools/desktop-regions';
+import { createCaptureDesktopContext, intersectCaptureRect, moveWindowInPhysicalPixels, nativeCaptureRectToDisplayDip, placeCaptureRecordingControls, positionCaptureWindowInPhysicalPixels, readWindowsCaptureMonitor, readWindowsDesktopRegions, recordingBoundaryPage, recordingBoundaryRectangles, type WindowsCaptureMonitorApi, type WindowsDesktopRegionsApi } from '../../src/main/capture-tools/desktop-regions';
 
 function nativeFixture() {
   const records = [
@@ -44,6 +44,8 @@ describe('desktop native regions', () => {
     const handle = Buffer.alloc(8); handle.writeBigUInt64LE(42n);
     expect(positionCaptureWindowInPhysicalPixels(handle, monitor!.bounds, api)).toBe(true);
     expect(api.setWindowPos).toHaveBeenCalledWith(42n, -1, 0, 0, 2560, 1600, 0x0210);
+    expect(moveWindowInPhysicalPixels(handle, -120, 48, api)).toBe(true);
+    expect(api.setWindowPos).toHaveBeenLastCalledWith(42n, 0, -120, 48, 0, 0, 0x0215);
     expect(readWindowsCaptureMonitor({ x: 0, y: 0, width: 100, height: 100 }, null)).toBeUndefined();
     const context = createCaptureDesktopContext({ display: { id: 1, bounds: { x: 0, y: 0, width: 1707, height: 1067 }, workArea: { x: 0, y: 0, width: 1707, height: 1019 }, scaleFactor: 1.5 },
       cursor: { x: 1, y: 1 }, native: { available: true, windows: [] }, nativeMonitor: monitor, screenToDipRect: rect => rect });

@@ -42,7 +42,7 @@ export interface BotDshRun {
   workerTools?: readonly BotDshTool[];
   onEvent?(event: NativeHostEvent): void;
 }
-export interface BotDshResult { artifacts?: Array<{ path: string; description?: string }>;outputs?:BotNativeReplyOutput[]; text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true }
+export interface BotDshResult { artifacts?: Array<{ path: string; description?: string }>;outputs?:BotNativeReplyOutput[]; text: string; sessionId: string; eventId: string; status: 'succeeded' | 'cancelled' | 'failed'; error?: string; inputContextCommitted?: boolean; outputCheckpoint?: number; quarantined?: true; peerResultsReceipt?: string }
 export interface BotDshCancelAck { accepted: boolean; result?: BotDshResult; absent?: boolean; paused?: boolean; sessionId?: string; eventId?: string; requiresAttachment?: boolean }
 export class BotDshPauseAcknowledgedError extends Error {
   readonly code = 'BOT_PAUSE_ACKNOWLEDGED';
@@ -231,7 +231,8 @@ export class BotDshBrain {
           const status = event.status ?? 'failed';
           const committed = (event as NativeHostEvent & { inputContextCommitted?: boolean }).inputContextCommitted;
           const result = { text: event.text ?? '', sessionId, eventId: input.eventId, status, artifacts: event.artifacts,outputs:event.outputs,
-            ...(typeof committed === 'boolean' ? { inputContextCommitted: committed } : {}) };
+            ...(typeof committed === 'boolean' ? { inputContextCommitted: committed } : {}),
+            ...(event.peerResultsReceipt ? { peerResultsReceipt: event.peerResultsReceipt } : {}) };
           if (input.signal?.aborted) throw new BotDshAbortAcknowledgedError(result);
           if (status === 'failed') {
             const checkpoint = (event as NativeHostEvent & { outputCheckpoint?: number }).outputCheckpoint;

@@ -4,13 +4,14 @@ import type { BotReplyProgress, BotReplyTiming, BotReplyPart } from '../../share
 export type BotConversationKind = 'direct' | 'group' | 'world' | 'peer';
 export type BotMessageStatus = 'queued' | 'running' | 'sent' | 'failed' | 'cancelled';
 export type BotEventStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-export type BotSource = 'user' | 'companion' | 'group' | 'world' | 'task' | 'gateway';
+export type BotSource = 'user' | 'companion' | 'group' | 'world' | 'task' | 'gateway' | 'schedule';
 export type BotSenderType = 'user' | 'companion' | 'service' | 'world';
 export interface BotCompanion {
   id: string; name: string; persona: string; createdAt: string; updatedAt: string; activePersonaId?: string; enabled?: boolean; workerConcurrency?: number;
 }
 export interface BotConversation {
   id: string; title: string; kind: BotConversationKind; memberIds: string[];
+  meeting?: boolean;
   audienceScopeId: string; securityDomainId: string; revision: number; createdAt: string;
   pinned?: boolean;
   participationMode?: 'automatic' | 'all' | 'mentions';
@@ -20,6 +21,8 @@ export interface BotConversation {
   announcement?: { text: string; updatedAt: string };
 }
 export interface BotMessage {
+  origin?: import('../../shared/companion-bot').BotMessageOrigin;
+  quote?: import('../../shared/companion-bot').BotMessageQuote;
   id: string; eventId: string; conversationId: string; senderId: string; senderName: string;
   senderType: BotSenderType; content: string; status: BotMessageStatus; sequence: number;
   kind: 'message' | 'task_progress' | 'task_done' | 'world_observation' | 'attention';

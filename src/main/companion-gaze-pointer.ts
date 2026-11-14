@@ -1,5 +1,6 @@
 import type { BrowserWindow, IpcMain } from 'electron';
 import { COMPANION_GAZE_POINTER_CHANNEL, type CompanionGazeResult } from '../shared/companion-gaze';
+import { callPetFor } from './companion-bot/call-pet-window';
 
 /** Electron's screen cursor and window content bounds use the same global DIP
  * space, even across monitors with different scale factors and negative origins.
@@ -21,6 +22,7 @@ export function registerCompanionGazePointer(options: {
     const window = options.getMainWindow();
     if (!window || window.isDestroyed() || event.sender !== window.webContents
       || event.senderFrame !== window.webContents.mainFrame) return { ok: false };
-    return companionGazePointer({ cursor: options.readCursor(), contentBounds: window.getContentBounds(), zoomFactor: window.webContents.getZoomFactor() });
+    const surface = callPetFor(window) ?? window;
+    return companionGazePointer({ cursor: options.readCursor(), contentBounds: surface.getContentBounds(), zoomFactor: surface.webContents.getZoomFactor() });
   });
 }

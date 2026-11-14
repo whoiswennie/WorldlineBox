@@ -1,9 +1,11 @@
+import { useBotCallDocument } from './call-pet';
 import {useEffect,useRef,useState} from 'react';
 import type {BotRequest,BotResponse} from '../../shared/companion-bot';
 import type {BotNativeTopic,BotTopicListMode} from '../../shared/companion-bot-topics';
 import {BotIcon} from './BotIcon';
 
 export function BotTopicPicker({conversationId,currentId,locale,request,refresh,onClose}:{conversationId:string;currentId?:string;locale:'zh-CN'|'en';request(input:BotRequest):Promise<BotResponse>;refresh():Promise<void>;onClose():void}){
+  const surface = useBotCallDocument();
   const zh=locale==='zh-CN',[mode,setMode]=useState<BotTopicListMode>('recent'),[query,setQuery]=useState(''),[topics,setTopics]=useState<BotNativeTopic[]>([]),[next,setNext]=useState<string>(),[cursors,setCursors]=useState<string[]>([]),[revision,setRevision]=useState(0),[loading,setLoading]=useState(false),[busy,setBusy]=useState(''),[menu,setMenu]=useState('');
   const [rename,setRename]=useState<{topic:BotNativeTopic;draft:string;requestId:string}>(),host=useRef<HTMLDivElement>(null),working=useRef(false);
   const cursor=cursors.at(-1),pending=topics.some(topic=>topic.renamePending);
@@ -16,9 +18,9 @@ export function BotTopicPicker({conversationId,currentId,locale,request,refresh,
   },[conversationId,query,mode,cursor,revision,request]);
   useEffect(()=>{if(!pending)return;const timer=setTimeout(()=>setRevision(value=>value+1),1200);return()=>clearTimeout(timer);},[pending,topics]);
   useEffect(()=>{
-    const outside=(event:PointerEvent)=>{if(event.target instanceof Element&&!host.current?.contains(event.target)&&!event.target.closest('.bot-topic-current'))onClose();};
-    document.addEventListener('pointerdown',outside);return()=>document.removeEventListener('pointerdown',outside);
-  },[onClose]);
+    const outside=(event:PointerEvent)=>{if((event.target as Element | null)?.closest&&!host.current?.contains(event.target as Node)&&!(event.target as Element).closest('.bot-topic-current'))onClose();};
+    surface.addEventListener('pointerdown',outside);return()=>surface.removeEventListener('pointerdown',outside);
+  },[onClose,surface]);
   const mutate=async(input:BotRequest,key:string)=>{
     if(working.current)return;working.current=true;setBusy(key);
     try{const result=await request(input);if(result.ok){setMenu('');setRename(undefined);setRevision(value=>value+1);await refresh();if(input.type==='topic.select')onClose();}}

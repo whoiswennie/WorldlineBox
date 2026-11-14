@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { DshLauncher } from '../../src/main/dsh/launcher';
 import { NativeHostClient } from '../../src/main/dsh/native-host-client';
+import type { OperationContext } from '../../src/main/dsh/operations';
 
 vi.mock('electron', () => ({
   app: { getPath: () => os.tmpdir(), getAppPath: () => process.cwd(), isPackaged: false },
@@ -29,7 +30,7 @@ function fixture(allowDefaultCreation = false, version = '0.2.1-rc.5') {
   });
   Reflect.set(launcher, 'instances', { list: () => records, get: (id: string) => records.find(value => value.id === id), ensureHost, create,
     launchPlan: () => ({ executable: path.join(os.tmpdir(), 'managed-node.exe') }) });
-  Reflect.set(launcher, 'runtimes', { get: () => ({ version, adapter: 'node-cli-web-v1' }),
+  Reflect.set(launcher, 'runtimes', { pendingDeletionVersions: () => [], get: () => ({ version, adapter: 'node-cli-web-v1' }),
     list: () => [{ id: 'compatible', version, adapter: 'node-cli-web-v1' }] });
   Reflect.set(launcher, 'cliTerminal', { state: () => ({ selectedInstanceId: selected }) });
   return { launcher, records, create, ensureHost, release, startup, select: (id: string) => { selected = id; } };
@@ -114,6 +115,28 @@ it('prevents runtime deletion or cleanup during an explicit role provisioning co
   await expect(route({ type: 'runtime.cleanup' })).rejects.toThrow('正在保存角色实例绑定');
   complete(own); expect(await pending).toMatchObject({ ok: true });
 });
+it.each([false, true])('upgrades exactly the named existing instance with an official runtime (installed=%s)', async installed => {
+  const f = fixture(false, '0.2.1'), target = { id: 'target-runtime', version: '0.2.2' };
+  vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+  const runtimes = Reflect.get(f.launcher, 'runtimes'), versions = Reflect.get(f.launcher, 'versions');
+  const getInstalled = runtimes.list;
+  runtimes.list = () => installed ? [...getInstalled(), target] : getInstalled();
+  const release = { version: target.version }, fetchRelease = vi.fn(async () => release), install = vi.fn(async () => target);
+  Reflect.set(versions, 'release', fetchRelease); Reflect.set(runtimes, 'installNode', install);
+  const upgrade = vi.fn(async () => undefined);
+  Reflect.set(Reflect.get(f.launcher, 'instances'), 'upgradeCompanion', upgrade);
+  const operations = Reflect.get(f.launcher, 'operations');
+  const op = { id: 'fixture-op', signal: new AbortController().signal, log: async () => undefined, update: async () => undefined };
+  const run = vi.spyOn(operations, 'run').mockImplementation(async (...args: unknown[]) => { await (args[3] as (context: OperationContext) => Promise<void>)(op); return op.id; });
+  const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
+  const request = { type: 'instance.upgrade-official', instanceId: 'selected', expectedRuntimeId: 'compatible', version: target.version };
+  await expect(route({ ...request, expectedRuntimeId: 'stale' })).rejects.toThrow('实例的运行版本已变更');
+  expect(run).not.toHaveBeenCalled();
+  expect(await route(request)).toMatchObject({ ok: true, operationId: op.id });
+  expect(fetchRelease).toHaveBeenCalledTimes(installed ? 0 : 1); expect(install).toHaveBeenCalledTimes(installed ? 0 : 1);
+  expect(upgrade).toHaveBeenCalledExactlyOnceWith('selected', target.id, expect.objectContaining({ id: op.id, signal: op.signal }));
+  expect(f.create).not.toHaveBeenCalled();
+});
 it('validates actual role identity before either binding mutation touches the native catalogue', async () => {
   const f = fixture();
   vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
@@ -153,7 +176,7 @@ it('passes an explicit task-resume permission only to the requested bound Host',
 
 it('returns a typed configuration error when no native runtime is installed', async () => {
   const f = fixture(true); f.records.splice(0);
-  Reflect.set(f.launcher, 'runtimes', { list: () => [] });
+  Reflect.set(f.launcher, 'runtimes', { list: () => [], pendingDeletionVersions: () => [] });
   await expect(f.launcher.botHost()).rejects.toMatchObject({ code: 'DSH_HOST_UNAVAILABLE', reason: 'configuration' });
   expect(f.create).not.toHaveBeenCalled(); expect(f.ensureHost).not.toHaveBeenCalled();
 });

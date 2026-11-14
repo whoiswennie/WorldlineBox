@@ -10,7 +10,11 @@ const pointerHeader = 'version https://git-lfs.github.com/spec/v1';
 export async function prepareSourceLfs(root, runGit = args => spawnSync('git', args, {
   cwd: root, stdio: 'inherit', windowsHide: true,
 })) {
-  const model = JSON.parse(await readFile(path.join(root, sourceDirectory, 'call.model3.json'), 'utf8'));
+  const modelSource = await readFile(path.join(root, sourceDirectory, 'call.model3.json'), 'utf8').catch(error => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  if (!modelSource) return { verified: 0, hydrated: false };
+  const model = JSON.parse(modelSource);
   const required = [model.FileReferences.Moc, ...model.FileReferences.Textures];
   const inspect = async () => {
     const pending = [];

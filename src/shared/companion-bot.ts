@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scheduleCommand, type CompanionScheduleState } from './companion-schedule';
 import type { BrowserPageContext } from './browser-page-context';
 import { botAppIdSchema, type BotAppId, type BotAppConnection } from './companion-apps';
 import type {BotTopicContext} from './companion-native-context';
@@ -8,10 +9,13 @@ import type { BotMediaRef } from './companion-bot-media';
 import { botMemoryMaintenanceSchemas } from './companion-bot-maintenance';
 import type { BotBrainContextSummary } from './companion-bot-context';
 import type { BotChatRuntime, BotNativeTopic } from './companion-bot-topics';
+import type { BotCallCue, BotCallModel, BotCallStage } from './companion-call';
 export type { BotBrainContextSummary, BotBrainRequestMetrics } from './companion-bot-context';
 
 export const BOT_CHANNEL = 'companion-bot:request';
 export const BOT_EVENT_CHANNEL = 'companion-bot:event';
+export const BOT_SPEECH_CHANNEL = 'companion-bot:speech';
+export const BOT_SPEECH_EVENT_CHANNEL = 'companion-bot:speech-event';
 const id = z.string().min(1).max(160);
 export const BOT_WORKER_CONCURRENCY_DEFAULT = 5;
 export const BOT_WORKER_CONCURRENCY_MIN = 1;
@@ -28,8 +32,10 @@ export type BotParticipationMode = 'automatic' | 'all' | 'mentions';
 export type BotHistoryFilter = 'all' | 'media' | 'stickers' | 'files' | 'links';
 export interface BotReplyTiming { elapsedMs: number; queueMs?: number; prepareMs?: number; firstTextMs?: number; modelMs?: number; finishMs?: number }
 export interface BotReplyProgress {
-  phase: 'queued' | 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory' | 'preparing-context' | 'compacting-context' | 'waiting-runtime' | 'waiting-model' | 'using-tool' | 'generating' | 'retrying' | 'reconciling';
+  phase: 'queued' | 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory' | 'preparing-context' | 'compacting-context' | 'waiting-runtime' | 'waiting-model' | 'using-tool' | 'generating' | 'retrying' | 'reconciling' | 'waiting-answer';
   toolName?: string; detail?: string;
+  /** Short user-facing description and step number, projected from native execution. */
+  activity?: { step?: number; summary?: string };
 }
 export interface BotGroupAnnouncement { text: string; updatedAt: string }
 export interface BotTaskFollowupReceipt {
@@ -54,7 +60,11 @@ export interface BotExecutionStep {
   textMode?: 'delta' | 'snapshot'; outputState?: 'draft' | 'committed' | 'abandoned';
   streamGeneration?: string; updatedAt?: string;
 }
+export interface BotMessageOrigin { id: string; kind: 'mobile' | 'router'; label: string }
+export interface BotMessageQuote { id: string; senderName: string; excerpt: string }
 export interface BotMessage {
+  origin?: BotMessageOrigin;
+  quote?: BotMessageQuote;
   apps?: BotAppId[];
   browserContext?: BrowserPageContext;
   id: string; eventId: string; conversationId: string; senderId: string; senderName: string;
@@ -68,7 +78,7 @@ export interface BotMessage {
   taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
-export interface BotReplyPart { id:string;kind:'text'|'media';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string }
+export interface BotReplyPart { id:string;kind:'text'|'media';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string; presentation?: BotCallCue }
 export interface BotNativeReplyOutput {id:string;sequence:number;text?:string;files?:Array<{path:string;description?:string}>}
 export interface BotTaskProgress { phase: string; detail?: string; updatedAt?: string; toolName?: string }
 export interface BotTask { id: string; conversationId: string; companionId: string; companionName?: string; goal: string; status: string; summary?: string; summaryIsPreview?: boolean; error?: string;
@@ -124,8 +134,14 @@ export interface BotHistoryPage { items: BotMessage[]; hasMore: boolean; nextBef
 export const botRequestSchema = z.discriminatedUnion('type', [
   ...botMemoryMaintenanceSchemas,
   z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional() }),
+  z.strictObject({ type: z.literal('call.open'), conversationId: id }),
+  z.strictObject({ type: z.literal('user.identity'), name: z.string().trim().min(1).max(80).regex(/^[^\x00-\x1f\x7f]+$/u).optional(), bio: z.string().trim().max(800).optional() }),
+  z.strictObject({ type: z.literal('companion.call-performance'), companionId: id }),
+  z.strictObject({ type: z.literal('call.interrupt'), conversationId: id, topicId: id.optional(), requestId: id,
+    replies: z.array(z.strictObject({ messageId: id, throughSegmentId: id.optional() })).max(80) }),
   z.strictObject({ type: z.literal('history.search'), conversationId: id, query: z.string().max(200).refine(value => !value.includes('\0')).default(''), filter: z.enum(['all', 'media', 'stickers', 'files', 'links']).optional(), before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(80).optional() }),
   z.strictObject({ type: z.literal('companion.create'), name: z.string().trim().min(1).max(80), persona: z.string().max(24000), workerConcurrency: botWorkerConcurrencySchema.optional() }),
+  z.strictObject({ type: z.literal('companion.schedule'), companionId: z.string().min(1).max(160), command: scheduleCommand }),
   z.strictObject({ type: z.literal('companion.update'), companionId: id, name: z.string().trim().min(1).max(80), persona: z.string().max(24000).optional(), workerConcurrency: botWorkerConcurrencySchema.optional() }),
   z.strictObject({ type: z.literal('companion.runtime'), companionId: id, operation: z.enum(['start', 'stop']) }),
   z.strictObject({ type: z.literal('companion.data.clear'), companionId: id, requestId: id }),
@@ -146,7 +162,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
   z.strictObject({ type: z.literal('conversation.pin'), conversationId: id, pinned: z.boolean() }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(2).optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(2).optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
@@ -184,12 +200,22 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.literal('asset-manager') }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
-export interface BotResponse { app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topicListStale?: boolean; topicListError?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
+export interface BotResponse { userName?: string; schedule?: CompanionScheduleState; callModel?: BotCallModel; callStage?: BotCallStage; interruptedReplyIds?: string[]; app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topicListStale?: boolean; topicListError?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
 export type BotEvent = { type: 'changed'; conversationId?: string }
+  | { type: 'progress'; conversationId: string; messageId: string; progress: BotReplyProgress }
   | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }
   | { type: 'error'; conversationId?: string; message: string };
 export interface WorldlineBoxBotApi {
   request(input: BotRequest): Promise<BotResponse>;
   onEvent(listener: (event: BotEvent) => void): () => void;
+  speech?(input: BotSpeechRequest): Promise<{ ok: boolean; error?: string }>;
+  onSpeech?(listener: (event: BotSpeechEvent) => void): () => void;
 }
+export const botSpeechRequest = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('play'), id: z.string().uuid(), conversationId: id, messageId: id, partId: id.optional() }),
+  z.strictObject({ type: z.literal('stop'), id: z.string().uuid() }),
+]);
+export type BotSpeechRequest = z.infer<typeof botSpeechRequest>;
+export type BotSpeechEvent = { id: string; audio?: Uint8Array; done?: boolean; error?: string };
+export interface BotResponse { userBio?: string }

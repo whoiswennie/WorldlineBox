@@ -47,6 +47,7 @@ test("tag management chip grid: create, sort, select, menu, merge, delete", asyn
 
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
 
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);

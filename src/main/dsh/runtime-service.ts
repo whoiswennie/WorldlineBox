@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { lstat, mkdir, readdir, rename } from './disk';
+import { lstat, mkdir, readdir, rename, rm } from './disk';
 import path from 'node:path';
 import { dshRuntimeSchema, type DshRuntime } from '../../shared/dsh-launcher';
 import { assertOwnedDirectory, contained, copyTree, inventoryTree, readJson, redact, removeManaged, type TreeInventory, type TreeHashCacheEntry, type TreeInventoryProgress, atomicJson } from './files';
@@ -59,6 +59,11 @@ export class RuntimeService implements RuntimeServiceLike {
   private readonly installingVersions = new Set<string>();
   private writes = Promise.resolve();
   private maintaining = false;
+  private deletingRuntimeId?: string;
+  private readonly pendingDeletions = new Map<string, DshRuntime>();
+  private deletionTimer?: ReturnType<typeof setTimeout>;
+  private deletingFiles?: Promise<void>;
+  private closed = false;
   constructor(private readonly options: {
     rootPath: string; onChanged: () => void;
     fetch?: HttpsDownloadFetch;
@@ -68,7 +73,16 @@ export class RuntimeService implements RuntimeServiceLike {
   async init(): Promise<void> {
     await mkdir(path.join(this.options.rootPath, 'runtimes'), { recursive: true });
     const raw = await readJson<unknown[]>(path.join(this.options.rootPath, 'runtimes.json')) ?? [];
-    this.records = raw.map(record => dshRuntimeSchema.parse(record));
+    const journal = path.join(this.options.rootPath, 'runtime-deletions');
+    await mkdir(journal, { recursive: true });
+    await assertOwnedDirectory(this.options.rootPath, journal);
+    for (const entry of await readdir(journal, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const record = dshRuntimeSchema.parse(await readJson(contained(journal, entry.name)));
+      if (entry.name !== `${record.id}.json`) throw new Error('待清理运行版本记录与目录不匹配。');
+      this.pendingDeletions.set(record.id, record);
+    }
+    this.records = raw.map(record => dshRuntimeSchema.parse(record)).filter(record => !this.pendingDeletions.has(record.id));
     for (const record of this.records) {
       const destination = contained(path.join(this.options.rootPath, 'runtimes'), record.id);
       if (await lstat(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; })) continue;
@@ -92,15 +106,17 @@ export class RuntimeService implements RuntimeServiceLike {
     }
     // A fully sealed directory survives a crash between directory commit and index commit.
     for (const entry of await readdir(path.join(this.options.rootPath, 'runtimes'), { withFileTypes: true })) {
-      if (!entry.isDirectory() || this.records.some(record => record.id === entry.name)) continue;
+      if (!entry.isDirectory() || this.pendingDeletions.has(entry.name) || this.records.some(record => record.id === entry.name)) continue;
       const directory = path.join(this.options.rootPath, 'runtimes', entry.name);
       const record = await this.readCompleteArtifact(directory, entry.name);
       if (record) this.records.push(record);
     }
     await this.save();
+    this.scheduleDeletionCleanup(0);
   }
   list(): DshRuntime[] { return this.records.map(record => ({ ...record })); }
-  get(id: string): DshRuntime { const record = this.records.find(record => record.id === id); if (!record) throw new Error('This DSH runtime is not installed.'); return { ...record }; }
+  get(id: string): DshRuntime { const record = this.records.find(record => record.id === id); if (!record || this.deletingRuntimeId === id) throw new Error('This DSH runtime is not installed.'); return { ...record }; }
+  pendingDeletionVersions(): string[] { return [...this.pendingDeletions.values()].map(record => record.version); }
   directory(id: string): string { this.get(id); return contained(path.join(this.options.rootPath, 'runtimes'), `${id}/program`); }
   plan(id: string) {
     const runtime = this.get(id);
@@ -116,7 +132,7 @@ export class RuntimeService implements RuntimeServiceLike {
     const record = this.get(id), program = this.directory(id);
     try {
       let fullScan = force;
-      const check = async () => {
+      const check = async (signal: AbortSignal) => {
         let sealed: TreeInventory;
         try {
           const value = await readJson<unknown>(contained(path.join(this.options.rootPath, 'runtimes'), `${id}/seal.json`));
@@ -145,7 +161,8 @@ export class RuntimeService implements RuntimeServiceLike {
           }
         } catch { cache.clear(); }
         // Large SDK trees on Windows can spend minutes in filesystem/antivirus I/O.
-        const current = await inventoryTree(program, AbortSignal.timeout(15 * 60_000), undefined, cache, observe);
+        const current = await inventoryTree(program, AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)]), undefined, cache, observe);
+        signal.throwIfAborted();
         if (current.contentSha256 !== sealed.contentSha256 || current.contentSha256 !== record.contentSha256) {
           const differences = runtimeDifferences(sealed, current), labels = { added: '新增', missing: '缺失', changed: '内容变化' };
           if (!differences.added && !differences.missing && !differences.changed)
@@ -166,7 +183,7 @@ export class RuntimeService implements RuntimeServiceLike {
         await this.integrity.verify(path.dirname(program), check, signal, fullScan);
         break;
       } catch (error) {
-        if (attempt || signal?.aborted || error instanceof DshTaskPreparationError
+        if (attempt || signal?.aborted || this.deletingRuntimeId === id || this.pendingDeletions.has(id) || error instanceof DshTaskPreparationError
           || !(isUnstableRuntime(error) || process.platform === 'win32' && isFileBusyError(error))) throw error;
         // Antivirus/sharing handles and monitor bursts can be transient. Retry
         // once, then require fresh bytes; never retry a real seal mismatch.
@@ -190,33 +207,97 @@ export class RuntimeService implements RuntimeServiceLike {
       throw wrap('verification', `DSH 运行版本校验未完成：${reason}。请根据此原因重试；尚未判定文件损坏，实例数据未修改。`);
     }
   }
-  close(): void { this.integrity.close(); }
-  async delete(id: string, referenced: boolean): Promise<void> {
+  async close(): Promise<void> {
+    this.closed = true;
+    clearTimeout(this.deletionTimer);
+    this.integrity.close();
+    await this.deletingFiles;
+  }
+  async delete(id: string, referenced: boolean, operation?: OperationContext): Promise<void> {
     if (referenced) throw new Error('此运行版本仍被实例、快照、整合包或任务引用，请先处理页面列出的引用。');
     if (this.importing || this.installingVersions.size || this.maintaining) throw new Error('请等待版本安装或清理操作结束。');
     const record = this.get(id); this.maintaining = true;
-    this.integrity.forget(path.dirname(this.directory(id)));
+    this.deletingRuntimeId = id;
     const source = contained(path.join(this.options.rootPath, 'runtimes'), id);
-    const trash = path.join(this.options.rootPath, 'runtime-trash', `${id}-${randomUUID()}`);
+    const journal = path.join(this.options.rootPath, 'runtime-deletions');
     try {
-      const info = await lstat(source);
-      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('运行版本目录不是受管的普通目录，已停止删除。');
-      await assertOwnedDirectory(this.options.rootPath, source);
-      await mkdir(path.dirname(trash), { recursive: true });
-      await assertOwnedDirectory(this.options.rootPath, path.dirname(trash));
-      await retryFileOperation(() => rename(source, trash));
-      const previous = this.records; this.records = this.records.filter(item => item.id !== id);
+      operation?.signal.throwIfAborted();
+      await assertOwnedDirectory(this.options.rootPath, path.dirname(source));
+      const present = await lstat(source).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      if (present) await assertOwnedDirectory(this.options.rootPath, source);
+      await assertOwnedDirectory(this.options.rootPath, journal);
+      await this.integrity.forget(source);
+      // Commit the user's deletion before touching the artifact. Startup can
+      // distinguish a deleted version from an interrupted installation.
+      await atomicRuntimeJson(contained(journal, `${id}.json`), record, operation?.signal);
+      this.pendingDeletions.set(id, record);
+      this.records = this.records.filter(item => item.id !== id);
       try { await this.save(); }
-      catch (error) { this.records = previous; await retryFileOperation(() => rename(trash, source)); throw error; }
+      catch { await operation?.log('Runtime deletion saved. The installed index will be retried before file cleanup.').catch(() => undefined); }
+      await operation?.log('Runtime removed from the installed list. File cleanup continues in the background.').catch(() => undefined);
+    } finally {
+      this.deletingRuntimeId = undefined;
+      this.maintaining = false;
+      this.scheduleDeletionCleanup(0);
       this.options.onChanged();
-      // A failed physical removal stays in runtime-trash, which startup never re-registers.
-      try { await removeManaged(this.options.rootPath, trash); }
-      catch (error) { throw new Error('版本已从安装列表移除，但部分文件仍被系统占用。请稍后使用「清理下载缓存」继续清理。', { cause: error }); }
-      await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'integrity', `${id}.json`));
-      if (!this.records.some(item => item.sourceSha256 === record.sourceSha256)) {
-        await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'cache', `${record.sourceSha256}.exe`));
+    }
+  }
+  private scheduleDeletionCleanup(delayMs: number): void {
+    if (this.closed || !this.pendingDeletions.size || this.deletingFiles) return;
+    clearTimeout(this.deletionTimer);
+    this.deletionTimer = setTimeout(() => {
+      this.deletionTimer = undefined;
+      if (this.closed) return;
+      if (this.importing || this.installingVersions.size || this.maintaining) {
+        this.scheduleDeletionCleanup(10_000);
+        return;
       }
-    } finally { this.maintaining = false; this.options.onChanged(); }
+      this.deletingFiles = this.cleanDeletedRuntimes().catch(() => undefined).finally(() => {
+        this.deletingFiles = undefined;
+        this.scheduleDeletionCleanup(10_000);
+        this.options.onChanged();
+      });
+    }, delayMs);
+    this.deletionTimer.unref();
+  }
+  private async cleanDeletedRuntimes(): Promise<void> {
+    const journal = path.join(this.options.rootPath, 'runtime-deletions');
+    const pending = [...this.pendingDeletions.values()];
+    // Never clear a deletion record until the installed index is durable.
+    await this.save();
+    await assertOwnedDirectory(this.options.rootPath, journal);
+    for (const record of pending) {
+      if (this.closed) return;
+      const source = contained(path.join(this.options.rootPath, 'runtimes'), record.id);
+      const trash = contained(journal, `${record.id}-files`);
+      try {
+        const owned = async (target: string) => {
+          const present = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== 'ENOENT') throw error;
+          });
+          if (!present) return false;
+          await assertOwnedDirectory(this.options.rootPath, target);
+          return true;
+        };
+        const sourcePresent = await owned(source), trashPresent = await owned(trash);
+        if (sourcePresent && trashPresent) continue;
+        if (sourcePresent) await retryFileOperation(() => rename(source, trash));
+        if (sourcePresent || trashPresent) await removeManaged(this.options.rootPath, trash);
+        await this.removeDeletionFile(contained(this.options.rootPath, `integrity/${record.id}.json`));
+        if (!this.importing && !this.installingVersions.size && !this.records.some(item => item.sourceSha256 === record.sourceSha256)) {
+          await this.removeDeletionFile(contained(this.options.rootPath, `cache/${record.sourceSha256}.exe`));
+        }
+        await rm(contained(journal, `${record.id}.json`), { force: true });
+        this.pendingDeletions.delete(record.id);
+      } catch { /* The durable request is retried after the operating system releases the files. */ }
+    }
+  }
+  private async removeDeletionFile(file: string): Promise<void> {
+    try { await assertOwnedDirectory(this.options.rootPath, path.dirname(file)); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    await rm(file, { force: true });
   }
   async cleanup(operation: OperationContext): Promise<void> {
     if (this.importing || this.installingVersions.size || this.maintaining) throw new Error('请等待版本安装或清理操作结束。');
@@ -240,8 +321,7 @@ export class RuntimeService implements RuntimeServiceLike {
     } finally { this.maintaining = false; this.options.onChanged(); }
   }
   private save(): Promise<void> {
-    const records = structuredClone(this.records);
-    this.writes = this.writes.catch(() => undefined).then(() => atomicRuntimeJson(path.join(this.options.rootPath, 'runtimes.json'), records));
+    this.writes = this.writes.catch(() => undefined).then(() => atomicRuntimeJson(path.join(this.options.rootPath, 'runtimes.json'), structuredClone(this.records)));
     return this.writes;
   }
   private async readCompleteArtifact(directory: string, id?: string, signal?: AbortSignal): Promise<DshRuntime | undefined> {
@@ -271,6 +351,7 @@ export class RuntimeService implements RuntimeServiceLike {
     return undefined;
   }
   private async commitArtifact(artifact: string, record: DshRuntime, seal: TreeInventory, operation: OperationContext, sealedCache?: Map<string, TreeHashCacheEntry>): Promise<DshRuntime> {
+    if (this.pendingDeletions.has(record.id)) throw new Error('该运行版本的旧文件正在清理，清理后可重新安装。');
     const destination = path.join(this.options.rootPath, 'runtimes', record.id);
     const present = await lstat(destination).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return undefined; throw error; });
     if (present) {
@@ -337,6 +418,7 @@ export class RuntimeService implements RuntimeServiceLike {
   /** Install one real, exact official npm release without changing any existing instance. */
   async installNode(release: OfficialNodeRelease, operation: OperationContext,prepareInstall?:NodeRuntimeInstallPreparation,expectedLock?:DshNodePackRuntimeLock): Promise<DshRuntime> {
     release = validateOfficialNodeRelease(release);
+    if (this.pendingDeletionVersions().includes(release.version)) throw new Error('该运行版本的旧文件正在清理，清理后可重新安装。');
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Managed DSH Node runtimes currently require Windows x64.');
     if (this.importing || this.maintaining || this.installingVersions.has(release.version)) throw new Error('This runtime version is already being installed or cleaned.');
     if (!this.options.nodeTools || !this.options.nodeInstallNetwork) throw new Error('Managed Node tools and installation network settings are unavailable.');

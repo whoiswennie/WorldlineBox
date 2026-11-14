@@ -56,6 +56,8 @@ const config: ForgeConfig = {
       // 一致）。
       process.env.VcpkgEnabled = 'false';
       const mediaPlatform = nativeMediaPlatform(platform, arch);
+      if (mediaPlatform === 'win32-x64') runNodeGate('scripts/stage-cabin-world.mjs', [], { NODE_USE_ENV_PROXY: '1' });
+      if (mediaPlatform === 'win32-x64') runNodeGate('scripts/stage-mobile-tunnel.mjs', [], { NODE_USE_ENV_PROXY: '1' });
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
       runNodeGate('scripts/stage-bot-memory.mjs', []);
       runNodeGate('scripts/verify-bot-stickers.mjs', []);
@@ -154,6 +156,9 @@ const config: ForgeConfig = {
     // checks against this copied directory.
     extraResource: [
       path.join(projectRoot, 'resources', 'dsh-bridge'),
+      path.join(projectRoot, 'resources', 'dsh-cabin-world'),
+      ...(process.platform === 'win32' ? [path.join(projectRoot, 'resources', 'cabin-world')] : []),
+      ...(process.platform === 'win32' ? [path.join(projectRoot, '.tools', 'mobile-cloudflared')] : []),
       path.join(projectRoot, 'resources', 'dsh-demo-plugins'),
       path.join(projectRoot, '.tools', 'bot-memory-release', 'vcp-memory'),
       path.join(projectRoot, 'resources', 'embedding-models'),

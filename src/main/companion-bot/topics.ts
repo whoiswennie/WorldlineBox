@@ -236,7 +236,7 @@ export class BotTopics {
         sql.prepare('INSERT OR IGNORE INTO bot_native_topics(id,conversation_id,acl_revision,title,created_at,updated_at,activity_at) VALUES(?,?,?,?,?,?,?)').run(id,room.id,room.revision,short(event.content),event.receivedAt,event.receivedAt,event.receivedAt);
         this.bind([event],this.readTopic(id,room.id));binding={topic_id:id};
       }
-      if(binding&&event.source==='user')this.store.setMetadata('native-topic-active:'+event.conversationId,binding.topic_id);
+      if(binding&&event.source==='user'&&!room?.meeting)this.store.setMetadata('native-topic-active:'+event.conversationId,binding.topic_id);
     });
   }
   assertCurrent(event:BotEvent):void{

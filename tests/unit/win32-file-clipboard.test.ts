@@ -10,7 +10,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { writeWin32FileClipboard } from "../../src/main/win32-file-clipboard";
+import { readWin32FileClipboardSnapshot, writeWin32FileClipboard } from "../../src/main/win32-file-clipboard";
 
 describe("win32-file-clipboard", () => {
   it.skipIf(process.platform !== "win32")(
@@ -20,7 +20,10 @@ describe("win32-file-clipboard", () => {
       const file = path.join(root, "复制测试.txt");
       writeFileSync(file, "probe");
 
-      expect(writeWin32FileClipboard([file])).toBe(true);
+      const second = path.join(root, "第二个.txt");
+      writeFileSync(second, "probe");
+      expect(writeWin32FileClipboard([file, second], "cut")).toBe(true);
+      expect(readWin32FileClipboardSnapshot()).toMatchObject({ paths: [file, second], operation: "cut" });
 
       // Windows PowerShell 5 can emit its console output in the active OEM
       // code page, which corrupts CJK paths even when CF_HDROP itself is
@@ -37,6 +40,7 @@ describe("win32-file-clipboard", () => {
       ).trim();
       const out = Buffer.from(encoded, "base64").toString("utf16le");
       expect(out).toContain(file);
+      expect(out).toContain(second);
     },
   );
 });

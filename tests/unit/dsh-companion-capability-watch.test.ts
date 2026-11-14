@@ -51,8 +51,8 @@ async function fixture() {
     await writeFile(path.join(instance.agentsPath, 'skills', 'research', 'SKILL.md'), '# Research\n');
   }
   const ensureHost = vi.fn(async () => { throw Error('Observing capabilities must never start DSH.'); });
-  Reflect.set(launcher, 'instances', { list: () => records, snapshots: () => [], ensureHost, shutdown: async () => undefined });
-  Reflect.set(launcher, 'runtimes', { list: () => [], close: () => undefined });
+  Reflect.set(launcher, 'instances', { list: () => records, archivedInstances: () => [], snapshots: () => [], ensureHost, shutdown: async () => undefined });
+  Reflect.set(launcher, 'runtimes', { list: () => [], pendingDeletionVersions: () => [], close: () => undefined });
   Reflect.set(launcher, 'packs', { list: () => [] });
   Reflect.set(launcher, 'operations', { list: () => [], shutdown: async () => undefined });
   Reflect.set(launcher, 'cliTerminal', { state: () => undefined, shutdown: async () => undefined });

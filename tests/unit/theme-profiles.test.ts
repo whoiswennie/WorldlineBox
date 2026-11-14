@@ -330,7 +330,7 @@ describe('theme profile contract v3', () => {
       { version: THEME_PROFILE_VERSION, preset: 'worldlinebox', overrides: {} },
       'light',
     );
-    expect(dark.tokens['--ui-surface-canvas']).toBe('#202124');
+    expect(dark.tokens['--ui-surface-canvas']).toBe('#292a2d');
     expect(light.tokens['--ui-surface-canvas']).toBe('#f8f8fa');
     expect(dark.id).toBe('worldlinebox');
     expect(light.id).toBe('worldlinebox');

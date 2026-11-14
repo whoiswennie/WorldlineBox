@@ -1,8 +1,8 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import type { BotExecution, BotExecutionStep, BotResponse } from '../../shared/companion-bot';
-import { botExecutionRounds } from '../../shared/companion-bot-execution';
+import { botExecutionRounds, latestBotExecutionActivity } from '../../shared/companion-bot-execution';
 import { BotIcon } from './BotIcon';
-import { botExecutionActivity, latestBotExecutionActivity } from './execution-activity';
+import { botExecutionActivity } from './execution-activity';
 import './bot-execution.css';
 
 type Locale = 'zh-CN' | 'en';

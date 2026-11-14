@@ -17,12 +17,43 @@ import { DshCliTerminal } from './cli-terminal';
 import { PackService } from './packs';
 import { extractSealedArchive, writeSealedArchive } from './archive';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
+import { compareDshVersions, dshVersionPattern } from '../../shared/dsh-version-order';
 import { configureWorkbenchBrowser } from './workbench-browser';
 import type { CompanionInstanceLeaseKind } from './companion-instance-leases';
 import { restoreCompanionKeepAlive, type CompanionEnvironmentOwner } from './companion-keep-alive';
 import { DshHostUnavailableError } from './host-errors';
+import { CabinWorld, cabinBridgeOnline } from '../cabin-world';
+import { connectCabinPlugin } from './cabin-plugin';
 
 export class DshLauncher {
+  private readonly cabin: CabinWorld;
+  private cabinPreparation?: Promise<void>;
+  private readonly cabinPluginPath: string;
+  async scheduledCabinOnline(): Promise<boolean> {
+    const instance = this.instances.list().find(item => item.isDefault);
+    if (!instance) return false;
+    const file = path.join(instance.homePath, 'plugin-data', 'worldlinebox-cabin-world', 'config.json');
+    const config = await readJson<{ bridgeJson?: string }>(file);
+    if (!config?.bridgeJson || !path.isAbsolute(config.bridgeJson)) return false;
+    return path.relative(config.bridgeJson, this.cabin.bridgeJson) === '' ? this.cabin.online() : cabinBridgeOnline(config.bridgeJson);
+  }
+
+  async openCabin(signal?: AbortSignal): Promise<void> {
+    await this.initialization;
+    signal?.throwIfAborted();
+    await this.cabin.open();
+    signal?.throwIfAborted();
+    if (this.instances.list().some(instance => instance.isDefault)) {
+      await (this.cabinPreparation ??= this.connectCabin().finally(() => { this.cabinPreparation = undefined; }));
+    }
+    signal?.throwIfAborted();
+  }
+
+  private async connectCabin(): Promise<void> {
+    const instance = await this.resolveBotInstance();
+    await connectCabinPlugin({ instance, cabin: this.cabin, packagePath: this.cabinPluginPath,
+      ensureHost: () => this.instances.ensureHost(instance.id), recordChange: result => this.instances.recordPluginChange(instance.id, result) });
+  }
   private botInstanceId?: string;
   private readonly botPreparationByInstance = new Map<string, DshHostStartupProgress>();
   private readonly botPreparations = new Map<string, Promise<void>>();
@@ -135,6 +166,8 @@ export class DshLauncher {
   private readonly cliTerminal: DshCliTerminal;
   private readonly network: LauncherNetwork;
   private readonly versions: OfficialVersionCatalogue;
+  private startingVersionRefresh?: Promise<string>;
+  private lastVersionRefresh?: { at: number; networkRevision: number };
   private readonly distributions: PackDistributionService;
   private publications: NonNullable<DshLauncherState['packPublications']> = [];
   private tools?: Promise<PortableToolchain>;
@@ -162,6 +195,9 @@ export class DshLauncher {
     private readonly onInstanceStopped?: (instanceId: string) => void,
     private readonly validateCompanion?: (companionId: string) => void) {
     this.rootPath = path.join(app.getPath('userData'), 'dsh');
+    const resources = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
+    this.cabin = new CabinWorld(path.join(resources, 'cabin-world'), path.join(app.getPath('userData'), 'cabin-world'), process.execPath);
+    this.cabinPluginPath = path.join(resources, 'dsh-cabin-world');
     const onChanged = () => {
       if (!this.ready || this.closed) return;
       this.observeExecutionCapabilities();
@@ -190,7 +226,7 @@ export class DshLauncher {
     this.operations = new OperationStore(path.join(this.rootPath, 'operations'), onChanged);
     this.network = applicationNetwork ?? new LauncherNetwork(path.join(app.getPath('userData'), 'network'), onChanged);
     if (applicationNetwork) applicationNetwork.subscribe(onChanged);
-    this.versions = new OfficialVersionCatalogue({ rootPath: this.rootPath, json: (url, signal) => this.network.json(url, signal), onChanged });
+    this.versions = new OfficialVersionCatalogue({ rootPath: this.rootPath, json: (url, signal, revalidate) => this.network.json(url, signal, revalidate), onChanged });
     this.runtimes = new RuntimeService({ rootPath: this.rootPath, onChanged, fetch: this.network.fetch,
       nodeTools: () => this.toolchain(), nodeInstallNetwork: signal => this.network.nodeInstallNetwork(signal) });
     this.instances = new InstanceService({ rootPath: this.rootPath, runtimes: this.runtimes, operations: this.operations, onChanged,
@@ -229,6 +265,33 @@ export class DshLauncher {
     void this.initialization.catch(error => { try { reportInitializationError?.(error); } catch { /* Preserve domain isolation even if diagnostics cannot be written. */ } });
   }
   private toolchain(): Promise<PortableToolchain> { return this.tools ??= resolvePortableTools(); }
+  private async refreshVersions(ifStale = false): Promise<DshLauncherResponse> {
+    if (this.startingVersionRefresh) return { ok: true, operationId: await this.startingVersionRefresh };
+    const running = this.operations.runningId('versions.refresh');
+    if (running) return { ok: true, operationId: running };
+
+    const networkRevision = this.network.state().revision;
+    const last = this.lastVersionRefresh;
+    const cooldown = last?.networkRevision === networkRevision && Date.now() - last.at < 60_000;
+    const recent = (!last || last.networkRevision === networkRevision) && this.versions.isFresh();
+    if (ifStale && (cooldown || recent)) return { ok: true };
+
+    const starting = this.operations.run('versions.refresh', '同步官方 DSH 发行版', undefined, async op => {
+      let revision = networkRevision;
+      try {
+        try { await this.versions.refresh(op.signal, op.update); }
+        catch (error) {
+          const currentRevision = this.network.state().revision;
+          if (op.signal.aborted || currentRevision === revision) throw error;
+          revision = currentRevision;
+          await this.versions.refresh(op.signal, op.update);
+        }
+      } finally { this.lastVersionRefresh = { at: Date.now(), networkRevision: revision }; }
+    });
+    this.startingVersionRefresh = starting;
+    try { return { ok: true, operationId: await starting }; }
+    finally { this.startingVersionRefresh = undefined; }
+  }
   private async init(): Promise<void> {
     await mkdir(this.rootPath, { recursive: true });
     if (!this.applicationNetwork) await this.network.init(); await this.versions.init();
@@ -360,8 +423,9 @@ export class DshLauncher {
   }
   state(): DshLauncherState {
     return { supported: process.platform === 'win32' && process.arch === 'x64', rootPath: this.rootPath,
-      runtimes: this.runtimes.list(), instances: this.instances.list(), snapshots: this.instances.snapshots(),
+      runtimes: this.runtimes.list(), instances: this.instances.list(), archivedInstances: this.instances.archivedInstances(), snapshots: this.instances.snapshots(),
       packs: this.packs.list(), operations: this.operations.list(), cli: this.cliTerminal.state(),
+      pendingRuntimeDeletions: this.runtimes.pendingDeletionVersions(),
       companionCapabilityRevisions: Object.fromEntries(this.instances.list().map(instance => [instance.id, this.companionCapabilityEpoch.get(instance.id) ?? 0])),
       network: this.network.state(), versions: this.versions.state(), packPublications: structuredClone(this.publications), executionReadiness: this.executionReadiness };
   }
@@ -421,6 +485,10 @@ export class DshLauncher {
   }
   private async handle(request: DshLauncherRequest): Promise<DshLauncherResponse> {
     if (request.type === 'state') return { ok: true, state: this.state() };
+    if (request.type === 'cabin.state') return { ok: true, cabin: await this.cabin.state() };
+    if (request.type === 'cabin.stop') { await this.cabin.stop(); return { ok: true, cabin: await this.cabin.state() }; }
+    if (request.type === 'cabin.open') { await this.openCabin(); return { ok: true, cabin: await this.cabin.state() }; }
+    if (request.type === 'versions.refresh') return this.refreshVersions(request.ifStale);
     if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
     switch (request.type) {
@@ -502,8 +570,31 @@ export class DshLauncher {
       case 'network.proxy.toggle': await this.network.setProxyEnabled(request.enabled); await this.network.inspect(); return { ok: true, state: this.state() };
       case 'network.inspect': await this.network.inspect(); return { ok: true, state: this.state() };
       case 'network.test': { const text = await this.network.test(); return { ok: true, text, state: this.state() }; }
-      case 'versions.refresh': return { ok: true, operationId: await this.operations.run(request.type, '同步官方 DSH 发行版', undefined, op => this.versions.refresh(op.signal)) };
-      case 'runtime.install': return { ok: true, operationId: await this.operations.run(request.type, `安装 DSH ${request.version} WebUI`, undefined, async op => { await this.runtimes.installNode(await this.versions.release(request.version, op.signal), op); }, request) };
+      case 'runtime.install': return { ok: true, operationId: await this.operations.run(request.type, `安装 DSH ${request.version} WebUI`, undefined, async op => {
+        await op.update('verifying');
+        const release = await this.versions.release(request.version, op.signal);
+        await this.runtimes.installNode(release, op);
+      }, request) };
+      case 'instance.upgrade-official': {
+        const { instanceId, expectedRuntimeId, version } = request;
+        const checkSource = () => {
+          if (this.instances.get(instanceId).runtimeId !== expectedRuntimeId) throw new Error('实例的运行版本已变更，请重新选择升级目标。');
+        };
+        checkSource();
+        const previous = this.runtimes.get(expectedRuntimeId).version;
+        if (!dshVersionPattern.test(previous) || compareDshVersions(version, previous) <= 0) throw new Error('请选择比实例当前版本更新的官方版本。');
+        if (this.operations.isInstanceInUse(instanceId)) throw new Error('该实例还有其他操作正在进行，请稍后再升级。');
+        return { ok: true, operationId: await this.operations.run(request.type, `升级实例至 DSH ${version}`, instanceId, async op => {
+          let target = this.runtimes.list().find(runtime => runtime.version === version);
+          if (!target) {
+            await op.update('verifying');
+            const release = await this.versions.release(version, op.signal);
+            target = await this.runtimes.installNode(release, { ...op, update: (phase, percent) => op.update(phase, percent === undefined ? undefined : percent * .75) });
+          }
+          checkSource();
+          await this.instances.upgradeCompanion(instanceId, target.id, { ...op, update: (phase, percent) => op.update(phase, percent === undefined ? undefined : 75 + percent * .25) });
+        }, request) };
+      }
       case 'runtime.import': {
         const source = await this.pick(request.sourceKind); if (!source) return { ok: true, cancelled: true };
         return { ok: true, operationId: await this.operations.run(request.type, '导入 DSH 运行版本', undefined, async op => { await this.runtimes.import(source, request.sourceKind, 'local-import', op); }) };
@@ -516,10 +607,11 @@ export class DshLauncher {
       }
       case 'runtime.delete': {
         if (this.companionProvisioning) throw new Error('正在保存角色实例绑定，请稍后再删除运行版本。');
-        if (this.operations.list().some(operation => operation.status === 'running')) throw new Error('Wait for running launcher operations before deleting a runtime.');
+        if (this.operations.list().some(operation => operation.status === 'running' && operation.kind !== 'versions.refresh')) throw new Error('请等待当前运行环境操作结束后再删除该版本。');
         const used = runtimeReferences(this.state(), request.runtimeId).length > 0;
         if (used) throw new Error('此运行版本仍被实例、快照或整合包引用，请先处理页面列出的引用。');
-        return { ok: true, operationId: await this.operations.run(request.type, '删除 DSH 运行版本并清理文件', undefined, () => this.runtimes.delete(request.runtimeId, false)) };
+        return { ok: true, operationId: await this.operations.run(request.type, '移除 DSH 运行版本', undefined, op =>
+          this.runtimes.delete(request.runtimeId, runtimeReferences(this.state(), request.runtimeId).length > 0, op)) };
       }
       case 'instance.folder': {
         const root = this.instances.getRoot(request.instanceId);
@@ -598,6 +690,7 @@ export class DshLauncher {
   }
   async shutdown(): Promise<void> {
     this.closed = true;
+    await this.cabin.close();
     clearTimeout(this.companionCapabilityTimer);
     for (const watchers of this.companionCapabilityWatchers.values()) for (const watcher of watchers) watcher.close();
     this.companionCapabilityWatchers.clear();
@@ -607,7 +700,7 @@ export class DshLauncher {
     await this.cliTerminal.shutdown();
     await this.operations.shutdown();
     await this.instances.shutdown();
-    this.runtimes.close();
+    await this.runtimes.close();
     for (const window of this.windows.values()) if (!window.isDestroyed()) window.destroy();
     this.windows.clear();
   }

@@ -5,7 +5,7 @@ import { useT } from '../i18n';
 import { formatBytes } from '../format-file-meta';
 import type { LauncherRunRequest } from './DshLauncher';
 
-export function OperationControls({ operation, run }: { operation: DshOperation; run: LauncherRunRequest }) {
+export function OperationControls({ operation, run, showTerminalPhase = true }: { operation: DshOperation; run: LauncherRunRequest; showTerminalPhase?: boolean }) {
   const t = useT(); const [pending, setPending] = useState(false);
   const control = async (type: 'operation.pause' | 'operation.resume' | 'operation.cancel' | 'operation.retry') => {
     if (pending) return; setPending(true);
@@ -13,7 +13,8 @@ export function OperationControls({ operation, run }: { operation: DshOperation;
   };
   const running = operation.status === 'running';
   const stats = operation.download;
-  const phaseKey = `launcher.phases.${operation.phase.split(':', 1)[0]}`;
+  const phaseGroup = operation.phase.startsWith('catalogue-') || operation.phase === 'cancelling' ? 'cataloguePhases' : 'phases';
+  const phaseKey = `launcher.${phaseGroup}.${operation.phase.split(':', 1)[0]}`;
   const phase = t(phaseKey) === phaseKey ? operation.phase : t(phaseKey);
   const label = stats?.paused ? t('launcher.downloadPaused') : phase;
   const packageCount = operation.phase.startsWith('prefetching dependency archives:') ? operation.phase.split(':')[1] : undefined;
@@ -28,7 +29,7 @@ export function OperationControls({ operation, run }: { operation: DshOperation;
       {running ? <Button disabled={pending || operation.phase === 'cancelling'} onClick={() => void control('operation.cancel')} size="sm" variant="quiet">{t(operation.phase === 'cancelling' ? 'launcher.cancellingOperation' : 'launcher.cancelOperation')}</Button>
         : operation.retryRequest && operation.status !== 'succeeded' ? <Button disabled={pending} iconName="refresh" onClick={() => void control('operation.retry')} size="sm">{t('launcher.retryOperation')}</Button> : null}
     </div>
-    {running ? <Progress label={label} message={packageCount ? t('launcher.dependencyPackageCount', { count: packageCount }) : undefined} showValue={!unknownTotal} indeterminate={!!unknownTotal} value={packagePercent ?? downloadPercent ?? operation.progress} /> : <p className="launcher-help">{label}</p>}
+    {running ? <Progress label={label} message={packageCount ? t('launcher.dependencyPackageCount', { count: packageCount }) : undefined} showValue={!unknownTotal} indeterminate={!!unknownTotal} value={packagePercent ?? downloadPercent ?? operation.progress} /> : showTerminalPhase ? <p className="launcher-help">{label}</p> : null}
     {stats ? <div className="launcher-download-stats"><span>{t('launcher.receivedBytes', { size: formatBytes(stats.transferredBytes) })}{stats.totalBytes ? ` / ${formatBytes(stats.totalBytes)}` : ''}</span><span>{stats.paused ? t('launcher.downloadPaused') : stats.canPause ? `${formatBytes(stats.speedBytesPerSecond)}/s` : t('launcher.downloadFinished')}</span></div> : null}
   </>;
 }

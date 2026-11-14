@@ -19,7 +19,7 @@ test('historical failures stay in history, live failures dismiss once, and clean
   test.skip(process.platform !== 'win32' || process.arch !== 'x64', 'DSH launcher UI requires Windows x64.');
   const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-dsh-history-e2e-'));
   const userData = path.join(root, 'user-data');
-  const manager = path.join(userData, 'dsh-launcher');
+  const manager = path.join(userData, 'dsh');
   const operations = path.join(manager, 'operations'); await mkdir(operations, { recursive: true });
   await writeFile(path.join(operations, 'operations.json'), JSON.stringify([{ id: 'historical-download', kind: 'runtime.download', label: '历史下载', status: 'failed', phase: 'failed', error: 'Invalid URL', startedAt: '2026-10-12T08:20:34Z', finishedAt: '2026-10-12T08:20:35Z' }]));
   await writeFile(path.join(operations, 'historical-download.log'), 'historical diagnostic log');

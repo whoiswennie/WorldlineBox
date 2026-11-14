@@ -4,7 +4,7 @@ import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'nod
 import { StringDecoder } from 'node:string_decoder';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { z } from 'zod';
-import { dshInstanceSchema, dshSnapshotSchema, type DshInstance, type DshRuntime, type DshSnapshot,
+import { dshArchivedInstanceSchema, dshInstanceSchema, dshSnapshotSchema, type DshArchivedInstance, type DshInstance, type DshRuntime, type DshSnapshot,
   type DshLauncherRequest, type DshLauncherResponse } from '../../shared/dsh-launcher';
 import { atomicJson, assertOwnedDirectory, copyTree, inventoryTree, readJson, removeManaged, type TreeInventoryProgress } from './files';
 import type { OperationStore, OperationContext } from './operations';
@@ -14,6 +14,7 @@ import type { DshCliSelection } from './cli-terminal';
 import { NativeHostClient } from './native-host-client';
 import { CompanionInstanceLeases, nativeIdleConfirmed, type CompanionInstanceLeaseKind } from './companion-instance-leases';
 import { DshHostUnavailableError, isDshHostUnavailableError } from './host-errors';
+import { compareDshVersions, dshVersionPattern } from '../../shared/dsh-version-order';
 
 export interface RuntimeServiceLike {
   list(): DshRuntime[]; get(id: string): DshRuntime; directory(id: string): string; plan(id: string): RuntimeLaunchPlan;
@@ -32,9 +33,8 @@ interface Options {
 }
 export interface DshHostStartupProgress {
   instanceId: string;
-  phase: 'verifying-runtime' | 'preparing-profile' | 'starting-host' | 'ready' | 'failed';
+  phase: 'preparing-profile' | 'starting-host' | 'ready' | 'failed';
   startedAt: string; updatedAt: string; elapsedMs: number;
-  integrity?: TreeInventoryProgress;
   error?: string;
 }
 interface Host { child: ChildProcessWithoutNullStreams; client?: NativeHostClient; url?: string; stopping: boolean; finished: Promise<void> }
@@ -52,9 +52,12 @@ const skipData = (relative: string) => {
 /** One native Web Host per instance, shared by Web UI and every partner Session. */
 export class InstanceService {
   private instances: DshInstance[] = [];
+  private archived: DshArchivedInstance[] = [];
   private snapshotRecords: DshSnapshot[] = [];
   private readonly hosts = new Map<string, Host>();
   private readonly starts = new Map<string, Promise<NativeHostClient>>();
+  private readonly startupPhases = new Map<string, DshHostStartupProgress['phase']>();
+  private readonly startupListeners = new Map<string, Set<(phase: DshHostStartupProgress['phase']) => void>>();
   private readonly stops = new Map<string, Promise<void>>();
   private readonly startControllers = new Map<string, AbortController>();
   private readonly busy = new Set<string>();
@@ -72,14 +75,21 @@ export class InstanceService {
   constructor(private readonly options: Options) {}
   async init(): Promise<void> {
     for (const directory of ['instances', 'snapshots', 'staging']) await mkdir(path.join(this.options.rootPath, directory), { recursive: true });
-    this.instances = (await readJson<unknown[]>(path.join(this.options.rootPath, 'native-instances.json')) ?? []).map(value => dshInstanceSchema.parse(value));
+    const registry = await readJson<unknown[]>(path.join(this.options.rootPath, 'native-instances.json')) ?? [];
+    this.instances = [];
+    this.archived = [];
+    for (const value of registry) {
+      if (value && typeof value === 'object' && 'archivedAt' in value) this.archived.push(dshArchivedInstanceSchema.parse(value));
+      else this.instances.push(dshInstanceSchema.parse(value));
+    }
     this.snapshotRecords = (await readJson<unknown[]>(path.join(this.options.rootPath, 'native-snapshots.json')) ?? []).map(value => dshSnapshotSchema.parse(value));
     const ids = new Set<string>();
-    for (const instance of this.instances) {
+    for (const instance of [...this.instances, ...this.archived]) {
       if (ids.has(instance.id)) throw new Error('Duplicate DSH instance identity.'); ids.add(instance.id);
       const paths = this.paths(instance.id);
       if (instance.homePath !== paths.homePath || instance.agentsPath !== paths.agentsPath || instance.workspacePath !== paths.workspacePath
         || instance.browserPartition !== `persist:dsh-instance-${instance.id}`) throw new Error('DSH registry contains an unmanaged path.');
+      if ('archivedAt' in instance) continue;
       await assertOwnedDirectory(this.options.rootPath, this.getRoot(instance.id));
       const journalPath = path.join(this.getRoot(instance.id), 'process.json');
       const journal = await readJson<ProcessIdentity>(journalPath);
@@ -111,6 +121,7 @@ export class InstanceService {
     await this.save();
   }
   list() { return this.instances.map(value => ({ ...value })); }
+  archivedInstances() { return this.archived.map(value => ({ ...value })); }
   snapshots() { return this.snapshotRecords.map(value => ({ ...value })); }
   getRoot(id: string): string { if (!/^[a-z0-9-]{1,80}$/.test(id)) throw new Error('Invalid instance ID.'); return path.join(this.options.rootPath, 'instances', id); }
   get(id: string): DshInstance { return { ...this.require(id) }; }
@@ -160,7 +171,7 @@ export class InstanceService {
       if (!currentRuntime || currentRuntime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 实例。');
       const records = this.list();
       for (const record of records) record.isDefault = record.id === instanceId;
-      await atomicJson(path.join(this.options.rootPath, 'native-instances.json'), records);
+      await this.writeInstanceRegistry(records);
       for (const value of this.instances) value.isDefault = value.id === instanceId;
       return this.get(instanceId);
     });
@@ -239,9 +250,12 @@ export class InstanceService {
     const pending = this.writes.then(work);
     this.writes = pending.then(() => undefined, () => undefined); return pending;
   }
+  private writeInstanceRegistry(instances: readonly DshInstance[], archived = this.archived): Promise<void> {
+    return atomicJson(path.join(this.options.rootPath, 'native-instances.json'), [...instances, ...archived]);
+  }
   private save() { const pending = this.writes.then(async () => {
     const instances = this.list(), snapshots = this.snapshots();
-    await atomicJson(path.join(this.options.rootPath, 'native-instances.json'), instances); await atomicJson(path.join(this.options.rootPath, 'native-snapshots.json'), snapshots);
+    await this.writeInstanceRegistry(instances); await atomicJson(path.join(this.options.rootPath, 'native-snapshots.json'), snapshots);
   }); this.writes = pending.catch(() => undefined); return pending; }
   private notifyChanged() { try { this.options.onChanged(); } catch { /* An observer cannot undo or obscure a completed durable mutation. */ } }
   private async changed() { await this.save(); this.notifyChanged(); }
@@ -249,7 +263,7 @@ export class InstanceService {
     const instance = this.require(id);
     if (this.closing || this.busy.has(id) || this.recoveryBlocked.has(id)) throw new Error('This DSH instance is busy or its previous process could not be recovered.');
     if (stopped) {
-      if (this.hosts.has(id) || this.starts.has(id)) throw new Error('请先停止此 DSH 实例，再修改或删除它的数据。');
+      if (this.hosts.has(id) || this.starts.has(id) || this.stops.has(id)) throw new Error('请先停止此 DSH 实例，再修改或删除它的数据。');
       if (this.leases.count(id)) throw new Error('此实例仍被任务或能力查询使用，请等待任务结束后再删除。');
       if (this.options.isCliInUse?.(id)) throw new Error('此实例的终端仍在运行，请先关闭该终端。');
       if (this.options.isExternallyInUse?.(id, operationId)) throw new Error('此实例的工作台或其他操作仍在使用中，请关闭工作台或等待操作结束。');
@@ -284,15 +298,17 @@ export class InstanceService {
     const sources = await Promise.all(names.map(name => readFile(path.join(this.options.bridgePackagePath, name))));
     const digest = createHash('sha256'); for (const source of sources) digest.update(source);
     const hash = digest.digest('hex'), target = path.join(instance.homePath, '.worldlinebox', 'bridge', hash);
-    await mkdir(target, { recursive: true });
-    for (let i = 0; i < names.length; i++) await writeFile(path.join(target, names[i]!), sources[i]!);
     const stamp = path.join(this.getRoot(instance.id), 'bridge.json');
     const installed = await readJson<{ hash: string }>(stamp);
-    const entries = await Promise.all(names.map(name => readFile(path.join(profile, 'node_modules', '@worldlinebox', 'dsh-bridge', name)).catch(() => undefined)));
-    if (installed?.hash !== hash || entries.some((entry, index) => !entry?.equals(sources[index]!))) {
-      await this.command(instance, ['plugin', '--profile', 'web', 'add', `file:../../.worldlinebox/bridge/${hash}`, '--save-exact'], signal, profile);
-      await atomicJson(stamp, { hash });
+    if (installed?.hash === hash) {
+      const entries = await Promise.all(names.map(name =>
+        readFile(path.join(profile, 'node_modules', '@worldlinebox', 'dsh-bridge', name)).catch(() => undefined)));
+      if (entries.every((entry, index) => entry?.equals(sources[index]!))) return;
     }
+    await mkdir(target, { recursive: true });
+    await Promise.all(names.map((name, index) => writeFile(path.join(target, name), sources[index]!)));
+    await this.command(instance, ['plugin', '--profile', 'web', 'add', `file:../../.worldlinebox/bridge/${hash}`, '--save-exact'], signal, profile);
+    await atomicJson(stamp, { hash });
   }
   async ensureHost(id: string, signal?: AbortSignal, options: { automatic?: boolean } = {}): Promise<NativeHostClient> {
     signal?.throwIfAborted();
@@ -358,36 +374,38 @@ export class InstanceService {
     // package-manager work cannot run forever before the old HTTP-only budget.
     signal = AbortSignal.any([signal, AbortSignal.timeout(360000)]);
     const started = performance.now(), startedAt = new Date().toISOString();
-    let phase: DshHostStartupProgress['phase'] = 'verifying-runtime', lastIntegrityReport = 0;
-    const progress = (next: DshHostStartupProgress['phase'], integrity?: TreeInventoryProgress, error?: string) => {
-      phase = next;
+    const progress = (phase: DshHostStartupProgress['phase'], error?: string) => {
+      this.startupPhases.set(id, phase);
+      for (const listener of this.startupListeners.get(id) ?? []) listener(phase);
       try { this.options.onStartup?.({ instanceId: id, phase, startedAt, updatedAt: new Date().toISOString(), elapsedMs: performance.now() - started,
-        ...(integrity ? { integrity } : {}), ...(error ? { error } : {}) }); } catch { /* Diagnostics cannot break native preparation. */ }
+        ...(error ? { error } : {}) }); } catch { /* Diagnostics cannot break native preparation. */ }
     };
     const instance = this.require(id); instance.status = 'starting'; delete instance.lastError; await this.changed();
     let host: Host | undefined;
-    let startupCheck = '校验运行文件', hostOutput = false;
+    let startupCheck = '检查启动入口和准备实例配置', hostOutput = false, missingDependency = false;
     const logPath = path.join(this.getRoot(id), 'logs', 'host.log');
     const logStartup = async (message: string) => {
       await mkdir(path.dirname(logPath), { recursive: true })
         .then(() => appendFile(logPath, `[${new Date().toISOString()}] ${sanitizeOutput(message)}\n`)).catch(() => undefined);
     };
     try {
-      progress('verifying-runtime');
-      await assertOwnedDirectory(this.options.rootPath, this.getRoot(id));
-      await this.options.runtimes.verify(instance.runtimeId, signal, false, integrity => {
-        if (integrity.phase === 'complete' || performance.now() - lastIntegrityReport >= 1000) {
-          lastIntegrityReport = performance.now(); progress('verifying-runtime', integrity);
-        }
-      });
       progress('preparing-profile');
+      await assertOwnedDirectory(this.options.rootPath, this.getRoot(id));
+      let plan: RuntimeLaunchPlan;
+      try { plan = this.launchPlan(id); }
+      catch (cause) {
+        const code = (cause as NodeJS.ErrnoException)?.code;
+        if (code !== 'ENOENT' && code !== 'ENOTDIR') throw cause;
+        throw new Error('DSH 启动入口缺失。请在「运行版本」中对当前版本执行完整性校验。', { cause });
+      }
       startupCheck = '准备实例配置和插件';
       await this.initializeProfile(instance, signal); signal.throwIfAborted();
       progress('starting-host');
       startupCheck = '等待 DSH Web 地址和伙伴桥接服务就绪（最长 120 秒）';
-      await logStartup('Starting DSH Web Host. Waiting for Web and bridge readiness.');
+      const prepared = performance.now();
+      await logStartup(`Starting DSH Web Host. Profile preparation took ${Math.round(prepared - started)} ms. Waiting for Web and bridge readiness.`);
       const token = randomBytes(32).toString('hex');
-      const child = await launchCli(this.launchPlan(id), ['web', '--no-open', '--host', '127.0.0.1', '--port', '0'],
+      const child = await launchCli(plan, ['web', '--no-open', '--host', '127.0.0.1', '--port', '0'],
         { ...await this.environment(instance), WORLDLINEBOX_DSH_BRIDGE_TOKEN: token }, instance.workspacePath);
       let resolveExit!: () => void; const finished = new Promise<void>(resolve => { resolveExit = resolve; });
       host = { child, finished, stopping: false }; this.hosts.set(id, host); const owned = host;
@@ -397,6 +415,7 @@ export class InstanceService {
       const decoders = [new StringDecoder('utf8'), new StringDecoder('utf8')]; const pending = ['', ''];
       const line = (value: string) => {
         hostOutput ||= !!value.trim();
+        missingDependency ||= /\b(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND)\b/.test(value);
         owned.url ??= parseReadyUrl(value);
         const port = /^WORLDLINEBOX_DSH_BRIDGE_READY (\d+)\s*$/.exec(value)?.[1];
         if (port && child.pid) owned.client = new NativeHostClient(Number(port), token, child.pid);
@@ -410,7 +429,9 @@ export class InstanceService {
       }));
       child.once('error', fail);
       child.once('close', (code, exitSignal) => {
-        const failure = new Error(`Native DSH Web Host exited ${exitSignal ?? code}. See instance logs.`);
+        const failure = new Error(missingDependency && !owned.url
+          ? 'DSH 启动时缺少模块。请先查看实例日志，再在「运行版本」中执行完整性校验。'
+          : `Native DSH Web Host exited ${exitSignal ?? code}. See instance logs.`);
         fail(failure);
         if (this.hosts.get(id) === owned) {
           this.hosts.delete(id); instance.status = owned.stopping ? 'stopped' : 'failed'; delete instance.pid; delete instance.port;
@@ -425,14 +446,17 @@ export class InstanceService {
         }
       });
       const identity = await inspectManagedProcess(child);
-      if (child.pid && identity) { const plan = this.launchPlan(id); await atomicJson(path.join(this.getRoot(id), 'process.json'), { pid: child.pid, executable: plan.executable, cli: plan.cli, createdAt: identity.createdAt }); }
+      if (child.pid && identity) await atomicJson(path.join(this.getRoot(id), 'process.json'), { pid: child.pid, executable: plan.executable, cli: plan.cli, createdAt: identity.createdAt });
       const timeout = AbortSignal.any([signal, AbortSignal.timeout(120000)]);
       await new Promise<void>((resolve, reject) => { const abort = () => reject(timeout.reason); timeout.addEventListener('abort', abort, { once: true });
         readiness.then(resolve, reject).finally(() => timeout.removeEventListener('abort', abort)); if (timeout.aborted) abort(); });
-      startupCheck = '验证伙伴桥接服务身份';
-      await owned.client!.health(timeout);
-      startupCheck = '验证 DSH 工作台登录';
-      await verifyReadyUrl(owned.url!, timeout);
+      const announced = performance.now();
+      startupCheck = '验证伙伴桥接服务身份和工作台登录';
+      await Promise.all([
+        owned.client!.health(timeout),
+        verifyReadyUrl(owned.url!, timeout),
+      ]);
+      await logStartup(`DSH Web Host announced readiness in ${Math.round(announced - prepared)} ms. Authenticated checks took ${Math.round(performance.now() - announced)} ms.`);
       instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); progress('ready'); this.scheduleIdle(id); return owned.client!;
     } catch (error) {
       let failure = error;
@@ -445,8 +469,8 @@ export class InstanceService {
       }
       await logStartup(`Startup failed while ${startupCheck}: ${failure instanceof Error ? failure.message : String(failure)}`);
       if (host) { host.stopping = true; await terminateOwnedProcess(host.child); await host.finished; }
-      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(failure)); await this.changed(); progress('failed', undefined, instance.lastError); throw failure;
-    }
+      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(failure)); await this.changed(); progress('failed', instance.lastError); throw failure;
+    } finally { this.startupPhases.delete(id); }
   }
   async stop(id: string, options: { automatic?: boolean } = {}): Promise<void> {
     this.require(id);
@@ -481,7 +505,7 @@ export class InstanceService {
       await this.commitRegistry(async () => {
         if (this.closing) throw new Error('DSH launcher is closing.'); op?.signal.throwIfAborted();
         instance.isDefault = !companion && !this.instances.some(value => value.isDefault);
-        await atomicJson(path.join(this.options.rootPath, 'native-instances.json'), [...this.list(), instance]);
+        await this.writeInstanceRegistry([...this.list(), instance]);
         this.instances.push(instance);
       });
     }
@@ -497,7 +521,8 @@ export class InstanceService {
     if (runtimeId === instance.runtimeId) return;
     if (this.held(id, op.id) || this.starts.has(id)) throw new Error('伙伴环境仍在使用中，请等待任务、问题或工作台结束后升级。');
     this.touchInstance(id); this.busy.add(id);
-    const previousRuntimeId = instance.runtimeId, journal = path.join(this.getRoot(id), 'upgrade.json');
+    const previousRuntimeId = instance.runtimeId, previousVersion = this.options.runtimes.get(previousRuntimeId).version;
+    const journal = path.join(this.getRoot(id), 'upgrade.json');
     const wasRunning = this.hosts.has(id), wasSuspended = this.suspendedCompanions.has(id), stopEpoch = this.manualStops.get(id) ?? 0;
     const stillAuthorized = () => {
       op.signal.throwIfAborted();
@@ -513,8 +538,9 @@ export class InstanceService {
       await this.stop(id, { automatic: true }); op.signal.throwIfAborted(); await op.update('保存升级前完整数据', 20);
       snapshotId = randomUUID(); const destination = path.join(this.options.rootPath, 'snapshots', snapshotId);
       const inventory = await this.exportData(id, destination, op);
-      this.snapshotRecords.unshift({ id: snapshotId, instanceId: id, name: `升级前 · ${this.options.runtimes.get(previousRuntimeId).version}`,
-        runtimeId: previousRuntimeId, createdAt: new Date().toISOString(), contentSha256: inventory.contentSha256, fileCount: inventory.fileCount, byteLength: inventory.byteLength });
+      const snapshot: DshSnapshot = { id: snapshotId, instanceId: id, name: `升级前 · ${previousVersion}`,
+        runtimeId: previousRuntimeId, createdAt: new Date().toISOString(), contentSha256: inventory.contentSha256, fileCount: inventory.fileCount, byteLength: inventory.byteLength };
+      this.snapshotRecords.unshift(snapshot);
       await this.changed();
       await atomicJson(journal, { format: 'worldlinebox-dsh-upgrade-v1', previousRuntimeId, snapshotId });
       stillAuthorized(); instance.runtimeId = runtimeId; switched = true;
@@ -525,7 +551,14 @@ export class InstanceService {
       try { await pending; } finally { this.starts.delete(id); this.startControllers.delete(id); }
       stillAuthorized();
       if (wasSuspended || !wasRunning && !instance.keepAlive) await this.stop(id, { automatic: true });
-      await rm(journal, { force: true }); await op.log(`伙伴环境升级完成；回退快照 ${snapshotId}。`);
+      await rm(journal, { force: true });
+      // Keep the old runtime pinned until the rollback journal has been cleared.
+      if (dshVersionPattern.test(previousVersion)) {
+        snapshot.upgradeFromVersion = previousVersion;
+        try { await this.changed(); }
+        catch { delete snapshot.upgradeFromVersion; }
+      }
+      await op.log(`DSH 实例升级完成；已保留升级前快照 ${snapshotId}。`).catch(() => undefined);
     } catch (error) {
       if (switched && snapshotId) {
         try {
@@ -585,9 +618,9 @@ export class InstanceService {
       runtimeContentSha256: this.options.runtimes.get(instance.runtimeId).contentSha256, createdAt: new Date().toISOString(), inventory });
     return inventory;
   }
-  async restoreFrom(source: string, name: string, op?: OperationContext): Promise<DshInstance> {
+  async restoreFrom(source: string, name: string, op?: OperationContext, upgradeRuntime?: DshRuntime): Promise<DshInstance> {
     const manifest = manifestSchema.parse(await readJson(path.join(source, 'manifest.json')));
-    const runtime = this.options.runtimes.list().find(value => value.contentSha256 === manifest.runtimeContentSha256);
+    const runtime = upgradeRuntime ?? this.options.runtimes.list().find(value => value.contentSha256 === manifest.runtimeContentSha256);
     if (!runtime) throw new Error('Install the backup’s exact DSH version before restoration.');
     const data = path.join(source, 'data'), inventory = await inventoryTree(data, op?.signal);
     if (inventory.contentSha256 !== manifest.inventory.contentSha256 || inventory.fileCount !== manifest.inventory.fileCount || inventory.byteLength !== manifest.inventory.byteLength) throw new Error('Backup inventory differs.');
@@ -596,6 +629,78 @@ export class InstanceService {
     try { await copyTree(data, this.getRoot(instance.id), { signal: op?.signal });
       await this.installDependencies(instance.id, op?.signal); return instance;
     } catch (error) { await this.remove(instance.id); throw error; }
+  }
+  private async archive(id: string, op: OperationContext): Promise<void> {
+    await this.withStoppedInstance(id, async () => {
+      const current = this.require(id);
+      const version = this.options.runtimes.get(current.runtimeId).version;
+      await assertOwnedDirectory(this.options.rootPath, this.getRoot(id));
+      await this.commitRegistry(async () => {
+        op.signal.throwIfAborted();
+        const entry: DshArchivedInstance = { ...current, isDefault: false, status: 'stopped', archivedAt: new Date().toISOString(), runtimeVersion: version };
+        const active = this.instances.filter(instance => instance.id !== id);
+        const nextDefault = current.isDefault ? active.find(instance => !instance.companionId) ?? active[0] : undefined;
+        const archive = [entry, ...this.archived];
+        await this.writeInstanceRegistry(active.map(instance => instance === nextDefault ? { ...instance, isDefault: true } : instance), archive);
+        this.touchInstance(id); this.leases.forget(id);
+        this.manualStops.delete(id); this.suspendedCompanions.delete(id); this.lastCompanionUse.delete(id);
+        if (nextDefault) nextDefault.isDefault = true;
+        this.instances = active;
+        this.archived = archive;
+      });
+    }, op.id);
+    this.notifyChanged();
+  }
+  private requireArchived(id: string, op: OperationContext): DshArchivedInstance {
+    const instance = this.archived.find(item => item.id === id);
+    if (!instance) throw new Error('未找到已归档的 DSH 实例。');
+    if (this.closing || this.busy.has(id) || this.options.operations.isInstanceInUse(id, op.id)) throw new Error('此实例还有其他操作正在进行。');
+    return instance;
+  }
+  private async unarchive(id: string, op: OperationContext): Promise<void> {
+    const archived = this.requireArchived(id, op);
+    if (archived.purgePending) throw new Error('此归档已开始永久清理。');
+    const runtimes = this.options.runtimes.list();
+    const runtime = runtimes.find(value => value.id === archived.runtimeId) ?? runtimes.find(value => value.version === archived.runtimeVersion);
+    if (!runtime) throw new Error(`请先安装 DSH ${archived.runtimeVersion}，然后恢复此实例。`);
+    this.busy.add(id);
+    try {
+      await assertOwnedDirectory(this.options.rootPath, this.getRoot(id));
+      await this.commitRegistry(async () => {
+        op.signal.throwIfAborted();
+        const instance = dshInstanceSchema.parse({ ...archived, runtimeId: runtime.id, isDefault: !this.instances.some(value => value.isDefault), updatedAt: new Date().toISOString() });
+        const archive = this.archived.filter(item => item.id !== id);
+        await this.writeInstanceRegistry([...this.instances, instance], archive);
+        this.instances.push(instance);
+        this.archived = archive;
+      });
+    } finally { this.busy.delete(id); }
+    this.notifyChanged();
+  }
+  private async purgeArchive(id: string, op: OperationContext): Promise<void> {
+    this.requireArchived(id, op);
+    const root = this.getRoot(id);
+    this.busy.add(id);
+    try {
+      await assertOwnedDirectory(this.options.rootPath, root).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      await this.commitRegistry(async () => {
+        op.signal.throwIfAborted();
+        const archive = this.archived.map(item => item.id === id ? { ...item, purgePending: true as const } : item);
+        await this.writeInstanceRegistry(this.instances, archive);
+        this.archived = archive;
+      });
+      this.notifyChanged();
+      await this.options.clearBrowserData(id);
+      await removeManaged(this.options.rootPath, root);
+      await this.commitRegistry(async () => {
+        const archive = this.archived.filter(item => item.id !== id);
+        await this.writeInstanceRegistry(this.instances, archive);
+        this.archived = archive;
+      });
+    } finally { this.busy.delete(id); }
+    this.notifyChanged();
   }
   async remove(id: string, operation?: OperationContext): Promise<void> {
     operation?.signal.throwIfAborted();
@@ -618,20 +723,37 @@ export class InstanceService {
       if (request.type === 'snapshot.delete') { const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
         await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'snapshots', snapshot.id)); this.snapshotRecords = this.snapshotRecords.filter(value => value.id !== snapshot.id); await this.changed(); return { ok: true }; }
       const id = 'instanceId' in request ? request.instanceId : undefined;
-      const operationId = await this.options.operations.run(request.type, request.type, id, async op => {
+      const kind = request.type === 'instance.delete' ? 'instance.archive' : request.type;
+      const operationId = await this.options.operations.run(kind, kind, id, async op => {
         switch (request.type) {
           case 'instance.upgrade': await this.upgradeCompanion(request.instanceId, request.runtimeId, op); break;
           case 'instance.create': await this.create(request.name, request.runtimeId, op); break;
           case 'instance.start': case 'instance.open': {
-            const started = performance.now(); await this.ensureHost(request.instanceId, op.signal);
+            const id = request.instanceId, started = performance.now();
+            const listeners = this.startupListeners.get(id) ?? new Set();
+            const showPhase = (phase: DshHostStartupProgress['phase']) => {
+              if (!op.signal.aborted && (phase === 'preparing-profile' || phase === 'starting-host')) void op.update(phase).catch(() => undefined);
+            };
+            listeners.add(showPhase); this.startupListeners.set(id, listeners);
+            try {
+              const phase = this.startupPhases.get(id); if (phase) showPhase(phase);
+              await this.ensureHost(id, op.signal);
+            } finally { listeners.delete(showPhase); if (!listeners.size) this.startupListeners.delete(id); }
+            await op.update('opening-workbench'); op.signal.throwIfAborted();
             await op.log(`Native Web Host ready in ${Math.round(performance.now() - started)} ms`);
             await this.options.openWorkbench(this.get(request.instanceId), this.getUrl(request.instanceId)!); break;
           }
           case 'instance.stop': await this.stop(request.instanceId); break;
-          case 'instance.delete': await this.remove(request.instanceId, op); break;
+          case 'instance.delete': case 'instance.archive': await this.archive(request.instanceId, op); break;
+          case 'instance.unarchive': await this.unarchive(request.instanceId, op); break;
+          case 'instance.purge-archive': await this.purgeArchive(request.instanceId, op); break;
           case 'snapshot.restore': {
             const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
-            await this.restoreFrom(path.join(this.options.rootPath, 'snapshots', snapshot.id), request.name, op); break;
+            const target = request.runtimeId ? this.options.runtimes.get(request.runtimeId) : undefined;
+            if (target && (!snapshot.upgradeFromVersion || !dshVersionPattern.test(target.version) || compareDshVersions(target.version, snapshot.upgradeFromVersion) < 0)) {
+              throw new Error('请选择与升级前版本相同或更新的 DSH 运行版本来恢复此快照。');
+            }
+            await this.restoreFrom(path.join(this.options.rootPath, 'snapshots', snapshot.id), request.name, op, target); break;
           }
           case 'snapshot.create': {
             await this.withStoppedInstance(request.instanceId, async () => {

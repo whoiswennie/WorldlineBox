@@ -111,7 +111,7 @@ describe("file-clipboard (WorldlineBox-vgp)", () => {
     const deps = makeDeps({ platform: "win32", writeNativeWin32: native });
     const target = "C:\\Library\\Assets\\Folder";
     expect(writeFilePathsToClipboard([target], deps)).toBe(true);
-    expect(native).toHaveBeenCalledWith([target]);
+    expect(native).toHaveBeenCalledWith([target], "copy");
     // Electron fallback formats are not written when the native path succeeds.
     expect(deps.hasFormat("CF_HDROP")).toBe(false);
     expect(deps.hasFormat("FileNameW")).toBe(false);

@@ -6,11 +6,14 @@ for (const key of ['log', 'info', 'debug', 'warn', 'error']) {
 }
 const fs = require('node:fs');
 const path = require('node:path');
+const { createRequire, registerHooks } = require('node:module');
+const { fileURLToPath, pathToFileURL } = require('node:url');
 const { performance } = require('node:perf_hooks');
 const workspace = require('./workspace.cjs');
 const callerEnv = { ...process.env };
 const callerCwd = process.cwd();
 let runtime, unlock, providerRouter, localEmbedding, chatMemory, botHost;
+let fetchResolver;
 let activeDiagnostics = false, lastTelemetry, requestStartedAt;
 function send(value) { process.stdout.write('\x1eVCP_MEMORY_JSON:' + JSON.stringify(value) + '\n'); }
 async function hostStage(stage, operation) {
@@ -32,6 +35,7 @@ async function close() {
     try { if (object) await object.close(); } catch (error) { errors.push(error.message); }
   }
   runtime = null; providerRouter = null; localEmbedding = null; chatMemory = null;
+  fetchResolver?.deregister(); fetchResolver = null;
   if (lastTelemetry) {
     lastTelemetry.host.shutdownDurationMs = performance.now() - startedAt;
     lastTelemetry.host.totalDurationMs = performance.now() - requestStartedAt;
@@ -198,6 +202,15 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
   if (!runtime) {
     if (!unlock) unlock = workspace.acquireLock(home);
     const runtimeDir = await hostStage('sourceSnapshot.stage', () => workspace.stageRuntime(home));
+    // ESM imports do not use NODE_PATH. Resolve the preserved toolbox's
+    // node-fetch imports from the packaged worker, independent of its junction.
+    const packagedFetch = pathToFileURL(createRequire(__filename).resolve('node-fetch')).href;
+    fetchResolver = registerHooks({ resolve(specifier, context, nextResolve) {
+      if (specifier !== 'node-fetch' || !context.parentURL?.startsWith('file:')) return nextResolve(specifier, context);
+      const relative = path.relative(runtimeDir, fileURLToPath(context.parentURL));
+      if (!relative || path.isAbsolute(relative) || relative === '..' || relative.startsWith('..' + path.sep)) return nextResolve(specifier, context);
+      return nextResolve(packagedFetch, context);
+    } });
     process.chdir(runtimeDir);
     workspace.applyEnvironment(home, config, runtimeDir);
     const providerConfig = { ...callerEnv, ...Object.fromEntries(Object.entries(config).filter(([, value]) => value !== '' && value !== null && value !== undefined)) };

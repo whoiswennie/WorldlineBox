@@ -418,10 +418,64 @@ it('updates loaded history without appending a newer page or moving the reader, 
   const latest = rows(141, 220); latest.find(item => item.id === 'm150')!.content = '已有消息的最终更正'; snapshots.a = snapshot(latest, true);
   await emit({ type: 'text', conversationId: 'a', messageId: 'm220', text: '历史窗口外的流式消息' }); await changed();
   expect(visibleIds()).toHaveLength(160); expect(visibleIds()).not.toContain('m161'); expect(transcript()).toContain('已有消息的最终更正');
-  expect(transcript()).not.toContain('历史窗口外的流式消息'); expect(transcript()).toContain('有新消息'); expect(log.scrollTop).toBe(123);
+  expect(transcript()).not.toContain('历史窗口外的流式消息'); expect(host.querySelector('.bot-jump-latest')?.textContent).toContain('有新消息'); expect(log.scrollTop).toBe(123);
   expect(host.querySelector('.bot-earlier')).toBeNull();
   await click('回到最新'); expect(visibleIds()).toHaveLength(80); expect(visibleIds()[0]).toBe('m141'); expect(visibleIds().at(-1)).toBe('m220');
-  expect(transcript()).not.toContain('有新消息'); expect(host.querySelector('.bot-earlier')).not.toBeNull();
+  expect(host.querySelector('.bot-jump-latest')).toBeNull(); expect(host.querySelector('.bot-earlier')).not.toBeNull();
+});
+it('keeps the reader in place during streaming and new messages, then follows after an explicit return or scrolling down', async () => {
+  const active = { ...message('m40', 'a', 280, ''), status: 'running' as const };
+  snapshots.a = snapshot([...rows(1, 39), active]);
+  await mount();
+  const log = host.querySelector<HTMLElement>('.bot-transcript')!;
+  let height = 1000, top = 700;
+  Object.defineProperties(log, {
+    clientHeight: { get: () => 300 },
+    scrollHeight: { get: () => height },
+    scrollTop: { get: () => top, set: (value: number) => { top = Math.min(value, height - 300); } },
+  });
+  const scrollTo = (value: number) => act(() => { log.scrollTop = value; log.dispatchEvent(new Event('scroll')); });
+  const badge = () => host.querySelector('.bot-jump-latest')?.textContent;
+  await scrollTo(240);
+  expect(badge()).toBe('回到最新');
+  await changed();
+  expect(top).toBe(240);
+  expect(badge()).toBe('回到最新');
+  height = 1300;
+  await emit({ type: 'text', conversationId: 'a', messageId: active.id, text: '进行中的正文' });
+  expect(transcript()).toContain('进行中的正文');
+  expect(top).toBe(240);
+  expect(badge()).toContain('有新消息');
+  snapshots.a = snapshot([...rows(1, 39), { ...active, status: 'sent', content: '最终正文' }, message('m41', 'a', 287, '新消息正文')]);
+  await changed();
+  expect(transcript()).toContain('新消息正文');
+  expect(top).toBe(240);
+  await click('回到最新');
+  expect(top).toBe(1000);
+  expect(badge()).toBeUndefined();
+  await scrollTo(860);
+  await scrollTo(1000);
+  expect(badge()).toBeUndefined();
+  height = 1450;
+  snapshots.a = snapshot([...snapshots.a!.messages, message('m42', 'a', 294, '后续消息')]);
+  await changed();
+  expect(top).toBe(1150);
+  expect(badge()).toBeUndefined();
+});
+it('keeps the current rows when a burst replaces the live page while the reader is away from the bottom', async () => {
+  snapshots.a = snapshot(rows(1, 80));
+  await mount();
+  const log = host.querySelector<HTMLElement>('.bot-transcript')!;
+  Object.defineProperties(log, { clientHeight: { value: 300 }, scrollHeight: { value: 1000 } });
+  await act(() => { log.scrollTop = 240; log.dispatchEvent(new Event('scroll')); });
+  snapshots.a = snapshot(rows(161, 240), true);
+  await changed();
+  expect(visibleIds().at(-1)).toBe('m80');
+  expect(log.scrollTop).toBe(240);
+  expect(host.querySelector('.bot-jump-latest')?.textContent).toContain('有新消息');
+  await click('回到最新');
+  expect(visibleIds().at(-1)).toBe('m240');
+  expect(host.querySelector('.bot-jump-latest')).toBeNull();
 });
 it('rejects a late earlier-page response after jumping to latest and a late jump after switching conversations', async () => {
   snapshots.a = snapshot(rows(101, 180), true); await mount();

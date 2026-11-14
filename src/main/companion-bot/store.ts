@@ -533,13 +533,14 @@ export class BotStore {
       return this.activatePersonaTemplate(companionId, id ?? 'default');
     }).immediate();
   }
-  openDirect(companionId: string): BotConversation {
+  openDirect(companionId: string, meeting = false): BotConversation {
     if (this.isRetiredDevelopmentDefault(companionId)) throw new Error('旧开发伙伴已退休。');
     const c = this.getCompanion(companionId); if (!c) throw new Error('伙伴不存在。');
     return this.db.transaction(() => {
-      const found = this.db.prepare('SELECT id FROM bot_conversations WHERE direct_key=?').get(companionId);
+      const directKey = meeting ? 'meeting:' + companionId : companionId;
+      const found = this.db.prepare('SELECT id FROM bot_conversations WHERE direct_key=?').get(directKey);
       if (found) return this.getConversation(String(asRow(found).id))!;
-      return this.insertConversation(c.name, 'direct', ['user', companionId], companionId);
+      return this.insertConversation(c.name, 'direct', ['user', companionId], directKey);
     }).immediate();
   }
   createGroup(input: { title: string; memberIds: string[]; kind?: BotConversationKind; includeUser?: boolean; participationMode?: 'automatic' | 'all' | 'mentions'; reuseMembers?: boolean }): BotConversation {
@@ -735,6 +736,7 @@ export class BotStore {
     const raw = this.db.prepare('SELECT * FROM bot_conversations WHERE id=?').get(id); if (!raw) return;
     const r = asRow(raw), memberIds = this.db.prepare('SELECT member_id FROM bot_members WHERE conversation_id=? ORDER BY member_id').all(id).map(raw => String(asRow(raw).member_id));
     return { id, title: String(r.title), kind: String(r.kind) as BotConversationKind, memberIds,
+      ...(typeof r.direct_key === 'string' && r.direct_key.startsWith('meeting:') ? { meeting: true } : {}),
       audienceScopeId: String(r.scope_id), securityDomainId: String(r.domain_id), revision: Number(r.revision), createdAt: String(r.created_at),
       ...(this.getMetadata(`conversation-pinned:${id}`) === '1' ? { pinned: true } : {}),
       ...(this.getMetadata(`peer-conversation:${id}`) === '1' ? { peerConversation: true } : {}),
@@ -928,9 +930,10 @@ export class BotStore {
     const originKey = hash([sourceInstanceId, sourceMessageId, input.conversationId]);
     return this.db.transaction(() => {
       const conversation = this.getConversation(input.conversationId); if (!conversation||conversation.dissolvedAt) throw new Error('会话不存在或已经解散。');
-      const serviceSource = source === 'world';
+      const serviceSource = source === 'world' || source === 'schedule';
       if (!serviceSource && !conversation.memberIds.includes(input.senderId)) throw new Error('消息发送者不属于该会话。');
       if (source === 'world' && conversation.kind !== 'world') throw new Error('世界事件必须进入世界会话。');
+      if (source === 'schedule' && (input.senderId !== 'schedule' || conversation.kind !== 'direct' || !conversation.memberIds.includes('user'))) throw new Error('日程只能投递到伙伴与用户的私聊。');
       const sender = this.getCompanion(input.senderId);
       if (source === 'user' && input.senderId !== 'user' || source === 'companion' && !sender) throw new Error('事件来源与真实发送者不匹配。');
       const senderType: BotSenderType = sender ? 'companion' : input.senderId === 'user' ? 'user' : source === 'world' ? 'world' : 'service';
@@ -1189,7 +1192,7 @@ export class BotStore {
   markDispatched(eventId: string, leaseToken: string, dshEventId: string): boolean {
     return !!this.db.prepare("UPDATE bot_inbox SET dsh_event_id=? WHERE id=? AND lease_token=? AND status='running'").run(dshEventId, eventId, leaseToken).changes;
   }
-  settle(input: { eventId: string; leaseToken: string; status: 'done' | 'failed' | 'cancelled'; content?: string; error?: string; dshEventId?: string; memoryJobs?: BotMemoryJobInput[]; metadata?: Array<{ key: string; value: string }> }): boolean {
+  settle(input: { eventId: string; leaseToken: string; status: 'done' | 'failed' | 'cancelled'; content?: string; error?: string; dshEventId?: string; memoryJobs?: BotMemoryJobInput[]; metadata?: Array<{ key: string; value: string }>; peerResultsReceipt?: string }): boolean {
     if (input.content && input.content.length > 512000) throw new Error('回复过大。');
     return this.db.transaction(() => {
       const event = this.getEvent(input.eventId); if (!event) return false;
@@ -1214,7 +1217,7 @@ export class BotStore {
         .run(event.replyMessageId, event.id, event.conversationId, event.replyMessageId, nowIso());
       for (const job of input.memoryJobs ?? []) this.enqueueMemoryJob(job);
       for (const entry of input.metadata ?? []) this.setMetadata(entry.key, entry.value);
-      this.peerReturns.settled(this.getEvent(event.id)!);
+      this.peerReturns.settled(this.getEvent(event.id)!, input.peerResultsReceipt);
       return true;
     }).immediate();
   }
@@ -1244,6 +1247,25 @@ export class BotStore {
       this.setMetadata('native-interrupted:' + eventId, '1');
       if (stopping) this.setMetadata('native-stop:' + eventId, JSON.stringify({ eventId, suspend: true, retryAt: 0 }));
       return true;
+    }).immediate();
+  }
+  interruptMeetingReply(event: BotEvent, throughSegmentId?: string): void {
+    this.db.transaction(() => {
+      const cues = this.replyParts(event.replyMessageId).filter(part => part.presentation);
+      const through = throughSegmentId ? cues.findIndex(part => part.id === throughSegmentId) : -1;
+      if (throughSegmentId && through < 0) throw Error('会面片段与当前回应不匹配。');
+      const kept = cues.slice(0, through + 1);
+      const discard = this.db.prepare('DELETE FROM bot_reply_parts WHERE message_id=? AND id=?');
+      for (const part of cues.slice(through + 1)) discard.run(event.replyMessageId, part.id);
+      const active = this.cancelEvent(event.id);
+      if (active && this.getMetadata('native-input:' + event.id)) {
+        this.setMetadata('native-stop:' + event.id, JSON.stringify({ eventId: event.id, retryAt: 0 }));
+      }
+      this.setMetadata('meeting-interrupted:' + event.id, '1');
+      if (active || kept.length < cues.length) {
+        this.db.prepare("UPDATE bot_messages SET status='cancelled',content=? WHERE id=?")
+          .run(kept.map(part => part.text).join('\n\n'), event.replyMessageId);
+      }
     }).immediate();
   }
   confirmNativeInterruption(eventId: string): void {
@@ -1308,11 +1330,15 @@ export class BotStore {
   private message(raw: unknown): BotMessage {
     const r = asRow(raw), attachments = JSON.parse(String(r.attachments_json ?? '[]')) as BotMediaRef[], timing = turnTiming(r.timing_json);
     const parts=this.replyParts(String(r.id));
+    const origin = r.sender_id === 'user' ? this.getMetadata('message-origin:' + String(r.id)) : undefined;
+    const quote = r.sender_id === 'user' ? this.getMetadata('message-quote:' + String(r.id)) : undefined;
     return { id: String(r.id), eventId: String(r.event_id), conversationId: String(r.conversation_id), senderId: String(r.sender_id),
       senderName: String(r.sender_name), senderType: String(r.sender_type) as BotSenderType, content: String(r.content), status: String(r.status) as BotMessage['status'],
       sequence: Number(r.sequence), kind: String(r.kind) as BotMessage['kind'], correlationId: String(r.correlation_id), createdAt: String(r.created_at), error: optional(r.error), ...(attachments.length ? { attachments } : {}),
       ...(timing.elapsedMs !== undefined ? { timing: timing as BotReplyTiming } : {}),
       ...(parts.length?{parts}:{}),
+      ...(origin ? { origin: JSON.parse(origin) as BotMessage['origin'] } : {}),
+      ...(quote ? { quote: JSON.parse(quote) as BotMessage['quote'] } : {}),
     };
   }
   publishForEvent(eventId: string, callId: string, input: { content?: string; attachments: BotMediaRef[]; attachmentGrants?: BotAttachmentGrant[]; sourceIds?: string[] }): BotMessage {
@@ -1403,10 +1429,15 @@ export class BotStore {
       .all(conversationId, options.after, options.through, bounded(options.limit, 32, 100)).map(raw => ({ projectionSequence: Number(asRow(raw).projection_sequence),
         timestamp: Number(asRow(raw).projection_timestamp), message: this.message(raw),suppressed:!!asRow(raw).suppressed }));
   }
-  messagesPage(conversationId: string, options: { limit?: number; before?: number } = {}): BotMessagePage {
+  messagesPage(conversationId: string, options: { limit?: number; before?: number; topicId?: string } = {}): BotMessagePage {
     const limit = bounded(options.limit, 100, 200);
-    const found = this.db.prepare("SELECT m.* FROM bot_messages m WHERE conversation_id=? AND sequence<? AND kind<>'attention' AND NOT EXISTS(SELECT 1 FROM bot_reply_parts p WHERE p.publication_id=m.id) ORDER BY sequence DESC LIMIT ?")
-      .all(conversationId, options.before ?? Number.MAX_SAFE_INTEGER, limit + 1).map(raw => this.message(raw));
+    const topic = options.topicId ? `WITH events AS (SELECT i.id,i.source_record_id,i.reply_message_id FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=?),
+      topic_messages(id) AS (SELECT source_record_id FROM events UNION SELECT reply_message_id FROM events
+        UNION SELECT p.message_id FROM bot_publications p JOIN events e ON e.id=p.event_id
+        UNION SELECT g.message_id FROM bot_guidance g JOIN events e ON e.id=g.event_id WHERE g.status='accepted')` : '';
+    const found = this.db.prepare(`${topic} SELECT m.* FROM bot_messages m WHERE conversation_id=? AND sequence<? AND kind<>'attention'
+      ${topic ? 'AND m.id IN (SELECT id FROM topic_messages)' : ''} AND NOT EXISTS(SELECT 1 FROM bot_reply_parts p WHERE p.publication_id=m.id) ORDER BY sequence DESC LIMIT ?`)
+      .all(...(options.topicId ? [options.topicId] : []), conversationId, options.before ?? Number.MAX_SAFE_INTEGER, limit + 1).map(raw => this.message(raw));
     const hasMore = found.length > limit, items = found.slice(0, limit).reverse();
     return { items, hasMore, nextBefore: hasMore ? items[0]?.sequence : undefined };
   }

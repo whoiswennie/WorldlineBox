@@ -36,3 +36,19 @@ it('retains the source order and identity of native deliveries between substanti
   const result=workerOutputFromEvents([user('worldlinebox-bot:ordered'),first,delivery,last],{eventId:'ordered'});
   expect(result.outputs).toEqual([{id:'native-text-'+first.seq,sequence:first.seq,text:'关键正文'},{id:'native-files-'+delivery.seq,sequence:delivery.seq,files:delivery.data.files},{id:'native-text-'+last.seq,sequence:last.seq,text:'完成'}]);
 });
+
+it('acknowledges peer results through a committed call_present receipt from the same turn', () => {
+  const tool = { type: 'tool/call', data: { name: 'call_present', callId: 'presentation' } };
+  const result = (toolCallId: string, isError: boolean) => ({ type: 'tool/result', surfaceOp: 'append', data: { message: { toolCallId, isError,
+    content: [{ type: 'text', text: JSON.stringify({ accepted: 1, segmentIds: ['segment-1'] }) }],
+  } } });
+  const receipt = 'a'.repeat(64);
+  const peerResults = { type: 'user/message', data: { id: 'peer-results', source: { kind: 'worldlinebox-bot-peer-results' },
+    content: [{ type: 'text', text: JSON.stringify({ status: 'ready', receipt }) }],
+  } };
+  const events = [user('worldlinebox-bot:old'), tool, result('presentation', false), user('worldlinebox-bot:meeting'), assistant('Plain draft'), peerResults, tool];
+  const unmatched = workerOutputFromEvents([...events, result('presentation', true), result('other-call', false)], { eventId: 'meeting' });
+  expect(unmatched.text).toBe('Plain draft');
+  expect(unmatched.peerResultsReceipt).toBeUndefined();
+  expect(workerOutputFromEvents([...events, result('presentation', false)], { eventId: 'meeting' }).peerResultsReceipt).toBe(receipt);
+});

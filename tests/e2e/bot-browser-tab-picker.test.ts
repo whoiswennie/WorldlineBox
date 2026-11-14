@@ -20,7 +20,7 @@ test('compact apps choose one background tab, replace it, and route the original
   testInfo.annotations.push({ type: 'boundary', description: 'Real BotWorkspace, BrowserService, native Chromium, SQLite and authenticated Agent callbacks. The Agent response is deterministic; this does not measure model quality.' });
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-browser-apps-'));
   const output = path.resolve('.tools/browser-apps-acceptance'); await mkdir(output, { recursive: true });
-  await build({ configFile: false, logLevel: 'error', ssr: { noExternal: true }, build: { ssr: path.resolve('tests/fixtures/browser-apps/main.ts'), outDir: output, emptyOutDir: false, target: 'node24', rollupOptions: { external: ['electron', 'better-sqlite3', 'node-edge-tts', 'ws'], output: { format: 'cjs', entryFileNames: 'main.cjs' } } } });
+  await build({ configFile: false, logLevel: 'error', ssr: { noExternal: true }, build: { ssr: path.resolve('tests/fixtures/browser-apps/main.ts'), outDir: output, emptyOutDir: false, target: 'node24', rollupOptions: { external: ['electron', 'better-sqlite3'], output: { format: 'cjs', entryFileNames: 'main.cjs' } } } });
   await build({ configFile: false, logLevel: 'error', build: { lib: { entry: path.resolve('tests/fixtures/browser-apps/preload.ts'), formats: ['cjs'], fileName: () => 'preload.cjs' }, outDir: output, emptyOutDir: false, rollupOptions: { external: ['electron'] } } });
   await build({ configFile: false, logLevel: 'error', root: path.resolve('tests/fixtures/browser-apps'), base: './', publicDir: false, plugins: [react()], build: { outDir: path.join(output, 'renderer'), emptyOutDir: false } });
   for (const actor of BUILTIN_BOT_COMPANIONS) {

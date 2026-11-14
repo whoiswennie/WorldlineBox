@@ -1,3 +1,4 @@
+import { useBotCallDocument } from './call-pet';
 import { useCallback, useRef, useState } from 'react';
 import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import { BotIcon } from './BotIcon';
@@ -19,11 +20,12 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
   const zh = locale === 'zh-CN', [preview, setPreview] = useState(false), [saving, setSaving] = useState(false), [opening, setOpening] = useState(false), [error, setError] = useState(''), [thumbnailFailed, setThumbnailFailed] = useState(false);
   const { name, kind, canPreview, policy, extension, imageUrl } = botAttachmentDetails(media, !!api);
   const eligibility = policy.previewEligibility;
+  const surface = useBotCallDocument();
   const player = useRef<HTMLMediaElement | null>(null), [playbackFailed, setPlaybackFailed] = useState(false);
   const assignPlayer=useCallback((element:HTMLMediaElement|null)=>{if(player.current&&player.current!==element)player.current.pause();player.current=element;},[]);
   const inline = variant === 'row' && media.kind !== 'sticker' && eligibility === 'inline' && ['image', 'audio', 'video'].includes(kind);
   const openPreview = () => { player.current?.pause(); setPreview(true); };
-  const play = (current: HTMLMediaElement) => { for (const other of document.querySelectorAll<HTMLMediaElement>('[data-bot-attachment-player]')) if (other !== current) other.pause(); };
+  const play = (current: HTMLMediaElement) => { for (const other of surface.querySelectorAll<HTMLMediaElement>('[data-bot-attachment-player]')) if (other !== current) other.pause(); };
   const closePreview = useCallback(() => setPreview(false), []);
   const tile = variant === 'tile', sticker = variant === 'row' && media.kind === 'sticker' && kind === 'image' && eligibility === 'inline';
   const typeLabel = kind === 'image' ? zh ? '图片' : 'Image' : kind === 'video' ? zh ? '视频' : 'Video' : kind === 'audio' ? zh ? '音频' : 'Audio' : extension;

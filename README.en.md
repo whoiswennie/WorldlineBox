@@ -5,10 +5,20 @@
 
 **A home and coordinating brain for virtual characters, worlds, assets, and execution tools.**
 
-[简体中文](README.md) · [Repository](https://github.com/whoiswennie/WorldlineBox)
+[简体中文](README.md) · [Windows 0.1.0](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.0) · [Android 0.1.0](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.0)
 </div>
 
 WorldlineBox is a local-first desktop app combining companions, persistent world state, asset management and DSH execution environments. The companion module is being rebuilt around a Super Agent: users stay in their chat while the coordinating brain recalls memories, delegates work and receives durable results.
+
+## Windows host and Android companion client
+
+The desktop app runs companions, memory and DSH tasks, manages assets, and authorizes devices. [WorldlineBox Mobile](https://github.com/whoiswennie/WorldlineBoxMobile) is the Android client for chatting with those companions, following streamed responses and task stages, exchanging files, and opening portrait-mode calls over SSH.
+
+1. Install `WorldlineBoxSetup.exe` on Windows x64 and `WorldlineBoxMobile.apk` on Android.
+2. Install and select a shared DSH instance in the desktop launcher, configure the model under Settings, and verify a desktop chat.
+3. In desktop Settings, open Remote Connection and display the pairing QR code. Scan it in the Android app. Keep the desktop app online for remote access. The temporary tunnel changes its address on restart and then needs a fresh scan.
+
+See the [mobile guide](https://github.com/whoiswennie/WorldlineBoxMobile#扫码连接) for pairing, transfers and optional permanent endpoint configuration.
 
 ## Current implementation
 
@@ -43,7 +53,7 @@ World channels can open a position map or Three.js scene. Companions have privat
 
 The new viewport reuses the real house/garden meshes and art. Known art IDs use their corresponding sheets; newly created companions currently use their own name markers. WebGL failures return to the position map. World events go to actual co-located observers, with private observer transcripts.
 
-The former independent world windows, 15 default contacts, relationship/routine simulation, probabilistic daily life, dreams and growth dashboards are retired. QQ/WeChat, phone gateways and broader simulation remain future integrations.
+The launcher integrates Cabin World. The former independent dream and growth dashboards are retired. QQ/WeChat and broader simulation remain future integrations.
 
 ### Data and validation
 
@@ -91,3 +101,5 @@ References: [PCL](https://github.com/Meloong-Git/PCL), [DeepSeek Harness](https:
 MIT; see [LICENSE](LICENSE). Thanks to [Serpent](https://github.com/dolag233/Serpent) author dolag233 and its contributors for the asset-management foundation and continued improvements. Their copyright notice is retained; WorldlineBox integrates the 0.3.2 changes by feature and keeps its own name and custom functionality. Third-party components and media follow their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The maintainer supplied the new icon artwork.
 
 The memory-system design draws on [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context ideas. The current standalone module in `resources/vcp-memory` retains upstream provenance and licenses; the former vendor runtime and companion memory host are retired.
+
+Thanks also to [VCPChat](https://github.com/lioensky/VCPChat) for conversation and context components, [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for the native execution environment, and [Cabin World by VADS](https://github.com/BabyBus2022/cabin-world) for the virtual living space. DeepSeek-chan artwork and layer separation are by 神宫凉子 and Live2D rigging is by 霓虹猫_NeonNeko. The public package uses the portrait fallback. For private use, see the [author's original announcement](https://www.bilibili.com/video/BV1ALnw6YEGK) and [local model setup](public/companion-call/NOTICE.md).

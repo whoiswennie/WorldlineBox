@@ -655,7 +655,7 @@ describe('删除命令的确认由界面动作统一处理', () => {
 });
 
 describe('注册表完整性', () => {
-  it('22 条定义全部注册且 id 唯一（createCommandRegistry 未抛错）', () => {
+  it('23 条定义全部注册且 id 唯一（createCommandRegistry 未抛错）', () => {
     expect(registry.list().map((def) => def.id)).toEqual([
       'folder.open-in-file-manager',
       'folder.create-subfolder',
@@ -665,6 +665,7 @@ describe('注册表完整性', () => {
       'folder.rename',
       'folder.linked-rules',
       'folder.copy-path',
+      'folder.cut',
       'folder.copy',
       'folder.paste',
       'folder.clone',

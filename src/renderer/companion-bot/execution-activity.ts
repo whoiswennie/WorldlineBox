@@ -1,4 +1,5 @@
 import type { BotExecutionStep } from '../../shared/companion-bot';
+import { botToolActivityArgs, botToolActivityDescription, cleanBotActivityText as clean } from '../../shared/companion-bot-execution';
 type Locale = 'zh-CN' | 'en';
 const labels: Record<string, [string, string]> = {
   read: ['读取文件', 'Read file'], read_file: ['读取文件', 'Read file'], read_image: ['查看图片', 'View image'], write: ['写入文件', 'Write file'], edit: ['编辑文件', 'Edit file'],
@@ -7,7 +8,12 @@ const labels: Record<string, [string, string]> = {
   sessions_spawn: ['启动子会话', 'Start subagent'], chat_send_sticker: ['发送表情', 'Send sticker'], chat_list_stickers: ['查找表情', 'Find stickers'], memory_search: ['检索记忆', 'Search memories'],
 };
 const browserLabels: Record<string, [string, string]> = { observe: ['查看页面', 'Inspect page'], read: ['读取网页', 'Read page'], click: ['点击网页元素', 'Click page element'], fill: ['填写网页内容', 'Fill page field'], navigate: ['打开网页', 'Navigate page'], scroll: ['滚动网页', 'Scroll page'], screenshot: ['截取网页', 'Capture page'], tabs: ['查看标签页', 'List tabs'], key: ['发送按键', 'Press key'] };
-const clean = (value: unknown) => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim().slice(0, 180) : '';
+export function botExecutionToolLabel(toolName: string | undefined, locale: Locale): string | undefined {
+  if (toolName === 'browser') return locale === 'zh-CN' ? '操作内置浏览器' : 'Use built-in browser';
+  if (toolName === 'asset_manager') return locale === 'zh-CN' ? '操作资产管理器' : 'Use asset manager';
+  const name = Object.keys(labels).find(name => toolName === name || toolName?.endsWith('_' + name));
+  return name ? labels[name]?.[locale === 'zh-CN' ? 0 : 1] : undefined;
+}
 /** Same native argument descriptions as DSH, rendered as text, not HTML.
  * Do not surface commands/credentials when an action has no safe description. */
 export function botExecutionActivity(step: BotExecutionStep, locale: Locale): { title: string; detail: string } {
@@ -17,11 +23,9 @@ export function botExecutionActivity(step: BotExecutionStep, locale: Locale): { 
     return { title: zh ? '思考' : 'Thinking', detail: clean(paragraph.split(/\r?\n/u)[0]?.replaceAll('**', '')) };
   }
   if (!['tool_call', 'tool_result'].includes(step.type)) return { title: step.summary || (zh ? '处理进展' : 'Progress'), detail: '' };
-  let args: Record<string, unknown> = {};
-  try { const value: unknown = JSON.parse(step.text ?? '{}'); if (value && typeof value === 'object' && !Array.isArray(value)) args = value as Record<string, unknown>; } catch { /* Legacy tool payload. */ }
-  const name = Object.keys(labels).find(name => step.toolName === name || step.toolName?.endsWith('_' + name));
-  let title = name ? labels[name]![language] : zh ? '调用工具' : 'Tool call';
-  let detail = clean(args.description) || clean(args.title);
+  const args = botToolActivityArgs(step);
+  let title = botExecutionToolLabel(step.toolName, locale) ?? (zh ? '调用工具' : 'Tool call');
+  let detail = botToolActivityDescription(args);
   if (step.toolName === 'browser') {
     const action = clean(args.action); title = browserLabels[action]?.[language] ?? (zh ? '操作内置浏览器' : 'Use built-in browser');
     if (!detail && action === 'fill') detail = `${zh ? '输入' : 'Enter'} ${typeof args.text === 'string' ? args.text.length : typeof args.value === 'string' ? args.value.length : 0} ${zh ? '个字符' : 'characters'}`;
@@ -33,14 +37,4 @@ export function botExecutionActivity(step: BotExecutionStep, locale: Locale): { 
   if (!detail && step.summary && !/^(开始调用工具|工具执行完成|工具执行失败)$/u.test(step.summary)) detail = clean(step.summary);
   detail ||= clean(step.toolName);
   return { title, detail };
-}
-
-export function latestBotExecutionActivity(steps: readonly BotExecutionStep[]): BotExecutionStep | undefined {
-  // Native sequence preserves exact chronology even when timestamps are equal.
-  return steps.reduce<BotExecutionStep | undefined>((latest, step) => {
-    if (step.outputState === 'abandoned' || ['session_created', 'session_resumed'].includes(step.type)) return latest;
-    if (!latest) return step;
-    if (step.streamGeneration === latest.streamGeneration && step.sequence !== undefined && latest.sequence !== undefined) return step.sequence > latest.sequence ? step : latest;
-    return Date.parse(step.updatedAt ?? step.at) >= Date.parse(latest.updatedAt ?? latest.at) ? step : latest;
-  }, undefined);
 }

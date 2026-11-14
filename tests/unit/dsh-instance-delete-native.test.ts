@@ -101,10 +101,14 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('creates a shared instance,
     expect((await lstat(targetRoot)).isDirectory()).toBe(true);
     await operationSettled({ type: 'instance.stop', instanceId: target.id });
     expect(service.get(target.id)).toMatchObject({ status: 'stopped' }); expect(service.get(target.id).pid).toBeUndefined();
-    const deletion = await operationSettled({ type: 'instance.delete', instanceId: target.id });
+    const archive = await operationSettled({ type: 'instance.delete', instanceId: target.id });
+    expect(service.archivedInstances()[0]?.id).toBe(target.id);
+    expect((await lstat(targetRoot)).isDirectory()).toBe(true);
+    expect(environment.clearedPartitions).toEqual([]);
+    const deletion = await operationSettled({ type: 'instance.purge-archive', instanceId: target.id });
     // The actual constructor calls the real occupancy check with this deletion's
     // exact durable id; unrelated operations must still block deletion.
-    expect(usage).toHaveBeenCalledWith(target.id, deletion.id);
+    expect(usage).toHaveBeenCalledWith(target.id, archive.id);
     expect(service.list().map(value => value.id)).toEqual([sibling.id]);
     const registry = JSON.parse(await readFile(path.join(environment.userData, 'dsh/native-instances.json'), 'utf8')) as DshInstance[];
     expect(registry.map(value => value.id)).toEqual([sibling.id]); expect(registry[0]!.isDefault).toBe(true);

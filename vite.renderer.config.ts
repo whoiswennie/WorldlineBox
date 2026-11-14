@@ -1,4 +1,5 @@
 import path from "node:path";
+import { rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
@@ -143,6 +144,14 @@ export default defineConfig({
     react(),
     harmonyosWindowsOnlyPlugin(),
     harmonyosFontFacePatchPlugin(),
+    {
+      name: "worldlinebox-omit-local-live2d-model",
+      apply: "build",
+      writeBundle(options) {
+        if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === "1" || !options.dir) return;
+        return rm(path.resolve(options.dir, "companion-call", "deepseek"), { recursive: true, force: true });
+      },
+    },
   ],
   // Bundled HDRI environment maps (src/renderer/assets/hdri/*.hdr, ~1.5 MB
   // each) are consumed by src/renderer/3d-viewer via import.meta.glob with
@@ -164,6 +173,7 @@ export default defineConfig({
   },
   resolve: {
     preserveSymlinks: true,
+    alias: [{ find: /^@soullink-emotion\/live2d-pixi$/, replacement: path.join(rendererDir, 'vendor/soullink-emotion/live2d-pixi/src/index.ts') }],
   },
   server: {
     watch: { ignored: DEV_GENERATED_WATCH_PATTERNS },

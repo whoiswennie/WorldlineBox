@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useBotCallDocument } from './call-pet';
+import { useEffect, useRef, useState } from 'react';
 import type { BotCompanion, BotRequest, BotResponse } from '../../shared/companion-bot';
 import type { BotChatRuntime } from '../../shared/companion-bot-topics';
 import { BotIcon } from './BotIcon';
@@ -7,8 +8,18 @@ import {BotContextMeter} from './BotContextMeter';
 import './bot-topics.css';
 
 /** Topic selection and the durable pending-input queue live beside the composer. */
-export function BotTopicBar({conversationId,runtime,members,locale,request,refresh}:{conversationId:string;runtime?:BotChatRuntime;members:BotCompanion[];locale:'zh-CN'|'en';request(input:BotRequest):Promise<BotResponse>;refresh():Promise<void>}){
+export function BotTopicBar({conversationId,runtime,members,locale,request,refresh,onPanelOpenChange}:{conversationId:string;runtime?:BotChatRuntime;members:BotCompanion[];locale:'zh-CN'|'en';request(input:BotRequest):Promise<BotResponse>;refresh():Promise<void>;onPanelOpenChange?(open:boolean):void}){
+  const surface = useBotCallDocument();
   const zh=locale==='zh-CN',[open,setOpen]=useState(false),[busy,setBusy]=useState(''),[notice,setNotice]=useState('');
+  const [contextOpen,setContextOpen]=useState(false);
+  useEffect(()=>{onPanelOpenChange?.(open||contextOpen);},[contextOpen,onPanelOpenChange,open]);
+  useEffect(()=>()=>onPanelOpenChange?.(false),[onPanelOpenChange]);
+  useEffect(()=>{
+    if(!onPanelOpenChange||!open)return;
+    const close=(event:KeyboardEvent)=>{if(event.key==='Escape'&&!event.defaultPrevented)setOpen(false);};
+    surface.addEventListener('keydown',close);
+    return()=>surface.removeEventListener('keydown',close);
+  },[onPanelOpenChange,open,surface]);
   const compactionId=useRef<string|undefined>(undefined),[companionChoice,setCompanionChoice]=useState(members[0]?.id??'');
   const companionId=members.some(member=>member.id===companionChoice)?companionChoice:members[0]?.id??'';
   const nativeActivity=runtime?.contexts?.[companionId]?.activity,nativeBusy=!!nativeActivity&&nativeActivity.phase!=='idle';
@@ -34,7 +45,7 @@ export function BotTopicBar({conversationId,runtime,members,locale,request,refre
       <button className="bot-topic-current" type="button" aria-expanded={open} onClick={()=>setOpen(value=>!value)} title={zh?'接入之前的话题':'Connect to an earlier topic'}><BotIcon name="history"/><span>{runtime?.topic?.title??(zh?'选择话题':'Choose topic')}</span><BotIcon name="chevron-down"/></button>
       {members.length>1&&<select aria-label={zh?'当前话题的伙伴会话':'Companion session in this topic'} title={zh?'选择查看上下文与执行压缩的伙伴':'Choose whose context to inspect or compact'} value={companionId} onChange={event=>setCompanionChoice(event.target.value)}>{members.map(member=><option value={member.id} key={member.id}>{member.name}</option>)}</select>}
       <button type="button" disabled={!!busy||nativeBusy||!runtime?.topic||!!runtime.running.length} title={zh?'使用 DSH 原生压缩保留本话题要点':'Compact this topic using native DSH'} onClick={compact}><BotIcon name="sparkles"/>{busy==='compact'||nativeCompacting?(zh?'压缩中…':'Compacting…'):(zh?'压缩':'Compact')}</button>
-      {runtime?.topic&&companionId&&<BotContextMeter key={conversationId+':'+runtime.topic.id+':'+companionId} conversationId={conversationId} topic={runtime.topic} companionId={companionId} companionName={members.find(member=>member.id===companionId)?.name??''} cached={runtime.contexts?.[companionId]} locale={locale} request={request} busy={!!busy} canCompact={!runtime.running.length} onCompact={compact} onNew={()=>void act('new',{type:'topic.new',conversationId,requestId:crypto.randomUUID()})}/>}
+      {runtime?.topic&&companionId&&<BotContextMeter key={conversationId+':'+runtime.topic.id+':'+companionId} conversationId={conversationId} topic={runtime.topic} companionId={companionId} companionName={members.find(member=>member.id===companionId)?.name??''} cached={runtime.contexts?.[companionId]} locale={locale} request={request} busy={!!busy} canCompact={!runtime.running.length} onCompact={compact} onOpenChange={onPanelOpenChange ? setContextOpen : undefined} onNew={()=>void act('new',{type:'topic.new',conversationId,requestId:crypto.randomUUID()})}/>}
     </div>
     {open&&<BotTopicPicker conversationId={conversationId} currentId={runtime?.topic?.id} locale={locale} request={request} refresh={refresh} onClose={()=>setOpen(false)}/>}
     {notice&&<small className="bot-topic-notice" role="status">{notice}</small>}

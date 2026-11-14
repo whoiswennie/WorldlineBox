@@ -34,6 +34,7 @@ resources/embedding-models/runtime-vulkan/
 # Large platform media bundles are produced by the trusted build pipeline or
 # acquired from a checksum-pinned release. Never commit local/system binaries.
 resources/ffmpeg/
+resources/cabin-world/
 resources/oiio/
 resources/portable-tools/win32-x64/
 resources/media-binaries/*/manifest.json
@@ -62,8 +63,8 @@ resources/media-binaries/*/
 # main 侧的剥离仍由合并流程（git rm --cached docs/internal）与 pre-commit 钩子负责。
 AGENTS.md
 CLAUDE.md
-# Companion runtime model/audio are source assets with retained licenses.
-# Their MOC3/textures use narrow Git LFS rules; original archives/PSD are not staged.
+# Creator-supplied Live2D assets are installed locally for private builds.
+/public/companion-call/deepseek/
 .beads/
 .github/
 # Speech model weights use Git LFS; vocabulary/manifest/licenses use ordinary Git.

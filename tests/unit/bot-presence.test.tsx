@@ -28,8 +28,7 @@ it('overrides stale active presence for disabled companions and excludes them fr
   const disabled = { ...companions[0]!, enabled: false }, busy = state({ status: 'working', counts: { ...state().counts, activeTasks: 5, running: 5 } });
   await mount(<><BotAvatar companion={disabled} presence={busy} /><BotPresenceSummary companions={[disabled]} presence={{ fish: busy }} locale="zh-CN" /><BotPresenceSummary companions={[disabled, companions[1]!]} presence={{ fish: busy, gpt: state() }} locale="zh-CN" /></>);
   expect(host.querySelector('.bot-presence-dot')?.getAttribute('data-presence')).toBe('disabled');
-  expect(host.textContent).toContain('已关闭');
-  expect(host.querySelector('.bot-presence-summary')?.textContent).toBe('待命');
+  expect([...host.querySelectorAll('.bot-presence-summary')].map(summary => summary.textContent)).toEqual(['已关闭', '待命']);
   expect(host.textContent).not.toContain('5 项任务');
 });
 

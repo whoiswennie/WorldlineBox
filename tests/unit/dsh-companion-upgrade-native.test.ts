@@ -17,7 +17,7 @@ const text = (content: Wire['messages'][number]['content']) => typeof content ==
  * exercises genuine tools without any paid account. Fixture runtime metadata
  * is deliberately not represented as sealed-package integrity verification. */
 it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)(
-  'upgrades the shared companion Host from the real rc5 runtime to rc1 with the same native Session and all native data', async () => {
+  'upgrades the real shared DSH Host and opens a new turn in the preserved Session', async () => {
     const previousProgram = path.resolve(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!), nextProgram = path.resolve(process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM!);
     const native = await createBotNativeHost(previousProgram), previousRuntime = (native.instances as unknown as { options: { runtimes: RuntimeServiceLike } }).options.runtimes.get(native.instance.runtimeId);
     const nextManifest = JSON.parse(await readFile(path.join(nextProgram, 'dsh/node_modules/@deepseek-ai/dsh/package.json'), 'utf8')) as { version: string };
@@ -100,7 +100,7 @@ it.runIf(!!process.env.WORLDLINEBOX_DSH_UPGRADE_PROGRAM && !!process.env.WORLDLI
       await stage('rc1-native-plugin-listed');
       const requestsBeforeReplay = modelRequests; expect((await brain.run(input)).text).toBe(first.text); expect(modelRequests).toBe(requestsBeforeReplay);
       await stage('duplicate-durable-receipt-not-replayed');
-      const after = await brain.run({ ...input, taskContinuation: { id: 'post-upgrade-real-tool', text: 'UPGRADE_REQUEST=' + JSON.stringify({ hex: '#2244CC' }) } });
+      const after = await brain.run({ ...input, eventId: 'post-upgrade-real-tool', prompt: 'UPGRADE_REQUEST=' + JSON.stringify({ hex: '#2244CC' }) });
       expect(after.sessionId).toBe(first.sessionId); expect(after.status).toBe('succeeded'); expect(after.text).toContain('#DDBB33');
       await stage('rc1-same-session-native-tool-completed');
       await preserveBotNativeJournals(native.root, path.join(output, 'native-history-after.json'), value => value.replaceAll('local-native-upgrade-key', '<redacted>'));

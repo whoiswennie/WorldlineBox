@@ -42,6 +42,7 @@ test('extension.save-from-file schedules a mutation thumbnail', async () => {
     libraryService,
     extensionRequest({
       type: 'extension.save-from-file',
+        kind: 'image',
       libraryId: 'lib-1',
       stagedFilePath: 'C:\\temp\\staged.png',
       contentType: 'image/png',

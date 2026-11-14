@@ -1,4 +1,4 @@
-import { isFileUrl, mediaFromElement, resolveMediaTargetFromDragEvent } from './media-target';
+import { isFileUrl, manifestUrlForBlobVideo, mediaFromElement, resolveMediaTargetFromDragEvent } from './media-target';
 import {
   DRAG_RADIAL_MENU_ENABLED_KEY,
   dragRadialMenuEnabledFromStored,
@@ -15,6 +15,13 @@ import { showSaveToast } from './save-bubble';
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message !== 'object') return;
   const type = Reflect.get(message, 'type');
+  if (type === 'worldlinebox-video-manifest-request') {
+    const blobUrl = Reflect.get(message, 'blobUrl');
+    const video = Array.from(document.querySelectorAll('video'))
+      .find(element => (element.currentSrc || element.src) === blobUrl);
+    sendResponse({ mediaUrl: video ? manifestUrlForBlobVideo(video) : undefined });
+    return;
+  }
   if (type === 'worldlinebox-local-context-save-request') {
     void (async () => {
       const mediaUrl = Reflect.get(message, 'mediaUrl');

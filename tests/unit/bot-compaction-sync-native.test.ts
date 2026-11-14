@@ -5,6 +5,7 @@ import { expect, it } from 'vitest';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
+import { startMobileGateway } from '../../src/main/companion-bot/mobile-gateway';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import type { BotNativeContext } from '../../src/shared/companion-native-context';
 import { createBotNativeHost } from '../fixtures/bot-native-host';
@@ -107,6 +108,24 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('pushes native auto/manual 
       const event = service.store.taskTransaction(sql => sql.prepare('SELECT id FROM bot_inbox WHERE reply_message_id=?').get(sent.replyMessageIds![0]!)) as { id: string };
       expect(history.events.filter((eventRow: { type: string; data: { id?: string } }) => eventRow.type === 'user/message' && eventRow.data.id === 'worldlinebox-bot:' + event.id)).toHaveLength(1);
     }
+    const portProbe = createServer();
+    await new Promise<void>(resolve => portProbe.listen(0, '127.0.0.1', resolve));
+    const mobilePort = (portProbe.address() as { port: number }).port;
+    await new Promise<void>((resolve, reject) => portProbe.close(error => error ? reject(error) : resolve()));
+    const mobileToken = 'a'.repeat(64);
+    await writeFile(path.join(root, 'mobile-access.json'), JSON.stringify({ port: mobilePort, token: mobileToken }));
+    const gateway = await startMobileGateway({ root, bot: async () => service!, media: async () => media, report: () => undefined });
+    try {
+      failSummary = 0;
+      const mobileCompact = await fetch(`http://127.0.0.1:${mobilePort}/mobile/v1/requests`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${mobileToken}` },
+        body: JSON.stringify({ type: 'topic.compact', conversationId: room.id, topicId: topicA.id,
+          companionId: DEFAULT_BOT_COMPANION_ID, requestId: 'mobile-native-compact' }),
+        signal: AbortSignal.timeout(45_000),
+      });
+      expect(await mobileCompact.json()).toMatchObject({ ok: true, compacted: true });
+    } finally { gateway?.close(); }
     await writeFile(path.join(evidence, 'native-result.json'), JSON.stringify({ passed: true, runtime: native.runtimeVersion, model: 'local-scripted-SSE',
       actualNativeAutoCompaction: true, actualNativeCommand: true, actualServiceQueue: true, pushWithoutStatisticPolling: true,
       noInputDuplication: true, independentTopics: true, failedCompactionRecovered: true, exactNativeProjectionMatch: true, summaries, before, afterAutomatic, during, final }, null, 2));

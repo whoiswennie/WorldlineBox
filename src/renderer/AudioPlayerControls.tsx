@@ -1,3 +1,5 @@
+import { MediaPlaybackModeButton } from './MediaPlaybackModeButton';
+import type { MediaPlaybackMode } from './media-playback-mode';
 import {
   useCallback,
   useEffect,
@@ -57,6 +59,9 @@ type RendererWindow = Window & {
 };
 
 export interface AudioPlayerControlsProps {
+  playbackMode?: MediaPlaybackMode;
+  onPlaybackModeChange?: (mode: MediaPlaybackMode) => void;
+  onEnded?: () => void;
   /** Keep preloaded navigation surfaces from capturing global shortcuts. */
   keyboardShortcutsDisabled?: boolean;
   /** Preloaded audio must decode without starting playback or producing sound. */
@@ -84,6 +89,9 @@ const SCRUB_STEP_SECONDS = 5;
  * faster rate → longer trail span).
  */
 export function AudioPlayerControls({
+  playbackMode = 'repeat-one',
+  onPlaybackModeChange,
+  onEnded,
   autoPlay = true,
   keyboardShortcutsDisabled = false,
   muted,
@@ -491,10 +499,11 @@ export function AudioPlayerControls({
       <audio
         autoPlay={autoPlay}
         className="preview-audio"
+        loop={playbackMode === 'repeat-one'}
         onDurationChange={(event) =>
           setDuration(event.currentTarget.duration || 0)
         }
-        onEnded={() => setPaused(true)}
+        onEnded={() => { setPaused(true); if (autoPlay && playbackMode === 'sequential') onEnded?.(); }}
         onError={onError}
         onLoadedMetadata={(event) => {
           const audio = event.currentTarget;
@@ -623,6 +632,7 @@ export function AudioPlayerControls({
             style={{ left: `${displayRatio * 100}%` }}
           />
         </div>
+        {onPlaybackModeChange && <MediaPlaybackModeButton mode={playbackMode} onChange={onPlaybackModeChange} onInteract={onUserActivity} />}
         <ViewerVolumeControls
           muted={muted}
           onInteract={onUserActivity}

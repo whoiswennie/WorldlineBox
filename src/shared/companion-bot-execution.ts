@@ -1,4 +1,39 @@
-import type { BotExecutionStep } from './companion-bot';
+import type { BotExecution, BotExecutionStep, BotReplyProgress } from './companion-bot';
+
+export const cleanBotActivityText = (value: unknown) => typeof value === 'string' ? value.replace(/\s+/gu, ' ').trim().slice(0, 180) : '';
+
+export function botToolActivityArgs(step: BotExecutionStep): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(step.text ?? '{}');
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;
+  } catch { /* Legacy tool payload. */ }
+  return {};
+}
+
+export function botToolActivityDescription(args: Record<string, unknown>): string {
+  return cleanBotActivityText(args.description) || cleanBotActivityText(args.title);
+}
+
+export function latestBotExecutionActivity(steps: readonly BotExecutionStep[]): BotExecutionStep | undefined {
+  // Native sequence preserves exact chronology even when timestamps are equal.
+  return steps.reduce<BotExecutionStep | undefined>((latest, step) => {
+    if (step.outputState === 'abandoned' || ['session_created', 'session_resumed'].includes(step.type)) return latest;
+    if (!latest) return step;
+    if (step.streamGeneration === latest.streamGeneration && step.sequence !== undefined && latest.sequence !== undefined) return step.sequence > latest.sequence ? step : latest;
+    return Date.parse(step.updatedAt ?? step.at) >= Date.parse(latest.updatedAt ?? latest.at) ? step : latest;
+  }, undefined);
+}
+
+/** The meeting only receives a compact activity description, never the execution trace. */
+export function botCallReplyProgress(progress: BotReplyProgress, execution?: BotExecution): BotReplyProgress {
+  if (execution?.question) return { phase: 'waiting-answer' };
+  const step = latestBotExecutionActivity(execution?.steps ?? []);
+  if (!step || step.stage === 'turn_end') return progress;
+  const summary = progress.phase === 'using-tool' && step.type === 'tool_call' && step.toolName === progress.toolName
+    ? botToolActivityDescription(botToolActivityArgs(step)) : '';
+  if (!summary && step.nativeStep === undefined) return progress;
+  return { ...progress, activity: { step: step.nativeStep, summary: summary || undefined } };
+}
 
 /** Aggregate transport fragments, preserving native attempt/session boundaries.
  * Legacy reasoning events have delta text and no stream identity. */

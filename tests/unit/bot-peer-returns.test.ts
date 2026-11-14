@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotTopics } from '../../src/main/companion-bot/topics';
 import { buildNativeBotContext } from '../../src/main/companion-bot/context';
@@ -19,6 +19,11 @@ function finish(store:BotStore,event:BotEvent,content:string,status:'done'|'fail
   expect(claim?.event.id).toBe(event.id);expect(store.settle({eventId:event.id,leaseToken:claim.leaseToken,status,content,error:status==='failed'?'实际失败':undefined})).toBe(true);
 }
 const returned=(store:BotStore)=>store.taskTransaction(sql=>sql.prepare("SELECT id FROM bot_inbox WHERE source_instance_id='peer-return-v1' ORDER BY sequence").all()).map(row=>store.getEvent((row as {id:string}).id)!);
+function pendingReply() {
+  let resolve!: (text: string) => void;
+  const promise = new Promise<string>(finish => { resolve = finish; });
+  return { promise, resolve };
+}
 
 it('returns exactly once to the original topic after a switch, without impersonating a room member or starting a peer reply loop',()=>{
   const {store,direct,source}=fixture(),topics=new BotTopics(store),original=topics.create(direct.id,'original');topics.bind([source],original);
@@ -44,6 +49,141 @@ it('does not duplicate delivery when the original native turn has already read t
   finish(store,sent.events[0]!,'GPT，我在整理书架。');
   store.taskTransaction(sql=>sql.prepare('INSERT INTO bot_peer_bridges VALUES(?,?,?,?,?)').run(source.companionId,sent.events[0]!.securityDomainId,sent.events[0]!.replyMessageId,source.conversationId,source.replyMessageId));
   finish(store,source,'大肥鱼说她在整理书架。');expect(returned(store)).toHaveLength(0);
+});
+it('falls back to the original topic if a ready response is lost before the native turn confirms it', () => {
+  const { store, source } = fixture();
+  const sent = store.contactPeer(source, 'fish', 'drop-inline-response', '请说近况');
+  if (!sent.accepted) throw Error(sent.reason);
+  finish(store, sent.events[0]!, '在整理书架');
+  const batch = store.peerReturns.inlineResults(source);
+  expect(batch).toMatchObject({ status: 'ready', results: [{ content: '在整理书架' }] });
+  // The callback did not reach the model. A progress acknowledgement cannot
+  // be used as evidence that the batch was incorporated into its reply.
+  finish(store, source, '我已联系伙伴');
+  expect(returned(store)).toHaveLength(1);
+  expect(returned(store)[0]!.content).toContain('在整理书架');
+});
+it('wakes a running coordinator as soon as both contacted peers settle', async () => {
+  const first = pendingReply(), second = pendingReply();
+  const started = new Set<string>();
+  let finishedWaiting = false;
+  const f = await nativeServiceFixture(async input => {
+    const { identity, delivery } = JSON.parse(input.prompt);
+    if (identity.id !== 'wait-owner') {
+      started.add(identity.id);
+      return identity.id === 'wait-first' ? first.promise : second.promise;
+    }
+    expect(delivery.kind).toBe('user-request');
+    for (const id of ['wait-first', 'wait-second']) {
+      const contact = await nativeCallback(input, 'companion_contact', { companionId: id, destination: 'peer', message: '请回复资料' }, id);
+      expect(contact.ok, contact.error).toBe(true);
+    }
+    await waitNative(() => started.size === 2);
+    const reply = await nativeCallback(input, 'companion_wait', { timeout_ms: 120000 });
+    finishedWaiting = true;
+    expect(reply.ok, reply.error).toBe(true);
+    expect(reply.result).toMatchObject({ status: 'ready', results: expect.arrayContaining([
+      expect.objectContaining({ companionId: 'wait-first', status: 'done', contentIsExcerpt: true }),
+      expect.objectContaining({ companionId: 'wait-second', status: 'done', content: '第二份资料' }),
+    ]) });
+    const items = reply.result!.results as Array<{ companionId: string; messageId: string }>;
+    const read = await nativeCallback(input, 'chat_read_message', { messageId: items.find(item => item.companionId === 'wait-first')!.messageId, offset: 18000 });
+    expect(read.result?.text).toBe('第一份资料结尾');
+    return { text: '已汇总两份资料', peerResultsReceipt: String(reply.result!.receipt) };
+  });
+  closes.push(async () => { first.resolve(''); second.resolve(''); await f.close(); });
+  const readBatch = vi.spyOn(f.service.store.peerReturns, 'inlineResults');
+  for (const id of ['wait-owner', 'wait-first', 'wait-second']) f.service.store.createCompanion({ id, name: id, persona: id });
+  const direct = f.service.store.openDirect('wait-owner');
+  await f.service.handle({ type: 'message.send', conversationId: direct.id, content: '汇总两份资料', requestId: 'wait-for-peers' });
+  await waitNative(() => readBatch.mock.results.some(result => result.value?.status === 'pending' && result.value.pending === 2));
+  first.resolve('正式资料'.repeat(4500) + '第一份资料结尾');
+  await waitNative(() => readBatch.mock.results.some(result => result.value?.status === 'pending' && result.value.pending === 1));
+  expect(finishedWaiting).toBe(false);
+  second.resolve('第二份资料');
+  await waitNative(() => f.service.store.messagesPage(direct.id).items.some(message => message.content === '已汇总两份资料' && message.status === 'sent'));
+  expect(f.calls).toHaveLength(3);
+  expect(returned(f.service.store)).toEqual([]);
+});
+it('keeps waiting when the next task for the same peer starts as soon as the previous task settles', async () => {
+  const first = pendingReply(), second = pendingReply();
+  let started = 0;
+  const f = await nativeServiceFixture(async input => {
+    const { identity, delivery } = JSON.parse(input.prompt);
+    if (identity.id === 'serial-worker') return (++started === 1 ? first : second).promise;
+    expect(delivery.kind).toBe('user-request');
+    for (const topic of ['第一件事', '第二件事']) {
+      const contact = await nativeCallback(input, 'companion_contact', { companionId: 'serial-worker', destination: 'peer', message: topic }, topic);
+      expect(contact.ok, contact.error).toBe(true);
+    }
+    await waitNative(() => started === 1);
+    const batch = await nativeCallback(input, 'companion_wait', { timeout_ms: 120000 });
+    expect(batch.result).toMatchObject({ status: 'ready', results: expect.arrayContaining([
+      expect.objectContaining({ content: '第一份回信' }), expect.objectContaining({ content: '第二份回信' }),
+    ]) });
+    return { text: '两项任务都已交付', peerResultsReceipt: String(batch.result!.receipt) };
+  });
+  closes.push(async () => { first.resolve(''); second.resolve(''); await f.close(); });
+  const batches = vi.spyOn(f.service.store.peerReturns, 'inlineResults');
+  for (const id of ['serial-owner', 'serial-worker']) f.service.store.createCompanion({ id, name: id, persona: id });
+  const direct = f.service.store.openDirect('serial-owner');
+  await f.service.handle({ type: 'message.send', conversationId: direct.id, content: '让伙伴做两件事', requestId: 'serial-peer-tasks' });
+  await waitNative(() => batches.mock.results.some(entry => entry.value?.status === 'pending' && entry.value.pending === 2));
+  first.resolve('第一份回信');
+  await waitNative(() => started === 2 && batches.mock.results.some(entry =>
+    entry.value?.status === 'pending' && entry.value.pending === 1 && entry.value.running));
+  second.resolve('第二份回信');
+  await waitNative(() => f.service.store.messagesPage(direct.id).items.some(message => message.status === 'sent' && message.content === '两项任务都已交付'));
+  expect(returned(f.service.store)).toEqual([]);
+});
+it('delivers deferred results to the original topic after the coordinator yields', async () => {
+  const worker = pendingReply();
+  const f = await nativeServiceFixture(async input => {
+    const { identity, delivery } = JSON.parse(input.prompt);
+    if (identity.id === 'deferred-worker') return worker.promise;
+    if (delivery.kind === 'peer-results') {
+      expect(delivery.peerReturn.results).toMatchObject([{ content: '稍后交付的资料' }]);
+      return '已汇总稍后交付的资料';
+    }
+    const contact = await nativeCallback(input, 'companion_contact', { companionId: 'deferred-worker', destination: 'peer', message: '请回复资料' });
+    expect(contact.ok, contact.error).toBe(true);
+    const waiting = await nativeCallback(input, 'companion_wait', { timeout_ms: 0 });
+    expect(waiting.result).toMatchObject({ status: 'deferred', pending: 1, timedOut: true });
+    return '已联系伙伴';
+  });
+  closes.push(async () => { worker.resolve(''); await f.close(); });
+  for (const id of ['deferred-owner', 'deferred-worker']) f.service.store.createCompanion({ id, name: id, persona: id });
+  const direct = f.service.store.openDirect('deferred-owner');
+  await f.service.handle({ type: 'message.send', conversationId: direct.id, content: '汇总伙伴资料', requestId: 'defer-peer-results' });
+  const published = (content: string) => f.service.store.messagesPage(direct.id).items.some(message => message.content === content && message.status === 'sent');
+  await waitNative(() => published('已联系伙伴'));
+  worker.resolve('稍后交付的资料');
+  await waitNative(() => published('已汇总稍后交付的资料'));
+  expect(returned(f.service.store)).toHaveLength(1);
+});
+it('unblocks an in-flight wait when the worker executor is stopped', async () => {
+  const worker = pendingReply();
+  let workerLane: string | undefined;
+  const f = await nativeServiceFixture(async input => {
+    const { identity, delivery } = JSON.parse(input.prompt);
+    if (identity.id === 'cancel-wait-worker') { workerLane = input.laneId; return worker.promise; }
+    expect(delivery.kind).toBe('user-request');
+    const contact = await nativeCallback(input, 'companion_contact', { companionId: 'cancel-wait-worker', destination: 'peer', message: '请回复资料' });
+    expect(contact.ok, contact.error).toBe(true);
+    const batch = await nativeCallback(input, 'companion_wait', { timeout_ms: 120000 });
+    expect(batch.result).toMatchObject({ status: 'ready', results: [{ status: 'cancelled' }] });
+    return { text: '伙伴的任务已取消', peerResultsReceipt: String(batch.result!.receipt) };
+  });
+  closes.push(async () => { worker.resolve(''); await f.close(); });
+  const batches = vi.spyOn(f.service.store.peerReturns, 'inlineResults');
+  for (const id of ['cancel-wait-owner', 'cancel-wait-worker']) f.service.store.createCompanion({ id, name: id, persona: id });
+  const direct = f.service.store.openDirect('cancel-wait-owner');
+  await f.service.handle({ type: 'message.send', conversationId: direct.id, content: '问一下伙伴', requestId: 'cancel-wait' });
+  await waitNative(() => !!workerLane && batches.mock.results.some(entry => entry.value?.status === 'pending'));
+  f.service.store.setMetadata('native-host:' + workerLane, 'stopped-executor');
+  f.service.workerInstanceStopped('stopped-executor');
+  await waitNative(() => f.service.store.messagesPage(direct.id).items.some(message => message.status === 'sent' && message.content === '伙伴的任务已取消'));
+  expect(returned(f.service.store)).toEqual([]);
 });
 it('allows only exact returned publications to be read across the return boundary, not the worker private room',async()=>{
   let privateMessageId='';const f=await nativeServiceFixture(async input=>{const body=JSON.parse(input.prompt);

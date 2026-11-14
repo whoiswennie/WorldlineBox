@@ -10,9 +10,9 @@ import { network } from './bridge/application-network';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
 import { companionBot } from './bridge/companion-bot';
+import { CALL_PET_CLOSED, CALL_PET_COMMAND, type CallPetApi, type CallPetCommand } from '../shared/companion-call-window';
 import { companionBotMedia } from './bridge/companion-bot-media';
 import { localSpeech } from './bridge/local-speech';
-import { companionBotSpeech } from './bridge/companion-bot-speech';
 import { automation } from './bridge/automation';
 import {
   armE2eBrowseSessionDelay,
@@ -20,6 +20,7 @@ import {
   type E2eBrowseSessionDelayTarget,
 } from './bridge/library';
 import { mcp } from './bridge/mcp';
+import { mobileAccess } from './bridge/mobile-access';
 import { plugins } from './bridge/plugins';
 import { shell } from './bridge/shell';
 import { shortcuts } from './bridge/shortcuts';
@@ -28,6 +29,15 @@ import { getE2eRequestCount } from './transport';
 import type { RendererRequest } from '../shared/protocol/requests';
 
 const e2eEnabled = process.env.WORLDLINEBOX_E2E === '1';
+const companionCallPet: CallPetApi = Object.freeze({
+  supported: process.platform === 'win32',
+  command(command: CallPetCommand) { ipcRenderer.send(CALL_PET_COMMAND, command); },
+  onClosed(listener: () => void) {
+    const handle = () => listener();
+    ipcRenderer.on(CALL_PET_CLOSED, handle);
+    return () => ipcRenderer.off(CALL_PET_CLOSED, handle);
+  },
+});
 
 if (!process.argv.includes(CAPTURE_TOOLS_ARGUMENT)) {
   contextBridge.exposeInMainWorld('worldlineboxStartup', Object.freeze({
@@ -90,11 +100,12 @@ contextBridge.exposeInMainWorld(
     llm,
     music,
     companionBot,
+    companionCallPet,
     companionBotMedia,
     localSpeech,
-    companionBotSpeech,
     automation,
     mcp,
+    mobileAccess,
     plugins,
     ...(e2eEnabled ? { e2e: e2eDiagnostics } : {}),
   }),

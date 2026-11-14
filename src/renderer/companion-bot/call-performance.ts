@@ -1,7 +1,5 @@
-import type { ModelProfile, PartialFACSLikeState, SoullinkRuntime, SpeechPerformanceCapabilities, SpeechPerformancePlanner } from '@soullink-emotion/engine';
+import type { PartialFACSLikeState, SoullinkRuntime } from '@soullink-emotion/engine';
 
-/** Measurements belong to the actual playing audio, never an estimated text clock. */
-export interface BotCallSpeechState { playing: boolean; level: number; durationSeconds?: number }
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, Number.isFinite(value) ? value : 0));
 
 /** Display-only orchestration of the SDK's continuous layers. It never produces chat. */
@@ -10,51 +8,51 @@ export class BotCallPerformance {
   private pointer: { x: number; y: number; at: number } | undefined;
   private pointerPose = { x: 0, y: 0, weight: 0 };
   private gesture: { kind: 'nod' | 'shake' | 'blink'; at: number } | undefined;
-  private speaking = false;
-  private level = 0;
-  private speechOrdinal = 0;
-  private segmentEnds = 0;
   private gazeEnabled = true;
+  private presence: 'idle' | 'waiting' | 'speaking' = 'idle';
+  private presenceAt = 0;
+  private presencePose = { headZ: 0, bodyX: 0 };
+  private idleEnabled = true;
+  private audioLevel = 0;
+  private lastAudioAt = -Infinity;
 
-  constructor(readonly engine: SoullinkRuntime, private readonly planner: SpeechPerformancePlanner,
-    private readonly profile: ModelProfile, private readonly capabilities: SpeechPerformanceCapabilities,
-    private readonly clock: () => number, reducedMotion = false) {
+  constructor(readonly engine: SoullinkRuntime, private readonly clock: () => number, private readonly reducedMotion = false) {
     engine.setParameterGain(1.05); engine.setBodyMotionGain(reducedMotion ? .45 : 1.1);
     engine.setLipSyncEnabled(true);
-    engine.setAudioLevelAnalyzer({ getLevel: () => this.level, getPeak: () => this.level, isAvailable: () => true, reset: () => { this.level = 0; } });
+    engine.setAudioLevelAnalyzer({ getLevel: () => this.audioLevel });
     engine.reset(0);
   }
 
-  react(text: string) { this.engine.sendMessage(text.slice(0, 4000), this.clock()); }
   pose(values: PartialFACSLikeState) { this.manual = { ...this.manual, ...values }; }
+  audio(value: number) {
+    this.audioLevel = clamp(value, 0, 1);
+    if (this.audioLevel > 0) {
+      this.lastAudioAt = this.clock();
+      this.engine.setVoicePlaybackActive(true);
+    }
+  }
   gaze(enabled: boolean) { this.gazeEnabled = enabled; if (!enabled) this.pointer = undefined; }
   point(x: number, y: number) { if (this.gazeEnabled) this.pointer = { x: clamp(x, -1, 1), y: clamp(y, -1, 1), at: this.clock() }; }
   leave() { this.pointer = undefined; }
-  triggerGesture(kind: 'nod' | 'shake' | 'blink') { this.gesture = { kind, at: this.clock() }; }
-  idle(enabled: boolean) { this.engine.setIdleEnabled(enabled); }
-  reset() { this.manual = {}; this.pointer = undefined; this.pointerPose = { x: 0, y: 0, weight: 0 }; this.gesture = undefined; this.speaking = false; this.level = 0; this.engine.reset(this.clock()); this.planner.clear(); }
-
-  speech(state: BotCallSpeechState) {
-    const start = state.playing && !this.speaking, stop = !state.playing && this.speaking;
-    this.speaking = state.playing;
-    this.engine.setVoicePlaybackActive(state.playing);
-    this.level = state.playing ? clamp(state.level, 0, 1) : 0;
-    if (start) this.planSpeech(state.durationSeconds);
-    if (stop) this.engine.finishSpeechPerformance(this.clock());
+  setGesture(kind?: 'nod' | 'shake' | 'blink') { this.gesture = kind ? { kind, at: this.clock() } : undefined; }
+  idle(enabled: boolean) { this.idleEnabled = enabled; this.engine.setIdleEnabled(enabled); }
+  setPresence(value: typeof this.presence) {
+    if (value === this.presence) return;
+    this.presence = value;
+    this.presenceAt = this.clock();
   }
-
-  private planSpeech(durationSeconds = 12) {
-    const now = this.clock(), state = this.engine.getSnapshot(), seconds = clamp(durationSeconds, .5, 120);
-    const plan = this.planner.plan({ emotion: state.vad.dominantEmotion, vad: state.vad.current,
-      intensity: Math.min(.65, state.vad.intensity || .35), confidence: .7, durationMs: seconds * 1000,
-      currentPosture: state.facs, turnOrdinal: ++this.speechOrdinal, capabilities: this.capabilities });
-    this.engine.startSpeechPerformance(plan, now, 'replace'); this.segmentEnds = now + seconds;
-  }
+  reset() { this.manual = {}; this.pointer = undefined; this.pointerPose = { x: 0, y: 0, weight: 0 }; this.gesture = undefined; this.audioLevel = 0; this.lastAudioAt = -Infinity; this.engine.reset(this.clock()); }
 
   update(time: number, delta: number) {
-    // Long audio can continue across SDK performance segments without freezing its pose.
-    if (this.speaking && time >= this.segmentEnds) this.planSpeech();
+    const elapsed = Math.max(0, time - this.presenceAt);
+    const presenceGain = this.idleEnabled && this.presence !== 'idle' ? (this.reducedMotion ? .4 : 1) : 0;
+    const ease = 1 - Math.exp(-clamp(delta, 0, .1) / .28);
+    const speaking = this.presence === 'speaking';
+    const tilt = speaking ? .045 + Math.sin(elapsed * 2.1) * .035 : -.08 + Math.sin(elapsed * 1.2) * .035;
+    this.presencePose.headZ += (tilt * presenceGain - this.presencePose.headZ) * ease;
+    this.presencePose.bodyX += ((speaking ? .045 : -.04) * presenceGain - this.presencePose.bodyX) * ease;
     let pose: PartialFACSLikeState = {};
+    if (presenceGain || Math.abs(this.presencePose.headZ) + Math.abs(this.presencePose.bodyX) > .001) pose = { ...this.presencePose };
     const weight = this.pointer ? clamp((2.2 - (time - this.pointer.at)) / .8, 0, 1) : 0;
     const blend = 1 - Math.exp(-clamp(delta, 0, .1) / .09);
     this.pointerPose.x += ((this.pointer?.x ?? this.pointerPose.x) - this.pointerPose.x) * blend;
@@ -62,7 +60,7 @@ export class BotCallPerformance {
     this.pointerPose.weight += (weight - this.pointerPose.weight) * blend;
     if (this.pointerPose.weight > .001) {
       const x = this.pointerPose.x * this.pointerPose.weight, y = this.pointerPose.y * this.pointerPose.weight;
-      pose = { gazeX: x, gazeY: y, headX: x * .14, headY: y * .08 };
+      pose = { ...pose, gazeX: x, gazeY: y, headX: x * .14, headY: y * .08 };
     }
     if (!weight) this.pointer = undefined;
     pose = { ...pose, ...this.manual };
@@ -73,14 +71,8 @@ export class BotCallPerformance {
       else if (this.gesture.kind === 'nod') pose.headY = Math.sin(progress * Math.PI * 2) * .35;
       else pose.headX = Math.sin(progress * Math.PI * 4) * .35;
     }
-    // Audio owns only the mouth during playback. It does not freeze gaze or posture.
-    if (this.speaking) delete pose.mouthOpen;
+    if (!this.audioLevel && time - this.lastAudioAt > .18) this.engine.setVoicePlaybackActive(false);
     this.engine.setManualFACS(pose);
-    const snapshot = this.engine.update(time, clamp(delta, 0, .1)), parameters = { ...snapshot.live2dParams };
-    const mouthRule = this.profile.parameterMap.mouthOpen;
-    for (const id of mouthRule?.targets ?? (mouthRule?.target ? [mouthRule.target] : [])) {
-      if (!this.speaking) parameters[id] = clamp(this.manual.mouthOpen ?? 0, 0, 1);
-    }
-    return { ...snapshot, live2dParams: parameters, speaking: this.speaking };
+    return this.engine.update(time, clamp(delta, 0, .1));
   }
 }

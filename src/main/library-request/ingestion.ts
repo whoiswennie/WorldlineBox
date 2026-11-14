@@ -1,3 +1,5 @@
+import { LIBRARY_ROOT_FOLDER_ID } from '../../shared/library-root-folder';
+import { clipboardNoop, clipboardPathWithin, sameClipboardParent, tryPasteCutFolders, pasteCopiedFolders } from '../clipboard-paste';
 import type { NativeImage } from "electron";
 
 import type { RendererRequest, WorkerCommand } from "../../shared/protocol/requests";
@@ -16,6 +18,7 @@ import {
 import { resolveImageSequenceImportPaths } from "../image-sequence-import";
 import { createWebImportCollectionCommand } from "../web-ingestion";
 import type { LibraryCommandBuildOutcome } from "./command-outcome";
+import { assetClipboard, type FileClipboardSnapshot } from '../asset-clipboard';
 
 export type PendingImageSequenceOffer = {
   offer: ImageSequenceImportOffer;
@@ -40,6 +43,9 @@ export type IngestionCommandRuntime = {
   clipboardImageDeps: ClipboardImageReaderDeps;
   clipboardAvailableFormats: () => string[];
   readClipboardFilePaths: () => string[];
+  readFileClipboard?: () => FileClipboardSnapshot;
+  readClipboardSequence?: () => number | null;
+  onCutPasteCompleted?: (snapshot: FileClipboardSnapshot, assetIds: string[], folderIds: string[]) => void;
 };
 
 /**
@@ -51,6 +57,18 @@ export async function tryBuildIngestionCommand(
   runtime: IngestionCommandRuntime,
 ): Promise<LibraryCommandBuildOutcome | undefined> {
   switch (request.type) {
+    case 'asset.clipboard-state.request': {
+      const sequence = runtime.readClipboardSequence?.();
+      // Windows exposes a cheap change token: polling must not decode a large
+      // CF_HDROP file list every half second while a batch remains cut.
+      const entry = sequence != null ? assetClipboard.readSequence(sequence)
+        : assetClipboard.read(runtime.readFileClipboard?.() ?? { paths: runtime.readClipboardFilePaths(), operation: 'copy' as const });
+      return { kind: 'result', result: {
+        ok: true, type: 'asset.clipboard-state',
+        cutAssetIds: entry?.libraryId === request.libraryId && entry.operation === 'cut' ? entry.assetIds : [],
+        ...(entry?.libraryId === request.libraryId && entry.operation === 'cut' && entry.folderIds.length ? { cutFolderIds: entry.folderIds } : {}),
+      } };
+    }
     case "asset.import-drop.request": {
       let sourceKind: "files" | "folder";
       try {
@@ -241,12 +259,17 @@ export async function tryBuildIngestionCommand(
       };
     }
     case "asset.import-clipboard.request": {
+      const injectedImagePath = runtime.isUnpackagedE2e()
+        ? runtime.e2eEnv("WORLDLINEBOX_E2E_CLIPBOARD_IMAGE_PATH")
+        : undefined;
+      if (!injectedImagePath && runtime.readClipboardFilePaths().length > 0) {
+        return { kind: 'result', result: { ok: false, error: createPublicError('CLIPBOARD_IMAGE_NOT_FOUND') } };
+      }
       let image;
       try {
-        const e2eClipboardImagePath = runtime.e2eEnv("WORLDLINEBOX_E2E_CLIPBOARD_IMAGE_PATH");
-        if (runtime.isUnpackagedE2e() && e2eClipboardImagePath) {
+        if (injectedImagePath) {
           image = runtime.createImageFromBuffer(
-            runtime.readFileBuffer(e2eClipboardImagePath),
+            runtime.readFileBuffer(injectedImagePath),
           );
         } else {
           // Windows clipboard images arrive in several layouts; walk them all
@@ -309,7 +332,9 @@ export async function tryBuildIngestionCommand(
           runtime.isUnpackagedE2e() && injectedPathsRaw
             ? injectedPathsRaw.split("\n").filter(Boolean)
             : null;
-        const sourcePaths = injectedPaths ?? runtime.readClipboardFilePaths();
+        const targetFolderId = request.folderId === LIBRARY_ROOT_FOLDER_ID ? null : request.folderId ?? null;
+        const snapshot = runtime.readFileClipboard?.() ?? { paths: runtime.readClipboardFilePaths(), operation: 'copy' as const };
+        let sourcePaths = injectedPaths ?? snapshot.paths;
         if (sourcePaths.length === 0) {
           return {
             kind: "result",
@@ -319,15 +344,61 @@ export async function tryBuildIngestionCommand(
             } satisfies RendererResult,
           };
         }
+        const internal = injectedPaths ? null : assetClipboard.read(snapshot);
+        if (internal?.operation === 'cut' && internal.libraryId !== request.libraryId) {
+          return { kind: 'result', result: { ok: false, error: createPublicError('INVALID_SELECTION') } };
+        }
+        if (internal?.operation === 'copy' && internal.libraryId === request.libraryId && internal.folderIds.length) {
+          const copied = await pasteCopiedFolders({
+            libraryId: request.libraryId, targetFolderId, assetIds: internal.assetIds,
+            folderIds: internal.folderIds, snapshot, requestWorker: runtime.requestWorker,
+          });
+          if (copied) return copied;
+        }
+        const moveSourceFiles = (internal?.operation ?? snapshot.operation) === 'cut';
+        let targetAbsolutePath = '';
+        if (moveSourceFiles) {
+          const target = await runtime.requestWorker({ type: 'folder.get-path', libraryId: request.libraryId, folderId: targetFolderId ?? LIBRARY_ROOT_FOLDER_ID });
+          if (!target.ok) return { kind: 'result', result: target };
+          if (target.type !== 'folder.path') throw new Error('Unexpected folder path response.');
+          targetAbsolutePath = target.absolutePath;
+          const cutFolderPaths = internal?.folderIds.length ? sourcePaths.slice(internal.assetIds.length) : [];
+          if (sourcePaths.every(source => sameClipboardParent(source, target.absolutePath)) || cutFolderPaths.some(folder => clipboardPathWithin(target.absolutePath, folder))) return clipboardNoop();
+          if (!internal) {
+            sourcePaths = sourcePaths.filter(source => !sameClipboardParent(source, target.absolutePath));
+          }
+        }
+        if (internal && internal.libraryId === request.libraryId && internal.operation === 'cut' && internal.folderIds.length) {
+          const folderPaste = await tryPasteCutFolders({ libraryId: request.libraryId, targetFolderId, targetAbsolutePath, assetIds: internal.assetIds, folderIds: internal.folderIds, snapshot, requestWorker: runtime.requestWorker, completed: runtime.onCutPasteCompleted });
+          return folderPaste;
+        }
+        if (internal && internal.libraryId === request.libraryId && internal.folderIds.length === 0) {
+          return {
+            kind: 'command',
+            assetClipboardSnapshot: snapshot,
+            command: {
+              type: internal.operation === 'cut' ? 'asset.move' : 'asset.copy',
+              clipboard: true,
+              libraryId: request.libraryId,
+              assetIds: internal.operation === 'cut'
+                ? internal.assetIds.filter((_, index) => !sameClipboardParent(sourcePaths[index]!, targetAbsolutePath))
+                : internal.assetIds,
+              targetFolderId,
+              conflictStrategy: 'keep-both',
+            },
+          };
+        }
         const sourceKind = classifyDroppedSourcePaths(sourcePaths);
         return {
           kind: "command",
+          ...(moveSourceFiles ? { fileClipboardMoveSnapshot: snapshot } : {}),
           command: {
             type: "asset.import.prepare",
             libraryId: request.libraryId,
-            targetFolderId: request.folderId ?? undefined,
+            targetFolderId: targetFolderId ?? undefined,
             sourceKind,
             sourcePaths,
+            moveSourceFiles,
             // Paste must never auto-group into an image sequence. Users expect
             // ordinary import + name/content conflict dialogs (PASTE-001).
             expandImageSequences: false,
@@ -660,7 +731,8 @@ export async function applyImportWorkerResult(
         request.type === "asset.import-files.request" ||
         request.type === "asset.import-folder.request" ||
         request.type === "asset.import-drop.request" ||
-        request.type === "asset.import-clipboard.request"
+        request.type === "asset.import-clipboard.request" ||
+        request.type === "folder.paste.request"
       ) {
         libId = request.libraryId;
       } else if ((request.type === "asset.import.resolve" ||

@@ -14,6 +14,7 @@ export interface NativeHostEvent extends Omit<DshTaskEvent, 'taskId'> {
   nativeStep?: number;
   rootSequence?:number;
   outputs?:BotNativeReplyOutput[];
+  peerResultsReceipt?: string;
   context?:BotNativeContext;
   /** App-owned main-brain observation; native workers do not synthesize this. */
   contextMetrics?: BotBrainRequestMetrics;

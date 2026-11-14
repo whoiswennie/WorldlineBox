@@ -73,6 +73,16 @@ export function positionCaptureWindowInPhysicalPixels(handle: Buffer, bounds: Ca
   } catch { return false; }
 }
 
+/** Move only. Keep the native window's size and z-order out of the position update. */
+export function moveWindowInPhysicalPixels(handle: Buffer, x: number, y: number, api: WindowsCaptureMonitorApi | null = loadWindowsCaptureMonitorApi()): boolean {
+  if (!api || handle.length < 4) return false;
+  try {
+    const window = handle.length >= 8 ? handle.readBigUInt64LE(0) : handle.readUInt32LE(0);
+    const flags = 0x0001 | 0x0004 | 0x0010 | 0x0200; // NOSIZE | NOZORDER | NOACTIVATE | NOOWNERZORDER
+    return withPhysicalDpiContext(api, () => !!api.setWindowPos(window, 0, x, y, 0, 0, flags));
+  } catch { return false; }
+}
+
 let cachedApi: WindowsDesktopRegionsApi | null | undefined;
 function loadWindowsDesktopRegionsApi(): WindowsDesktopRegionsApi | null {
   if (cachedApi !== undefined) return cachedApi;

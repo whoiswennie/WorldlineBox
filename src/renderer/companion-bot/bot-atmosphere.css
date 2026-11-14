@@ -42,10 +42,9 @@
 .bot-atmosphere .bot-chat-header h2 { font-size:16px;font-weight:600;letter-spacing:.2px; }
 .bot-atmosphere .bot-chat-identity { gap:13px; }
 .bot-atmosphere .bot-chat-identity>.bot-avatar { width:43px;height:43px;border:2px solid color-mix(in srgb,var(--bot-accent) 20%,var(--bot-panel)); }
-.bot-atmosphere .bot-chat-title { display:grid;gap:6px;min-width:0; }
-.bot-atmosphere .bot-chat-title-status { gap:8px;min-height:15px; }
+.bot-atmosphere .bot-chat-title { gap:3px; }
+.bot-atmosphere .bot-chat-title-status { min-height:16px; }
 .bot-atmosphere .bot-chat-subtitle { color:var(--bot-muted);font-size:11px; }
-.bot-atmosphere .bot-presence-summary { padding:0!important;background:transparent!important;border:0!important;color:var(--bot-muted)!important;max-width:100%;font-size:11px!important; }
 .bot-atmosphere .bot-group-members-trigger { padding:0 2px;border:0;background:transparent;color:var(--bot-muted);font-size:10px; }
 .bot-atmosphere .bot-chat-header>nav { gap:5px;flex-wrap:nowrap; }
 .bot-atmosphere .bot-chat-header>nav>button { min-width:32px;height:34px;padding:7px 10px;color:var(--bot-muted);border:1px solid transparent;border-radius:10px;font-size:11px; }
@@ -67,26 +66,24 @@
 .bot-atmosphere .from-user .bot-message-text { border-radius:17px 5px 17px 17px; }
 .bot-atmosphere .bot-reply-timing { color:var(--bot-muted); }
 .bot-atmosphere .bot-composer-dock { padding:12px 20px 18px; }
-.bot-atmosphere .bot-composer { display:grid;grid-template-columns:minmax(100px,1fr) auto auto;grid-template-areas:'draft draft draft' 'field tools send';align-items:center;gap:0 7px;max-width:100%;margin:0;border:1px solid color-mix(in srgb,var(--bot-accent) 48%,var(--bot-edge));border-radius:17px;padding:7px 9px 7px 15px;background:linear-gradient(110deg,var(--bot-panel),color-mix(in srgb,var(--bot-accent-bright) 4%,var(--bot-panel)));box-shadow:0 4px 19px #3b29590b,inset 0 1px #ffffff25; }
-.bot-atmosphere .bot-composer.has-followup { grid-template-areas:'followup followup followup' 'draft draft draft' 'field tools send'; }
-.bot-atmosphere .bot-composer:focus-within { border-color:var(--bot-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--bot-accent-bright) 10%,transparent); }
-.bot-atmosphere .bot-composer textarea { grid-area:field;min-width:0;padding:10px 0;line-height:1.8;font-size:13px;color:var(--bot-text); }
-.bot-atmosphere .bot-composer textarea::placeholder { color:var(--bot-muted); }
-.bot-atmosphere .bot-compose-tools { grid-area:tools;gap:0;flex-wrap:nowrap;margin:0; }
-.bot-atmosphere .bot-compose-tools>button,.bot-atmosphere .bot-expression-tools>button { width:31px;height:33px;flex-shrink:0;color:var(--bot-muted);border-radius:9px; }
-.bot-atmosphere .bot-compose-tools button:hover,.bot-atmosphere .bot-compose-tools button[aria-pressed=true] { background:var(--bot-panel-soft);color:var(--bot-accent); }
-.bot-atmosphere .bot-compose-tools>small { display:none; }
-.bot-atmosphere .bot-expression-tools { gap:0; }
-.bot-atmosphere .bot-emoji-anchor { position:static; }
-.bot-atmosphere .bot-compose-tools .bot-expression-picker { left:auto;right:9px;bottom:calc(100% + 9px);width:448px;max-width:calc(100% - 18px);background:var(--bot-panel);border-color:var(--bot-edge); }
-.bot-atmosphere .bot-tool-separator { background:var(--bot-edge);margin:0 5px; }
-.bot-atmosphere .bot-compose-footer { grid-area:send;margin:0;gap:5px; }
-.bot-atmosphere .bot-compose-footer>small { display:none; }
-.bot-atmosphere .bot-send { width:38px;height:38px;min-width:38px;border:1px solid var(--ui-border-focus);border-radius:12px;background:var(--ui-action-accent);box-shadow:0 3px 9px color-mix(in srgb,var(--ui-action-accent) 15%,transparent);color:var(--ui-content-on-accent); }
-.bot-atmosphere .bot-send:hover:not(:disabled) { background:var(--ui-action-accent-hover);color:var(--ui-content-on-accent); }
-.bot-atmosphere .bot-send:disabled { background:var(--bot-panel-soft);border-color:var(--bot-edge);box-shadow:none;color:var(--bot-muted); }
-.bot-atmosphere .bot-draft-attachments { grid-area:draft; }
-.bot-atmosphere .bot-attachment-limit { grid-area:draft; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-composer { display:grid;grid-template-columns:minmax(100px,1fr) auto auto;grid-template-areas:'draft draft draft' 'field tools send';align-items:center;gap:0 7px;max-width:100%;margin:0;border:1px solid color-mix(in srgb,var(--bot-accent) 48%,var(--bot-edge));border-radius:17px;padding:7px 9px 7px 15px;background:linear-gradient(110deg,var(--bot-panel),color-mix(in srgb,var(--bot-accent-bright) 4%,var(--bot-panel)));box-shadow:0 4px 19px #3b29590b,inset 0 1px #ffffff25; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-composer.has-followup { grid-template-areas:'followup followup followup' 'draft draft draft' 'field tools send'; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-composer:focus-within { border-color:var(--bot-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--bot-accent-bright) 10%,transparent); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-composer textarea { grid-area:field;min-width:0;padding:10px 0;line-height:1.8;font-size:13px;color:var(--bot-text); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-composer textarea::placeholder { color:var(--bot-muted); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-tools { grid-area:tools;gap:0;flex-wrap:nowrap;margin:0; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-tools>button,:is(.bot-atmosphere,.bot-call-composer-host) .bot-expression-tools>button { width:31px;height:33px;flex-shrink:0;color:var(--bot-muted);border-radius:9px; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-tools button:hover,:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-tools button[aria-pressed=true] { background:var(--bot-panel-soft);color:var(--bot-accent); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-tools>small { display:none; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-expression-tools { gap:0; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-emoji-anchor { position:static; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-tools .bot-expression-picker { left:auto;right:9px;bottom:calc(100% + 9px);width:448px;max-width:calc(100% - 18px);background:var(--bot-panel);border-color:var(--bot-edge); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-tool-separator { background:var(--bot-edge);margin:0 5px; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-footer { grid-area:send;margin:0;gap:5px; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-compose-footer>small { display:none; }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-send { width:38px;height:38px;min-width:38px;border:1px solid var(--ui-border-focus);border-radius:12px;background:var(--ui-action-accent);box-shadow:0 3px 9px color-mix(in srgb,var(--ui-action-accent) 15%,transparent);color:var(--ui-content-on-accent); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-send:hover:not(:disabled) { background:var(--ui-action-accent-hover);color:var(--ui-content-on-accent); }
+:is(.bot-atmosphere,.bot-call-composer-host) .bot-send:disabled { background:var(--bot-panel-soft);border-color:var(--bot-edge);box-shadow:none;color:var(--bot-muted); }
 .bot-atmosphere .bot-empty h2 { color:var(--bot-text);font-size:26px;font-weight:500; }
 .bot-atmosphere .bot-empty p { color:var(--bot-muted); }
 .bot-atmosphere .bot-conversation-welcome .bot-avatar { width:84px;height:84px;box-shadow:0 0 0 8px color-mix(in srgb,var(--bot-accent-bright) 8%,transparent),0 8px 28px #5c438520; }

@@ -1,19 +1,20 @@
 import { useEffect, useState } from 'react';
 import type { BotMessage, BotReplyProgress } from '../../shared/companion-bot';
 import { BotIcon } from './BotIcon';
+import { botExecutionToolLabel } from './execution-activity';
 
 const phases: Record<'zh-CN' | 'en', Record<BotReplyProgress['phase'], string>> = {
   'zh-CN': {
     'memory-starting': '正在唤醒伙伴记忆', 'memory-verifying': '正在校验内置记忆引擎', 'memory-indexing': '正在同步记忆索引',
     queued: '等待处理', 'recalling-memory': '正在检索记忆', 'preparing-context': '准备上下文',
     'compacting-context': '正在整理长对话', 'waiting-runtime': '等待运行环境', 'waiting-model': '等待模型响应',
-    'using-tool': '正在使用工具', generating: '正在生成回复', retrying: '正在恢复连接', reconciling: '正在核实先前操作',
+    'using-tool': '正在使用工具', generating: '正在生成回复', retrying: '正在恢复连接', reconciling: '正在核实先前操作', 'waiting-answer': '等待你的回复',
   },
   en: {
     'memory-starting': 'Starting companion memory', 'memory-verifying': 'Verifying the memory engine', 'memory-indexing': 'Synchronizing memory indexes',
     queued: 'Waiting to start', 'recalling-memory': 'Recalling memories', 'preparing-context': 'Preparing context',
     'compacting-context': 'Organizing the conversation', 'waiting-runtime': 'Waiting for runtime', 'waiting-model': 'Waiting for model',
-    'using-tool': 'Using a tool', generating: 'Generating a reply', retrying: 'Reconnecting', reconciling: 'Checking prior actions',
+    'using-tool': 'Using a tool', generating: 'Generating a reply', retrying: 'Reconnecting', reconciling: 'Checking prior actions', 'waiting-answer': 'Waiting for your reply',
   },
 };
 const tools: Record<string, [string, string]> = {
@@ -27,19 +28,24 @@ const tools: Record<string, [string, string]> = {
   dsh_task: ['提交执行任务', 'Submitting a task'], dsh_task_control: ['查看或协调任务', 'Checking or coordinating a task'], dsh_task_result_read: ['读取任务结果', 'Reading the task result'],
   world: ['与虚拟世界交互', 'Interacting with the world'], message_peer: ['联系其他伙伴', 'Messaging another companion'], companion_contact: ['联系其他伙伴', 'Contacting another companion'],
   context_handoff_read: ['读取先前对话摘要', 'Reading earlier context'], agent_read_tool_result: ['读取工具回执', 'Reading a tool receipt'],
+  call_stage: ['查看会面表情和动作', 'Checking meeting expressions and motions'],
+  call_present: ['安排会面片段', 'Queuing meeting dialogue'],
 };
 
 export function botReplyProgressLabel(status: BotMessage['status'], progress: BotMessage['progress'], locale: 'zh-CN' | 'en'): string {
   const phase = progress?.phase ?? (status === 'queued' ? 'queued' : 'preparing-context');
-  const tool = progress?.toolName ? tools[progress.toolName] : undefined;
+  const toolName = progress?.toolName;
+  const tool = toolName && Object.hasOwn(tools, toolName) ? tools[toolName] : undefined;
   // Only host phases and known tool labels are presented. Arguments, model reasoning and
   // arbitrary provider detail must never become the visible activity description.
-  return phase === 'using-tool' && tool ? tool[locale === 'zh-CN' ? 0 : 1] : phases[locale][phase];
+  return phase === 'using-tool' && toolName
+    ? tool?.[locale === 'zh-CN' ? 0 : 1] ?? botExecutionToolLabel(toolName, locale) ?? phases[locale][phase]
+    : phases[locale][phase];
 }
 
 export function BotReplyProgressIndicator({ message, locale, onStop }: {
   message: Pick<BotMessage, 'status' | 'progress' | 'createdAt'>;
-  locale: 'zh-CN' | 'en'; onStop(): void;
+  locale: 'zh-CN' | 'en'; onStop?(): void;
 }) {
   const active = message.status === 'queued' || message.status === 'running';
   const [now, setNow] = useState(Date.now);
@@ -51,10 +57,15 @@ export function BotReplyProgressIndicator({ message, locale, onStop }: {
   }, [active, message.createdAt]);
   if (!active) return null;
   const started = Date.parse(message.createdAt), seconds = Math.max(0, Math.floor((now - started) / 1000));
+  const activity = message.progress?.activity;
+  const phase = botReplyProgressLabel(message.status, message.progress, locale);
   return <div className="bot-reply-progress" data-phase={message.progress?.phase ?? (message.status === 'queued' ? 'queued' : 'preparing-context')}>
     <BotIcon name="clock" />
-    <span className="bot-reply-progress-label" role="status">{botReplyProgressLabel(message.status, message.progress, locale)}</span>
+    <span className="bot-reply-progress-label" role="status">
+      {activity?.step !== undefined && <>{locale === 'zh-CN' ? `第 ${activity.step} 步` : `Step ${activity.step}`} · </>}{phase}
+      {activity?.summary && <span className="bot-reply-progress-summary" title={activity.summary}>{activity.summary}</span>}
+    </span>
     {Number.isFinite(started) && <span className="bot-reply-progress-elapsed" aria-live="off">{locale === 'zh-CN' ? `已用 ${seconds} 秒` : `${seconds}s elapsed`}</span>}
-    <button className="bot-stop" onClick={onStop}>{locale === 'zh-CN' ? '停止' : 'Stop'}</button>
+    {onStop && <button className="bot-stop" onClick={onStop}>{locale === 'zh-CN' ? '停止' : 'Stop'}</button>}
   </div>;
 }

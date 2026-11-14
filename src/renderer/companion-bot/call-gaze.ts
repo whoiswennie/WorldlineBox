@@ -13,8 +13,8 @@ export function companionGazeReader(): CompanionGazeReader | undefined {
 /** One serialized native sample stream, bounded to 30 Hz. Capturing on the
  * window is a browser/test fallback and also sees pointer events over controls.
  * Crossing a UI boundary or losing window focus never resets the gaze target. */
-export function trackCallGaze(host: HTMLElement, target: GazeTarget, read = companionGazeReader()) {
-  let enabled = true, disposed = false, pending = false, revision = 0, timer: ReturnType<typeof setTimeout> | undefined;
+export function trackCallGaze(host: HTMLElement, target: GazeTarget, read = companionGazeReader(), initiallyEnabled = true) {
+  let enabled = initiallyEnabled, disposed = false, pending = false, revision = 0, timer: ReturnType<typeof setTimeout> | undefined;
   let nativeAvailable = !!read;
   const apply = (point: { x: number; y: number }) => {
     if (!enabled || disposed) return;

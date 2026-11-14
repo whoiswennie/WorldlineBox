@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { dshPackDistributionSchema, dshPackPublicationSchema, dshRepositorySchema } from './dsh-pack-distribution';
 import { dshTaskCapabilitiesSchema } from './dsh-task-spec';
+import { dshVersionPattern } from './dsh-version-order';
 
 export const DSH_LAUNCHER_CHANNEL = 'worldlinebox:dsh-launcher';
 export const DSH_LAUNCHER_CHANGED_CHANNEL = 'worldlinebox:dsh-launcher:changed';
@@ -9,6 +10,8 @@ export const DSH_TERMINAL_OUTPUT_CHANNEL = 'worldlinebox:dsh-launcher:terminal-o
 const id = z.string().regex(/^[a-z0-9-]{1,80}$/);
 const name = z.string().trim().min(1).max(100);
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/);
+const officialVersion = z.string().max(128).regex(dshVersionPattern);
+const officialUpgradeRequest = z.strictObject({ type: z.literal('instance.upgrade-official'), instanceId: id, expectedRuntimeId: id, version: officialVersion });
 export const dshPackPublicationRecordSchema = dshPackPublicationSchema.extend({ packId: id, createdAt: z.string() });
 export const dshRuntimeSchema = z.object({
   id, version: z.string().min(1).max(128), nodeVersion: z.string().max(128), npmVersion: z.string().max(128).optional(),
@@ -31,6 +34,8 @@ export const dshInstanceSchema = z.object({
   companionId: z.string().min(1).max(160).optional(), companionName: name.optional(), keepAlive: z.boolean().optional(),
 });
 export type DshInstance = z.infer<typeof dshInstanceSchema>;
+export const dshArchivedInstanceSchema = dshInstanceSchema.extend({ archivedAt: z.string(), runtimeVersion: z.string().min(1).max(128), purgePending: z.literal(true).optional() });
+export type DshArchivedInstance = z.infer<typeof dshArchivedInstanceSchema>;
 export const dshCompanionEnvironmentSchema = z.object({ mode: z.enum(['shared', 'private']), instance: dshInstanceSchema });
 export type DshCompanionEnvironment = z.infer<typeof dshCompanionEnvironmentSchema>;
 export interface DshCompanionCapabilityState {
@@ -40,6 +45,7 @@ export interface DshCompanionCapabilityState {
 export const dshSnapshotSchema = z.object({
   id, instanceId: id, name, runtimeId: id, createdAt: z.string(),
   contentSha256: sha256, fileCount: z.number(), byteLength: z.number(),
+  upgradeFromVersion: officialVersion.optional(),
 });
 export type DshSnapshot = z.infer<typeof dshSnapshotSchema>;
 export const dshPackSchema = z.object({
@@ -57,6 +63,7 @@ export const dshOperationSchema = z.object({
     speedBytesPerSecond: z.number().nonnegative(), paused: z.boolean(), canPause: z.boolean() }).optional(),
   retryRequest: z.discriminatedUnion('type', [
     z.object({ type: z.literal('runtime.install'), version: z.string().max(128) }),
+    officialUpgradeRequest,
     z.object({ type: z.literal('pack.import-url'), manifestUrl: z.string().max(4096) }),
   ]).optional(),
 });
@@ -125,8 +132,9 @@ export const dshVersionsStateSchema = z.object({ entries: z.array(dshOfficialVer
 export type DshVersionsState = z.infer<typeof dshVersionsStateSchema>;
 export const dshLauncherStateSchema = z.object({
   supported: z.boolean(), rootPath: z.string(), runtimes: z.array(dshRuntimeSchema),
-  instances: z.array(dshInstanceSchema), snapshots: z.array(dshSnapshotSchema),
+  instances: z.array(dshInstanceSchema), archivedInstances: z.array(dshArchivedInstanceSchema).optional(), snapshots: z.array(dshSnapshotSchema),
   packs: z.array(dshPackSchema),
+  pendingRuntimeDeletions: z.array(z.string()).optional(),
   operations: z.array(dshOperationSchema),
   cli: dshCliStateSchema.optional(),
   network: dshNetworkStateSchema.optional(), versions: dshVersionsStateSchema.optional(),
@@ -138,6 +146,9 @@ export type DshLauncherState = z.infer<typeof dshLauncherStateSchema>;
 
 export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('state') }),
+  z.strictObject({ type: z.literal('cabin.state') }),
+  z.strictObject({ type: z.literal('cabin.open') }),
+  z.strictObject({ type: z.literal('cabin.stop') }),
   z.strictObject({ type: z.literal('companion.environment.state'), companionId: z.string().min(1).max(160), name }),
   z.strictObject({ type: z.literal('companion.environment.create'), companionId: z.string().min(1).max(160), name, runtimeId: id }),
   z.strictObject({ type: z.literal('companion.environment.bind'), companionId: z.string().min(1).max(160), name, instanceId: id }),
@@ -146,8 +157,8 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('companion.environment.configure'), companionId: z.string().min(1).max(160), name, keepAlive: z.boolean() }),
   z.strictObject({ type: z.literal('companion.environment.refresh'), companionId: z.string().min(1).max(160), name }),
   z.strictObject({ type: z.literal('companion.environment.upgrade'), companionId: z.string().min(1).max(160), name, runtimeId: id }),
-  z.strictObject({ type: z.literal('versions.refresh') }),
-  z.strictObject({ type: z.literal('runtime.install'), version: z.string().regex(/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/) }),
+  z.strictObject({ type: z.literal('versions.refresh'), ifStale: z.boolean().optional() }),
+  z.strictObject({ type: z.literal('runtime.install'), version: officialVersion }),
   z.strictObject({ type: z.literal('network.save'), settings: dshNetworkSettingsSchema }),
   z.strictObject({ type: z.literal('network.patch'), patch: dshNetworkPatchSchema }),
   z.strictObject({ type: z.literal('network.proxy.toggle'), enabled: z.boolean() }),
@@ -167,6 +178,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
 
 
   z.strictObject({ type: z.literal('instance.upgrade'), instanceId: id, runtimeId: id }),
+  officialUpgradeRequest,
   z.strictObject({ type: z.literal('instance.create'), name, runtimeId: id }),
   z.strictObject({ type: z.literal('instance.rename'), instanceId: id, name }),
   z.strictObject({ type: z.literal('instance.default'), instanceId: id }),
@@ -175,6 +187,9 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('instance.stop'), instanceId: id }),
   z.strictObject({ type: z.literal('instance.open'), instanceId: id }),
   z.strictObject({ type: z.literal('instance.delete'), instanceId: id }),
+  z.strictObject({ type: z.literal('instance.archive'), instanceId: id }),
+  z.strictObject({ type: z.literal('instance.unarchive'), instanceId: id }),
+  z.strictObject({ type: z.literal('instance.purge-archive'), instanceId: id }),
   z.strictObject({ type: z.literal('instance.folder'), instanceId: id, scope: z.enum(['home', 'agents', 'workspace', 'logs', 'root']) }),
   z.strictObject({ type: z.literal('cli.select'), instanceId: id }),
   z.strictObject({ type: z.literal('cli.install-command') }),
@@ -191,7 +206,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('operation.retry'), operationId: id }),
   z.strictObject({ type: z.literal('instance.logs'), instanceId: id }),
   z.strictObject({ type: z.literal('snapshot.create'), instanceId: id, name }),
-  z.strictObject({ type: z.literal('snapshot.restore'), snapshotId: id, name }),
+  z.strictObject({ type: z.literal('snapshot.restore'), snapshotId: id, name, runtimeId: id.optional() }),
   z.strictObject({ type: z.literal('snapshot.delete'), snapshotId: id }),
   z.strictObject({ type: z.literal('backup.export'), instanceId: id }),
   z.strictObject({ type: z.literal('backup.import'), name }),
@@ -209,6 +224,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
 export type DshLauncherRequest = z.infer<typeof dshLauncherRequestSchema>;
 export const dshLauncherResponseSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), state: dshLauncherStateSchema.optional(),
+    cabin: z.object({ available: z.boolean(), running: z.boolean(), version: z.string().optional() }).optional(),
     companionEnvironment: dshCompanionEnvironmentSchema.optional(),
     taskCapabilities: dshTaskCapabilitiesSchema.optional(),
     packDistribution: dshPackDistributionSchema.optional(),

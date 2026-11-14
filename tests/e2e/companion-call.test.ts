@@ -1,13 +1,13 @@
-import { mkdtemp, mkdir, writeFile, copyFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { _electron as electron, expect, test } from '@playwright/test';
-import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
-import type { WorldlineBoxBotMediaApi } from '../../src/shared/companion-bot-media';
+import { _electron as electron, expect, test, type Page } from '@playwright/test';
+import { enableCallVisualFixture } from './fixtures/call-visual-binding';
+import { observeCallRenderedPose } from './fixtures/call-rendered-pose';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 // eslint-disable-next-line no-empty-pattern -- Isolated native Electron owns the page and WebGL model.
-test('companion meeting loads real Live2D and native actions, shares the original chat and cleans up ringtone on connect/end', async ({}, testInfo) => {
+test('companion meeting loads real Live2D and native actions, and cleans up ringtone on connect/end', async ({}, testInfo) => {
   test.setTimeout(240000);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-companion-call-'));
   if (path.dirname(path.resolve(profile)) !== path.resolve(tmpdir()) || !path.basename(profile).startsWith('wlb-companion-call-')) throw Error('Unexpected call profile');
@@ -15,31 +15,44 @@ test('companion meeting loads real Live2D and native actions, shares the origina
   const app = await electron.launch({ ...launch, args: [...launch.args, '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'], env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
   const errors: string[] = [];
   try {
-    const page = await app.firstWindow(); page.on('pageerror', error => errors.push(error.message));
+    const workspaceModule = '[data-application-module="companions"]';
+    let workspace: Page | undefined;
+    await expect.poll(async () => {
+      for (const candidate of app.windows()) {
+        if (await candidate.locator(workspaceModule).count().catch(() => 0)) { workspace = candidate; return true; }
+      }
+      return false;
+    }, { timeout: 45_000 }).toBe(true);
+    if (!workspace) throw Error('Missing companion workspace');
+    const page = workspace;
+    page.on('pageerror', error => errors.push(error.message));
     const loadedNativeFiles = new Set<string>(); page.on('response', response => { if (response.ok() && /\.(?:exp3|motion3)\.json$/u.test(response.url())) loadedNativeFiles.add(decodeURIComponent(response.url())); });
     page.on('console', entry => { if (/Failed to (?:apply native|load (?:expression|motion))/iu.test(entry.text())) errors.push(entry.text()); });
-    const attachment = path.join(profile, '会面聊天附件.md'); await writeFile(attachment, '# 同一段对话\n\n会面沿用聊天附件服务。');
-    await app.evaluate(({ app, BrowserWindow, dialog }, input) => {
-      if (app.getPath('userData') !== input.profile) throw Error('Call acceptance must be isolated');
+    await app.evaluate(({ app, BrowserWindow }, expected) => {
+      if (app.getPath('userData') !== expected) throw Error('Call acceptance must be isolated');
       for (const window of BrowserWindow.getAllWindows()) { window.on('show', () => window.hide()); window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false); window.setSize(1600, 1000); window.hide(); }
-      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [input.attachment] });
-    }, { profile, attachment });
-    await page.locator('[data-application-module="companions"]').click();
-    const original = await page.evaluate(async () => {
-      const state = await (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state' });
-      return { rooms: state.snapshot!.conversations.map(room => room.id), room: state.snapshot!.conversations.find(room => room.kind === 'direct' && room.memberIds.includes('builtin-dafeiyu'))!.id };
-    });
-    await page.evaluate(async room => {
-      const api = Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi; companionBotMedia: WorldlineBoxBotMediaApi };
-      const imported = await api.companionBotMedia.request({ type: 'files.pick', conversationId: room });
-      if (!imported.ok || !imported.media?.length) throw Error('Call attachment import failed');
-      const shared = await api.companionBot.request({ type: 'message.send', conversationId: room, content: '', attachmentIds: [imported.media[0]!.id], requestId: 'call-attachment' });
-      if (!shared.ok) throw Error('Call attachment share failed');
-    }, original.room);
+    }, profile);
+    await page.locator(workspaceModule).click();
+    await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeDisabled();
+    await enableCallVisualFixture(app, page);
+    const attachmentPaths = ['会面参考图.png', '长文件名的舞台设计说明.txt', '对话节奏记录.md'].map(name => path.join(profile, name));
+    await copyFile(path.resolve('public/companion-call/scenes/evening.png'), attachmentPaths[0]!);
+    await Promise.all(attachmentPaths.slice(1).map(file => writeFile(file, '仅用于会面附件验收。')));
+    await app.evaluate(({ dialog }, filePaths) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths }); }, attachmentPaths);
     await page.evaluate(() => { const OriginalAudio = window.Audio; window.Audio = class extends OriginalAudio { constructor(src?: string) { super(src); Reflect.set(window, '__callAcceptanceAudio', this); } }; });
     await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
     const meeting = page.getByRole('dialog', { name: '与大肥鱼会面', exact: true }); await expect(meeting).toContainText('等待你接通');
-    await expect.poll(() => page.evaluate(() => { const audio = Reflect.get(window, '__callAcceptanceAudio') as HTMLAudioElement; return audio?.duration; })).toBe(26);
+    const ringtone = () => page.evaluate(() => {
+      const audio = Reflect.get(window, '__callAcceptanceAudio') as HTMLAudioElement;
+      return { src: audio.getAttribute('src'), duration: audio.duration, paused: audio.paused, muted: audio.muted };
+    });
+    await expect.poll(async () => (await ringtone()).duration).toBeCloseTo(127.15, 1);
+    expect((await ringtone()).src).toMatch(/\/ringtones\/dafeiyu-let-me-go\.ogg$/);
+    await expect.poll(async () => (await ringtone()).paused).toBe(false);
+    await meeting.getByRole('button', { name: '静音铃声', exact: true }).click();
+    expect(await ringtone()).toMatchObject({ muted: true, paused: false });
+    await meeting.getByRole('button', { name: '开启铃声', exact: true }).click();
+    expect(await ringtone()).toMatchObject({ muted: false, paused: false });
     expect(await page.evaluate(() => (Reflect.get(window, '__callAcceptanceAudio') as HTMLAudioElement).loop)).toBe(true);
     await expect(meeting.locator('.bot-call-live2d')).toHaveCount(0);
     const evidence = path.resolve('artifacts/superagent-bot-development/ui'); await mkdir(evidence, { recursive: true });
@@ -49,11 +62,15 @@ test('companion meeting loads real Live2D and native actions, shares the origina
       const file = testInfo.outputPath(name); await writeFile(file, Buffer.from(png, 'base64')); await copyFile(file, path.join(evidence, name));
     };
     await capture('companion-call-dialing.png'); await meeting.getByRole('button', { name: '接通', exact: true }).click();
-    expect(await page.evaluate(() => (Reflect.get(window, '__callAcceptanceAudio') as HTMLAudioElement).paused)).toBe(true);
+    await expect.poll(() => page.evaluate(() => (Reflect.get(window, '__callAcceptanceAudio') as HTMLAudioElement).paused)).toBe(true);
     await expect(meeting.locator('.bot-call-model-error')).toHaveCount(0);
     await expect(meeting.locator('.bot-call-loading')).toHaveCount(0, { timeout: 90000 });
     expect(await meeting.locator('.bot-call-model-error').allTextContents()).toEqual([]);
     await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
+    const renderedPose = await observeCallRenderedPose(page);
+    const sceneCanvas = meeting.locator('.bot-call-live2d canvas');
+    const resolution = (canvas: HTMLCanvasElement) => canvas.width / canvas.clientWidth;
+    const originalResolution = await sceneCanvas.evaluate(resolution);
     await capture('companion-call-portrait-default.png');
     await meeting.getByRole('button', { name: '会面菜单', exact: true }).click();
     await expect(meeting.getByRole('button', { name: '全身取景', exact: true })).toBeVisible();
@@ -62,9 +79,16 @@ test('companion meeting loads real Live2D and native actions, shares the origina
     await meeting.getByRole('button', { name: '会面菜单', exact: true }).click();
     await meeting.locator('.bot-call-history-toggle').click();
     await meeting.getByRole('tab', { name: '操作', exact: true }).click();
+    await meeting.getByText('表情与动作', { exact: true }).click();
     await expect(meeting.getByLabel('选择模型表情', { exact: true }).locator('option')).toHaveCount(24);
     await expect(meeting.getByLabel('选择模型动作', { exact: true }).locator('option')).toHaveCount(9);
-    const catalog = await page.evaluate(async () => (await fetch(new URL('companion-call/deepseek/catalog.json', document.baseURI))).json() as Promise<{ expressions: { name: string; file: string }[]; motions: { name: string; file: string }[] }>);
+    await meeting.getByLabel('选择模型表情', { exact: true }).selectOption({ label: '流泪' });
+    await expect.poll(async () => (await renderedPose())?.tear ?? 0).toBeGreaterThan(.8);
+    await meeting.getByLabel('选择模型动作', { exact: true }).selectOption({ label: '默认手切举手' });
+    await meeting.getByRole('button', { name: '播放动作', exact: true }).click();
+    await expect.poll(async () => (await renderedPose())?.hand ?? 0, { intervals: [30], timeout: 1800 }).toBeGreaterThan(.5);
+    expect((await renderedPose())?.tear).toBeGreaterThan(.8);
+    const catalog = JSON.parse(await readFile(path.resolve('public/companion-call/deepseek/catalog.json'), 'utf8')) as { expressions: { name: string; file: string }[]; motions: { name: string; file: string }[] };
     for (const item of catalog.expressions) {
       await meeting.getByLabel('选择模型表情', { exact: true }).selectOption({ label: item.name });
       await expect.poll(() => [...loadedNativeFiles].some(url => url.endsWith(item.file))).toBe(true);
@@ -75,11 +99,13 @@ test('companion meeting loads real Live2D and native actions, shares the origina
     }
     await meeting.getByLabel('选择模型表情', { exact: true }).selectOption({ label: '脸红' });
     await meeting.getByLabel('选择模型动作', { exact: true }).selectOption({ label: '默认手切举手' }); await meeting.getByRole('button', { name: '播放动作', exact: true }).click();
+    await meeting.getByText('神态与姿态', { exact: true }).click();
     await meeting.getByRole('button', { name: '点头', exact: true }).click();
     await meeting.getByRole('button', { name: '全身', exact: true }).click(); await capture('companion-call-live2d-controls.png');
     await meeting.getByRole('button', { name: '恢复默认姿态', exact: true }).click();
     await meeting.getByRole('button', { name: '半身', exact: true }).click();
     await meeting.getByRole('tab', { name: '对话', exact: true }).click();
+    await meeting.getByRole('button', { name: '收起会面面板', exact: true }).click();
     await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
     await meeting.getByRole('button', { name: '表情', exact: true }).click();
     const emoji = meeting.getByRole('button', { name: '🐳', exact: true }); await expect(emoji).toBeVisible();
@@ -87,22 +113,202 @@ test('companion meeting loads real Live2D and native actions, shares the origina
     const dictate = meeting.getByRole('button', { name: '语音转文字', exact: true }); await dictate.click();
     const localVoice = meeting.getByRole('region', { name: '本地语音', exact: true }); await expect(localVoice).toBeVisible();
     await dictate.press('Escape'); await expect(localVoice).toHaveCount(0); await expect(meeting).toBeVisible();
-    await meeting.getByRole('button', { name: '打开预览 会面聊天附件.md', exact: true }).click();
-    const preview = page.getByRole('dialog', { name: '会面聊天附件.md', exact: true }); await expect(preview).toContainText('会面沿用聊天附件服务');
-    expect(await page.evaluate(() => Number(getComputedStyle(document.querySelector('.bot-attachment-viewer-backdrop')!).zIndex) > Number(getComputedStyle(document.querySelector('.bot-call-overlay')!).zIndex))).toBe(true);
-    await preview.press('Escape'); await expect(preview).toHaveCount(0); await expect(meeting).toBeVisible();
-    await meeting.getByRole('textbox', { name: '发送消息…', exact: true }).fill('会面验收：这条消息必须出现在原来的私聊中。');
-    expect(await meeting.getByRole('textbox', { name: '发送消息…', exact: true }).evaluate(field => getComputedStyle(field).outlineWidth)).toBe('0px');
+    await meeting.getByRole('textbox', { name: '发送消息…', exact: true }).fill('会面里的独立草稿。');
     await capture('companion-call-full-composer-focused.png');
-    await meeting.getByRole('button', { name: '发送 ↑', exact: true }).click(); await expect(meeting.locator('.bot-call-transcript')).toContainText('会面验收：');
-    const after = await page.evaluate(async room => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request({ type: 'state', conversationId: room }), original.room);
-    expect(after.snapshot!.conversations.map(room => room.id)).toEqual(original.rooms);
-    expect(after.snapshot!.messages.filter(message => message.senderId === 'user' && message.content.includes('会面验收：'))).toHaveLength(1);
-    await capture('companion-call-live2d-chat.png'); await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click(); await expect(meeting).toHaveCount(0);
-    await expect(page.locator('.bot-transcript')).toContainText('会面验收：'); await expect(page.locator('.bot-call-live2d canvas')).toHaveCount(0);
+    if (process.platform === 'win32') {
+      const duration = await meeting.locator('time').textContent();
+      const opened = app.waitForEvent('window');
+      await meeting.getByRole('button', { name: '切换为桌宠', exact: true }).click();
+      const pet = await opened;
+      pet.on('pageerror', error => errors.push(error.message));
+      const floating = pet.getByRole('dialog', { name: '与大肥鱼会面', exact: true });
+      await expect(meeting).toHaveCount(0);
+      await expect(floating.locator('.bot-call-live2d canvas')).toBeVisible();
+      const petCanvas = floating.locator('.bot-call-live2d canvas');
+      await expect.poll(() => petCanvas.evaluate(resolution)).toBeGreaterThanOrEqual(1.99);
+      await expect(floating.getByRole('textbox')).toHaveValue('会面里的独立草稿。');
+      const composer = floating.locator('.bot-composer');
+      const compactBox = (await composer.boundingBox())!;
+      const inputBox = (await floating.getByRole('textbox').boundingBox())!;
+      expect(compactBox.height).toBeLessThan(58);
+      expect(inputBox.x - compactBox.x).toBeLessThan(18);
+      const hangup = floating.getByRole('button', { name: '挂断', exact: true });
+      await expect(floating.locator('.bot-call-input-group').getByRole('button', { name: '挂断', exact: true })).toBeVisible();
+      await expect(floating.locator('.bot-call-header')).toHaveCount(0);
+      const more = floating.getByRole('button', { name: '更多会面功能', exact: true });
+      await expect(more).toHaveAttribute('aria-expanded', 'false');
+      const topics = floating.getByRole('region', { name: '会面话题' });
+      await expect(topics.getByRole('button', { name: '新话题', exact: true })).toBeVisible();
+      await expect(topics.getByRole('button', { name: '压缩', exact: true })).toBeVisible();
+      const topicsBox = (await topics.boundingBox())!;
+      expect(topicsBox.y + topicsBox.height).toBeLessThan(compactBox.y);
+      await expect(floating.getByRole('button', { name: '表情', exact: true })).toHaveCount(0);
+      const buttonBounds = (await hangup.boundingBox())!, iconBounds = (await hangup.locator('svg').boundingBox())!;
+      expect(Math.abs(buttonBounds.y + buttonBounds.height - inputBox.y - inputBox.height)).toBeLessThan(5);
+      expect(Math.abs(buttonBounds.x + buttonBounds.width / 2 - iconBounds.x - iconBounds.width / 2)).toBeLessThan(1);
+      expect(Math.abs(buttonBounds.y + buttonBounds.height / 2 - iconBounds.y - iconBounds.height / 2)).toBeLessThan(1);
+      await hangup.click({ trial: true });
+      await expect(floating.locator('.bot-call-scene')).toHaveCSS('background-image', 'none');
+      await expect(pet.locator('body')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+      const window = await app.browserWindow(pet);
+      expect(await window.evaluate(native => ({ top: native.isAlwaysOnTop(), visible: native.isVisible(), resize: native.isResizable() })))
+        .toEqual({ top: true, visible: true, resize: false });
+      const gripBox = (await floating.locator('[data-pet-drag]').boundingBox())!;
+      const gripX = gripBox.x + gripBox.width / 2, gripY = gripBox.y + gripBox.height / 2;
+      const bounds = () => window.evaluate(native => native.getBounds());
+      const before = await bounds(), beforeCanvas = (await petCanvas.boundingBox())!;
+      for (let index = 0; index < 4; index++) {
+        const start = await bounds();
+        await pet.mouse.move(gripX, gripY);
+        await pet.mouse.down();
+        // Move away from the right edge of the shaped native window.
+        const distance = -36;
+        await pet.mouse.move(gripX + distance, gripY - 12);
+        await expect.poll(async () => (await bounds()).x - start.x).toBeCloseTo(distance, -1);
+        await pet.mouse.up();
+        expect(await bounds()).toMatchObject({ width: before.width, height: before.height });
+      }
+      expect(await petCanvas.boundingBox()).toEqual(beforeCanvas);
+      const capture = await window.evaluate(async (native, topicBounds) => {
+        const frame = await native.webContents.capturePage();
+        const pixels = frame.toBitmap();
+        const { width, height } = frame.getSize();
+        const { width: cssWidth, height: cssHeight } = native.getContentBounds();
+        const characterOffset = (Math.floor(height * .36) * width + Math.floor(width / 2)) * 4;
+        const topicY = Math.floor((topicBounds.y + 3) * height / cssHeight);
+        const topicPixels = [.05, .5, .95].map(ratio => {
+          const x = Math.floor((topicBounds.x + topicBounds.width * ratio) * width / cssWidth);
+          const offset = (topicY * width + x) * 4;
+          return [...pixels.subarray(offset, offset + 4)];
+        });
+        return { cornerAlpha: pixels[3], characterAlpha: pixels[characterOffset + 3], topicPixels, width, height, cssWidth, cssHeight, png: frame.toPNG().toString('base64') };
+      }, topicsBox);
+      expect(capture).toMatchObject({ cornerAlpha: 0, characterAlpha: 255 });
+      const petImage = Buffer.from(capture.png, 'base64');
+      await testInfo.attach('desktop-pet', { body: petImage, contentType: 'image/png' });
+      await expect(topics).toHaveCSS('background-color', 'rgb(245, 249, 253)');
+      for (const [blue, green, red, alpha] of capture.topicPixels) {
+        expect(alpha, JSON.stringify({ topicsBox, image: [capture.width, capture.height], window: [capture.cssWidth, capture.cssHeight], samples: capture.topicPixels })).toBe(255);
+        expect(Math.min(blue!, green!, red!)).toBeGreaterThan(225);
+      }
+      await writeFile(path.join(evidence, 'companion-call-desktop-pet.png'), petImage);
+      await more.press('Tab');
+      await pet.keyboard.press('Shift+Tab');
+      await expect(more).toBeFocused();
+      await expect(more).toHaveCSS('outline-offset', '-2px');
+      await more.click();
+      await expect(more).toHaveAttribute('aria-expanded', 'true');
+      await expect(more).toHaveCSS('box-shadow', /inset/);
+      await expect.poll(async () => floating.locator('time').textContent()).not.toBe(duration);
+      await expect(floating.locator('.bot-call-input-group').getByRole('button', { name: '返回会面场景', exact: true })).toBeVisible();
+      await expect(floating.locator('.bot-call-pet-identity')).toHaveText('大肥鱼');
+      await expect(topics).toBeVisible();
+      await expect(floating.locator('.bot-call-pet-options').getByRole('region', { name: '会面话题' })).toHaveCount(0);
+      const optionsBox = (await floating.locator('.bot-call-pet-options').boundingBox())!;
+      const expandedComposer = (await composer.boundingBox())!;
+      expect(optionsBox.y + optionsBox.height).toBeLessThan(topicsBox.y);
+      const center = (box: { x: number; width: number }) => box.x + box.width / 2;
+      expect(Math.abs(center(optionsBox) - center(topicsBox))).toBeLessThan(1);
+      expect(Math.abs(center(optionsBox) - center(expandedComposer))).toBeLessThan(1);
+      expect(expandedComposer.height).toBe(compactBox.height);
+      const toolsScreenshot = await window.evaluate(async native => (await native.webContents.capturePage()).toPNG().toString('base64'));
+      await writeFile(path.join(evidence, 'companion-call-desktop-pet-tools.png'), Buffer.from(toolsScreenshot, 'base64'));
+      await topics.locator('.bot-topic-current').click();
+      await expect(floating.getByRole('dialog', { name: '接入之前的话题' })).toBeVisible();
+      await expect(more).toHaveAttribute('aria-expanded', 'false');
+      await floating.getByRole('button', { name: '关闭话题列表', exact: true }).click();
+      await more.click();
+      await floating.getByRole('button', { name: '会面聊天记录', exact: true }).click();
+      const history = floating.getByRole('region', { name: '会面聊天', exact: true });
+      await expect(history).toContainText('这个话题还没有消息。');
+      await expect(history).toHaveCSS('background-color', 'rgb(251, 253, 255)');
+      await expect(history.getByRole('tab', { name: '操作' })).toHaveCSS('color', 'rgb(64, 91, 120)');
+      const historyBox = (await history.boundingBox())!;
+      expect(historyBox.height).toBeLessThanOrEqual(144);
+      expect(historyBox.y + historyBox.height).toBeLessThan(topicsBox.y);
+      const historyScreenshot = await window.evaluate(async native => (await native.webContents.capturePage()).toPNG().toString('base64'));
+      await writeFile(path.join(evidence, 'companion-call-desktop-pet-history.png'), Buffer.from(historyScreenshot, 'base64'));
+      await history.getByRole('button', { name: '收起会面面板' }).click();
+      await more.click();
+      await floating.getByRole('button', { name: '全身取景', exact: true }).click();
+      await expect(floating).toHaveClass(/is-full-body/);
+      await more.click();
+      const fullStage = (await petCanvas.boundingBox())!;
+      const petDock = (await floating.locator('.bot-call-dock').boundingBox())!;
+      expect(fullStage.y + fullStage.height).toBeLessThanOrEqual(petDock.y + 1);
+      await pet.waitForTimeout(250);
+      const full = await window.evaluate(async native => {
+        const frame = await native.webContents.capturePage();
+        return frame.toPNG().toString('base64');
+      });
+      await writeFile(path.join(evidence, 'companion-call-desktop-pet-full-body.png'), Buffer.from(full, 'base64'));
+      await more.click();
+      await floating.getByRole('button', { name: '场景与互动', exact: true }).click();
+      const size = floating.getByRole('slider', { name: '形象大小', exact: true });
+      const horizontal = floating.getByRole('slider', { name: '水平位置', exact: true });
+      const vertical = floating.getByRole('slider', { name: '垂直位置', exact: true });
+      await expect(size).toHaveValue('1');
+      await expect(vertical).toHaveValue('0');
+      await size.press('ArrowRight'); await horizontal.press('ArrowRight'); await vertical.press('ArrowLeft');
+      await expect(size).toHaveValue('1.01');
+      await expect(floating.getByRole('button', { name: '点头', exact: true })).not.toBeVisible();
+      await floating.getByText('神态与姿态', { exact: true }).click();
+      await floating.getByRole('button', { name: '点头', exact: true }).click();
+      await expect(horizontal).toHaveValue('0.01');
+      await expect(vertical).toHaveValue('-0.01');
+      await floating.getByRole('button', { name: '重置取景', exact: true }).click();
+      await expect(size).toHaveValue('1.9');
+      await expect(horizontal).toHaveValue('0'); await expect(vertical).toHaveValue('0');
+      await floating.getByRole('button', { name: '收起会面面板', exact: true }).click();
+      await more.click();
+      await floating.getByRole('button', { name: '表情', exact: true }).click();
+      const petEmoji = floating.getByRole('button', { name: '🐳', exact: true });
+      await expect(petEmoji).toBeVisible();
+      await petEmoji.press('Escape'); await expect(petEmoji).toHaveCount(0);
+      await floating.getByRole('textbox').fill('在桌宠窗口编辑。');
+      await floating.getByRole('button', { name: '添加文件', exact: true }).click();
+      const draftAttachments = floating.getByRole('region', { name: '待发送附件' });
+      await expect(draftAttachments.getByRole('listitem')).toHaveCount(2);
+      await draftAttachments.getByRole('button', { name: '查看全部 3 个附件' }).click();
+      await expect(draftAttachments.getByRole('listitem')).toHaveCount(3);
+      await draftAttachments.getByRole('button', { name: '预览 会面参考图.png' }).click();
+      const preview = pet.getByRole('dialog', { name: '会面参考图.png', exact: true });
+      await expect(preview).toBeVisible();
+      await expect(preview.locator('img')).toHaveJSProperty('complete', true);
+      await preview.getByRole('button', { name: '关闭预览' }).click();
+      const attachmentsScreenshot = await window.evaluate(async native => (await native.webContents.capturePage()).toPNG().toString('base64'));
+      await writeFile(path.join(evidence, 'companion-call-desktop-pet-attachments.png'), Buffer.from(attachmentsScreenshot, 'base64'));
+      await draftAttachments.getByRole('button', { name: '移除 对话节奏记录.md' }).click();
+      await expect(draftAttachments.getByRole('listitem')).toHaveCount(2);
+      await more.press('Escape');
+      await expect(more).toHaveAttribute('aria-expanded', 'false');
+      await expect(floating.getByRole('textbox')).toHaveValue('在桌宠窗口编辑。');
+      await more.click();
+      const closed = pet.waitForEvent('close');
+      await floating.getByRole('button', { name: '返回会面场景', exact: true }).click().catch(error => { if (!pet.isClosed()) throw error; });
+      await closed;
+      await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
+      await expect.poll(() => sceneCanvas.evaluate(resolution)).toBeCloseTo(originalResolution, 1);
+      await expect(meeting.getByRole('textbox')).toHaveValue('在桌宠窗口编辑。');
+      await expect(meeting.locator('.bot-call-scene')).not.toHaveCSS('background-image', 'none');
+      const reopened = app.waitForEvent('window');
+      await meeting.getByRole('button', { name: '切换为桌宠', exact: true }).click();
+      const secondPet = await reopened;
+      const ended = secondPet.waitForEvent('close');
+      const endCall = secondPet.getByRole('button', { name: '挂断', exact: true });
+      await endCall.click().catch(error => { if (!secondPet.isClosed()) throw error; });
+      await ended;
+      await expect(meeting).toHaveCount(0);
+    } else {
+      await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
+    }
+    await expect(meeting).toHaveCount(0); await expect(page.locator('.bot-call-live2d canvas')).toHaveCount(0);
     await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click(); await expect(meeting).toContainText('等待你接通');
+    await expect.poll(async () => (await ringtone()).paused).toBe(false);
+    const ringtoneSeconds = (await ringtone()).duration;
     await meeting.getByRole('button', { name: '取消', exact: true }).click(); await expect(meeting).toHaveCount(0);
+    expect(await ringtone()).toMatchObject({ paused: true, src: null });
     expect(errors).toEqual([]);
-    await writeFile(path.join(evidence, 'companion-call-evidence.json'), JSON.stringify({ actualCoreAndModelLoaded: true, expressions: catalog.expressions.length, motions: catalog.motions.length, allNativeFilesLoadedAndControlsInvoked: true, sameChatAttachmentPreview: true, standardEmojiAndVoiceEscapePreservesMeeting: true, composerUsesOneOuterFocusIndicator: true, ringtoneSeconds: 26, explicitUserConnect: true, sameConversation: original.room, modelCalls: 0, noSeparateAgentLoop: true, errors }, null, 2));
+    await writeFile(path.join(evidence, 'companion-call-evidence.json'), JSON.stringify({ actualCoreAndModelLoaded: true, expressions: catalog.expressions.length, motions: catalog.motions.length, allNativeFilesLoadedAndControlsInvoked: true, standardEmojiAndVoiceEscapePreservesMeeting: true, ringtoneSeconds, explicitUserConnect: true, modelCalls: 0, errors }, null, 2));
   } finally { await app.close(); await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); }
 });

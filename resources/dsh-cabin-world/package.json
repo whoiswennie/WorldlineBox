@@ -1,0 +1,13 @@
+{
+  "name": "@worldlinebox/dsh-cabin-world",
+  "version": "1.1.0",
+  "description": "Cabin World tools for WorldlineBox companion workers in DeepSeek Harness",
+  "type": "module",
+  "main": "index.js",
+  "files": ["index.js", "server.js", "cordis.patch.yml", "README.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "engines": { "dsh": ">=0.2.2-rc.2" },
+  "dependencies": { "@modelcontextprotocol/sdk": "1.30.0" },
+  "peerDependencies": { "@deepseek-ai/dsh-mcp-client": ">=0.2.2-rc.2" },
+  "license": "MIT"
+}

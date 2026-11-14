@@ -43,6 +43,11 @@ export function BotPresenceSummary({ companions, presence, locale }: { companion
   const entries = companions.flatMap(person => person.enabled !== false && presence?.[person.id] ? [presence[person.id]!] : []);
   const now = usePresenceClock(entries.find(state => state.expiresAt));
   const first = [...entries].sort((a, b) => order.indexOf(botPresenceStatus(a, now)) - order.indexOf(botPresenceStatus(b, now)))[0];
-  if (!first) return companions.length && companions.every(person => person.enabled === false) ? <span className="bot-presence-text" data-presence="disabled">{locale === 'zh-CN' ? '已关闭' : 'Disabled'}</span> : null;
-  return <span className="bot-presence-summary" role="status"><span className="bot-presence-indicator" data-presence={botPresenceStatus(first, now)} /><BotPresenceText presence={first} locale={locale} /></span>;
+  const status = first ? botPresenceStatus(first, now) : companions.length && companions.every(person => person.enabled === false) ? 'disabled' : undefined;
+  if (!status) return null;
+  const label = status === 'disabled' ? locale === 'zh-CN' ? '已关闭' : 'Disabled' : labels[status][locale === 'zh-CN' ? 0 : 1];
+  return <span className="bot-presence-summary" role="status">
+    <span className="bot-presence-indicator" data-presence={status} aria-hidden="true" />
+    <span className="bot-presence-text" data-presence={status}>{label}</span>
+  </span>;
 }

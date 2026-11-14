@@ -7,7 +7,7 @@ export interface BotCallVoiceCapture {
   cancel(): void;
 }
 export interface BotCallVoiceState {
-  phase: 'off' | 'preparing' | 'listening' | 'recognizing' | 'waiting' | 'speaking' | 'error';
+  phase: 'off' | 'preparing' | 'listening' | 'recognizing' | 'waiting' | 'error';
   enabled: boolean; turn: number; transcript?: string; error?: string; canRetrySend?: boolean;
 }
 export interface BotCallVoiceOptions {
@@ -15,7 +15,6 @@ export interface BotCallVoiceOptions {
   captureFactory(): BotCallVoiceCapture;
   /** This callback must stay bound to the original meeting conversation. */
   send(text: string, requestId: string): Promise<boolean>;
-  stopSpeech(): void;
   changed(state: BotCallVoiceState): void;
 }
 interface Capture { recorder: BotCallVoiceCapture; epoch: number; stopping: boolean }
@@ -32,7 +31,6 @@ export class BotCallVoiceSession {
   private attempt?: SendAttempt;
   private sending = false;
   private resumeRequested = false;
-  private playbackBlocked = false;
   private preparingResourcesEpoch?: number;
   private pendingTyped?: { text: string; requestId: string; promise: Promise<boolean> };
   constructor(private readonly options: BotCallVoiceOptions) {}
@@ -55,18 +53,17 @@ export class BotCallVoiceSession {
     try { return await this.options.api.request(input); }
     finally { this.activeRequests.delete(input.requestId); }
   }
-  private fail(error: unknown, epoch: number, stopSpeech = true): void {
+  private fail(error: unknown, epoch: number): void {
     if (!this.current(epoch)) return;
-    this.cancelWork(); this.playbackBlocked = false;
+    this.cancelWork();
     this.publish({ phase: 'error', error: error instanceof Error ? error.message : '语音对话暂时不可用，请重试。' });
-    if (stopSpeech) this.options.stopSpeech();
   }
 
   /** Called only by a deliberate user's enable/start action. */
   async start(): Promise<void> {
     if (this.closed || this.value.enabled && !['off', 'error'].includes(this.value.phase)) return;
-    const epoch = this.cancelWork(); this.attempt = undefined; this.prepared = false; this.playbackBlocked = false;
-    this.publish({ enabled: true, phase: 'preparing', transcript: undefined, error: undefined }); this.options.stopSpeech();
+    const epoch = this.cancelWork(); this.attempt = undefined; this.prepared = false;
+    this.publish({ enabled: true, phase: 'preparing', transcript: undefined, error: undefined });
     await this.prepareResources(epoch);
   }
   private async prepareResources(epoch: number): Promise<void> {
@@ -82,16 +79,15 @@ export class BotCallVoiceSession {
         if (!prepared.ok || prepared.cancelled) throw Error(prepared.error || '语音资源准备未完成，请重试。');
       }
       this.prepared = true;
-      if (this.playbackBlocked) { this.publish({ phase: 'speaking' }); return; }
       await this.listen(epoch);
     } catch (error) { this.fail(error, epoch); }
     finally { if (this.preparingResourcesEpoch === epoch) this.preparingResourcesEpoch = undefined; }
   }
   private async listen(epoch: number): Promise<void> {
-    if (!this.current(epoch) || !this.prepared || this.playbackBlocked) return;
+    if (!this.current(epoch) || !this.prepared) return;
     this.resumeRequested = false; this.attempt = undefined;
     this.publish({ phase: 'preparing', turn: this.value.turn + 1, transcript: undefined, error: undefined });
-    if (!this.current(epoch) || this.playbackBlocked) return;
+    if (!this.current(epoch)) return;
     const capture: Capture = { recorder: this.options.captureFactory(), epoch, stopping: false }; this.capture = capture;
     try {
       const started = await capture.recorder.start(() => this.finishUtterance());
@@ -153,27 +149,16 @@ export class BotCallVoiceSession {
   sendAction(text: string, requestId: string, perform: () => Promise<boolean>): Promise<boolean> {
     if (this.closed || !this.value.enabled || !requestId) return Promise.resolve(false);
     if (this.pendingTyped?.requestId === requestId) return this.pendingTyped.text === text ? this.pendingTyped.promise : Promise.resolve(false);
-    const epoch = this.cancelWork(); this.playbackBlocked = false;
+    const epoch = this.cancelWork();
     this.attempt = { text, requestId, accepted: false, perform };
-    // Publish preparing before stopping old speech: its synchronous idle callback
-    // must not re-open the microphone for this newly submitted turn.
-    this.publish({ phase: 'preparing', turn: this.value.turn + 1, transcript: text, error: undefined }); this.options.stopSpeech();
+    this.publish({ phase: 'preparing', turn: this.value.turn + 1, transcript: text, error: undefined });
     const pending = { text, requestId, promise: Promise.resolve(false) }; this.pendingTyped = pending;
     pending.promise = this.deliver(epoch).finally(() => { if (this.pendingTyped === pending) this.pendingTyped = undefined; });
     return pending.promise;
   }
-  /** Preparation/playback blocks the mic; Root opens the next turn after the whole queue ends. */
-  markSpeaking(turn = this.value.turn): void {
-    if (this.closed || !this.value.enabled || turn !== this.value.turn || ['off', 'error'].includes(this.value.phase)) return;
-    // Unsolicited playback also closes the mic, preventing speaker audio re-recording.
-    if (this.prepared && !['waiting', 'speaking'].includes(this.value.phase)) this.cancelWork();
-    this.playbackBlocked = true;
-    this.publish({ phase: 'speaking', error: undefined });
-  }
-  /** Root calls after the associated reply fully ends, or when reading is disabled. */
+  /** Open the microphone once the associated reply finishes. */
   readyForNextTurn(turn = this.value.turn): void {
-    if (this.closed || !this.value.enabled || turn !== this.value.turn || !['waiting', 'speaking'].includes(this.value.phase)) return;
-    this.playbackBlocked = false;
+    if (this.closed || !this.value.enabled || turn !== this.value.turn || this.value.phase !== 'waiting') return;
     if (!this.prepared) {
       if (this.preparingResourcesEpoch !== this.epoch) { this.publish({ phase: 'preparing' }); void this.prepareResources(this.epoch); }
       return;
@@ -183,28 +168,21 @@ export class BotCallVoiceSession {
   }
   /** An exact reply ID proves acceptance, even if the send acknowledgement is still pending. */
   replyFailed(error: string, turn = this.value.turn): void {
-    if (this.closed || !this.value.enabled || turn !== this.value.turn || !['waiting', 'speaking'].includes(this.value.phase)) return;
+    if (this.closed || !this.value.enabled || turn !== this.value.turn || this.value.phase !== 'waiting') return;
     if (this.attempt) this.attempt.accepted = true;
-    this.fail(Error(error || '伙伴回复或朗读未完成，可以重新开始语音。'), this.epoch, false);
+    this.fail(Error(error || '伙伴回复未完成，可以重新开始语音。'), this.epoch);
   }
-  /** Re-arm an enabled conversation for a deliberate TTS retry, without resending chat. */
-  waitForPlayback(): void {
-    if (this.closed || !this.value.enabled || !this.prepared) return;
-    this.cancelWork(); this.attempt = undefined; this.playbackBlocked = true;
-    this.publish({ phase: 'speaking', error: undefined });
-  }
-  /** Explicit barge-in: stop playback before opening a new microphone capture. */
+  /** Start another utterance without waiting for the previous response. */
   async interruptTalk(): Promise<void> {
     if (this.closed || !this.value.enabled) return;
-    const epoch = this.cancelWork(); this.playbackBlocked = false;
-    this.publish({ phase: 'preparing', error: undefined }); this.options.stopSpeech();
+    const epoch = this.cancelWork();
+    this.publish({ phase: 'preparing', error: undefined });
     try { if (this.prepared) await this.listen(epoch); else { this.publish({ enabled: false, phase: 'off' }); await this.start(); } }
     catch (error) { this.fail(error, epoch); }
   }
-  pause(): void { this.stop(); }
   stop(): void {
     if (this.closed) return;
-    this.cancelWork(); this.playbackBlocked = false; this.publish({ enabled: false, phase: 'off', error: undefined }); this.options.stopSpeech();
+    this.cancelWork(); this.publish({ enabled: false, phase: 'off', error: undefined });
   }
   dispose(): void {
     if (this.closed) return;

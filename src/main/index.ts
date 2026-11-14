@@ -5,13 +5,19 @@ import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
 import type { BotService } from './companion-bot/service';
+import { startMobileGateway } from './companion-bot/mobile-gateway';
+import { MobileAccessSettings } from './companion-bot/mobile-access-settings';
+import { DeepSeekSpeech, speechText } from './companion-bot/deepseek-speech';
+import { startMobileSsh } from './companion-bot/mobile-ssh';
+import { hasFixedMobilePublicEndpoint, startMobilePublicTunnel } from './companion-bot/mobile-public-tunnel';
+import { MOBILE_ACCESS_CHANNEL, mobileSettingsRequest } from '../shared/mobile-access';
+import { bindCallPetWindow, callPetFor } from './companion-bot/call-pet-window';
 import type { BotDataCleanupService } from './companion-bot/data-cleanup';
-import { BOT_CHANNEL, BOT_EVENT_CHANNEL, botRequestSchema } from '../shared/companion-bot';
+import { BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, botSpeechRequest } from '../shared/companion-bot';
 import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
 import type { BotMediaService } from './companion-bot/media-service';
 import { LOCAL_SPEECH_CHANNEL, localSpeechRequestSchema, type LocalSpeechResponse } from '../shared/local-speech';
 import { LocalSpeechService } from './local-speech-service';
-import { registerBotSpeechIpc } from './companion-bot/speech-ipc';
 import { botCanInspectConversation, botCanImportConversationMedia } from '../shared/companion-bot-access';
 import { GlobalEmbeddingService, createManagedTextEmbeddingService } from './embedding-global-service';
 import { EmbeddingDeviceCapabilityService } from './embedding-device-capability';
@@ -265,9 +271,12 @@ import type {
 import { resolveNativeDialogCopy } from '../shared/native-dialog-i18n';
 
 import { popupEditContextMenu } from "./edit-context-menu";
+import { assetClipboard, completeInternalClipboardMove, completeFileClipboardMove, pendingClipboardMoves, rememberClipboardMove, type FileClipboardSnapshot } from './asset-clipboard';
+import { readWin32ClipboardSequenceNumber } from './win32-file-clipboard';
 import {
   createFileClipboardDeps,
   readFilePathsFromClipboard,
+  readFileClipboard,
   writeFilePathsToClipboard,
 } from "./file-clipboard";
 import {
@@ -572,6 +581,12 @@ import {
   type ListFoldersDisposition,
   type ListCollectionsDisposition,
 } from "./extension-server";
+import { mapWorkerSaveFailure } from "./extension-save-disposition";
+import {
+  SegmentedSourceValidationError,
+  SegmentedMediaTransferManager,
+  type SegmentedMediaCommitInput,
+} from "./segmented-media-transfer";
 import {
   readExtensionBrowseFolderIds,
   recordExtensionBrowseFolder,
@@ -662,7 +677,6 @@ let musicService: MusicService | undefined;
 let botService: BotService | undefined;
 let botDataCleanup: BotDataCleanupService | undefined;
 let localSpeechService: LocalSpeechService | undefined;
-let disposeBotSpeechIpc: (() => void) | undefined;
 let botMediaService: Promise<BotMediaService> | undefined;
 let creatingBotService: Promise<BotService> | undefined;
 const mainProcessSessionId = randomUUID();
@@ -1173,6 +1187,7 @@ function refreshApplicationMenuRecentLibraries(): void {
 }
 
 let extensionServer: ExtensionServer | undefined;
+let segmentedMediaTransferManager: SegmentedMediaTransferManager | undefined;
 let extensionBrowseFoldersStorePath: string | undefined;
 const aiQueueScheduler = new AiQueueScheduler(processAiQueueBatch, {
   batchSize: AI_ANALYSIS_QUEUE_BATCH_SIZE,
@@ -1910,6 +1925,8 @@ let loopbackRelease: Promise<void> | undefined;
 
 function releaseLoopbackListeners(): Promise<void> {
   if (loopbackRelease !== undefined) return loopbackRelease;
+  const segmentedTransferClose = segmentedMediaTransferManager?.dispose() ?? Promise.resolve();
+  segmentedMediaTransferManager = undefined;
   try {
     extensionServer?.server.close();
   } catch (error) {
@@ -1917,7 +1934,7 @@ function releaseLoopbackListeners(): Promise<void> {
   }
   extensionServer = undefined;
   const mcpClose = companionAssetManagerApp.close().then(() => embeddedMcpServer?.close());
-  loopbackRelease = mcpClose.catch((error: unknown) => {
+  loopbackRelease = Promise.all([segmentedTransferClose, mcpClose]).then(() => undefined).catch((error: unknown) => {
     logger?.error("automation.mcp.close", error);
   });
   return loopbackRelease;
@@ -2426,7 +2443,7 @@ async function createMainWindow(): Promise<void> {
       mainWindow = undefined;
     }
   });
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  bindCallPetWindow(window);
   window.webContents.on("will-navigate", (event, url) => { if (!isCurrentDocumentReload(window.webContents.getURL(), url)) event.preventDefault(); });
   window.webContents.session.on("will-download", (event, item) => {
     if (item.getURL().startsWith("worldlinebox-plugin:")) event.preventDefault();
@@ -2729,6 +2746,7 @@ async function handleListFolders(): Promise<ListFoldersDisposition> {
 
   return {
     ok: true,
+    libraryId: saveContext.libraryId,
     libraryDisplayName,
     recentBrowsedFolderIds: (() => {
       let ids = extensionBrowseFoldersStorePath
@@ -2886,21 +2904,22 @@ async function handleSaveIntent(
           reason: result.error.reason,
         },
       );
-      return {
-        accepted: false,
-        status: result.error.code === "LIBRARY_NOT_OPEN" ? 503 : 422,
-        reason: result.error.reason ?? result.error.code,
-      };
+      return mapWorkerSaveFailure(result);
     }
     logger?.info("extension-server.save", "Asset saved successfully.", {
       type: result.type,
     });
-    if (result.type === "extension.asset-saved") {
+    if (result.type === "extension.asset-saved" && !result.duplicate) {
       void enqueueAutoAnalyzeAfterImport(saveContext.libraryId, [
         result.asset.assetId,
       ]);
     }
-    return { accepted: true };
+    return {
+      accepted: true,
+      ...(result.type === "extension.asset-saved" && result.duplicate
+        ? { duplicate: true as const }
+        : {}),
+    };
   } catch (error) {
     logger?.error("extension-server.save", error);
     throw error;
@@ -2934,6 +2953,9 @@ async function handleSaveUpload(
     return { accepted: false, status: 503, reason: "no active library" };
   }
 
+  if (upload.expectedLibraryId !== undefined && upload.expectedLibraryId !== saveContext.libraryId) {
+    return { accepted: false, status: 409, reason: "the original library is no longer active" };
+  }
   const targetFolderId = upload.targetCollectionId ? undefined :
     upload.targetFolderId !== undefined
       ? upload.targetFolderId ?? undefined
@@ -2941,6 +2963,7 @@ async function handleSaveUpload(
 
   const command: WorkerCommand = {
     type: "extension.save-from-file",
+    kind: upload.kind,
     libraryId: saveContext.libraryId,
     targetFolderId,
     sourcePageUrl: upload.sourcePageUrl,
@@ -2970,11 +2993,7 @@ async function handleSaveUpload(
           reason: result.error.reason,
         },
       );
-      return {
-        accepted: false,
-        status: result.error.code === "LIBRARY_NOT_OPEN" ? 503 : 422,
-        reason: result.error.reason ?? result.error.code,
-      };
+      return mapWorkerSaveFailure(result);
     }
     if (result.type !== "extension.asset-saved") {
       return { accepted: false, status: 500, reason: "unexpected worker response" };
@@ -3005,10 +3024,15 @@ async function handleSaveUpload(
         asset: result.asset,
       });
     }
-    void enqueueAutoAnalyzeAfterImport(saveContext.libraryId, [
-      result.asset.assetId,
-    ]);
-    return { accepted: true };
+    if (!result.duplicate) {
+      void enqueueAutoAnalyzeAfterImport(saveContext.libraryId, [
+        result.asset.assetId,
+      ]);
+    }
+    return {
+      accepted: true,
+      ...(result.duplicate ? { duplicate: true as const } : {}),
+    };
   } catch (error) {
     logger?.error("extension-server.save-upload", error);
     throw error;
@@ -3018,6 +3042,80 @@ async function handleSaveUpload(
     } catch (error) {
       logger?.error("extension-server.save-upload-cleanup", error);
     }
+  }
+}
+
+async function commitSegmentedMediaTransfer(
+  transfer: SegmentedMediaCommitInput,
+): Promise<{ duplicate?: true }> {
+  if (!workerClient) throw new Error("Worker unavailable");
+  const result = await workerClient.request({
+    type: "extension.save-segmented-video",
+    libraryId: transfer.target.libraryId,
+    transferId: transfer.sessionId,
+    ...(transfer.target.targetFolderId === undefined
+      ? {}
+      : { targetFolderId: transfer.target.targetFolderId }),
+    sourcePageUrl: transfer.sourcePageUrl,
+    mediaUrl: transfer.mediaUrl,
+    stagingDirectory: transfer.stagingDirectory,
+    contentType: "video/mp4",
+    filename: transfer.filename,
+    protocol: transfer.protocol,
+    totalBytes: transfer.totalBytes,
+    tracks: transfer.tracks,
+  });
+  if (!result.ok) {
+    if (result.errorCode === "SEGMENTED_SOURCE_VALIDATION") {
+      throw new SegmentedSourceValidationError(result.error.reason ?? "The selected video failed media validation.");
+    }
+    throw new Error(result.error.reason ?? result.error.code);
+  }
+  if (result.type !== "extension.asset-saved") throw new Error("Unexpected segmented media worker response");
+
+  if (transfer.target.targetCollectionId) {
+    const added = await workerClient.request({
+      type: "collection.assets.add",
+      libraryId: transfer.target.libraryId,
+      collectionId: transfer.target.targetCollectionId,
+      assetIds: [result.asset.assetId],
+    });
+    if (!added.ok || added.type !== "collection.assets.added") {
+      throw new Error(added.ok ? "Unable to add the asset to its collection" : added.error.reason ?? added.error.code);
+    }
+  }
+  logger?.info("extension-server.segmented-media", "Segmented video saved successfully.", {
+    transferId: transfer.sessionId,
+    byteLength: transfer.totalBytes,
+    assetId: result.asset.assetId,
+  });
+  if (transfer.focusAppAfterSave) {
+    focusWorldlineBoxWindow(transfer.target.targetWindowId ?? undefined);
+  }
+  if (transfer.revealInLibrary) {
+    publishExtensionSaveCompleted(transfer.target.targetWindowId ?? null, {
+      type: "extension.save.completed",
+      libraryId: transfer.target.libraryId,
+      asset: result.asset,
+    });
+  }
+  if (!result.duplicate) {
+    void enqueueAutoAnalyzeAfterImport(transfer.target.libraryId, [result.asset.assetId]);
+  }
+  return result.duplicate ? { duplicate: true } : {};
+}
+
+async function cancelSegmentedMediaWorkerTransfer(
+  transferId: string,
+): Promise<void> {
+  if (!workerClient) return;
+  const result = await workerClient.request({
+    type: "extension.cancel-segmented-video",
+    transferId,
+  });
+  if (!result.ok) throw new Error(result.error.reason ?? result.error.code);
+  if (result.type !== "extension.segmented-video.cancelled") {
+    throw new Error("Unexpected segmented media cancellation response");
   }
 }
 
@@ -3730,6 +3828,9 @@ async function commandFor(
     case "asset.retry-artifact.request": {
       return executeMediaPathMainCommand(request);
     }
+    case 'asset.clipboard-state.request':
+      // Clipboard state is resolved in Main before commandFor dispatch.
+      return undefined;
     case "sync.servers.list.request":
     case "sync.servers.upsert.request":
     case "sync.servers.delete.request":
@@ -3802,6 +3903,8 @@ async function handleLibraryRequest(
   let operation: "create" | "open" | "import" | "open-eagle" | "open-billfish" | undefined;
   let lifecyclePublished = false;
   let clipboardStageDirectory: string | undefined;
+  let pastedAssetClipboardSnapshot: FileClipboardSnapshot | undefined;
+  let pastedFileClipboardMoveSnapshot: FileClipboardSnapshot | undefined;
   let command: WorkerCommand | undefined;
   let retainExternalSource = false;
   let deleteFromDiskLibraryId: string | undefined;
@@ -4087,11 +4190,18 @@ async function handleLibraryRequest(
         },
         clipboardAvailableFormats: () => clipboard.availableFormats(),
         readClipboardFilePaths: () => readFilePathsFromClipboard(createFileClipboardDeps()),
+        readFileClipboard: () => readFileClipboard(createFileClipboardDeps()),
+        readClipboardSequence: readWin32ClipboardSequenceNumber,
+        onCutPasteCompleted: (snapshot, assetIds, folderIds) => completeInternalClipboardMove(snapshot, assetIds, folderIds, {
+          read: () => readFileClipboard(createFileClipboardDeps()), clear: () => clipboard.clear(),
+        }),
       });
       if (ingestion?.kind === "result") return ingestion.result;
       if (ingestion?.kind === "command") {
         command = ingestion.command;
         clipboardStageDirectory = ingestion.clipboardStageDirectory;
+        pastedAssetClipboardSnapshot = ingestion.assetClipboardSnapshot;
+        pastedFileClipboardMoveSnapshot = ingestion.fileClipboardMoveSnapshot;
       } else {
         command = await commandFor(
           request,
@@ -4208,6 +4318,25 @@ async function handleLibraryRequest(
         }
         return result;
       })();
+    const clipboardImportId = request.type === 'asset.import.resolve' || request.type === 'asset.import.skip-source-failure' || request.type === 'asset.import.abandon'
+      ? request.importId : undefined;
+    const fileMoveSnapshot = pastedFileClipboardMoveSnapshot ?? (clipboardImportId ? pendingClipboardMoves.get(clipboardImportId) : undefined);
+    if (fileMoveSnapshot && workerResult.ok) {
+      if (workerResult.type === 'asset.import.conflicts' || workerResult.type === 'asset.import.source-failure') {
+        rememberClipboardMove(workerResult.plan.importId, fileMoveSnapshot);
+      } else if (workerResult.type === 'asset.import.completed') {
+        completeFileClipboardMove(fileMoveSnapshot, {
+          read: () => readFileClipboard(createFileClipboardDeps()),
+          exists: existsSync,
+          write: (paths) => writeFilePathsToClipboard(paths, createFileClipboardDeps(), 'cut'),
+          clear: () => clipboard.clear(),
+        });
+        if (clipboardImportId) pendingClipboardMoves.delete(clipboardImportId);
+      }
+    }
+    if (request.type === 'asset.import.abandon') pendingClipboardMoves.delete(request.importId);
+
+
     if (timedNavigationRequestType) {
       navigationWorkerResumedAt = performance.now();
       logNavigationMainStage('worker-resumed');
@@ -4342,8 +4471,13 @@ async function handleLibraryRequest(
       writeClipboardText: (text) => {
         clipboard.writeText(text);
       },
-      writeClipboardFilePaths: (absolutePaths) =>
-        writeFilePathsToClipboard(absolutePaths, createFileClipboardDeps()),
+      writeClipboardFilePaths: (absolutePaths, operation) =>
+        writeFilePathsToClipboard(absolutePaths, createFileClipboardDeps(), operation),
+      rememberAssetClipboard: (libraryId, assetIds, operation, folderIds, absolutePaths) => {
+        const snapshot = readFileClipboard(createFileClipboardDeps());
+        if (absolutePaths?.some((file, index) => snapshot.paths[index] !== file)) return;
+        assetClipboard.remember(libraryId, assetIds, snapshot, operation, folderIds);
+      },
       openWith: (absolutePath) =>
         openPathWithOtherApplication(
           absolutePath,
@@ -4351,6 +4485,27 @@ async function handleLibraryRequest(
         ),
     });
     if (mediaShellResult) return mediaShellResult;
+
+    if (request.type === 'folder.paste.request' && workerResult.ok &&
+      (workerResult.type === 'asset.moved' || workerResult.type === 'asset.copied')) {
+      if (workerResult.type === 'asset.moved' && command.type === 'asset.move' &&
+        workerResult.movedCount > 0 && workerResult.skippedCount === 0 && pastedAssetClipboardSnapshot) {
+        const snapshot = readFileClipboard(createFileClipboardDeps());
+        const current = assetClipboard.read(snapshot);
+        if (current?.libraryId === command.libraryId) {
+          completeInternalClipboardMove(pastedAssetClipboardSnapshot, current.assetIds, [], {
+            read: () => snapshot,
+            clear: () => clipboard.clear(),
+          });
+        }
+      }
+      const count = workerResult.type === 'asset.moved' ? workerResult.movedCount : workerResult.copiedCount;
+      return { ok: true, type: 'asset.import.completed', completion: {
+        pasteAction: count === 0 && workerResult.type === 'asset.moved' ? 'noop' : workerResult.type === 'asset.moved' ? 'move' : 'copy',
+        importedCount: count, fileCount: count, assetCount: count,
+        replacedCount: 0, skippedCount: workerResult.skippedCount, assets: workerResult.assets,
+      } } satisfies RendererResult;
+    }
 
     const importPostProcess = await applyImportWorkerResult(request, workerResult, {
       pendingImportLibraries,
@@ -5096,6 +5251,7 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
+  let mobileGateway: Awaited<ReturnType<typeof startMobileGateway>>;
   const ensureBotMediaService = ():Promise<BotMediaService> => {
     if (botDataCleanup?.busy) return Promise.reject(new Error('正在后台清理伙伴聊天与记忆，请稍后重试。'));
     return botMediaService ??= import('./companion-bot/media-service').then(async ({BotMediaService})=>new BotMediaService({
@@ -5160,7 +5316,9 @@ async function startApplication(): Promise<void> {
         ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
         getHost: getWorkerHost });
       const brain = worker;
-      botService = new BotService({ root, brain, prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
+      botService = new BotService({ root, brain,
+        scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
+        callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), "public", "companion-call") : path.join(__dirname, "..", "renderer", MAIN_WINDOW_VITE_NAME, "companion-call"), prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
         resolveBrowserContext: id => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.resolveCompanionContext(id); },
         browserTool: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },
         ensureCompanionBindings: async ids => {
@@ -5199,12 +5357,82 @@ async function startApplication(): Promise<void> {
           });
         },
         model: () => { const { connection, limits } = currentBotModel(); return { ...connection, imageSupport: modelCapabilities.imageSupport(connection), contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
-        onEvent: event => { if (!botDataCleanup?.busy && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event); },
+        onEvent: event => {
+          if (botDataCleanup?.busy) return;
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event);
+          mobileGateway?.notify(event);
+        },
         report: error => logger?.error('companion-bot.runtime', error),
       });
       return botService;
     })().catch(error => { creatingBotService = undefined; throw error; });
   };
+  const deepSeekSpeech = new DeepSeekSpeech(() => {
+    const config = loadAiConfig();
+    const official = config.profiles.filter(profile => {
+      try { return new URL(profile.baseUrl).origin === 'https://api.deepseek.com' && hasAiProfileCredential(profile.id); }
+      catch { return false; }
+    });
+    const profile = official.find(profile => profile.id === config.activeProfileId) ?? official[0];
+    return profile ? getDecryptedProfileApiKey(profile.id) : '';
+  }, (input, init) => applicationNetwork!.deepSeekSpeechRequest(input, init), url => applicationNetwork!.resolveProxy(url));
+  let desktopSpeech: { id: string; controller: AbortController } | undefined;
+  ipcMain.handle(BOT_SPEECH_CHANNEL, async (event, input: unknown) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权访问伙伴语音。' };
+    const parsed = botSpeechRequest.safeParse(input);
+    if (!parsed.success) return { ok: false, error: '语音请求格式不正确。' };
+    const request = parsed.data;
+    if (request.type === 'stop') {
+      if (desktopSpeech?.id === request.id) desktopSpeech.controller.abort();
+      return { ok: true };
+    }
+    desktopSpeech?.controller.abort();
+    const controller = new AbortController();
+    desktopSpeech = { id: request.id, controller };
+    const emit = (payload: { audio?: Uint8Array; done?: boolean; error?: string }) => {
+      if (!controller.signal.aborted && !event.sender.isDestroyed()) event.sender.send(BOT_SPEECH_EVENT_CHANNEL, { id: request.id, ...payload });
+    };
+    void (async () => {
+      const bot = await ensureBotService();
+      const room = bot.store.getConversation(request.conversationId);
+      if (!room || room.dissolvedAt || !room.memberIds.includes('user') && room.kind !== 'peer') throw Error('当前会话不可用。');
+      const text = speechText(bot.store.getMessage(request.messageId), room.id, request.partId);
+      await deepSeekSpeech.play(text, !!request.partId, audio => emit({ audio }), controller.signal);
+      emit({ done: true });
+    })().catch(error => emit({ error: error instanceof Error ? error.message : '伙伴语音播放失败。' })).finally(() => {
+      if (desktopSpeech?.controller === controller) desktopSpeech = undefined;
+    });
+    return { ok: true };
+  });
+  app.once('before-quit', () => desktopSpeech?.controller.abort());
+  const mobileOptions = { root: app.getPath('userData'), bot: ensureBotService, media: ensureBotMediaService, speech: deepSeekSpeech,
+    callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), 'public', 'companion-call') : path.join(__dirname, '..', 'renderer', MAIN_WINDOW_VITE_NAME, 'companion-call'),
+    report: (error: unknown) => logger?.error('companion-bot.mobile', error) };
+  const mobileShutdown = new AbortController();
+  const usePublicMobileEndpoint = process.env.WORLDLINEBOX_E2E !== '1' || process.env.WORLDLINEBOX_MOBILE_PUBLIC_TEST === '1';
+  const mobileSettings = new MobileAccessSettings(mobileOptions.root, async access => {
+    const gateway = await startMobileGateway({ ...mobileOptions, access, ...(usePublicMobileEndpoint ? { port: 0 } : {}) });
+    if (!gateway) throw new Error('Mobile listener failed to start.');
+    let ssh: Awaited<ReturnType<typeof startMobileSsh>> | undefined;
+    try {
+      const listener = ssh = await startMobileSsh(mobileOptions.root, access, { targetPort: gateway.port, ...(usePublicMobileEndpoint ? { port: 0 } : {}) });
+      const tunnel = usePublicMobileEndpoint ? await startMobilePublicTunnel(app.getAppPath(), mobileOptions.root, listener.sshPort, mobileShutdown.signal) : undefined;
+      mobileGateway = gateway;
+      return { ...listener, ...(tunnel ? { host: tunnel.host, sshPort: 443, transport: 'wss' as const, endpointMode: tunnel.endpointMode, alive: tunnel.alive } : {}), connected: gateway.connected,
+        disconnect(id: string) { gateway.disconnect(id); listener.disconnect(id); },
+        close() { tunnel?.close(); listener.close(); gateway.close(); if (mobileGateway === gateway) mobileGateway = undefined; } };
+    } catch (error) { ssh?.close(); gateway.close(); throw error; }
+  }, undefined, usePublicMobileEndpoint && hasFixedMobilePublicEndpoint());
+  const mobileSettingsReady = mobileSettings.initialize().catch(error => logger?.error('companion-bot.mobile.start', error));
+  ipcMain.handle(MOBILE_ACCESS_CHANNEL, async (event, input: unknown) => {
+    if (applicationClosing || !mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return { ok: false, error: '无权管理移动连接。' };
+    const parsed = mobileSettingsRequest.safeParse(input);
+    if (!parsed.success) return { ok: false, error: '请检查连接参数。' };
+    await mobileSettingsReady;
+    try { return await mobileSettings.request(parsed.data); }
+    catch (error) { return { ok: false, error: error instanceof Error ? error.message : '移动连接操作失败。' }; }
+  });
+  app.once('before-quit', () => { mobileShutdown.abort(); mobileSettings.close(); });
   const ensureLocalSpeech = () => localSpeechService ??= new LocalSpeechService({
     root: path.join(app.getPath('userData'), 'local-speech'),
     resources: app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'),
@@ -5257,6 +5485,7 @@ async function startApplication(): Promise<void> {
       retiringBotRuntime = undefined;
       if (!applicationClosing) void ensureLocalSpeech().prewarm().catch(error => logger?.error('local-speech.prewarm', error));
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, { type: 'data-cleared', companionId: job.companionId });
+      mobileGateway?.notify({ type: 'data-cleared', companionId: job.companionId });
     },
     changed: () => { if (!botDataCleanup?.busy && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, { type: 'changed' }); },
     report: error => logger?.error('companion-bot.data-cleanup', error),
@@ -5280,6 +5509,11 @@ async function startApplication(): Promise<void> {
     }
     catch (error) { logger?.error('companion-bot.request', error); return { ok: false, error: error instanceof Error ? error.message : '伙伴服务暂不可用。' }; }
   });
+  // Start the scheduler at application startup when a persisted schedule exists.
+  const scheduleDatabase = path.join(app.getPath('userData'), 'companion-bot-v2', 'bot.sqlite');
+  void import('./companion-bot/schedules').then(({ hasActiveSchedules }) => {
+    if (hasActiveSchedules(scheduleDatabase)) return ensureBotService();
+  }).catch(error => logger?.error('companion-bot.schedule.start', error));
   ipcMain.on(BOT_MEDIA_CLIPBOARD_CHANNEL,(event,conversationId:unknown)=>{
     event.returnValue=false;
     if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return;
@@ -5296,6 +5530,7 @@ async function startApplication(): Promise<void> {
       if(!botCanInspectConversation(room))throw new Error('附件会话不存在或不对用户开放。');
       if(['files.pick','files.paste','files.import','pack.pick','pack.import'].includes(request.type)&&!botCanImportConversationMedia(room))throw new Error('正在旁观伙伴私聊，不能向这段私聊添加附件。');
       const media=await ensureBotMediaService();
+      const dialogOwner=callPetFor(mainWindow)??mainWindow;
       switch(request.type){
         case 'packs.list':return{ok:true,packs:await media.listPacks(request)};
         case 'stickers.list':return{ok:true,media:await media.listStickers(request)};
@@ -5310,15 +5545,15 @@ async function startApplication(): Promise<void> {
         }
         case 'pack.import':return{ok:true,pack:await media.importStickerPack(request)};
         case 'files.pick':{
-          const selection=await dialog.showOpenDialog(mainWindow,{title:'选择发送的附件',properties:['openFile','multiSelections']});
+          const selection=await dialog.showOpenDialog(dialogOwner,{title:'选择发送的附件',properties:['openFile','multiSelections']});
           return selection.canceled?{ok:true,cancelled:true}:{ok:true,media:await media.importFiles({conversationId:request.conversationId,paths:selection.filePaths})};
         }
         case 'pack.pick':{
-          const selection=await dialog.showOpenDialog(mainWindow,{title:'导入表情包文件夹',properties:['openDirectory']});
+          const selection=await dialog.showOpenDialog(dialogOwner,{title:'导入表情包文件夹',properties:['openDirectory']});
           return selection.canceled?{ok:true,cancelled:true}:{ok:true,pack:await media.importStickerPack({conversationId:request.conversationId,directory:selection.filePaths[0]!})};
         }
         case 'attachment.save':{
-          const [source]=await media.resolveForConversation(request.conversationId,[request.id]),selection=await dialog.showSaveDialog(mainWindow,{title:'保存附件',defaultPath:source!.originalName||source!.name});
+          const [source]=await media.resolveForConversation(request.conversationId,[request.id]),selection=await dialog.showSaveDialog(dialogOwner,{title:'保存附件',defaultPath:source!.originalName||source!.name});
           if(selection.canceled||!selection.filePath)return{ok:true,cancelled:true};
           await media.saveAttachment({conversationId:request.conversationId,id:request.id,destination:selection.filePath});
           return{ok:true,savedPath:selection.filePath};
@@ -5329,16 +5564,6 @@ async function startApplication(): Promise<void> {
         }
       }
     }catch(error){return{ok:false,error:error instanceof Error?error.message:'附件操作失败。'};}
-  });
-  disposeBotSpeechIpc = registerBotSpeechIpc({
-    ipc: ipcMain, getMainWindow: () => mainWindow, isClosing: () => applicationClosing || applicationQuitting,
-    ensureReady: async conversationId => { await (await ensureBotService()).handle({ type: 'state', conversationId }); },
-    createSpeechService: async () => {
-      const { BotSpeechService } = await import('./companion-bot/speech-service');
-      return new BotSpeechService({ getMessage: id => botService?.store.getMessage(id), getConversation: id => botService?.store.getConversation(id),
-        resolveProxy: async url => { if (!applicationNetwork) throw Error('全局网络服务尚未就绪。'); return applicationNetwork.resolveProxy(url); } });
-    },
-    report: error => logger?.error('companion-bot.speech', error),
   });
   bindRendererKeyboardFocusLogger(logger);
   appUpdateService = createAppUpdateService({
@@ -7825,6 +8050,7 @@ async function startApplication(): Promise<void> {
     if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) return;
     if (input === "paste") event.sender.paste();
     if (input === "select-all") event.sender.selectAll();
+    if (input === "cut") event.sender.cut();
   });
 
   // Bootstrap dialog locale from OS before Renderer syncs (WorldlineBox-bwb).
@@ -8038,11 +8264,44 @@ async function startApplication(): Promise<void> {
     "extension-recent-browse-folders.json",
   );
 
+  try {
+    segmentedMediaTransferManager = new SegmentedMediaTransferManager(
+      app.getPath("temp"),
+      {
+        resolveTarget: async (request) => {
+          const routing = getExtensionSaveRouting();
+          const context = routing.context;
+          if (!context) return undefined;
+          const targetFolderId = request.targetCollectionId
+            ? undefined
+            : request.targetFolderId !== undefined
+              ? request.targetFolderId ?? undefined
+              : context.selectedFolderId;
+          return {
+            libraryId: context.libraryId,
+            ...(targetFolderId === undefined ? {} : { targetFolderId }),
+            ...(request.targetCollectionId === undefined
+              ? {}
+              : { targetCollectionId: request.targetCollectionId }),
+            targetWindowId: routing.targetWindowId,
+          };
+        },
+        commit: commitSegmentedMediaTransfer,
+        cancelCommit: cancelSegmentedMediaWorkerTransfer,
+      },
+    );
+    await segmentedMediaTransferManager.initialize();
+  } catch (error) {
+    segmentedMediaTransferManager = undefined;
+    logger?.error("extension-server.segmented-media.initialize", error);
+  }
+
   // Start the browser-extension HTTP server on 127.0.0.1.
   try {
     extensionServer = await createExtensionServer({
       port: 19876,
       uploadStagingRoot: app.getPath("temp"),
+      segmentedMediaTransferManager,
       onListFolders: handleListFolders,
       onListCollections: handleListCollections,
       onSaveIntent: handleSaveIntent,
@@ -8119,7 +8378,6 @@ if (!hasSingleInstanceLock) {
   });
 
   app.on("before-quit", (event) => {
-    disposeBotSpeechIpc?.(); disposeBotSpeechIpc = undefined;
     applicationClosing = true;
     applicationQuitting = true;
     aiQueueScheduler.clearAll();

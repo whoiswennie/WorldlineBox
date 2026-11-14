@@ -87,7 +87,14 @@ function stageRuntime(home) {
   const expected = path.join(ROOT, 'node_modules');
   if (!fs.existsSync(expected)) throw Object.assign(new Error('The packaged memory dependency directory is missing'), { code: 'MEMORY_DEPENDENCIES_MISSING' });
   const inspect = () => { try { return fs.lstatSync(dependencies); } catch (error) { if (error.code !== 'ENOENT') throw error; } };
-  const matches = () => { try { return comparable(fs.realpathSync(dependencies)) === comparable(fs.realpathSync(expected)); } catch (error) { if (error.code !== 'ENOENT') throw error; return false; } };
+  const expectedPhysical = fs.realpathSync.native(expected);
+  const matches = () => {
+    try { return comparable(fs.realpathSync.native(dependencies)) === comparable(expectedPhysical); }
+    catch (error) {
+      if (error.code === 'ENOENT' || process.platform === 'win32' && ['UNKNOWN', 'EINVAL'].includes(error.code)) return false;
+      throw error;
+    }
+  };
   const existing = inspect();
   let backup;
   if (existing && !matches()) {
@@ -102,7 +109,7 @@ function stageRuntime(home) {
     }
   }
   if (!inspect()) {
-    try { fs.symlinkSync(expected, dependencies, process.platform === 'win32' ? 'junction' : 'dir'); }
+    try { fs.symlinkSync(expectedPhysical, dependencies, process.platform === 'win32' ? 'junction' : 'dir'); }
     catch (error) {
       if (error.code !== 'EEXIST' || !matches()) {
         if (backup && !inspect()) fs.renameSync(backup, dependencies);

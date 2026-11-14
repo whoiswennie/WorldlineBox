@@ -15,13 +15,16 @@ export class NativeServiceMemory extends BotMemoryService {
   override async appendHistory() { return { appended: [] }; }
   override async close() {}
 }
-export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext'>>) {
+export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string | { text: string; peerResultsReceipt: string }>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext'>>) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-native-routing-')), calls: BotDshRun[] = [];
   class Native extends BotDshBrain {
     constructor() { super({ getHost: async () => { throw Error('No DSH process in service routing fixture'); } }); }
     override async run(input: BotDshRun) {
       if (input.laneId.startsWith('memory-encoder-')) return { status: 'succeeded' as const, text: '{"notes":[]}', eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId) };
-      calls.push(input); return { status: 'succeeded' as const, text: await run(input), eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), inputContextCommitted: true };
+      calls.push(input);
+      const reply = await run(input);
+      return { status: 'succeeded' as const, ...(typeof reply === 'string' ? { text: reply } : reply),
+        eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), inputContextCommitted: true };
     }
     override async archive() {}
     override async close() {}

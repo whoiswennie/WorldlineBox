@@ -8,13 +8,28 @@
 
 Windows x64 · Electron / React / TypeScript / Three.js · 本地数据存储 · MIT
 
-[English](README.en.md) · [项目仓库](https://github.com/whoiswennie/WorldlineBox) · [使用手册](docs/user-guide/README.md) · [开发文档](docs/developer/README.md)
+[English](README.en.md) · [Windows 0.1.0 下载](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.0) · [Android 0.1.0 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.0) · [使用手册](docs/user-guide/README.md)
 
 </div>
 
 WorldlineBox 是一个本地优先的桌面应用，结合**虚拟伙伴、持久世界状态、数字资产管理与 DSH 执行环境**。
 伙伴模块正按 Super Agent 思路重构：用户留在一个聊天界面，主脑理解请求、查询记忆、协调独立任务，执行结果再作为事件回到原会话。
 本次开发使用新的数据目录；旧伙伴聊天、认知证明链与旧 VCP 宿主不再是运行入口。
+
+## 电脑端和手机端
+
+| 应用 | 用途 |
+| --- | --- |
+| **WorldlineBox · Windows** | 运行伙伴、记忆和共享 DSH，管理资产、执行任务、配置远程接入和授权设备。可独立使用。 |
+| **WorldlineBox Mobile · Android** | 在外面通过 SSH 操作家中电脑上的伙伴，查看流式回复和任务阶段、收发附件、发起桌宠通话。伙伴执行与记忆保存在电脑端。 |
+
+### 首次使用和扫码连接
+
+1. 在 Windows 10 / 11 x64 上安装 `WorldlineBoxSetup.exe`。在「启动器 → DeepSeek Harness」安装官方运行版本，创建或选择共享执行实例。在「设置 → 全局模型」配置兼容 OpenAI Chat Completions 的模型，先在「伙伴」发送一条消息验证。
+2. 在 Android 上安装 `WorldlineBoxMobile.apk`。电脑打开「设置 → 远程连接 → 显示配对二维码」，用手机 App 扫码。电脑保持联网且世界线盒子运行时，手机可从外网连接。电脑可暂停或删除设备授权。
+3. 在手机选择现有伙伴，发送消息或附件。回到桌面可按消息来源筛选。需要朗读或流式通话语音时，在桌面保存 DeepSeek 官方 API 凭据，合成音色为 Stella。
+
+默认的 Cloudflare 临时入口适合个人试用。重启隧道会更换地址，届时需要重新扫码。两端的详细教程与可选的固定入口配置见 [WorldlineBox Mobile 源码仓库](https://github.com/whoiswennie/WorldlineBoxMobile)。
 
 ## 四个主要入口
 
@@ -50,7 +65,7 @@ WorldlineBox 是一个本地优先的桌面应用，结合**虚拟伙伴、持�
 
 新三维视图复用真实小屋、花园与已有美术资源。已有美术 ID 使用对应动作图组；新建伙伴目前显示本人姓名标记。WebGL 不可用时返回位置图。世界事件只投给同场实际观察者；私人小屋不向其他伙伴开放。坐在电脑前是一种世界动作，不代表 DSH 工作已经执行。
 
-旧的独立世界窗口、15 位默认联系人、关系／作息／概率日常、梦境和成长工作台已退役，不是本轮新系统的功能。QQ、微信、手机网关及更完整世界模拟属于后续接入范围。
+启动器的「小屋世界」集成 Cabin World。旧世界系统的独立成长工作台和梦境入口已退役。QQ、微信及更完整世界模拟属于后续接入范围。
 
 ## DSH：主脑协调与独立执行
 
@@ -186,9 +201,16 @@ Electron、React、TypeScript、Vite、Three.js 和 SQLite。资产库由 Librar
 - [插件、脚本与 MCP 作者手册](docs/manual/README.md) · [浏览器扩展](extension/README.md)
 - [产品方向](docs/product-brief.md) · [初始工程验证记录](docs/developer/validation-0.1.0.md)
 
-世界内容与运行器、IM 网关、手机连接及完整世界线分支编辑器属于后续方向。
+更多世界内容、IM 网关和完整世界线分支编辑器属于后续方向。
 
 ## 许可与来源
 
-本项目使用 [MIT 许可](LICENSE)。感谢 [Serpent](https://github.com/dolag233/Serpent) 作者 dolag233 及贡献者提供资产管理基础和持续改进；按功能增量整合并保留其版权声明。WorldlineBox 保持独立名称、版本和自有功能。
-当前独立记忆模块位于 `resources/vcp-memory`，保留 VCPToolBox 等上游代码的来源清单与许可；它替代已退役的旧 VCP 宿主。图标包含维护者提供的素材；媒体、工具、字体与其他资源遵循各自许可，见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。DSH 运行制品保留自身许可；Git、FFmpeg 等组件的分发义务不能由本仓库 MIT 许可替代。
+感谢以下项目和创作者。
+
+- **Serpent** 由 dolag233 和贡献者开发，为世界线盒子提供了数字资产管理基础。 [Serpent 原仓库](https://github.com/dolag233/Serpent)
+- **VCP** 的日记、语义索引和长上下文能力为独立记忆模块提供基础。模块保留了上游来源与许可。 [VCPToolBox 原仓库](https://github.com/lioensky/VCPToolBox) · [VCPChat 原仓库](https://github.com/lioensky/VCPChat)
+- **DeepSeek Harness** 提供原生 Agent 循环、会话与执行环境。 [DeepSeek Harness 原仓库](https://github.com/deepseek-ai/deepseek-harness)
+- **Cabin World by VADS** 提供「小屋世界」。应用附带上游 V1.0.0 的运行文件，WorldlineBox 提供启动器和 DSH 桥接。 [Cabin World 原仓库](https://github.com/BabyBus2022/cabin-world) · [上游许可](https://github.com/BabyBus2022/cabin-world/blob/main/LICENSE)
+- **DeepSeek-chan（大肥鱼）Live2D** 由神宫凉子原画及拆分，霓虹猫_NeonNeko 建模。公开安装包使用头像。个人可从作者渠道获得模型，并按 [本地素材说明](public/companion-call/NOTICE.md) 准备用于私人构建的文件。 [作者发布页面](https://www.bilibili.com/video/BV1ALnw6YEGK)
+
+本项目自有代码使用 [MIT 许可](LICENSE)。各上游代码、模型、素材和工具保留自己的授权条件。 [第三方声明](THIRD_PARTY_NOTICES.md)

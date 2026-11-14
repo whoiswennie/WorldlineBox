@@ -4,17 +4,23 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BotCallWindow } from '../../src/renderer/companion-bot/BotCallWindow';
 import { botCallClock, botCallProfile } from '../../src/renderer/companion-bot/call-presentation';
-import { BotComposer } from '../../src/renderer/companion-bot/BotComposer';
-import type { BotCallComposerSendBridge } from '../../src/renderer/companion-bot/BotCallWindow';
-import type { BotMessage } from '../../src/shared/companion-bot';
-import type { BotCallSpeechState } from '../../src/renderer/companion-bot/BotCallSpeechSession';
+import type { BotMessage, BotRequest, BotSnapshot, BotEvent, BotResponse } from '../../src/shared/companion-bot';
+import type { BotLive2DControls } from '../../src/renderer/companion-bot/BotLive2DStage';
+import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-vi.mock('../../src/renderer/companion-bot/BotLive2DStage', () => ({ BotLive2DStage: () => <div data-live2d-fixture /> }));
+const live2d = vi.hoisted(() => ({
+  present: vi.fn(), fullBody: vi.fn(), scale: vi.fn(), position: vi.fn(), gaze: vi.fn(), idle: vi.fn(),
+}));
+vi.mock('../../src/renderer/companion-bot/BotLive2DStage', async () => {
+  const { useEffect } = await import('react');
+  return { BotLive2DStage: ({ onReady }: { onReady(controls: BotLive2DControls): void }) => {
+    useEffect(() => { onReady({ ...live2d, catalog: { expressions: [], motions: [] } } as unknown as BotLive2DControls); }, [onReady]);
+    return <div data-live2d-fixture />;
+  } };
+});
 const voice = vi.hoisted(() => ({ available: false, stop: vi.fn(), start: vi.fn(), interrupt: vi.fn(), waitForPlayback: vi.fn(), finish: vi.fn(), retry: vi.fn(), sendAction: vi.fn(async (_text: string, _id: string, perform: () => Promise<{ ok: boolean }>) => (await perform()).ok) }));
-const speech = vi.hoisted(() => ({ available: false, enabled: true, state: { phase: 'idle' } as BotCallSpeechState, stop: vi.fn(), unlock: vi.fn(), toggle: vi.fn(), replay: vi.fn() }));
 vi.mock('../../src/renderer/companion-bot/useBotCallVoice', () => ({ useBotCallVoice: () => ({ ...voice, state: { phase: voice.available ? 'listening' : 'off', enabled: voice.available, turn: 0 }, level: 0 }) }));
-vi.mock('../../src/renderer/companion-bot/useBotCallSpeech', () => ({ useBotCallSpeech: () => ({ ...speech }) }));
 vi.mock('../../src/renderer/companion-bot/voice-recorder', () => ({
   speechBase64: () => '',
   VoiceRecorder: class {
@@ -23,59 +29,77 @@ vi.mock('../../src/renderer/companion-bot/voice-recorder', () => ({
     cancel() { this.resolve?.(undefined); }
   },
 }));
-const sounds: Array<{ loop: boolean; muted: boolean; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; removeAttribute: ReturnType<typeof vi.fn> }> = [];
+const sounds: Array<{ src: string; loop: boolean; muted: boolean; play: ReturnType<typeof vi.fn>; pause: ReturnType<typeof vi.fn>; removeAttribute: ReturnType<typeof vi.fn> }> = [];
 let root: Root | undefined, host: HTMLDivElement;
 const companion = { id: 'gpt', name: 'GPT', persona: '', createdAt: '2026-11-05' };
 beforeEach(() => {
   vi.useFakeTimers(); sounds.length = 0;
-  voice.available = false; speech.available = false; speech.enabled = true; speech.state = { phase: 'idle' }; vi.clearAllMocks();
+  voice.available = false; vi.clearAllMocks();
   vi.stubGlobal('Audio', class { loop = false; muted = false; volume = 0; play = vi.fn().mockResolvedValue(undefined); pause = vi.fn(); removeAttribute = vi.fn(); load = vi.fn(); constructor(readonly src: string) { sounds.push(this); } });
 });
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); root = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
-async function mount(send = vi.fn().mockResolvedValue(true), register = vi.fn<(bridge?: BotCallComposerSendBridge) => void>(), messages: BotMessage[] = [], streams: Record<string, string> = {}, initialDraft = '原聊天的草稿', clipboard?: { paste(): void; probe(): boolean }) {
+async function mount(initialDraft = '会面草稿', actor = companion, options: { model?: boolean; send?: () => Promise<BotResponse> } = {}) {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host); const hangup = vi.fn();
+  let listener: ((event: BotEvent) => void) | undefined;
+  const snapshot: BotSnapshot = { companions: [actor], messages: [], conversations: [], tasks: [], hasMore: false,
+    runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: '', activeLanes: 0, ready: true, dataRoot: '' } };
+  const request = vi.fn(async (input: BotRequest): Promise<BotResponse> => {
+    if (input.type === 'call.open') return { ok: true, conversationId: 'meeting', snapshot: { ...snapshot },
+      callModel: options.model ? { model: 'test.model3.json', catalog: 'test.json', assets: { expressions: [], motions: [], credits: '', license: '' } } : undefined };
+    if (input.type === 'state') return { ok: true, snapshot: { ...snapshot } };
+    if (input.type === 'call.interrupt') return { ok: true, interruptedReplyIds: input.replies.map(reply => reply.messageId) };
+    if (input.type === 'message.send' && options.send) return options.send();
+    return { ok: true };
+  });
+  const api = { request, onEvent: (callback: (event: BotEvent) => void) => { listener = callback; return () => { listener = undefined; }; } };
   function Harness() {
     const [draft, setDraft] = useState(initialDraft);
-    return <BotCallWindow conversationId="room" companion={companion} messages={messages} streams={streams} locale="zh-CN" onHangup={hangup} send={send} onOpenUrl={() => undefined} registerComposerSend={register} onEditText={setDraft} hasPendingDraft={!!draft.trim()} onPasteFiles={clipboard?.paste} mediaApi={clipboard ? { request: async () => ({ ok: true }), getDroppedFilePaths: () => [], hasClipboardFiles: clipboard.probe } : undefined}
-      composer={options => <BotComposer locale="zh-CN" conversationId="room" draft={draft} setDraft={setDraft} disabled={false} busy={false} group={false} world={false} panel={null} setPanel={() => undefined} send={async () => send(draft)} addFiles={async () => undefined} removeFile={() => undefined} sendSticker={async () => undefined} sendVoice={async () => undefined} extraTools={options.toolbar} cornerControl={options.corner} status={options.status} onVoiceInputStart={options.onVoiceInputStart} onVoiceInputActivity={options.onVoiceInputActivity} />} />;
+    return <BotCallWindow conversationId="direct" companion={actor} api={api} draft={draft} setDraft={setDraft} locale="zh-CN" onHangup={hangup} onOpenUrl={() => undefined} />;
   }
   await act(() => root!.render(<Harness />));
-  return { hangup, send, register, refresh: async () => { await act(() => root!.render(<Harness />)); } };
+  return { hangup, request, refresh: async (messages: BotMessage[]) => {
+    snapshot.messages = messages; await act(async () => { listener?.({ type: 'changed', conversationId: 'meeting' }); await vi.advanceTimersByTimeAsync(40); });
+  } };
 }
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text)!;
 it('waits for the user to connect, loops the ringtone and ends after exactly 60 seconds', async () => {
   const fixture = await mount(); expect(sounds[0]?.loop).toBe(true); expect(sounds[0]?.play).toHaveBeenCalledOnce(); expect(document.querySelector('.bot-call-ringing')).not.toBeNull();
+  expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
   await act(() => vi.advanceTimersByTime(59000)); expect(fixture.hangup).not.toHaveBeenCalled(); expect(document.querySelector('.bot-call-ringing')?.textContent).toContain('1 秒');
   await act(() => vi.advanceTimersByTime(1000)); expect(fixture.hangup).toHaveBeenCalledOnce();
+});
+it('uses 大肥鱼’s theme by companion ID and mutes without restarting it', async () => {
+  await mount('', { ...companion, id: DEFAULT_BOT_COMPANION_ID, name: '自定义昵称' });
+  const sound = sounds[0]!;
+  expect(sound.src).toMatch(/\/ringtones\/dafeiyu-let-me-go\.ogg$/);
+  await act(() => button('静音铃声').click()); expect(sound.muted).toBe(true);
+  await act(() => button('开启铃声').click()); expect(sound.muted).toBe(false);
+  expect(sound.play).toHaveBeenCalledOnce();
 });
 it('stops ringing on connect, cancels the ringing deadline and shows an avatar for an ordinary companion', async () => {
   const fixture = await mount(); await act(() => button('接通').click()); expect(sounds[0]?.pause).toHaveBeenCalled(); expect(sounds[0]?.removeAttribute).toHaveBeenCalledWith('src');
   expect(document.querySelector('.bot-call-portrait h2')?.textContent).toBe('GPT'); expect(document.querySelector('[data-live2d-fixture]')).toBeNull();
   await act(() => vi.advanceTimersByTime(61000)); expect(fixture.hangup).not.toHaveBeenCalled(); expect(document.querySelector('.bot-call-duration')?.textContent).toBe('01:01');
-  await act(() => button('挂断').click()); expect(fixture.hangup).toHaveBeenCalledOnce();
+  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="挂断"]')!.click()); expect(fixture.hangup).toHaveBeenCalledOnce();
 });
-it('hosts the original full composer at the bottom and registers its transport only after connecting', async () => {
-  const f = await mount(); expect(f.register).not.toHaveBeenCalled(); expect(document.querySelector('.bot-composer')).toBeNull();
+it('routes the bubble composer to the dedicated meeting and keeps native topic controls available', async () => {
+  const f = await mount(); expect(document.querySelector('.bot-composer')).toBeNull();
   await act(() => button('接通').click());
-  expect(f.register).toHaveBeenLastCalledWith({ send: voice.sendAction });
-  expect(document.querySelectorAll('.bot-composer')).toHaveLength(1); expect(document.querySelector('.bot-call-chat textarea')).toBeNull();
-  const collapse = document.querySelector<HTMLButtonElement>('[aria-label="收起会面输入"]')!;
-  expect(collapse.closest('.bot-composer')).not.toBeNull(); expect(collapse.querySelector('svg.bot-icon path')?.getAttribute('d')).toBe('M6 9l6 6 6-6'); expect(collapse.textContent).not.toContain('⌄');
-  const field = document.querySelector<HTMLTextAreaElement>('.bot-call-composer-host .bot-composer textarea')!;
-  expect(field.value).toBe('原聊天的草稿'); expect(field.getAttribute('aria-label')).toBe('发送消息…');
-  await act(async () => document.querySelector<HTMLButtonElement>('.bot-call-composer-host [aria-label="表情"]')!.click());
-  expect(document.querySelector('.bot-expression-picker')).not.toBeNull();
-  await act(async () => document.querySelector<HTMLButtonElement>('.bot-send')!.click()); expect(f.send).toHaveBeenCalledExactlyOnceWith('原聊天的草稿');
-  await act(() => root!.unmount()); root = undefined; expect(f.register).toHaveBeenLastCalledWith();
+  expect(f.request).toHaveBeenCalledWith({ type: 'call.open', conversationId: 'direct' });
+  const field = document.querySelector<HTMLTextAreaElement>('.bot-call-composer-host textarea')!;
+  expect(field.value).toBe('会面草稿');
+  expect(button('新话题')).toBeDefined(); expect(button('压缩').disabled).toBe(true);
+  await act(() => document.querySelector<HTMLButtonElement>('.bot-send')!.click());
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', conversationId: 'meeting', content: '会面草稿' }));
 });
-it('stops continuous listening and playback once when one-click dictation starts, until it closes', async () => {
+it('stops continuous listening when one-click dictation starts, until it closes', async () => {
   voice.available = true;
   vi.stubGlobal('worldlinebox', { localSpeech: { request: async () => ({ ok: true, status: { phase: 'ready' } }) } });
   await mount(); await act(() => button('接通').click());
   const toggle = document.querySelector<HTMLButtonElement>('[aria-label="连续语音对话"]')!;
   expect(toggle.disabled).toBe(false);
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="语音转文字"]')!.click());
-  expect(voice.stop).toHaveBeenCalledOnce(); expect(speech.stop).toHaveBeenCalledOnce(); expect(toggle.disabled).toBe(true);
+  expect(voice.stop).toHaveBeenCalledOnce(); expect(toggle.disabled).toBe(true);
   expect(document.querySelector('.bot-voice-panel')?.textContent).toBe('00:00');
   expect(document.querySelector('[aria-label="语音转文字"]')?.getAttribute('aria-pressed')).toBe('true');
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭语音"]')!.click()); expect(toggle.disabled).toBe(false);
@@ -93,85 +117,115 @@ it('closes emoji then the standard composer before Escape hangs up, and leaves I
   await act(async () => document.querySelector('.bot-call-window')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(f.hangup).toHaveBeenCalledOnce();
 });
-it('shows one current streaming native reply with its attachment, keeping other messages in on-demand history', async () => {
-  const base = { conversationId: 'room', createdAt: '2026-11-05T00:00:00Z', senderId: companion.id, senderName: companion.name };
-  const messages: BotMessage[] = [
-    { ...base, id: 'older', eventId: 'e1', sequence: 1, status: 'sent', content: '上一次完整回复。' },
-    { ...base, id: 'own', eventId: 'e2', sequence: 2, status: 'sent', senderId: 'user', content: '刚刚发送并识别出来的话。' },
-    { ...base, id: 'current', eventId: 'e3', sequence: 3, status: 'running', content: '', attachments: [{ id: 'file', name: '最新附件.html', kind: 'file', mimeType: 'text/html', size: 512, url: 'worldlinebox://bot-media/public/file' }] },
-  ];
-  const f = await mount(undefined, undefined, messages, { current: '这是正在生成的最新回应。' }); await act(() => button('接通').click());
-  expect(document.querySelector<HTMLElement>('.bot-call-chat')?.hidden).toBe(true);
-  expect(document.querySelector('.bot-call-dialogue')?.getAttribute('data-call-dialogue-message')).toBe('current');
-  expect(document.querySelector('.bot-call-dialogue')?.textContent).toContain('这是正在生成的最新回应。'); expect(document.querySelector('.bot-call-dialogue')?.textContent).toContain('最新附件.html');
-  expect(document.querySelector('.bot-call-user-echo')).toBeNull(); expect(document.querySelector('.bot-call-dialogue [data-call-message]')).toBeNull();
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="收起会面输入"]')!.click());
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="会面聊天记录"]')!.click());
-  expect(document.querySelector<HTMLElement>('.bot-call-chat')?.hidden).toBe(false); expect(document.querySelectorAll('[data-call-message]')).toHaveLength(3); expect(document.querySelector('.bot-call-dialogue')).toBeNull();
-  await act(() => document.querySelector('.bot-call-window')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-  expect(document.querySelector<HTMLElement>('.bot-call-chat')?.hidden).toBe(true); expect(f.hangup).not.toHaveBeenCalled(); expect(document.querySelector('.bot-call-dialogue')).not.toBeNull();
+it('displays only published segments while the native turn is still running, and pages long text losslessly', async () => {
+  const actor = { ...companion, id: 'claude', name: 'Claude' };
+  const f = await mount('', actor); await act(() => button('接通').click());
+  const text = '我把这份很长的内容拆成几个小段，方便在舞台上阅读。'.repeat(8);
+  const reply: BotMessage = { id: 'reply', eventId: 'event', conversationId: 'meeting', createdAt: new Date().toISOString(), senderId: actor.id,
+    senderName: actor.name, sequence: 1, status: 'running', content: '后台正文不进入舞台', parts: [{ id: 'first', sequence: 1, kind: 'text', text, presentation: {} }] };
+  await f.refresh([reply]);
+  const avatar = document.querySelector<HTMLImageElement>('.bot-call-visual-novel header .bot-avatar img');
+  expect(avatar?.src).toBe(document.querySelector<HTMLImageElement>('.bot-call-portrait img')?.src);
+  expect(avatar).not.toBeNull();
+  const page = () => document.querySelector('.bot-call-bubble-text')?.textContent ?? '';
+  expect(page()).not.toBe(''); expect(page().length).toBeLessThan(text.length);
+  expect(document.querySelector('.bot-call-window')?.textContent).not.toContain(reply.content);
+  const next = document.querySelector<HTMLButtonElement>('[aria-label="下一段"]')!;
+  let joined = page();
+  while (!next.disabled) { await act(() => next.click()); joined += page(); }
+  expect(joined).toBe(text);
+  await act(() => button('完整对话').click());
+  expect(document.querySelector('.bot-call-transcript')?.textContent).toContain(text);
+  expect(document.querySelector('.bot-call-transcript')?.textContent).not.toContain(reply.content);
 });
-it('starts with a quiet input entry and expands only the original composer, retaining an unsent draft on collapse', async () => {
-  voice.available = true; await mount(undefined, undefined, [], {}, ''); await act(() => button('接通').click());
-  expect(document.querySelector('.bot-composer')).toBeNull(); expect(document.querySelector('.bot-call-input-entry')?.textContent).toContain('说点什么'); expect(document.querySelectorAll('[aria-label="连续语音对话"]')).toHaveLength(1);
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="展开会面输入"]')!.click()); expect(document.querySelectorAll('.bot-composer')).toHaveLength(1); expect(document.querySelectorAll('[aria-label="连续语音对话"]')).toHaveLength(1);
-  const field = document.querySelector<HTMLTextAreaElement>('.bot-composer textarea')!;
-  await act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, '不应丢失的文字'); field.dispatchEvent(new Event('input', { bubbles: true })); });
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="收起会面输入"]')!.click()); expect(document.querySelector('.bot-call-input-entry')?.textContent).toContain('未发送');
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="展开会面输入"]')!.click()); expect(document.querySelector<HTMLTextAreaElement>('.bot-composer textarea')?.value).toBe('不应丢失的文字');
+
+it('keeps the call clock and model parameter profile', () => {
+  expect(botCallClock(125_000)).toBe('02:05');
+  expect(botCallProfile({ ParamAngleX: { min: -30, max: 30, default: 0 } }, 'model.json').capabilities?.headControl).toBe(true);
 });
-it('pins the actual manually playing reply and its audio-revealed prefix even with automatic read-aloud off', async () => {
-  speech.available = true; speech.enabled = false; speech.state = { phase: 'speaking', messageId: 'audio', displayText: '真正正在说', revealComplete: false };
-  const base = { conversationId: 'room', createdAt: '2026-11-05T00:00:00Z', senderId: companion.id, senderName: companion.name, status: 'sent' as const };
-  await mount(undefined, undefined, [{ ...base, id: 'audio', eventId: 'a', sequence: 1, content: '真正正在说的完整旧消息。' }, { ...base, id: 'queued', eventId: 'b', sequence: 2, content: '还没有开始朗读的新消息。' }], {}, ''); await act(() => button('接通').click());
-  expect(document.querySelector('.bot-call-dialogue')?.getAttribute('data-call-dialogue-message')).toBe('audio');
-  expect(document.querySelector('.bot-call-dialogue-content')?.textContent).toBe('真正正在说');
-  const viewport = document.querySelector<HTMLElement>('.bot-call-dialogue-content')!;
-  Object.defineProperty(viewport, 'scrollHeight', { value: 480, configurable: true });
-  speech.state = { ...speech.state, displayText: '真正正在说的后半句话' };
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="会面菜单"]')!.click()); expect(viewport.scrollTop).toBe(0);
-  speech.state = { phase: 'idle', messageId: 'audio', displayText: '真正正在说的完整旧消息。', revealComplete: true };
-  viewport.scrollTop = 60;
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="会面菜单"]')!.click()); expect(viewport.scrollTop).toBe(60);
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="会面聊天记录"]')!.click()); await act(() => document.querySelector<HTMLButtonElement>('[aria-label="会面聊天记录"]')!.click());
-  expect(document.querySelector('.bot-call-dialogue')?.getAttribute('data-call-dialogue-message')).toBe('queued');
+
+it('keeps the first tool segment on stage for its requested duration while later calls queue', async () => {
+  const f = await mount(''); await act(() => button('接通').click());
+  const first = { id: 'first', sequence: 1, kind: 'text' as const, text: '第一段。', presentation: { durationMs: 5000 } };
+  const reply: BotMessage = { id: 'reply', eventId: 'event', conversationId: 'meeting', createdAt: new Date().toISOString(), senderId: companion.id,
+    senderName: companion.name, sequence: 1, status: 'running', content: '', parts: [first] };
+  await f.refresh([reply]);
+  const text = () => document.querySelector('.bot-call-bubble-text')?.textContent;
+  expect(text()).toBe(first.text);
+  await f.refresh([{ ...reply, status: 'sent', parts: [first, { id: 'second', sequence: 2, kind: 'text', text: '第二段。', presentation: { durationMs: 2000 } },
+    { id: 'third', sequence: 3, kind: 'text', text: '第三段。', presentation: {} }] }]);
+  await act(() => vi.advanceTimersByTime(4800)); expect(text()).toBe(first.text);
+  await act(() => vi.advanceTimersByTime(250)); expect(text()).toBe('第二段。');
+  await act(() => vi.advanceTimersByTime(1900)); expect(text()).toBe('第二段。');
+  await act(() => vi.advanceTimersByTime(150)); expect(text()).toBe('第三段。');
+  await act(() => vi.advanceTimersByTime(1400)); expect(document.querySelector('.bot-call-bubble-status')?.textContent).toBe('回应结束 · 可以继续');
 });
-it('keeps read-aloud failure and manual retry visible while the full keyboard composer remains collapsed', async () => {
-  speech.available = true; speech.state = { phase: 'error', messageId: 'failed-audio', displayText: '不完整', revealComplete: false, error: '伙伴声音连接中断', failures: [{ messageId: 'failed-audio', error: '伙伴声音连接中断' }] };
-  const f = await mount(undefined, undefined, [{ id: 'failed-audio', eventId: 'a', sequence: 1, conversationId: 'room', createdAt: '2026-11-05T00:00:00Z', senderId: companion.id, senderName: companion.name, status: 'sent', content: '朗读失败后仍应看到这句完整消息。' }], {}, ''); await act(() => button('接通').click());
-  expect(document.querySelector('.bot-composer')).toBeNull(); expect(document.querySelector('.bot-call-dialogue-content')?.textContent).toBe('朗读失败后仍应看到这句完整消息。');
-  expect(document.querySelector('.bot-call-live-status [role="alert"]')?.textContent).toContain('伙伴声音连接中断');
-  await act(() => button('重试朗读').click()); expect(speech.replay).toHaveBeenCalledExactlyOnceWith('failed-audio'); expect(f.send).not.toHaveBeenCalled(); expect(document.querySelector('.bot-composer')).toBeNull();
+
+it('interrupts the live queue at its visible segment and drops late old snapshots', async () => {
+  const f = await mount(''); await act(() => button('接通').click());
+  const reply: BotMessage = { id: 'live', eventId: 'event', conversationId: 'meeting', createdAt: new Date().toISOString(), senderId: companion.id,
+    senderName: companion.name, sequence: 1, status: 'running', content: '', parts: [
+      { id: 'visible', sequence: 1, kind: 'text', text: '已经展示', presentation: { durationMs: 7000 } },
+      { id: 'queued', sequence: 2, kind: 'text', text: '应被丢弃', presentation: { gesture: 'nod' } },
+    ] };
+  await f.refresh([reply]);
+  await act(() => button('打断').click());
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt', conversationId: 'meeting', replies: [{ messageId: 'live', throughSegmentId: 'visible' }] }));
+  expect(document.querySelector('.bot-call-bubble-status')?.textContent).toBe('已打断 · 可以继续');
+  await f.refresh([reply]);
+  await act(() => vi.advanceTimersByTime(10000));
+  expect(document.querySelector('.bot-call-bubble-text')).toBeNull();
 });
-it('keeps audio captions on the frozen synthesis source through stale streams, new snapshots and completion', async () => {
-  const sourceText = '已经开始朗读的稳定原文。', messages: BotMessage[] = [{ id: 'spoken', eventId: 'spoken', sequence: 1, conversationId: 'room', createdAt: '2026-11-05T00:00:00Z', senderId: companion.id, senderName: companion.name, status: 'sent', content: sourceText }];
-  const streams = { spoken: '这是仍留在流缓存中的另一段文字。' };
-  speech.available = true; speech.state = { phase: 'preparing', messageId: 'spoken', sourceText, displayText: '', pendingMessageIds: ['spoken'] };
-  const fixture = await mount(undefined, undefined, messages, streams, ''); await act(() => button('接通').click());
-  const caption = () => document.querySelector('.bot-call-caption-text')!.textContent!;
-  expect(caption()).toBe('正在准备语音…');
-  speech.state = { ...speech.state, phase: 'speaking', displayText: sourceText.slice(0, 5) }; await fixture.refresh(); expect(caption()).toBe(sourceText.slice(0, 5));
-  messages[0] = { ...messages[0]!, content: '稍后到达的消息快照不能改写已经开始的字幕。' }; await fixture.refresh(); expect(caption()).toBe(sourceText.slice(0, 5));
-  speech.state = { ...speech.state, phase: 'idle', displayText: sourceText, revealComplete: true, pendingMessageIds: [], textMessageIds: ['spoken'] }; await fixture.refresh();
-  expect(caption()).toBe(sourceText); await act(() => vi.advanceTimersByTime(500)); expect(caption()).toBe(sourceText);
+
+const caption = () => document.querySelector('.bot-call-bubble-text')?.textContent;
+const namedButton = (label: string) => document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
+const stageReply = (id: string, sequence: number, parts: BotMessage['parts'], status: BotMessage['status'] = 'sent'): BotMessage => ({
+  id, eventId: id, conversationId: 'meeting', senderId: companion.id, senderName: companion.name,
+  createdAt: new Date().toISOString(), sequence, status, content: '', parts,
 });
-it('accepts native file paste without browser File items and leaves ordinary text paste to the original editor', async () => {
-  const paste = vi.fn(), probe = vi.fn(() => true);
-  await mount(undefined, undefined, [], {}, '', { paste, probe }); await act(() => button('接通').click());
-  const native = new Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(native, 'clipboardData', { value: { files: [], items: [], types: ['text/plain'], getData: (type: string) => type === 'text/plain' ? 'C:\\example\\report.txt' : '' } });
-  await act(() => document.querySelector('.bot-call-window')!.dispatchEvent(native));
-  expect(paste).toHaveBeenCalledOnce(); expect(probe).toHaveBeenCalledWith('room'); expect(native.defaultPrevented).toBe(true); expect(document.querySelector('.bot-composer')).not.toBeNull();
-  probe.mockReturnValue(false);
-  const normal = new Event('paste', { bubbles: true, cancelable: true });
-  Object.defineProperty(normal, 'clipboardData', { value: { files: [], items: [], types: ['text/plain'], getData: (type: string) => type === 'text/plain' ? '普通文字' : '' } });
-  await act(() => document.querySelector('textarea')!.dispatchEvent(normal));
-  expect(paste).toHaveBeenCalledOnce(); expect(normal.defaultPrevented).toBe(false);
+
+it('replays each recorded expression and motion when stepping and replaying from the beginning', async () => {
+  const f = await mount('', companion, { model: true }); await act(() => button('接通').click());
+  const first = { expression: 'smile', motion: 'wave', gesture: 'nod' as const, durationMs: 1600 };
+  const second = { expression: 'surprised', gesture: 'blink' as const };
+  await f.refresh([stageReply('reply', 1, [
+    { id: 'one', kind: 'text', sequence: 1, text: '第一段', presentation: first },
+    { id: 'two', kind: 'text', sequence: 2, text: '第二段', presentation: second },
+  ])]);
+  expect(live2d.present).toHaveBeenLastCalledWith(first);
+  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(second);
+  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(undefined);
+  await act(() => namedButton('上一段').click()); expect(live2d.present).toHaveBeenLastCalledWith(first);
+  await act(() => namedButton('下一段').click()); expect(live2d.present).toHaveBeenLastCalledWith(second);
+  await act(() => namedButton('从头播放').click()); expect(live2d.present).toHaveBeenLastCalledWith(first);
+  expect(caption()).toBe('第一段');
+  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(second);
+  await act(() => button('打断').click());
+  expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
 });
-it('keeps local controls within real model capabilities and formats meeting duration across minutes', () => {
-  const profile = botCallProfile({ ParamAngleX: { min: -30, max: 30, default: 0 }, ParamEyeLOpen: { min: 0, max: 1, default: 1 } }, 'local.model3.json');
-  expect(profile.parameterMap.headX?.targets).toEqual(['ParamAngleX']); expect(profile.parameterMap.eyeOpen?.targets).toEqual(['ParamEyeLOpen']); expect(profile.parameterMap.blush).toBeUndefined();
-  const face = botCallProfile({ key7: { min: 0, max: 1, default: 0 }, ParamMouthForm: { min: -1, max: 1, default: 0 } }, 'local.model3.json');
-  expect(face.parameterMap.blush?.scale).toBeLessThanOrEqual(.2); expect(face.parameterMap.mouthSmile?.scale).toBeLessThanOrEqual(.4);
-  expect(botCallClock(61000)).toBe('01:01'); expect(botCallClock(-1)).toBe('00:00');
+
+it('shows the submitted prompt while waiting and accepts only its associated reply', async () => {
+  let resolve!: (response: BotResponse) => void;
+  const sent = new Promise<BotResponse>(done => { resolve = done; });
+  const f = await mount('新一轮问题', companion, { send: () => sent });
+  await act(() => button('接通').click());
+  const old = stageReply('old', 1, [{ id: 'old-segment', sequence: 1, kind: 'text', text: '旧台词', presentation: {} }]);
+  await f.refresh([old]); expect(caption()).toBe('旧台词');
+  await act(() => vi.advanceTimersByTime(1400));
+  await act(() => namedButton('发送 ↑').click());
+  expect(caption()).toBeUndefined();
+  expect(document.querySelector('.bot-call-user-line')?.textContent).toContain('新一轮问题');
+  expect(document.querySelector('.bot-call-bubble-status')?.textContent).toBe('正在回应…');
+  await act(() => resolve({ ok: true, replyMessageIds: ['new'] }));
+  await f.refresh([old, stageReply('unrelated', 3, [{ id: 'other', sequence: 1, kind: 'text', text: '无关台词', presentation: {} }])]);
+  expect(caption()).toBeUndefined();
+  const reply = stageReply('new', 2, [], 'running');
+  await f.refresh([old, { ...reply, progress: { phase: 'using-tool', toolName: 'shell', activity: { step: 4, summary: '正在核对文件' } } }]);
+  const progress = document.querySelector('.bot-call-progress')!;
+  expect(progress.textContent).toContain('第 4 步 · 运行命令');
+  expect(progress.textContent).toContain('正在核对文件');
+  expect(progress.nextElementSibling?.className).toBe('bot-call-bubble');
+  await f.refresh([old, stageReply('new', 2, [{ id: 'new-segment', sequence: 1, kind: 'text', text: '新的回应', presentation: {} }])]);
+  expect(caption()).toBe('新的回应');
+  expect(document.querySelector('.bot-call-progress')).toBeNull();
 });

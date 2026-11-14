@@ -44,6 +44,7 @@ export type AppSettingsCategoryId =
   | "capture-tools"
   | "semantic-search"
   | "mcp"
+  | "mobile-access"
   | "plugins"
   | "safety"
   | "sync";
@@ -68,6 +69,7 @@ export type AppSettingsCategory = {
     | "settings.categoryCaptureTools"
     | "settings.categorySemanticSearch"
     | "settings.categoryMcp"
+    | "settings.categoryMobileAccess"
     | "settings.categoryPlugins"
     | "settings.categorySync";
 };
@@ -114,6 +116,7 @@ export const APP_SETTINGS_CATEGORIES: readonly AppSettingsCategory[] = [
     labelKey: "settings.categoryMcp",
   },
   { id: "music", icon: "music", labelKey: "settings.categoryMusic" },
+  { id: "mobile-access", icon: "globe", labelKey: "settings.categoryMobileAccess" },
   { id: "capture-tools", icon: "camera", labelKey: "settings.categoryCaptureTools" },
   {
     id: "plugins",

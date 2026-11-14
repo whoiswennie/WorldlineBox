@@ -75,7 +75,7 @@ test('seeds Claude with a distinct character card, authored persona and working 
       await application.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0]!.setSize(size.width, size.height), { width, height });
       await page.evaluate(theme => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme })), theme);
       await page.reload(); const card = await openClaude(); await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-      images.push({ theme, viewportWidth: width, label: '角色头像', ...await imageProof(card.locator('.bot-settings-character-portrait img'), builtin!.portrait.url) });
+      images.push({ theme, viewportWidth: width, label: '角色头像', ...await imageProof(card.locator('.bot-editor-header img'), builtin!.portrait.url) });
       if (theme === 'light') await capture('claude-persona-light-1440.png');
       await card.locator('.bot-editor-tabs').getByRole('button', { name: '基本资料', exact: true }).click();
       await card.locator('.bot-character-reference summary').click(); await expect(card.locator('.bot-character-reference')).toHaveAttribute('open', '');

@@ -21,6 +21,7 @@ import {
   rmSync,
   statSync,
   utimesSync,
+  unlinkSync,
   watch,
   writeFileSync,
   writeSync,
@@ -4071,6 +4072,7 @@ interface BatchRelinkMatch {
 }
 
 interface ImportSourceEntry {
+  clipboardMoveSource?: string;
   byteSize: number;
   destinationRelativePath: string;
   /** Metadata projected from an Eagle item; absent for ordinary imports. */
@@ -4145,6 +4147,7 @@ interface ManagedRelinkPlacedMarkerV1 {
 }
 
 interface PendingImport {
+  moveSourceFiles?: boolean;
   directories: string[];
   entries: ImportSourceEntry[];
   createImageSequence?: boolean;
@@ -14096,6 +14099,7 @@ export class LibraryService {
   cloneManagedFolder(input: {
     libraryId: string;
     folderId: string;
+    targetParentFolderId?: string | null;
   }): {
     folder: ManagedFolderSummary;
     clonedFolderCount: number;
@@ -14105,15 +14109,18 @@ export class LibraryService {
     const { folder, descendantFolders, assetIds } =
       this.collectManagedFolderSubtree(openLibrary, input.folderId);
 
+    const parentFolderId = input.targetParentFolderId === undefined
+      ? folder.parent_folder_id : input.targetParentFolderId;
+    if (parentFolderId === folder.folder_id || descendantFolders.some(child => child.folder_id === parentFolderId)) {
+      throw new LibraryServiceError('INVALID_SELECTION');
+    }
     const cloneName = this.availableSiblingFolderName(
-      openLibrary,
-      folder.parent_folder_id,
-      folder.name,
+      openLibrary, parentFolderId, folder.name, input.targetParentFolderId !== undefined,
     );
     const rootClone = this.createManagedFolder({
       libraryId: input.libraryId,
       name: cloneName,
-      parentFolderId: folder.parent_folder_id ?? undefined,
+      parentFolderId: parentFolderId ?? undefined,
     });
 
     const idMap = new Map<string, string>([[folder.folder_id, rootClone.folderId]]);
@@ -14457,6 +14464,7 @@ export class LibraryService {
     openLibrary: OpenLibrary,
     parentFolderId: string | null,
     baseName: string,
+    preferOriginalName = false,
   ): string {
     const parentRelative =
       parentFolderId === null
@@ -14472,7 +14480,7 @@ export class LibraryService {
       throw new LibraryServiceError('FOLDER_NOT_FOUND');
     }
 
-    const candidates = [`${baseName} copy`];
+    const candidates = preferOriginalName ? [baseName, `${baseName} copy`] : [`${baseName} copy`];
     for (let index = 2; index < 10_000; index += 1) {
       candidates.push(`${baseName} copy ${index}`);
     }
@@ -37501,11 +37509,26 @@ export class LibraryService {
     throw new LibraryServiceError('LIBRARY_NOT_WRITABLE');
   }
 
+  copyAssetsIncludingLinked(input: Parameters<LibraryService['copyAssets']>[0]): ReturnType<LibraryService['copyAssets']> {
+    const sources = this.listAssetSummariesByIds(this.requireOpenLibrary(input.libraryId), input.assetIds);
+    if (!sources.some(asset => asset.locationKind === 'linked') || !sources.some(asset => asset.locationKind === 'managed')) return this.copyAssets(input);
+    if (sources.length !== input.assetIds.length) throw new LibraryServiceError('ASSET_NOT_FOUND');
+    const results = sources.map(asset => this.copyAssets({ ...input, assetIds: [asset.assetId] }));
+    return {
+      copiedCount: results.reduce((count, result) => count + result.copiedCount, 0),
+      skippedCount: results.reduce((count, result) => count + result.skippedCount, 0),
+      operationId: null,
+      assets: results.flatMap(result => result.assets),
+      outputAssetIdsBySource: results.flatMap(result => result.outputAssetIdsBySource),
+    };
+  }
+
   moveAssets(input: {
     libraryId: string;
     assetIds: string[];
     targetFolderId: string | null;
     conflictStrategy?: 'keep-both' | 'replace' | 'skip';
+    clipboard?: true;
   }): { movedCount: number; skippedCount: number; operationId: string | null; assets: AssetSummary[] } {
     const openLibrary = this.requireOpenLibrary(input.libraryId);
     this.assertLibraryWritable(openLibrary);
@@ -37520,6 +37543,8 @@ export class LibraryService {
       ? null
       : this.linkedFolderRowForImport(openLibrary, input.targetFolderId);
     if (linkedTarget) {
+      // Clipboard cut must preserve the asset's catalog identity.
+      if (input.clipboard) throw new LibraryServiceError('INVALID_SELECTION');
       const managedSourceCount = sqliteAllInChunks<string, { count: number }>({
         connection: openLibrary.connection,
         values: input.assetIds,
@@ -43661,6 +43686,7 @@ export class LibraryService {
     relativePath?: string;
     sourceKind: 'files' | 'folder';
     sourcePaths: string[];
+    moveSourceFiles?: boolean;
     expandImageSequences?: boolean;
     imageSequenceFps?: number;
   }): ImportCompletion {
@@ -43703,6 +43729,7 @@ export class LibraryService {
 
     const occupied = new Set<string>();
     const written: string[] = [];
+    const movedEntries: Array<{ entry: ImportSourceEntry; destination: string }> = [];
     try {
       for (const entry of entries) {
         const originalRelative = normalizeRelativeAssetPath(
@@ -43746,6 +43773,7 @@ export class LibraryService {
         mkdirSync(path.dirname(destination), { recursive: true });
         copyFileSync(entry.sourcePath, destination, constants.COPYFILE_EXCL);
         written.push(relativeDestination);
+        if (input.moveSourceFiles) movedEntries.push({ entry: { ...entry, clipboardMoveSource: entry.sourcePath }, destination });
         occupied.add(portablePathIdentity(relativeDestination));
       }
     } catch (error) {
@@ -43774,7 +43802,15 @@ export class LibraryService {
     }).filter((asset) =>
       identities.has(portablePathIdentity(asset.relativeFilePath)),
     );
+    let sourceRetainedCount = 0;
+    if (assets.length === written.length) {
+      for (const item of movedEntries) {
+        if (!this.finishClipboardMoveSource(item.entry, item.destination)) sourceRetainedCount += 1;
+      }
+    } else sourceRetainedCount = movedEntries.length;
     return {
+      ...(input.moveSourceFiles ? { pasteAction: 'move' as const } : {}),
+      ...(sourceRetainedCount ? { sourceRetainedCount } : {}),
       importedCount: assets.length,
       fileCount: assets.length,
       assetCount: assets.length,
@@ -44224,6 +44260,7 @@ export class LibraryService {
     targetFolderId?: string;
     sourceKind: 'files' | 'folder';
     sourcePaths: string[];
+    moveSourceFiles?: boolean;
     expandImageSequences?: boolean;
     imageSequenceFps?: number;
     createImageSequence?: boolean;
@@ -44267,6 +44304,9 @@ export class LibraryService {
           ...(input.sourcePageUrl === undefined ? {} : { sourcePageUrl: input.sourcePageUrl }),
         });
     const { directories, entries } = enumerated;
+    if (input.moveSourceFiles) {
+      for (const entry of entries) entry.clipboardMoveSource = entry.sourcePath;
+    }
     const importId = randomUUID();
     const operationPath = path.join(
       openLibrary.summary.libraryPath,
@@ -44666,6 +44706,7 @@ export class LibraryService {
     const pending: PendingImport = {
       directories,
       entries: stagedEntries,
+      ...(input.moveSourceFiles ? { moveSourceFiles: true } : {}),
       libraryId: input.libraryId,
       operationPath,
       ...(context.skippedSources && context.skippedSources.length > 0
@@ -44709,10 +44750,13 @@ export class LibraryService {
     targetFolderId?: string;
     sourceKind: 'files' | 'folder';
     sourcePaths: string[];
+    moveSourceFiles?: boolean;
     expandImageSequences?: boolean;
     imageSequenceFps?: number;
     createImageSequence?: boolean;
     sourcePageUrl?: string;
+    /** Opt a caller into content-deduping identical bytes even at the same path. */
+    dedupeSameNameByContent?: boolean;
     automationPlan?: {
       planHash: string;
       expectedChangeSequence: number;
@@ -44734,6 +44778,7 @@ export class LibraryService {
         relativePath: linked.relative_path,
         sourceKind: input.sourceKind,
         sourcePaths: input.sourcePaths,
+        moveSourceFiles: input.moveSourceFiles,
         expandImageSequences: input.expandImageSequences === true,
         imageSequenceFps: input.imageSequenceFps,
       });
@@ -44778,6 +44823,7 @@ export class LibraryService {
         relativePath: linked.relative_path,
         sourceKind: input.sourceKind,
         sourcePaths: input.sourcePaths,
+        moveSourceFiles: input.moveSourceFiles,
         expandImageSequences: input.expandImageSequences === true,
         imageSequenceFps: input.imageSequenceFps,
       });
@@ -46219,12 +46265,23 @@ export class LibraryService {
     };
 
     const affectedAssetIds: string[] = [];
+    const committedMoveSources: ImportAction[] = [];
+    let sourceRetainedCount = 0;
+    let moveSourcesSettled = false;
     let importedCount = 0;
     let replacedCount = 0;
     let committed = false;
     let destinationGuardFailed = false;
 
     const completeCommittedImport = (): ImportCompletion => {
+      if (!moveSourcesSettled) {
+        moveSourcesSettled = true;
+        for (const action of committedMoveSources) {
+          if (!this.finishClipboardMoveSource(action.entry, this.folderPath(openLibrary, action.destinationRelativePath))) {
+            sourceRetainedCount += 1;
+          }
+        }
+      }
       const affected = [...new Set([...affectedAssetIds, ...mergedAssetIds])];
       let assetCount = new Set(affectedAssetIds).size;
       try {
@@ -46254,6 +46311,8 @@ export class LibraryService {
       }
 
       return {
+        ...(pending.moveSourceFiles ? { pasteAction: 'move' as const } : {}),
+        ...(sourceRetainedCount ? { sourceRetainedCount } : {}),
         importedCount,
         fileCount: importedCount,
         assetCount,
@@ -46554,6 +46613,7 @@ export class LibraryService {
         })();
         if (committedAssetId) {
           affectedAssetIds.push(committedAssetId);
+          if (action.entry.clipboardMoveSource) committedMoveSources.push(action);
           if (action.entry.eagleMetadata && committedRevisionId) {
             if (bulkCommit) {
               deferredThumbnails.push({
@@ -49472,7 +49532,7 @@ export class LibraryService {
     sourcePageUrl?: string;
     mediaUrl: string;
     mediaType?: string;
-  }): Promise<{ asset: AssetSummary }> {
+  }): Promise<{ asset: AssetSummary; duplicate?: true }> {
     // Validate HTTP scheme on mediaUrl (already Zod-validated but defense in depth).
     let parsedUrl: URL;
     try {
@@ -49708,7 +49768,7 @@ export class LibraryService {
     stagedFilePath: string;
     contentType: string;
     filename: string;
-  }): Promise<{ asset: AssetSummary }> {
+  }): Promise<{ asset: AssetSummary; duplicate?: true }> {
     const openLibrary = this.requireOpenLibrary(input.libraryId);
 
     let stagedAbsolute: string;
@@ -49800,8 +49860,12 @@ export class LibraryService {
         ...(input.targetFolderId === undefined ? {} : { targetFolderId: input.targetFolderId }),
         sourceKind: 'files',
         sourcePaths: [sourcePath],
+        dedupeSameNameByContent: true,
         ...(input.sourcePageUrl === undefined ? {} : { sourcePageUrl: input.sourcePageUrl }),
       });
+      const duplicateAssetId = isImportConflictPlan(prepared)
+        ? prepared.examples.find((example) => example.existingAssetId !== undefined)?.existingAssetId
+        : undefined;
       const completion = this.finishImportWithoutUserDecision(prepared, {
         suspectedDuplicate: 'skip',
         nameConflict: 'keep-both',
@@ -49809,21 +49873,12 @@ export class LibraryService {
       const asset = completion.assets[0];
       if (asset !== undefined) return { asset };
 
-      // A library-level duplicate is intentionally skipped by the extension,
-      // matching the ordinary import default. Return the retained asset just
-      // as the old extension path did, without creating a second record.
-      const existingAssetId = this.findActiveManagedAssetIdByContent(
-        openLibrary,
-        stagedStat.size,
-        sha256FileAtPath(sourcePath),
-        new Map(),
-      );
-      if (existingAssetId !== null) {
-        const existing = this.listAssets({
-          libraryId: input.libraryId,
-          recursive: true,
-        }).find((candidate) => candidate.assetId === existingAssetId);
-        if (existing !== undefined) return { asset: existing };
+      // The conflict plan already identified the matching content by its
+      // indexed hash. Resolve only that row instead of rehashing the library
+      // and materializing every AssetSummary to recover the skipped asset.
+      if (duplicateAssetId !== undefined) {
+        const existing = this.listAssetSummariesByIds(openLibrary, [duplicateAssetId])[0];
+        if (existing !== undefined) return { asset: existing, duplicate: true };
       }
       throw new LibraryServiceError('IMPORT_APPLY_FAILED');
     } catch (error) {
@@ -49957,6 +50012,24 @@ export class LibraryService {
       contentFingerprint: hashes.contentFingerprint,
       sourcePath: input.stagedPath,
     };
+  }
+
+  private finishClipboardMoveSource(entry: ImportSourceEntry, destinationPath: string): boolean {
+    const sourcePath = entry.clipboardMoveSource;
+    if (!sourcePath) return true;
+    try {
+      if (this.transferPathKey(sourcePath) === this.transferPathKey(destinationPath)) return true;
+      const current = lstatSync(sourcePath, { bigint: true });
+      if (!current.isFile() || !sameSourceSnapshot(entry.sourceSnapshot, sourceSnapshot(current))) return false;
+      const expectedHash = entry.sha256 ?? sha256FileAtPath(destinationPath);
+      if (sha256FileAtPath(sourcePath) !== expectedHash || sha256FileAtPath(destinationPath) !== expectedHash) return false;
+      if (!sameSourceSnapshot(entry.sourceSnapshot, sourceSnapshot(lstatSync(sourcePath, { bigint: true })))) return false;
+      unlinkSync(sourcePath);
+      return true;
+    } catch (error) {
+      this.diagnose('clipboard.move.source-retained', error);
+      return false;
+    }
   }
 
   private stageImportSourceEntries(input: {

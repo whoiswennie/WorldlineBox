@@ -79,15 +79,48 @@ function button(text: string, scope: ParentNode = document): HTMLButtonElement {
 
 async function click(text: string, scope?: ParentNode) { await act(() => button(text, scope).click()); }
 
+async function selectInstance(id: string) {
+  const picker = container!.querySelector<HTMLSelectElement>('.launcher-instance-toolbar select')!;
+  await act(() => {
+    picker.value = id;
+    picker.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+it('shows the same release sync and its result after switching away from the catalogue', async () => {
+  const subject = fixture([], { versions: { source: 'cache', stale: true, entries: [] } });
+  await mount(subject.api);
+  const navigation = container!.querySelector('.launcher-navigation')!;
+  await click('运行版本', navigation);
+  await click('官方版本');
+  expect(subject.request).toHaveBeenCalledWith({ type: 'versions.refresh', ifStale: true });
+  const sync: DshOperation = {
+    id: 'catalogue', kind: 'versions.refresh', label: '同步官方 DSH 发行版',
+    status: 'running', phase: 'catalogue-fetching', progress: 0, startedAt: '2026-11-12T02:00:00Z',
+  };
+  await subject.publish({ ...subject.state(), operations: [sync] });
+  expect(button('正在同步').disabled).toBe(true);
+  expect(container!.querySelector('[data-dsh-catalogue-sync]')?.textContent).toContain('正在读取 GitHub');
+  await click('操作记录', navigation);
+  expect(container!.querySelectorAll('[data-dsh-operation="catalogue"]')).toHaveLength(1);
+  await subject.publish({ ...subject.state(), operations: [{ ...sync, phase: 'catalogue-waiting-npm', progress: 50 }] });
+  await click('运行版本', navigation);
+  expect(container!.querySelector('[data-dsh-catalogue-sync]')?.textContent).toContain('正在等待 npm');
+  const fetchedAt = '2026-11-12T02:00:03Z';
+  await subject.publish({ ...subject.state(), operations: [{ ...sync, status: 'succeeded', phase: 'completed', finishedAt: fetchedAt }],
+    versions: { source: 'github-npm', stale: false, fetchedAt, entries: [{ version: '0.2.2', channel: 'stable', recommended: true, nodeRange: '>=24', integrity: 'fixture', releaseUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2' }] } });
+  expect(container!.querySelector('[data-dsh-catalogue-sync]')).toBeNull();
+  expect(container!.querySelector('time[datetime="' + fetchedAt + '"]')?.textContent).toContain('上次同步');
+  expect(container!.querySelector('[data-dsh-version="0.2.2"]')).not.toBeNull();
+  expect(button('刷新版本').disabled).toBe(false);
+});
+
 it('browses instance details without changing shared execution or CLI selection', async () => {
   const subject = fixture([], { cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: [] } });
   await mount(subject.api);
-  const itemA = container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-a"]')!;
-  const itemB = container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!;
-  await act(() => itemA.click());
-  await act(() => { itemB.click(); itemB.click(); });
+  await selectInstance('instance-a');
+  await selectInstance('instance-b');
   expect(container!.querySelector('.launcher-instance-details h1')!.textContent).toBe('环境 B');
-  expect(itemA.disabled).toBe(false); expect(itemB.disabled).toBe(false);
   expect(button('启动实例').disabled).toBe(false);
   expect(subject.request.mock.calls.some(([request]) => request.type === 'cli.select' || request.type === 'instance.default')).toBe(false);
   await click('运行版本', container!.querySelector('.launcher-navigation')!);
@@ -108,7 +141,7 @@ it('switches between same-runtime instances and uses independent instance identi
   const f = fixture();
   await mount(f.api);
   expect(container!.textContent).toContain('C:\\managed\\instance-a\\home');
-  await act(() => container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!.click());
+  await selectInstance('instance-b');
   expect(container!.textContent).toContain('C:\\managed\\instance-b\\home');
   expect(container!.textContent).not.toContain('C:\\managed\\instance-a\\home');
   await click('启动实例');
@@ -164,7 +197,7 @@ it('selects the default instance and starts a second Web Host without switching 
   const a = { ...instance('instance-a', '环境 A'), status: 'running' as const };
   const f = fixture([], { instances: [a, instance('instance-b', '环境 B')], cli: cliFixture() });
   await mount(f.api);
-  await act(() => container!.querySelector<HTMLButtonElement>('[data-dsh-instance="instance-b"]')!.click());
+  await selectInstance('instance-b');
   expect(f.request.mock.calls.some(([request]) => request.type === 'cli.select')).toBe(false);
   await click('设为共享执行实例');
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.default', instanceId: 'instance-b' });
@@ -189,6 +222,41 @@ it.each([false, true])('upgrades an instance in place regardless of its legacy o
   await click('保存', dialog);
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.upgrade', instanceId: 'instance-a', runtimeId: 'runtime-b' });
   expect(f.request.mock.calls.some(([input]) => input.type === 'instance.clone' || input.type === 'companion.environment.upgrade')).toBe(false);
+});
+
+it('opens the official upgrade from the current instance and submits its identity with the release', async () => {
+  const f = fixture([], { runtimes: [runtime('runtime-a', '0.2.1')], versions: { source: 'github-npm', stale: false, entries: [
+    { version: '0.2.2', channel: 'stable', recommended: true, nodeRange: '>=24', integrity: 'fixture', releaseUrl: 'https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.2' },
+  ] } });
+  await mount(f.api); await click('升级运行版本');
+  await click('升级现有实例', container!.querySelector('[data-dsh-version="0.2.2"]')!);
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain('环境 A · DSH 0.2.1 → 0.2.2');
+  await click('确认升级', dialog);
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.upgrade-official', instanceId: 'instance-a', expectedRuntimeId: 'runtime-a', version: '0.2.2' });
+  expect(f.request.mock.calls.some(([input]) => input.type === 'instance.create' || input.type === 'instance.delete')).toBe(false);
+});
+
+it('archives from the instance page and reserves permanent deletion for the archive', async () => {
+  const f = fixture([], { instances: [instance('instance-a', '旧环境')] });
+  await mount(f.api);
+  expect(container!.textContent).not.toContain('永久删除实例');
+  await click('归档实例');
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain('仍保存在本机');
+  expect(button('导出完整备份', dialog)).toBeDefined();
+  await click('归档实例', dialog);
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.archive', instanceId: 'instance-a' });
+  await f.publish({ ...f.state(), instances: [], archivedInstances: [{ ...instance('instance-a', '旧环境'), archivedAt: '2026-11-12T08:00:00Z', runtimeVersion: '0.9.0' }] });
+  await click('已归档实例');
+  await click('恢复实例');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.unarchive', instanceId: 'instance-a' });
+  await click('永久删除实例');
+  const purge = document.querySelector('[role="dialog"]')!;
+  expect(button('永久删除实例', purge).hasAttribute('data-dialog-default-action')).toBe(false);
+  expect(f.request.mock.calls.some(([input]) => input.type === 'instance.purge-archive')).toBe(false);
+  await click('永久删除实例', purge);
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.purge-archive', instanceId: 'instance-a' });
 });
 
 it('requires a concrete credentials notice before exporting a full backup', async () => {

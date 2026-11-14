@@ -19,11 +19,13 @@ async function renderRig(maskCount: number) {
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   const manager = { _clippingContextListForMask: Array.from({ length: maskCount }), release: fixture.release };
   const core = {};
+  const expressionManager = { currentExpression: {}, defaultExpression: {}, reserveExpressionIndex: -1,
+    stopAllExpressions: fixture.stopExpressions, resetExpression: fixture.neutralExpression };
   fixture.model = { anchor: { set: vi.fn() }, scale: { set: vi.fn() }, width: 300, height: 600, destroy: vi.fn(), expression: fixture.expression, motion: fixture.motion,
-    internalModel: { coreModel: core, on: vi.fn(), off: vi.fn(), motionManager: { expressionManager: { reserveExpressionIndex: -1, stopAllExpressions: fixture.stopExpressions, resetExpression: fixture.neutralExpression } }, renderer: { _clippingManager: manager,
+    internalModel: { coreModel: core, on: vi.fn(), off: vi.fn(), motionManager: { stopAllMotions: vi.fn(), expressionManager }, renderer: { _clippingManager: manager,
       initialize: fixture.initialize.mockImplementation((_model, atlasCount) => { fixture.atlases = atlasCount; }), setClippingMaskBufferSize: fixture.maskSize } } };
   const renderer = new Live2DRenderer(document.createElement('div'), { cubismLoader: async () => undefined });
-  await renderer.load('local.model3.json'); return { renderer, core };
+  await renderer.load('local.model3.json'); return { renderer, core, expressionManager };
 }
 it('allocates two independent mask atlases for the real 49-group rig instead of overlapping face masks', async () => {
   const { renderer, core } = await renderRig(49);
@@ -36,9 +38,14 @@ it('keeps a compatible single atlas for smaller rigs and preserves the mask reso
   expect(fixture.maskSize).toHaveBeenCalledWith(1024); renderer.destroy();
 });
 it('returns to a neutral expression without ever selecting a random costume or face', async () => {
-  const { renderer } = await renderRig(49);
+  const { renderer, expressionManager } = await renderRig(49);
+  const previous = {};
+  expressionManager.currentExpression = previous;
+  expressionManager.reserveExpressionIndex = 7;
   renderer.applyNativeAnimation(null); renderer.applyNativeAnimation(null);
   expect(fixture.expression).not.toHaveBeenCalled(); expect(fixture.neutralExpression).toHaveBeenCalledOnce();
+  expect(expressionManager.currentExpression).toBe(expressionManager.defaultExpression);
+  expect(expressionManager.reserveExpressionIndex).toBe(-1);
   renderer.applyNativeAnimation({ token: 4, expression: '脸红', motion: null, suppressParamIds: ['key7'] });
   expect(fixture.expression).toHaveBeenCalledExactlyOnceWith('脸红');
   renderer.applyNativeAnimation(null); expect(fixture.expression).toHaveBeenCalledTimes(1); expect(fixture.neutralExpression).toHaveBeenCalledTimes(2);

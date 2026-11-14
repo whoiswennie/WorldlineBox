@@ -1,0 +1,3 @@
+- insert:
+    - id: worldlinebox-cabin-world
+      name: '@worldlinebox/dsh-cabin-world'

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { WorldlineBoxShellApi } from '../../src/shared/external-url';
+import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 import { electronLaunchEnv, preparePackagedCompanionLaunch, resolveElectronLaunchOptions } from './electron-test-helpers';
 
 interface GazeProbe { pointer?: { x: number; y: number }; engine: { getSnapshot(): { live2dParams: Record<string, number> } } }
@@ -29,14 +30,16 @@ test('native pointer gaze stays continuous over controls and outside a zoomed wi
     }, profile);
     evidence.push({ initialNativeCursor: initial });
     await page.locator('[data-application-module="companions"]').click();
+    await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeDisabled();
+    await enableCallVisualFixture(application, page);
     const read = await page.evaluate(async () => (Reflect.get(window, 'worldlinebox') as { shell: WorldlineBoxShellApi }).shell.getCompanionGazePointer!());
     expect(read.ok).toBe(true);
     await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
     const meeting = page.getByRole('dialog', { name: '与大肥鱼会面', exact: true });
     await meeting.getByRole('button', { name: '接通', exact: true }).click();
+    await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
     await expect(meeting.locator('.bot-call-loading')).toHaveCount(0, { timeout: 60000 });
     await expect(meeting.locator('.bot-call-model-error')).toHaveCount(0);
-    await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
     await page.evaluate(() => {
       const element = document.querySelector('.bot-call-live2d')!, key = Object.keys(element).find(name => name.startsWith('__reactFiber'))!;
       let probe: GazeProbe | undefined;
@@ -50,6 +53,26 @@ test('native pointer gaze stays continuous over controls and outside a zoomed wi
       const probe = Reflect.get(window, '__gazeProbe') as GazeProbe;
       return { target: probe.pointer, parameters: probe.engine.getSnapshot().live2dParams };
     });
+    await expect.poll(async () => (await current()).target).toBeUndefined();
+    const idle = await page.evaluate(async () => {
+      const probe = Reflect.get(window, '__gazeProbe') as GazeProbe;
+      const samples: Array<{ breath: number; angle: number; eye: number }> = [];
+      const until = performance.now() + 9000;
+      while (performance.now() < until) {
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        const parameters = probe.engine.getSnapshot().live2dParams;
+        samples.push({ breath: parameters.ParamBreath ?? 0, angle: parameters.AngleX ?? 0, eye: parameters.ParamEyeLOpen ?? 1 });
+      }
+      const span = (key: 'breath' | 'angle' | 'eye') => Math.max(...samples.map(item => item[key])) - Math.min(...samples.map(item => item[key]));
+      return { breath: span('breath'), angle: span('angle'), eye: span('eye') };
+    });
+    expect(idle.breath).toBeGreaterThan(.15); expect(idle.angle).toBeGreaterThan(.5); expect(idle.eye).toBeGreaterThan(.3);
+    await meeting.getByRole('button', { name: '会面菜单', exact: true }).click();
+    await meeting.getByRole('button', { name: /场景与互动/ }).click();
+    await meeting.getByText('神态与姿态', { exact: true }).click();
+    const follow = meeting.getByRole('checkbox', { name: '视线跟随鼠标' });
+    await expect(follow).not.toBeChecked(); await follow.check();
+    await meeting.getByRole('button', { name: '收起会面面板', exact: true }).click();
     const sampleAt = async (x: number, y: number, name: string) => {
       const point = await application.evaluate(({ BrowserWindow, screen }, input) => {
         const window = BrowserWindow.getAllWindows()[0]!, bounds = window.getContentBounds(), zoom = window.webContents.getZoomFactor();
@@ -69,7 +92,8 @@ test('native pointer gaze stays continuous over controls and outside a zoomed wi
         return frames;
       });
       const last = frames.at(-1)!;
-      if (Math.abs(expected.x) > .5) expect(Math.sign(last.x)).toBe(Math.sign(expected.x));
+      // The model's VTS mapping inverts the horizontal eye output.
+      if (Math.abs(expected.x) > .5) expect(Math.sign(last.x)).toBe(-Math.sign(expected.x));
       if (Math.abs(expected.y) > .5) expect(Math.sign(last.y)).toBe(Math.sign(expected.y));
       expect(frames.every(frame => Number.isFinite(frame.x) && Number.isFinite(frame.y))).toBe(true);
       const tail = frames.slice(-20), jitter = Math.max(...tail.map(frame => frame.x)) - Math.min(...tail.map(frame => frame.x));
@@ -88,7 +112,7 @@ test('native pointer gaze stays continuous over controls and outside a zoomed wi
     await sampleAt(2600, -500, 'outside-window-right-top');
     await meeting.getByRole('button', { name: '会面菜单', exact: true }).click();
     await meeting.getByRole('button', { name: /场景与互动/ }).click();
-    const follow = meeting.getByRole('checkbox', { name: '视线跟随鼠标' });
+    await meeting.getByText('神态与姿态', { exact: true }).click();
     await follow.uncheck();
     await expect.poll(async () => (await current()).target).toBeUndefined();
     const stopped = await application.evaluate(() => Number(Reflect.get(globalThis, '__gazeSamples')));
