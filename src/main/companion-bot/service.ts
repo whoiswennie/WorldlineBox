@@ -46,6 +46,7 @@ import { scheduleCommand } from '../../shared/companion-schedule';
 
 export interface BotServiceOptions {
   callAssetsRoot?: string;
+  readLocalCallModel?(companionId: string): Promise<BotCallModel | undefined>;
   assetManagerApp?: Pick<BotAssetManagerApp, 'connect' | 'execute'>;
   resolveBrowserContext?(referenceId: string): BrowserPageContext;
   browserTool?(scope: CompanionBrowserScope, input: CompanionBrowserArguments, signal: AbortSignal): Promise<CompanionBrowserResult>;
@@ -295,10 +296,14 @@ export class BotService {
   private callModel(companionId: string): Promise<BotCallModel | undefined> {
     let model = this.callModels.get(companionId);
     if (!model) {
-      model = readBotCallModel(this.options.callAssetsRoot, companionId);
+      model = this.options.readLocalCallModel?.(companionId).then(local => local ?? readBotCallModel(this.options.callAssetsRoot, companionId))
+        ?? readBotCallModel(this.options.callAssetsRoot, companionId);
       this.callModels.set(companionId, model);
     }
     return model;
+  }
+  invalidateCallModel(companionId: string): void {
+    this.callModels.delete(companionId);
   }
   private interruptMeeting(input: Extract<BotRequest, { type: 'call.interrupt' }>): BotResponse {
     const { conversationId, requestId } = input, room = this.store.getConversation(conversationId);

@@ -20,6 +20,7 @@ public/companion-call/deepseek/*.moc3 filter=lfs diff=lfs merge=lfs -text
 public/companion-call/deepseek/**/*.png filter=lfs diff=lfs merge=lfs -text
 public/companion-call/ringtone.wav -text
 public/companion-call/ringtones/*.ogg -text
+public/companion-call/ringtones/*.wav -text
 tests/fixtures/media/*.wav -text
 tests/fixtures/media/*.mp3 -text
 # Retained third-party TypeScript distributions preserve the compiler's export formatting.

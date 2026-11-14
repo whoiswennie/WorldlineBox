@@ -230,7 +230,7 @@ export async function startMobileGateway(options: Options) {
       const updates = messages.filter(message => tracked.has(message.id) || message.status === 'running' || message.status === 'queued').slice(-24);
       const projected = [...new Map([...selected, ...updates].map(message => [message.id, message])).values()].sort((a,b) => a.sequence - b.sequence);
       return json(res, 200, { ok: true, conversationId: result.conversationId, callStage: result.callStage,
-        callModel: result.callModel ? { model: result.callModel.model, manifest: result.callModel.manifest, vts: result.callModel.vtsParameters } : undefined,
+        callModel: result.callModel && !result.callModel.modelUrl ? { model: result.callModel.model, manifest: result.callModel.manifest, vts: result.callModel.vtsParameters } : undefined,
         message: sent ? projectMessage(sent) : undefined, snapshot: {
         companions: snapshot.companions.map(({ id, name, enabled }) => ({ id, name, enabled, presence: snapshot.presence?.[id]?.status })),
         conversations: snapshot.conversations.filter(room => canChat(bot.store.getConversation(room.id))).map(({ id, title, kind, memberIds, pinned }) => ({ id, title, kind, memberIds, pinned, activity: snapshot.conversationActivity?.[id] })),

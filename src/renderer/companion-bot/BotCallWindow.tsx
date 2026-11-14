@@ -21,6 +21,7 @@ import { BotCallDocument, useCallPet } from './call-pet';
 import './bot-call.css';
 
 const emptyMessages: readonly BotMessage[] = [];
+const defaultRingtone = 'ringtone.wav';
 const poseFields = [
   ['headX', '左右转头', 'Turn head', -1, 1, 0], ['headY', '抬头低头', 'Tilt head', -1, 1, 0], ['headZ', '歪头', 'Lean head', -1, 1, 0],
   ['bodyX', '身体左右', 'Body', -1, 1, 0], ['gazeX', '视线左右', 'Look sideways', -1, 1, 0], ['gazeY', '视线上下', 'Look up/down', -1, 1, 0],
@@ -34,6 +35,7 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
 }) {
   const zh = locale === 'zh-CN', [phase, setPhase] = useState<'ringing' | 'connected'>('ringing'), [openedAt] = useState(Date.now), [connectedAt, setConnectedAt] = useState(0), [now, setNow] = useState(Date.now);
   const [muted, setMuted] = useState(false), [audioBlocked, setAudioBlocked] = useState(false), audio = useRef<HTMLAudioElement>(undefined);
+  const ringtoneRetry = useRef<() => void>(undefined);
   const [preferences] = useState(() => readBotCallPreferences(companion.id));
   const [scene, setScene] = useState(preferences.scene), [voiceInputActive, setVoiceInputActive] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(!!draft), [hudMenu, setHudMenu] = useState(false);
@@ -256,10 +258,27 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
   useEffect(() => { if (phase !== 'ringing') return; const timer = setTimeout(onHangup, Math.max(0, BOT_CALL_TIMEOUT_MS - (Date.now() - openedAt))); return () => clearTimeout(timer); }, [phase, openedAt, onHangup]);
   useEffect(() => {
     if (phase !== 'ringing') return;
-    const ringtone = companion.id === DEFAULT_BOT_COMPANION_ID ? 'ringtones/dafeiyu.ogg' : 'ringtone.wav';
-    const sound = new Audio(botAssetUrl('companion-call/' + ringtone)); sound.loop = true; sound.volume = .55; audio.current = sound;
-    void sound.play().catch(() => { if (audio.current === sound) setAudioBlocked(true); });
-    return () => { audio.current = undefined; sound.pause(); sound.removeAttribute('src'); sound.load(); };
+    let ringtone = companion.id === DEFAULT_BOT_COMPANION_ID ? 'ringtones/dafeiyu.wav' : defaultRingtone;
+    const url = (file: string) => botAssetUrl('companion-call/' + file);
+    const sound = new Audio(url(ringtone)); sound.loop = true; sound.volume = .75; audio.current = sound;
+    const play = async () => {
+      try {
+        await sound.play();
+        if (audio.current === sound) setAudioBlocked(false);
+      } catch (error) {
+        if (audio.current !== sound) return;
+        if (ringtone !== defaultRingtone && (sound.error || (error as { name?: string })?.name === 'NotSupportedError')) {
+          ringtone = defaultRingtone;
+          sound.src = url(ringtone);
+          await play();
+          return;
+        }
+        setAudioBlocked(true);
+      }
+    };
+    ringtoneRetry.current = () => void play();
+    void play();
+    return () => { ringtoneRetry.current = undefined; audio.current = undefined; sound.pause(); sound.removeAttribute('src'); sound.load(); };
   }, [companion.id, phase]);
   useEffect(() => { if (audio.current) audio.current.muted = muted; }, [muted, phase]);
   useEffect(() => {
@@ -372,7 +391,7 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
     {phase === 'ringing' ? <div className="bot-call-ringing"><div className="bot-call-dial-orbit"><BotAvatar companion={companion} large /></div><h2>{companion.name}</h2><p>{zh ? '等待你接通' : 'Ready when you are'}</p><small>{zh ? `${remaining} 秒后自动结束` : `Ends automatically in ${remaining}s`}</small>
       <div className="bot-call-dial-actions"><button className="bot-call-hangup" onClick={onHangup}><BotIcon name="phone-off" /><span>{zh ? '取消' : 'Cancel'}</span></button><button className="bot-call-accept" data-call-accept disabled={connecting} onClick={() => void connect()}><BotIcon name="phone" /><span>{connecting ? (zh ? '接通中…' : 'Connecting…') : (zh ? '接通' : 'Connect')}</span></button></div>
       <button className="bot-call-ring-volume" onClick={() => setMuted(value => !value)} aria-pressed={muted}><BotIcon name="volume" />{muted ? zh ? '开启铃声' : 'Unmute ringtone' : zh ? '静音铃声' : 'Mute ringtone'}</button>
-      {audioBlocked && <button className="bot-call-ring-retry" onClick={() => { void audio.current?.play().then(() => setAudioBlocked(false)).catch(() => setAudioBlocked(true)); }}>{zh ? '播放铃声' : 'Play ringtone'}</button>}
+      {audioBlocked && <button className="bot-call-ring-retry" onClick={() => ringtoneRetry.current?.()}>{zh ? '播放铃声' : 'Play ringtone'}</button>}
       {sendError && <p className="bot-call-ring-error" role="alert">{sendError}</p>}
     </div> : <><div className="bot-call-connected"><div className="bot-call-scene" style={{ backgroundImage: background }}>
       {!desktop.pet && <div className="bot-call-scene-shade" />}

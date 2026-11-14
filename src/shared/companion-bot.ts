@@ -135,6 +135,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   ...botMemoryMaintenanceSchemas,
   z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional() }),
   z.strictObject({ type: z.literal('call.open'), conversationId: id }),
+  z.strictObject({ type: z.literal('call.model.import'), companionId: id }),
   z.strictObject({ type: z.literal('user.identity'), name: z.string().trim().min(1).max(80).regex(/^[^\x00-\x1f\x7f]+$/u).optional(), bio: z.string().trim().max(800).optional() }),
   z.strictObject({ type: z.literal('companion.call-performance'), companionId: id }),
   z.strictObject({ type: z.literal('call.interrupt'), conversationId: id, topicId: id.optional(), requestId: id,

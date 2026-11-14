@@ -12,6 +12,9 @@ import { startMobileSsh } from './companion-bot/mobile-ssh';
 import { hasFixedMobilePublicEndpoint, startMobilePublicTunnel } from './companion-bot/mobile-public-tunnel';
 import { MOBILE_ACCESS_CHANNEL, mobileSettingsRequest } from '../shared/mobile-access';
 import { bindCallPetWindow, callPetFor } from './companion-bot/call-pet-window';
+import { importDafeiyuModel, readLocalCallModel, serveLocalCallModel } from './companion-bot/local-call-model';
+import { CALL_MODEL_HOST } from '../shared/companion-call';
+import { DEFAULT_BOT_COMPANION_ID } from '../shared/builtin-bot-companions';
 import type { BotDataCleanupService } from './companion-bot/data-cleanup';
 import { BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, botSpeechRequest } from '../shared/companion-bot';
 import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
@@ -5252,6 +5255,7 @@ async function startApplication(): Promise<void> {
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
   let mobileGateway: Awaited<ReturnType<typeof startMobileGateway>>;
+  const localCallModelRoot = path.join(app.getPath('userData'), 'companion-call-model');
   const ensureBotMediaService = ():Promise<BotMediaService> => {
     if (botDataCleanup?.busy) return Promise.reject(new Error('正在后台清理伙伴聊天与记忆，请稍后重试。'));
     return botMediaService ??= import('./companion-bot/media-service').then(async ({BotMediaService})=>new BotMediaService({
@@ -5317,6 +5321,7 @@ async function startApplication(): Promise<void> {
         getHost: getWorkerHost });
       const brain = worker;
       botService = new BotService({ root, brain,
+        readLocalCallModel: companionId => readLocalCallModel(localCallModelRoot, companionId),
         scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
         callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), "public", "companion-call") : path.join(__dirname, "..", "renderer", MAIN_WINDOW_VITE_NAME, "companion-call"), prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
         resolveBrowserContext: id => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.resolveCompanionContext(id); },
@@ -5500,6 +5505,17 @@ async function startApplication(): Promise<void> {
     const parsed = botRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };
     try {
+      if (parsed.data.type === 'call.model.import') {
+        if (parsed.data.companionId !== DEFAULT_BOT_COMPANION_ID) throw Error('当前只支持导入大肥鱼的 Live2D 模型。');
+        const selection = await dialog.showOpenDialog(mainWindow, {
+          title: '选择作者发布的大肥鱼模型 ZIP', properties: ['openFile'], filters: [{ name: 'ZIP', extensions: ['zip'] }],
+        });
+        if (selection.canceled || !selection.filePaths[0]) return { ok: true };
+        await importDafeiyuModel(localCallModelRoot, selection.filePaths[0]);
+        const service = await ensureBotService();
+        service.invalidateCallModel(parsed.data.companionId);
+        return await service.handle({ type: 'companion.call-performance', companionId: parsed.data.companionId });
+      }
       if (parsed.data.type === 'companion.data.clear.status') return { ok: true, cleanup: await botDataCleanup!.status(parsed.data.companionId) };
       if (parsed.data.type === 'companion.data.clear') {
         if (!botDataCleanup!.busy && !(await ensureBotService()).store.getCompanion(parsed.data.companionId)) throw new Error('伙伴不存在。');
@@ -7082,6 +7098,7 @@ async function startApplication(): Promise<void> {
   protocol.handle("worldlinebox", async (request) => {
     try {
       const url = new URL(request.url);
+      if (url.hostname === CALL_MODEL_HOST) return serveLocalCallModel(localCallModelRoot, request);
       if(url.hostname==='bot-media')return(await ensureBotMediaService()).response(request);
       if (url.hostname === APP_ASSET_HOST) {
         // Bundled app assets (e.g. .hdr environment maps) that the packaged

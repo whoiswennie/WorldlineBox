@@ -71,10 +71,14 @@ it('waits for the user to connect, loops the ringtone and ends after exactly 60 
 it('uses 大肥鱼’s theme by companion ID and mutes without restarting it', async () => {
   await mount('', { ...companion, id: DEFAULT_BOT_COMPANION_ID, name: '自定义昵称' });
   const sound = sounds[0]!;
-  expect(sound.src).toMatch(/\/ringtones\/dafeiyu-let-me-go\.ogg$/);
+  expect(sound.src).toMatch(/\/ringtones\/dafeiyu\.wav$/);
   await act(() => button('静音铃声').click()); expect(sound.muted).toBe(true);
   await act(() => button('开启铃声').click()); expect(sound.muted).toBe(false);
   expect(sound.play).toHaveBeenCalledOnce();
+});
+it('uses the common ringtone for 菲比', async () => {
+  await mount('', { ...companion, id: 'phoebe', name: '自定义昵称' });
+  expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
 });
 it('stops ringing on connect, cancels the ringing deadline and shows an avatar for an ordinary companion', async () => {
   const fixture = await mount(); await act(() => button('接通').click()); expect(sounds[0]?.pause).toHaveBeenCalled(); expect(sounds[0]?.removeAttribute).toHaveBeenCalledWith('src');

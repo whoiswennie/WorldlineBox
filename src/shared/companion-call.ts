@@ -5,6 +5,8 @@ export const BOT_CALL_SEGMENTS_PER_TURN = 100;
 export const BOT_CALL_SEGMENT_LENGTH = 500;
 export const BOT_CALL_MIN_DURATION_MS = 400;
 export const BOT_CALL_MAX_DURATION_MS = 20_000;
+export const DAFEIYU_MODEL_DOWNLOAD = 'https://www.bilibili.com/video/BV1KmxY66EZ3';
+export const CALL_MODEL_HOST = 'call-model';
 const name = z.string().min(1).max(160);
 const file = z.string().min(1).max(240).refine(value => !/[:\\?#%\0]/u.test(value) && value.split('/').every(part => part && part !== '.' && part !== '..'));
 
@@ -24,6 +26,8 @@ export type BotCallModelCatalog = z.infer<typeof botCallModelCatalog>;
 export interface BotCallModel {
   /** Relative to the app's companion-call assets. */
   model: string;
+  /** Local desktop model URL. Mobile continues to load its own assets. */
+  modelUrl?: string;
   catalog?: string;
   assets: BotCallModelCatalog;
   manifest?: { Expressions: Array<{ Name: string; File: string }>; Motions: Record<string, Array<{ File: string; FadeInTime?: number; FadeOutTime?: number }>> };

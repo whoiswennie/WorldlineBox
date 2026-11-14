@@ -178,6 +178,13 @@ if (existsSync(sqliteNodePath)) {
 
 const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
+for (const relative of ['ringtone.wav', 'ringtones/dafeiyu.wav']) {
+  const file = path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
+  const wav = asar.extractFile(asarPath, file);
+  if (wav.length < 44 || wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error(`Invalid bundled call ringtone: ${relative}`);
+  }
+}
 // Vendor-prefix optimization must not erase Chromium's actual fallback.
 // This checks emitted CSS rather than trusting the source declaration order.
 const rendererCss = asarFiles.filter(entry => String(entry).replaceAll('\\', '/').includes('/.vite/renderer/main_window/assets/') && String(entry).endsWith('.css'));

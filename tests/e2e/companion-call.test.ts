@@ -46,8 +46,8 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
       const audio = Reflect.get(window, '__callAcceptanceAudio') as HTMLAudioElement;
       return { src: audio.getAttribute('src'), duration: audio.duration, paused: audio.paused, muted: audio.muted };
     });
-    await expect.poll(async () => (await ringtone()).duration).toBeCloseTo(127.15, 1);
-    expect((await ringtone()).src).toMatch(/\/ringtones\/dafeiyu-let-me-go\.ogg$/);
+    await expect.poll(async () => (await ringtone()).duration).toBeGreaterThan(1);
+    expect((await ringtone()).src).toMatch(/\/ringtones\/dafeiyu\.wav$/);
     await expect.poll(async () => (await ringtone()).paused).toBe(false);
     await meeting.getByRole('button', { name: '静音铃声', exact: true }).click();
     expect(await ringtone()).toMatchObject({ muted: true, paused: false });

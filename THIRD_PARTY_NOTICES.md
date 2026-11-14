@@ -120,7 +120,7 @@ SOFTWARE.
 
 Cabin World by VADS。应用附带上游 V1.0.0 的 Windows 运行文件和桥接资源，保持其原始内容；WorldlineBox 自己实现启动器界面与 DSH 插件。上游代码采用 MIT，美术、数据与文档采用 CC BY 4.0，Naiwa 素材的例外及 Godot 声明见随包的 `cabin-world/LICENSE`、`LICENSE-NOTES.md` 和 `third-party/`。 [Cabin World 原仓库](https://github.com/BabyBus2022/cabin-world) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
-感谢神宫凉子（原画、拆分）及霓虹猫_NeonNeko（Live2D 建模）提供 DeepSeek-chan。模型可供个人通过作者渠道获取，公开版使用头像。Cubism Core、查看器和随包铃声的来源见通话素材声明。 [作者发布页面](https://www.bilibili.com/video/BV1ALnw6YEGK) · [通话素材声明](public/companion-call/NOTICE.md)
+感谢神宫凉子（原画、拆分）及霓虹猫_NeonNeko（Live2D 建模）提供 DeepSeek-chan。模型可供个人通过作者渠道获取，并在大肥鱼角色卡的「形象」页导入。Cubism Core、查看器和随包铃声的来源见通话素材声明。 [作者发布页面](https://www.bilibili.com/video/BV1KmxY66EZ3) · [通话素材声明](public/companion-call/NOTICE.md)
 
 ## 本地语音识别：SenseVoiceSmall、sherpa-onnx 与 Silero VAD
 

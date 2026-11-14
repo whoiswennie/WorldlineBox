@@ -211,6 +211,6 @@ Electron、React、TypeScript、Vite、Three.js 和 SQLite。资产库由 Librar
 - **VCP** 的日记、语义索引和长上下文能力为独立记忆模块提供基础。模块保留了上游来源与许可。 [VCPToolBox 原仓库](https://github.com/lioensky/VCPToolBox) · [VCPChat 原仓库](https://github.com/lioensky/VCPChat)
 - **DeepSeek Harness** 提供原生 Agent 循环、会话与执行环境。 [DeepSeek Harness 原仓库](https://github.com/deepseek-ai/deepseek-harness)
 - **Cabin World by VADS** 提供「小屋世界」。应用附带上游 V1.0.0 的运行文件，WorldlineBox 提供启动器和 DSH 桥接。 [Cabin World 原仓库](https://github.com/BabyBus2022/cabin-world) · [上游许可](https://github.com/BabyBus2022/cabin-world/blob/main/LICENSE)
-- **DeepSeek-chan（大肥鱼）Live2D** 由神宫凉子原画及拆分，霓虹猫_NeonNeko 建模。公开安装包使用头像。个人可从作者渠道获得模型，并按 [本地素材说明](public/companion-call/NOTICE.md) 准备用于私人构建的文件。 [作者发布页面](https://www.bilibili.com/video/BV1ALnw6YEGK)
+- **DeepSeek-chan（大肥鱼）Live2D** 由神宫凉子原画及拆分，霓虹猫_NeonNeko 建模。下载作者发布的原始 ZIP 后，在桌面端打开「大肥鱼 → 角色卡 → 形象」，选择「导入 Live2D 模型」。 [作者发布页面](https://www.bilibili.com/video/BV1KmxY66EZ3) · [本地素材说明](public/companion-call/NOTICE.md)
 
 本项目自有代码使用 [MIT 许可](LICENSE)。各上游代码、模型、素材和工具保留自己的授权条件。 [第三方声明](THIRD_PARTY_NOTICES.md)

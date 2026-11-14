@@ -27,7 +27,7 @@ export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { 
       // Pixi's interpreter patch keeps JavaScript eval blocked by the app CSP.
       const [{ Live2DRenderer, createScriptTagCubismLoader }, { SoullinkRuntime }] = await Promise.all([import('@soullink-emotion/live2d-pixi'), import('@soullink-emotion/engine'), import('@pixi/unsafe-eval')]);
       if (cancelled || !host.current) return;
-      const modelUrl = botAssetUrl('companion-call/' + model.model);
+      const modelUrl = model.modelUrl ?? botAssetUrl('companion-call/' + model.model);
       const catalog = model.assets;
       const loadCore = createScriptTagCubismLoader(botAssetUrl('companion-call/live2dcubismcore.min.js'));
       renderer = new Live2DRenderer(host.current, { cubismLoader: async () => {
