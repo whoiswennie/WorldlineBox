@@ -2,6 +2,7 @@ const pinPath = 'M8 3h8l-1 6 3 3v2H6v-2l3-3-1-6ZM12 14v7';
 const paths = {
   apps: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
   assets: 'M3 6l9-4 9 4v12l-9 4-9-4zM3 6l9 4 9-4M12 10v12',
+  cabin: 'M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6',
   check: 'M5 12l4 4L19 6',
   close: 'M6 6l12 12M18 6L6 18',
   copy: 'M8 6V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z',
@@ -29,6 +30,7 @@ const paths = {
   tasks: 'M8 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3M8 3h8v4H8zM8 14l3 3 5-6',
   history: 'M3 11a9 9 0 1 1 2.4 7M3 4v7h7M12 7v5l3 2',
   clock: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 7v5l3 2',
+  info: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M12 11v5m0-8h.01',
   smile: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M8 14s1.5 3 4 3 4-3 4-3M8.5 8.5h.01M15.5 8.5h.01',
   arrow: 'M12 19V5M5 12l7-7 7 7',
   'arrow-left': 'M19 12H5M12 5l-7 7 7 7',

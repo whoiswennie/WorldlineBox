@@ -251,7 +251,7 @@ it('writes a confirmed indexed interaction diary even when policy 3 extraction r
   await expect(captureBotMemory({ ...input, policyVersion: 3, completed: true, answerMessageId: 'a1', capturedAt: '2026-11-09T08:00:00Z',
     nativeDeliveries: [{ path: 'C:/workspace/report.pdf', description: '原生交付报告' }] })).resolves.toEqual({ notes: 1 });
   const write = memory.remember.mock.calls[0]![1];
-  expect(write).toMatchObject({ sourceEventId: 'event-1:interaction:v3', sourceMessageIds: ['u1','a1'], waitForIndex: true });
+  expect(write).toMatchObject({ sourceEventId: 'event-1:interaction:v3', sourceMessageIds: ['u1','a1'], waitForIndex: true, indexTimeoutMs: 300 });
   expect(write.content).toContain('用户 (user)'); expect(write.content).toContain('a1'); expect(write.content).toContain('report.pdf');
   expect(write.content).toContain('不能单独证明'); expect(write.content).toContain('isExcerpt: false'); expect(brain.run).toHaveBeenCalledOnce();
 });

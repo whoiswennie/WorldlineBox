@@ -6,9 +6,12 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { constants as zlib, createGzip } from 'node:zlib';
 import { z } from 'zod';
 import { botRequestSchema, type BotEvent, type BotMessage, type BotRequest } from '../../shared/companion-bot';
 import { BOT_MEDIA_PREVIEW_MAX_BYTES } from '../../shared/companion-bot-media';
+import { callCaptionPlaybackPages, callCaptionHoldMs } from '../../shared/companion-call-captions';
+import { botCallProgressIcon, botReplyProgressLabel } from '../../shared/companion-bot-progress';
 import { MOBILE_ACCESS_PORT, mobileDeviceName, mobileToken } from '../../shared/mobile-access';
 import type { MobileAccessSettings } from './mobile-access-settings';
 import type { BotMediaService } from './media-service';
@@ -81,11 +84,22 @@ function fileName(value: string | null) {
   return name;
 }
 
-function projectMessage(message: BotMessage) {
+function projectProgress(status: BotMessage['status'], progress: NonNullable<BotMessage['progress']>) {
+  return { ...progress, label: botReplyProgressLabel(status, progress, 'zh-CN'), icon: botCallProgressIcon(progress.phase) };
+}
+
+const projectedPages = (text: string) => callCaptionPlaybackPages(text).map(({ text }, speechPage) => ({ text, speechPage, holdMs: callCaptionHoldMs(text) }));
+
+function projectMessage(message: BotMessage, meeting = false) {
   const { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing, progress, execution, topic, quote, error } = message;
-  return { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing, progress, topic, quote,
+  const cues = message.parts?.filter(part => part.presentation);
+  return { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing,
+    progress: progress && projectProgress(status, progress), topic, quote,
     ...(error ? { error: '伙伴回复失败，请在电脑端查看详情后重试。' } : {}),
-    ...(message.parts?.some(part => part.presentation) ? { cues: message.parts.filter(part => part.presentation).map(({ id, text, presentation }) => ({ id, text, ...presentation })) } : {}),
+    ...(cues?.length ? { cues: cues.map(({ id, text, presentation }) => ({
+      id, text, ...presentation,
+      pages: projectedPages(text ?? ''),
+    })) } : meeting && senderId !== 'user' && status === 'sent' && content.trim() ? { captionPages: projectedPages(content) } : {}),
     ...(execution ? { execution: { status: execution.status, phase: execution.phase, question: execution.question,
       continuation: execution.continuation, interruption: execution.interruption,
       steps: execution.steps.slice(-50).map(({ id, type, summary, toolName, status, at }) => ({ id, type, summary, toolName, status, at })) } } : {}) };
@@ -127,7 +141,7 @@ export async function startMobileGateway(options: Options) {
       responses.set(res, device);
       res.once('close', () => responses.delete(res));
     }
-    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, maxUploadBytes: BOT_MEDIA_PREVIEW_MAX_BYTES });
+    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, maxUploadBytes: BOT_MEDIA_PREVIEW_MAX_BYTES, pagedSpeech: !!options.speech });
     if (device && options.access && url.pathname === '/mobile/v1/profile') {
       if (method === 'PUT') {
         const profile = z.strictObject({ name: mobileDeviceName }).safeParse(await readJson(req));
@@ -168,14 +182,33 @@ export async function startMobileGateway(options: Options) {
         const messageId = id.safeParse(url.searchParams.get('messageId'));
         const partId = id.nullable().safeParse(url.searchParams.get('partId'));
         if (!messageId.success || !partId.success) throw new RequestError(400, '语音请求中的消息编号无效。');
-        const text = speechText(bot.store.getMessage(messageId.data), roomId.data, partId.data ?? undefined);
-        await options.speech.play(text, !!partId.data, async audio => {
-          requireRoom(roomId.data);
-          if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' });
-          if (!res.write(audio)) await once(res, 'drain', { signal: controller.signal });
-        }, controller.signal);
-        if (!res.headersSent) throw Error('DeepSeek 没有返回音频。');
-        res.end();
+        const pageParam = url.searchParams.get('pageIndex');
+        if (pageParam !== null && !/^\d{1,8}$/u.test(pageParam)) throw new RequestError(400, '语音请求中的对白页码无效。');
+        const text = speechText(bot.store.getMessage(messageId.data), roomId.data, partId.data ?? undefined, pageParam === null ? undefined : Number(pageParam));
+        const acceptsGzip = req.headers['accept-encoding']?.split(',').some(value => value.trim().toLowerCase() === 'gzip');
+        let gzip: ReturnType<typeof createGzip> | undefined;
+        let transfer: Promise<void> | undefined;
+        try {
+          await options.speech.play(text, !!partId.data, async audio => {
+            requireRoom(roomId.data);
+            if (!res.headersSent) {
+              res.writeHead(200, { 'content-type': 'application/octet-stream', 'cache-control': 'no-store', vary: 'Accept-Encoding',
+                ...(acceptsGzip ? { 'content-encoding': 'gzip' } : {}) });
+              if (acceptsGzip) {
+                gzip = createGzip({ level: zlib.Z_BEST_SPEED, flush: zlib.Z_SYNC_FLUSH });
+                transfer = pipeline(gzip, res);
+                void transfer.catch(() => undefined);
+              }
+            }
+            const output = gzip ?? res;
+            if (!output.write(audio)) await once(output, 'drain', { signal: controller.signal });
+          }, controller.signal);
+          if (!res.headersSent) throw Error('DeepSeek 没有返回音频。');
+          (gzip ?? res).end();
+          await transfer;
+        } finally {
+          gzip?.destroy();
+        }
         return;
       } catch (error) {
         if (error instanceof RequestError || res.headersSent) throw error;
@@ -186,8 +219,8 @@ export async function startMobileGateway(options: Options) {
     if (method === 'POST' && url.pathname === '/mobile/v1/requests') {
       const raw = await readJson(req);
       const state = z.strictObject({ type: z.literal('state'), conversationId: id.optional(), after: z.number().int().min(0).optional(),
-        tracked: z.array(id).max(20).default([]) }).safeParse(raw);
-      const parsed = botRequestSchema.safeParse(state.success ? { type: 'state', conversationId: state.data.conversationId } : raw);
+        tracked: z.array(id).max(20).default([]), history: z.literal(true).optional(), before: z.number().int().positive().optional() }).safeParse(raw);
+      const parsed = botRequestSchema.safeParse(state.success ? { type: 'state', conversationId: state.data.conversationId, before: state.data.before } : raw);
       requireDevice();
       if (!parsed.success) throw new RequestError(400, '伙伴请求格式不正确。');
       const input = parsed.data;
@@ -225,16 +258,19 @@ export async function startMobileGateway(options: Options) {
       const { messages } = snapshot;
       const after = state.success ? state.data.after : undefined;
       const tracked = new Set(state.success ? state.data.tracked : []);
+      const history = state.success && state.data.history;
       const latest = messages.at(-1)?.sequence ?? 0;
       const selected = after === undefined ? messages.slice(-6) : messages.filter(message => message.sequence > after).slice(-24);
       const updates = messages.filter(message => tracked.has(message.id) || message.status === 'running' || message.status === 'queued').slice(-24);
-      const projected = [...new Map([...selected, ...updates].map(message => [message.id, message])).values()].sort((a,b) => a.sequence - b.sequence);
+      const projected = history ? messages : [...new Map([...selected, ...updates].map(message => [message.id, message])).values()].sort((a,b) => a.sequence - b.sequence);
+      const projectedRoom = result.conversationId ?? ('conversationId' in input ? input.conversationId : undefined);
+      const meeting = !!projectedRoom && !!bot.store.getConversation(projectedRoom)?.meeting;
       return json(res, 200, { ok: true, conversationId: result.conversationId, callStage: result.callStage,
         callModel: result.callModel && !result.callModel.modelUrl ? { model: result.callModel.model, manifest: result.callModel.manifest, vts: result.callModel.vtsParameters } : undefined,
         message: sent ? projectMessage(sent) : undefined, snapshot: {
         companions: snapshot.companions.map(({ id, name, enabled }) => ({ id, name, enabled, presence: snapshot.presence?.[id]?.status })),
         conversations: snapshot.conversations.filter(room => canChat(bot.store.getConversation(room.id))).map(({ id, title, kind, memberIds, pinned }) => ({ id, title, kind, memberIds, pinned, activity: snapshot.conversationActivity?.[id] })),
-        messages: projected.map(projectMessage), cursor: latest,
+        messages: projected.map(message => projectMessage(message, meeting && message.conversationId === projectedRoom)), cursor: latest, ...(history ? { hasMore: snapshot.hasMore } : {}),
         ready: snapshot.runtime.ready,
         ...(chatRuntime ? { chatRuntime: { topic: chatRuntime.topic, queued: chatRuntime.queued, running: chatRuntime.running, hiddenMessageIds: chatRuntime.hiddenMessageIds,
           contexts: Object.fromEntries(Object.entries(chatRuntime.contexts ?? {}).map(([companionId, context]) =>
@@ -425,7 +461,7 @@ export async function startMobileGateway(options: Options) {
         return;
       }
       if (event.type !== 'changed' && event.type !== 'text' && event.type !== 'progress') return;
-      const payload = `data: ${JSON.stringify(event)}\n\n`;
+      const payload = `data: ${JSON.stringify(event.type === 'progress' ? { ...event, progress: projectProgress('running', event.progress) } : event)}\n\n`;
       for (const [res, roomId] of subscribers) {
         if (roomId && event.conversationId && event.conversationId !== roomId) continue;
         if (event.type === 'changed') { send(res, 'data: {"type":"changed"}\n\n'); continue; }

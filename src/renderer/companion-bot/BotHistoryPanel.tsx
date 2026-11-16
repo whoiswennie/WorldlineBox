@@ -19,14 +19,16 @@ const words = {
 type Failure = { message: string; before?: number; append: boolean };
 interface HistoryProps { api: WorldlineBoxBotApi; conversationId: string; locale: 'zh-CN' | 'en'; companions?: readonly BotCompanion[]; onLocate(message: BotMessage): void }
 
-export function BotHistoryDialog(props: HistoryProps & { title: string; onClose(): void }) {
+export function BotHistoryDialog(props: HistoryProps & { title: string; onClose(): void; suspended?: boolean }) {
   const container = useRef<HTMLElement>(null), t = words[props.locale];
   useEffect(() => {
+    if (props.suspended) return;
     const previous = document.activeElement;
     container.current?.querySelector<HTMLInputElement>('input')?.focus();
     return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
-  }, []);
+  }, [props.suspended]);
   const keyboard = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') { event.stopPropagation(); props.onClose(); }
     if (event.key !== 'Tab') return;
     const controls = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled),input,select,[tabindex="0"]')].filter(element => !element.hidden);
@@ -34,7 +36,7 @@ export function BotHistoryDialog(props: HistoryProps & { title: string; onClose(
     if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   };
-  return <div className="bot-history-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) props.onClose(); }}>
+  return <div className="bot-history-backdrop" hidden={props.suspended} onMouseDown={event => { if (event.target === event.currentTarget) props.onClose(); }}>
     <section ref={container} className="bot-history-dialog" role="dialog" aria-modal="true" aria-label={t.title} onKeyDown={keyboard}>
       <header className="bot-history-heading"><div><h2>{props.title}</h2><span>{t.title}</span></div><button type="button" aria-label={t.close} onClick={props.onClose}>×</button></header>
       <BotHistoryPanel {...props} />

@@ -29,6 +29,7 @@ function fixture(allowDefaultCreation = false, version = '0.2.1-rc.5') {
     const value = { id: 'new-default', name, runtimeId, isDefault: true, status: 'stopped' }; records.push(value); return value;
   });
   Reflect.set(launcher, 'instances', { list: () => records, get: (id: string) => records.find(value => value.id === id), ensureHost, create,
+    hasBundledRuntime: (id: string) => records.some(value => Reflect.get(value, 'isBundled') && value.runtimeId === id),
     launchPlan: () => ({ executable: path.join(os.tmpdir(), 'managed-node.exe') }) });
   Reflect.set(launcher, 'runtimes', { pendingDeletionVersions: () => [], get: () => ({ version, adapter: 'node-cli-web-v1' }),
     list: () => [{ id: 'compatible', version, adapter: 'node-cli-web-v1' }] });
@@ -136,6 +137,17 @@ it.each([false, true])('upgrades exactly the named existing instance with an off
   expect(fetchRelease).toHaveBeenCalledTimes(installed ? 0 : 1); expect(install).toHaveBeenCalledTimes(installed ? 0 : 1);
   expect(upgrade).toHaveBeenCalledExactlyOnceWith('selected', target.id, expect.objectContaining({ id: op.id, signal: op.signal }));
   expect(f.create).not.toHaveBeenCalled();
+});
+it('rejects removing the fallback runtime or upgrading its instance before starting an operation', async () => {
+  const f = fixture();
+  Reflect.set(f.records[0]!, 'isBundled', true);
+  vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+  const run = vi.spyOn(Reflect.get(f.launcher, 'operations'), 'run');
+  const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
+  await expect(route({ type: 'runtime.delete', runtimeId: 'compatible' })).rejects.toThrow('内置兜底版本');
+  await expect(route({ type: 'instance.upgrade-official', instanceId: 'default', expectedRuntimeId: 'compatible', version: '0.3.0' })).rejects.toThrow('内置兜底实例');
+  await expect(route({ type: 'companion.environment.upgrade', companionId: 'fish', name: 'Fish', runtimeId: 'another' })).rejects.toThrow('内置兜底实例');
+  expect(run).not.toHaveBeenCalled();
 });
 it('validates actual role identity before either binding mutation touches the native catalogue', async () => {
   const f = fixture();

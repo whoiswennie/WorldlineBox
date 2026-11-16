@@ -8,17 +8,19 @@ import type { BrowserPageContext } from '../../src/shared/browser-page-context';
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root, host: HTMLDivElement;
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); });
-async function render(onAssets: () => Promise<void>, onBrowser: (context: BrowserPageContext) => Promise<void> = vi.fn(async () => undefined), browserApi?: WorldlineBoxBrowserApi, browserContext?: BrowserPageContext) {
+async function render(onAssets: () => Promise<void>, onBrowser: (context: BrowserPageContext) => Promise<void> = vi.fn(async () => undefined), browserApi?: WorldlineBoxBrowserApi, browserContext?: BrowserPageContext, onCabin = vi.fn(async () => undefined)) {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(() => root.render(<BotApps locale="zh-CN" browserAvailable browserApi={browserApi} browserContext={browserContext} assetAttached={false} onAssets={onAssets} onBrowser={onBrowser} />));
+  await act(() => root.render(<BotApps locale="zh-CN" browserAvailable browserApi={browserApi} browserContext={browserContext} assetAttached={false} cabinAttached={false} onAssets={onAssets} onBrowser={onBrowser} onCabin={onCabin} />));
 }
 it('uses a single Apps entry and only activates the explicitly chosen app', async () => {
-  const assets = vi.fn(async () => undefined), browser = vi.fn(async () => undefined); await render(assets, browser);
+  const assets = vi.fn(async () => undefined), browser = vi.fn(async () => undefined), cabin = vi.fn(async () => undefined);
+  await render(assets, browser, undefined, undefined, cabin);
   expect(host.querySelector('[aria-label="应用"]')?.textContent).toContain('应用'); expect(assets).not.toHaveBeenCalled(); expect(browser).not.toHaveBeenCalled();
   await act(() => host.querySelector<HTMLButtonElement>('[aria-label="应用"]')!.click());
-  const choices = host.querySelectorAll<HTMLButtonElement>('.bot-app-choice'); expect(choices).toHaveLength(2);
+  const choices = host.querySelectorAll<HTMLButtonElement>('.bot-app-choice'); expect(choices).toHaveLength(3);
   expect(host.querySelector('.bot-app-artwork,.bot-app-tile')).toBeNull(); expect(choices[0]?.querySelector('svg.bot-icon')).not.toBeNull();
-  await act(() => choices[1]!.click()); expect(assets).toHaveBeenCalledOnce(); expect(browser).not.toHaveBeenCalled(); expect(host.querySelector('[role="dialog"]')).toBeNull();
+  await act(() => choices[1]!.click()); expect(assets).toHaveBeenCalledOnce(); expect(browser).not.toHaveBeenCalled(); expect(cabin).not.toHaveBeenCalled(); expect(host.querySelector('[role="dialog"]')).toBeNull();
+  await click('应用'); await click('小屋世界'); expect(cabin).toHaveBeenCalledOnce(); expect(assets).toHaveBeenCalledOnce();
 });
 
 function browserFixture() {

@@ -5323,6 +5323,7 @@ async function startApplication(): Promise<void> {
       botService = new BotService({ root, brain,
         readLocalCallModel: companionId => readLocalCallModel(localCallModelRoot, companionId),
         scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
+        cabinWorldApp: launcher?.companionCabinApp,
         callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), "public", "companion-call") : path.join(__dirname, "..", "renderer", MAIN_WINDOW_VITE_NAME, "companion-call"), prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
         resolveBrowserContext: id => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.resolveCompanionContext(id); },
         browserTool: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },
@@ -5401,7 +5402,7 @@ async function startApplication(): Promise<void> {
       const bot = await ensureBotService();
       const room = bot.store.getConversation(request.conversationId);
       if (!room || room.dissolvedAt || !room.memberIds.includes('user') && room.kind !== 'peer') throw Error('当前会话不可用。');
-      const text = speechText(bot.store.getMessage(request.messageId), room.id, request.partId);
+      const text = speechText(bot.store.getMessage(request.messageId), room.id, request.partId, request.pageIndex);
       await deepSeekSpeech.play(text, !!request.partId, audio => emit({ audio }), controller.signal);
       emit({ done: true });
     })().catch(error => emit({ error: error instanceof Error ? error.message : '伙伴语音播放失败。' })).finally(() => {

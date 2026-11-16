@@ -9,12 +9,8 @@ const bridgeJson = process.argv[2];
 if (!bridgeJson || !path.isAbsolute(bridgeJson)) throw new Error('Expected an absolute path to Cabin World data/bridge.json.');
 const worldRoot = path.resolve(path.dirname(bridgeJson), '..');
 const { tools: definitions } = JSON.parse(await readFile(process.argv[3] ?? path.join(worldRoot, 'bridge', 'openai-tools.json'), 'utf8'));
-const toolNames = ['cabin_status', 'cabin_look', 'cabin_go', 'cabin_use', 'cabin_buy', 'cabin_eat', 'cabin_stop'];
-const tools = toolNames.map(name => {
-  const definition = definitions.find(tool => tool.type === 'function' && tool.function?.name === name)?.function;
-  if (!definition) throw new Error(`Cabin World tool definition is missing: ${name}`);
-  return { name, description: definition.description, inputSchema: definition.parameters };
-});
+const tools = definitions.filter(tool => tool.type === 'function' && /^cabin_[a-z_]+$/.test(tool.function?.name))
+  .map(({ function: definition }) => ({ name: definition.name, description: definition.description, inputSchema: definition.parameters }));
 const taskTool = 'cabin_task_status';
 tools.push({
   name: taskTool,
@@ -65,7 +61,7 @@ function toolResult(result, isError = false) {
   return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result, ...(isError ? { isError } : {}) };
 }
 
-const server = new Server({ name: 'worldlinebox-cabin-world', version: '1.0.0' }, {
+const server = new Server({ name: 'worldlinebox-cabin-world', version: '1.2.0' }, {
   capabilities: { tools: {} },
   instructions: '小屋世界是伙伴可以操作的像素世界。用 cabin_status 查看角色状态，用 cabin_look 查看当前房间可用的物品和动作。动作返回 running 时用 cabin_task_status 查询原 taskId。只有 done 表示完成。',
 });

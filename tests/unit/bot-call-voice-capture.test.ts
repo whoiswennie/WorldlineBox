@@ -23,8 +23,15 @@ afterEach(() => vi.unstubAllGlobals());
 
 it('reuses shared recording, metering and sentence detection without creating another audio context', async () => {
   const context = vi.fn(); vi.stubGlobal('AudioContext', context);
-  const level = vi.fn(), capture = new CallVoiceCapture({ onLevel: level }), started = await capture.start(vi.fn());
-  expect(fixture.start).toHaveBeenCalledExactlyOnceWith(expect.any(Function), { onLevel: level, silenceSeconds: 1, minSpeechSeconds: .25, onSilence: expect.any(Function) });
+  const level = vi.fn(), onset = vi.fn();
+  const capture = new CallVoiceCapture({ onLevel: level, onSpeechStart: onset }), started = await capture.start(vi.fn());
+  expect(fixture.start).toHaveBeenCalledExactlyOnceWith(expect.any(Function), {
+    onLevel: level, silenceSeconds: 1, minSpeechSeconds: .25, onSilence: expect.any(Function),
+    onSpeechStart: expect.any(Function), speechPrerollSeconds: .25,
+  });
+  fixture.options!.onSpeechStart!();
+  expect(onset).toHaveBeenCalledOnce();
+  expect(fixture.stop).not.toHaveBeenCalled();
   fixture.options!.onLevel!(.45); expect(level).toHaveBeenCalledWith(.45); expect(context).not.toHaveBeenCalled();
   capture.stop(); expect(await started!.finished).toEqual({ wave: new Uint8Array([1, 2]), seconds: 2 }); expect(fixture.stop).toHaveBeenCalledOnce();
 });

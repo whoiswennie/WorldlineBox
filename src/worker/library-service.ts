@@ -450,6 +450,13 @@ const ORPHAN_ARTIFACT_GRACE_MS = 5 * 60_000;
 export const THUMBNAIL_VISIBLE_PAGE_SIZE = 100;
 const OIIO_VERSION = '3.1.12.0';
 const FFMPEG_VERSION = '8.1';
+
+function rawViewerGeneratorPrefix(assetPath: string): string {
+  const arwSettings = path.extname(assetPath).toLowerCase() === '.arw'
+    ? '-ppg-histogram1'
+    : '';
+  return `oiio@${OIIO_VERSION};raw-viewer-full-jpeg95${arwSettings}-srgb;`;
+}
 /**
  * WorldlineBox-308675: media jobs run under full-decoder CPU saturation, where the
  * single Worker thread can stall well past a 15s lease between heartbeat
@@ -712,6 +719,12 @@ import {
   normalizeProbeEmbeddedMetadata,
 } from './embedded-metadata';
 import { extractRawEmbeddedJpegThumbnail } from './raw-embedded-thumbnail';
+import {
+  rawViewerLuminanceCdf,
+  rawViewerProbeArgs,
+  rawViewerToneFromProbe,
+  type RawViewerTone,
+} from './raw-viewer-color-match';
 import {
   queryModelCompanionAssets,
   resolveModelPreviewResolution,
@@ -29667,6 +29680,43 @@ export class LibraryService {
     }
   }
 
+  private async rawViewerDisplayTone(
+    assetPath: string,
+    oiiotoolPath: string,
+    nativeInput: MediaNativeMemoryEstimateInput,
+    execution: MediaExecutionContext,
+  ): Promise<RawViewerTone | null> {
+    const embeddedJpeg = extractRawEmbeddedJpegThumbnail(assetPath);
+    if (!embeddedJpeg) return null;
+    try {
+      const previewCdf = await runSharpDecoder(execution.signal, execution.lane, async () => {
+        const sharp = this.options.sharpFn ?? requireSharp();
+        const bitmap = await sharp(embeddedJpeg, { failOn: 'none', limitInputPixels: false })
+          .rotate()
+          .toColourspace('srgb')
+          .resize({ width: 128, height: 85, fit: 'fill' })
+          .raw!()
+          .toBuffer!({ resolveWithObject: true });
+        return rawViewerLuminanceCdf(bitmap.data, bitmap.info.channels);
+      });
+      if (!previewCdf) return null;
+      const probe = await this.runOiio(oiiotoolPath, rawViewerProbeArgs(assetPath), {
+        signal: execution.signal,
+        memory: nativeInput,
+      });
+      if (probe.exitCode !== 0) return null;
+      return rawViewerToneFromProbe(previewCdf, probe.stdout.toString('utf8'));
+    } catch (error) {
+      throwIfMediaExecutionAborted(execution.signal);
+      const resourceError = asMediaResourceExhaustedError(error, 'oiio');
+      if (resourceError) throw resourceError;
+      this.diagnose('oiio.raw-viewer-color-probe', error, {
+        extension: path.extname(assetPath).toLowerCase(),
+      });
+      return null;
+    }
+  }
+
   private async generateOiiOThumbnail(
     input: { libraryId: string; assetId: string },
     openLibrary: OpenLibrary,
@@ -29684,10 +29734,16 @@ export class LibraryService {
     const artifactId = randomUUID();
     const artifactsDir = this.artifactsDir(openLibrary);
     mkdirSync(artifactsDir, { recursive: true });
-    const artifactRelPath = `${artifactId}.png`;
-    const artifactAbsPath = path.join(artifactsDir, artifactRelPath);
     const artifactKind = options.artifactKind ?? 'thumbnail';
     const isViewerImage = artifactKind === 'viewer_image';
+    // RAW has no alpha. Its full-resolution PNG spends most of the viewer's
+    // wait compressing a camera-sized raster, so use a display-ready JPEG.
+    const isRawAsset = isRawImageExtension(assetPath);
+    const isRawViewerImage = isViewerImage && isRawAsset;
+    const isArwViewerImage = isRawViewerImage && path.extname(assetPath).toLowerCase() === '.arw';
+    const artifactMimeType = isRawViewerImage ? 'image/jpeg' : 'image/png';
+    const artifactRelPath = `${artifactId}.${isRawViewerImage ? 'jpg' : 'png'}`;
+    const artifactAbsPath = path.join(artifactsDir, artifactRelPath);
     let subimage = Number.isSafeInteger(options.subimage) && (options.subimage ?? 0) >= 0
       ? options.subimage ?? 0
       : 0;
@@ -29716,7 +29772,6 @@ export class LibraryService {
         exposureMultiplier,
         1,
       ].join(',');
-      const isRawAsset = isRawImageExtension(assetPath);
       // Keep the card artifact inside a 512px square while preserving the
       // source aspect ratio. `--resize 0x512` makes a 2048x1024 source into a
       // 1024x512 card, which is twice as wide as the card contract and caused
@@ -29724,7 +29779,7 @@ export class LibraryService {
       // presentation size, not a source acceptance or processing limit.
       const resizeArgs = isViewerImage ? [] : ['--fit', '512x512'];
       // Chromium <img> does not paint 16-bit PNG. Card and viewer outputs are
-      // display files, so force 8-bit before writing the PNG.
+      // display files, so force 8-bit before writing the artifact.
       const displayDepthArgs = ['-d', 'uint8'];
 
       if (isRawAsset && !isViewerImage) {
@@ -29739,6 +29794,9 @@ export class LibraryService {
       }
 
       const nativeInput = await inspectMediaNativeInput(assetPath, execution);
+      const viewerTone = isArwViewerImage
+        ? await this.rawViewerDisplayTone(assetPath, oiiotoolPath, nativeInput, execution)
+        : null;
 
       // LibRaw already converts camera RAW data to its display-ready default
       // output. Running that result through the studio OCIO display transform
@@ -29747,10 +29805,18 @@ export class LibraryService {
       // formats retain the established explicit OCIO route.
       const args: string[] = isRawAsset
         ? [
+            // PPG keeps the full ARW raster while reducing demosaic time.
+            ...(isArwViewerImage ? ['--iconfig', 'raw:Demosaic', 'PPG'] : []),
+            // Keep LibRaw's default brightness when there is no usable camera preview.
+            ...(viewerTone ? ['--iconfig', 'raw:auto_bright', '0'] : []),
             '--subimage', String(subimage),
             assetPath,
             ...resizeArgs,
+            ...(viewerTone
+              ? ['--mulc', String(viewerTone.gain), '--powc', String(viewerTone.power)]
+              : []),
             ...displayDepthArgs,
+            ...(isRawViewerImage ? ['--compression', 'jpeg:95'] : []),
             '-o', artifactAbsPath,
           ]
         : [
@@ -29795,11 +29861,11 @@ export class LibraryService {
           `INSERT INTO revision_artifacts
              (artifact_id, revision_id, kind, mime_type, byte_size, file_path,
               generator_version, status, generated_at)
-           VALUES (?, ?, ?, 'image/png', ?, ?, ?, 'ready', ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', ?)`,
         )
-        .run(artifactId, revisionId, artifactKind, outputStat.size, artifactRelPath,
+        .run(artifactId, revisionId, artifactKind, artifactMimeType, outputStat.size, artifactRelPath,
           (isRawAsset
-            ? `oiio@${OIIO_VERSION};raw-${isViewerImage ? 'viewer-full' : 'default'}-srgb;subimage=${subimage};display-uint8`
+            ? `${isViewerImage ? rawViewerGeneratorPrefix(assetPath) : `oiio@${OIIO_VERSION};raw-default-srgb;`}subimage=${subimage};display-uint8`
             : isIcoAsset
               ? `oiio@${OIIO_VERSION};ico-largest-v1;subimage=${subimage};display-uint8`
               : `oiio@${OIIO_VERSION};${isViewerImage ? 'viewer-full;' : ''}ocio=studio-v4-aces2;colorspace=${inputColorSpace ?? 'auto'};exposure=${exposureStops};subimage=${subimage};display-uint8`) + `;${OIIO_LITERAL_PATHS_MARK}`,
@@ -29835,12 +29901,12 @@ export class LibraryService {
           `INSERT INTO revision_artifacts
              (artifact_id, revision_id, kind, mime_type, byte_size, file_path,
               generator_version, status, error_code, generated_at)
-           VALUES (?, ?, ?, 'image/png', 0, ?, ?, 'failed', ?, ?)`,
+           VALUES (?, ?, ?, ?, 0, ?, ?, 'failed', ?, ?)`,
         )
         .run(
-          artifactId, revisionId, artifactKind, artifactRelPath,
-          (isRawImageExtension(assetPath)
-            ? `oiio@${OIIO_VERSION};raw-${isViewerImage ? 'viewer-full' : 'default'}-srgb;subimage=${subimage}`
+          artifactId, revisionId, artifactKind, artifactMimeType, artifactRelPath,
+          (isRawAsset
+            ? `${isViewerImage ? rawViewerGeneratorPrefix(assetPath) : `oiio@${OIIO_VERSION};raw-default-srgb;`}subimage=${subimage}`
             : isIcoAsset
               ? `oiio@${OIIO_VERSION};ico-largest-v1;subimage=${subimage}`
               : `oiio@${OIIO_VERSION};${isViewerImage ? 'viewer-full;' : ''}ocio=studio-v4-aces2;subimage=${subimage}`) + `;${OIIO_LITERAL_PATHS_MARK}`,
@@ -30387,12 +30453,12 @@ export class LibraryService {
   ): Promise<void> {
     const key = `${input.libraryId}:${input.assetId}:${revisionId}`;
     const existing = this.getCurrentArtifact(input.libraryId, input.assetId, 'viewer_image');
-    const expected = `oiio@${OIIO_VERSION};raw-viewer-full;`;
+    const expected = rawViewerGeneratorPrefix(assetPath);
     // A failed viewer artifact is not a durable verdict about the source.
     // In particular, a library can remain open while its media bundle is
     // repaired or replaced. Retry failed/legacy artifacts once the RAW reader
     // is available instead of returning the stale failure forever.
-    if (existing?.status === 'ready' && existing.generatorVersion.includes(expected)) return;
+    if (existing?.status === 'ready' && existing.generatorVersion.startsWith(expected)) return;
     if (existing) {
       openLibrary.connection
         .prepare(

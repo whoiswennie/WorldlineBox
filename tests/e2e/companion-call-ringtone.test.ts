@@ -36,25 +36,31 @@ test('plays the packaged ringtone from a fresh profile and stops it when ringing
     await expect.poll(audio).toMatchObject({ paused: false, error: undefined, muted: false });
     await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
     expect((await audio())?.src).toMatch(/\/companion-call\/ringtones\/dafeiyu\.wav$/);
-    if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1') {
+    const privateAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
+    if (privateAssets) {
       expect((await audio())?.duration).toBeCloseTo(127.147, 1);
       await meeting.getByRole('button', { name: '接通', exact: true }).click();
       await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible({ timeout: 30000 });
       await expect(meeting.getByText('正在准备形象…', { exact: true })).toBeHidden({ timeout: 30000 });
       await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
       await expect.poll(audio).toMatchObject({ paused: true, src: null });
-      await meeting.getByRole('button', { name: '挂断', exact: true }).click();
-      await page.locator('.bot-sidebar-tabs').getByRole('tab', { name: /联系人/u }).click();
-      await page.locator('.bot-contact').filter({ has: page.getByText('GPT', { exact: true }) }).click();
-      await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
-      await expect.poll(audio).toMatchObject({ paused: false, error: undefined, muted: false });
-      await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
-      expect((await audio())?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
-      expect((await audio())?.duration).toBeCloseTo(28.779, 1);
-      return;
+      await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
+    } else {
+      await meeting.getByRole('button', { name: '取消', exact: true }).click();
     }
-    await meeting.getByRole('button', { name: '取消', exact: true }).click();
     await expect.poll(audio).toMatchObject({ paused: true, src: null });
+    const file = privateAssets ? 'ringtones/phoebe.wav' : 'ringtone.wav';
+    const duration = privateAssets ? 28.779 : 3.6;
+    for (const name of ['菲比啾比', 'GPT']) {
+      await page.locator('.bot-sidebar-tabs').getByRole('tab', { name: /联系人/u }).click();
+      await page.locator('.bot-contact').filter({ has: page.getByText(name, { exact: true }) }).click();
+      await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+      await expect.poll(async () => (await audio())?.src?.endsWith('/companion-call/' + file)).toBe(true);
+      await expect.poll(async () => (await audio())?.time ?? 0).toBeGreaterThan(0);
+      expect((await audio())?.duration).toBeCloseTo(duration, 1);
+      await page.getByRole('dialog', { name: `与${name}会面`, exact: true }).getByRole('button', { name: '取消', exact: true }).click();
+      await expect.poll(audio).toMatchObject({ paused: true, src: null });
+    }
   } finally {
     await app.close();
     removeCompanionTestDirectory(profile);

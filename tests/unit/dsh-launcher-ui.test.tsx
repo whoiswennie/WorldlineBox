@@ -87,6 +87,53 @@ async function selectInstance(id: string) {
   });
 }
 
+it('marks and protects the fallback after another instance becomes the shared executor', async () => {
+  const f = fixture([], { instances: [
+    { ...instance('instance-a', 'WorldlineBox DSH'), isBundled: true, isDefault: false },
+    { ...instance('instance-b', '个人 DSH'), isDefault: true, runtimeId: 'runtime-b' },
+  ] });
+  await mount(f.api);
+  expect(container!.querySelector('option[value="instance-a"]')?.textContent).toContain('WorldlineBox DSH · 内置兜底实例');
+  expect(button('归档实例').disabled).toBe(false);
+  await selectInstance('instance-a');
+  expect(container!.querySelector('.launcher-instance-title h1')?.textContent).toBe('WorldlineBox DSH');
+  expect(button('归档实例').disabled).toBe(true);
+  expect(button('升级运行版本').disabled).toBe(true);
+  expect(button('设为共享执行实例').disabled).toBe(false);
+  await click('运行版本', container!.querySelector('.launcher-navigation')!);
+  const bundled = container!.querySelector('[data-dsh-runtime="runtime-a"]')!;
+  expect(bundled.textContent).toContain('内置兜底版本');
+  expect(button('删除运行版本', bundled).disabled).toBe(true);
+});
+
+it('shows the shared default and prevents starting it again while it prewarms', async () => {
+  const previous = { ...instance('instance-a', '旧终端实例'), isDefault: false };
+  const fallback = { ...instance('instance-b', 'WorldlineBox DSH'), isDefault: true, isBundled: true as const };
+  const f = fixture([], {
+    cli: { selectedInstanceId: 'instance-a', commandPath: '', binPath: '', pathEnabled: false, output: '', terminals: [] },
+    instances: [previous, fallback],
+    executionReadiness: { instanceId: fallback.id, status: 'warming', updatedAt: fallback.updatedAt },
+  });
+  await mount(f.api);
+  expect(container!.querySelector('.launcher-instance-title h1')?.textContent).toBe('WorldlineBox DSH');
+  expect(button('启动中…').disabled).toBe(true);
+  await f.publish({ ...f.state(), instances: [previous, { ...fallback, status: 'starting' }], executionReadiness: undefined });
+  expect(button('启动中…').disabled).toBe(true);
+  expect(button('启动中…').getAttribute('aria-busy')).toBe('true');
+  await click('启动中…');
+  expect(f.request).not.toHaveBeenCalledWith({ type: 'instance.start', instanceId: fallback.id });
+
+  await f.publish({ ...f.state(), instances: [previous, { ...fallback, status: 'running' }] });
+  expect(button('打开 / 返回工作台').disabled).toBe(false);
+  await click('打开 / 返回工作台');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.open', instanceId: fallback.id });
+
+  await f.publish({ ...f.state(), instances: [previous, { ...fallback, status: 'failed' }] });
+  expect(button('启动实例').disabled).toBe(false);
+  await click('启动实例');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.start', instanceId: fallback.id });
+});
+
 it('shows the same release sync and its result after switching away from the catalogue', async () => {
   const subject = fixture([], { versions: { source: 'cache', stale: true, entries: [] } });
   await mount(subject.api);

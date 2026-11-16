@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { createPortal } from 'react-dom';
+import startupLogo from '../../../assets/icons/startup-logo.png';
 import type { BotCompanion, BotMessage, BotRequest, BotResponse, BotSnapshot, WorldlineBoxBotApi } from '../../shared/companion-bot';
 import type { WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
@@ -21,7 +22,7 @@ import { BotCallDocument, useCallPet } from './call-pet';
 import './bot-call.css';
 
 const emptyMessages: readonly BotMessage[] = [];
-const defaultRingtone = 'ringtone.wav';
+const fallbackRingtone = 'ringtone.wav';
 const poseFields = [
   ['headX', '左右转头', 'Turn head', -1, 1, 0], ['headY', '抬头低头', 'Tilt head', -1, 1, 0], ['headZ', '歪头', 'Lean head', -1, 1, 0],
   ['bodyX', '身体左右', 'Body', -1, 1, 0], ['gazeX', '视线左右', 'Look sideways', -1, 1, 0], ['gazeY', '视线上下', 'Look up/down', -1, 1, 0],
@@ -52,6 +53,7 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
   }, []);
   const [historyFocus, setHistoryFocus] = useState<string>();
   const [pose, setPose] = useState<Record<string, number>>({}), [gazeEnabled, setGazeEnabled] = useState(preferences.gazeEnabled), [idleEnabled, setIdleEnabled] = useState(preferences.idleEnabled);
+  const [bodyShape, setBodyShape] = useState(0);
   const [meeting, setMeeting] = useState<{ id: string; model?: BotCallModel; stage?: BotCallStage; baseline: Set<string> }>();
   const [snapshot, setSnapshot] = useState<BotSnapshot>();
   const [turn, setTurn] = useState<BotCallTurn>();
@@ -62,6 +64,12 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
   const presented = useRef(new Map<string, { id: string; sequence: number }>());
   const interrupting = useRef<Promise<BotResponse>>(undefined);
   const [connecting, setConnecting] = useState(false), [sendError, setSendError] = useState('');
+  const stopReplySpeech = useRef<() => void>(undefined);
+  const [replyAudioInterrupted, setReplyAudioInterrupted] = useState(false);
+  const silenceReply = useCallback(() => {
+    stopReplySpeech.current?.();
+    setReplyAudioInterrupted(true);
+  }, []);
   const [files, setFiles] = useState<BotMediaRef[]>([]), [importing, setImporting] = useState(false), [sending, setSending] = useState(false);
   const live = useRef(false), generation = useRef(0), sendLock = useRef(false), importLock = useRef(false);
   const latestDraft = useRef(draft);
@@ -120,6 +128,7 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
     if (!result.ok || !result.conversationId || !result.snapshot) return;
     const baseline = new Set(result.snapshot.messages.flatMap(message => message.parts?.filter(part => part.presentation).map(part => part.id) ?? []));
     for (const message of result.snapshot.messages) {
+      if (message.status === 'sent') baseline.add(`message:${message.id}`);
       const prior = message.parts?.findLast(part => part.presentation);
       if (prior) recordPresentation(message.id, prior.id, prior.sequence);
     }
@@ -157,6 +166,7 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
       const stopped = !input && (topicId || playback.current.pending.length || runtime?.running.length)
         ? interrupt('send-' + requestId) : undefined;
       setTurn({ id: requestId, content: content.trim() });
+      setReplyAudioInterrupted(false);
       if (!input) {
         if (stopped) {
           const result = await stopped;
@@ -186,16 +196,20 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
     onHangup();
   };
   const send: BotCallSend = (text, requestId) => dispatch(text, requestId);
-  const voice = useBotCallVoice({ connected: phase === 'connected', conversationId, companionId: companion.id, messages, send });
+  const voice = useBotCallVoice({ connected: phase === 'connected', conversationId, companionId: companion.id, messages, send, onSpeechStart: silenceReply });
+  const voiceHold = replyAudioInterrupted || voice.state.enabled && ['preparing', 'waiting', 'recognizing'].includes(voice.state.phase);
   const stopVoice = voice.stop;
   const topicRequest = useCallback(async (input: BotRequest) => {
     if (input.type !== 'topic.context' && input.type !== 'topic.list') setSendError('');
     const result = await request(input);
     if (result.ok && (input.type === 'topic.new' || input.type === 'topic.select') && result.topic?.id !== topicId) {
-      for (const message of lastMessages.current) for (const part of message.parts ?? []) {
-        if (part.presentation) meeting?.baseline.add(part.id);
+      for (const message of lastMessages.current) {
+        if (message.status === 'sent') meeting?.baseline.add(`message:${message.id}`);
+        for (const part of message.parts ?? []) {
+          if (part.presentation) meeting?.baseline.add(part.id);
+        }
       }
-      stopVoice(); setTurn(undefined); setHistoryFocus(undefined); setOlder(undefined); historyFollowing.current = true;
+      stopVoice(); setReplyAudioInterrupted(false); setTurn(undefined); setHistoryFocus(undefined); setOlder(undefined); historyFollowing.current = true;
       textAttempt.current = undefined;
     }
     return result;
@@ -253,12 +267,12 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
     return () => { observer.disconnect(); shell.style.removeProperty('--bot-call-dock-height'); };
   }, [phase]);
   useEffect(() => { const previous = document.activeElement; return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); }; }, []);
-  useEffect(() => { box.current?.querySelector<HTMLElement>(phase === 'ringing' ? '[data-call-accept]' : composerExpanded ? 'textarea' : '.bot-call-input-entry')?.focus(); }, [phase, composerExpanded]);
+  useEffect(() => { box.current?.querySelector<HTMLElement>(phase === 'ringing' ? '[data-call-accept]' : composerExpanded ? 'textarea' : '.bot-call-input-entry')?.focus(); }, [phase, composerExpanded, desktop.surface]);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
   useEffect(() => { if (phase !== 'ringing') return; const timer = setTimeout(onHangup, Math.max(0, BOT_CALL_TIMEOUT_MS - (Date.now() - openedAt))); return () => clearTimeout(timer); }, [phase, openedAt, onHangup]);
   useEffect(() => {
     if (phase !== 'ringing') return;
-    let ringtone = companion.id === DEFAULT_BOT_COMPANION_ID ? 'ringtones/dafeiyu.wav' : defaultRingtone;
+    let ringtone = companion.id === DEFAULT_BOT_COMPANION_ID ? 'ringtones/dafeiyu.wav' : 'ringtones/phoebe.wav';
     const url = (file: string) => botAssetUrl('companion-call/' + file);
     const sound = new Audio(url(ringtone)); sound.loop = true; sound.volume = .75; audio.current = sound;
     const play = async () => {
@@ -267,8 +281,8 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
         if (audio.current === sound) setAudioBlocked(false);
       } catch (error) {
         if (audio.current !== sound) return;
-        if (ringtone !== defaultRingtone && (sound.error || (error as { name?: string })?.name === 'NotSupportedError')) {
-          ringtone = defaultRingtone;
+        if (ringtone !== fallbackRingtone && (sound.error || (error as { name?: string })?.name === 'NotSupportedError')) {
+          ringtone = fallbackRingtone;
           sound.src = url(ringtone);
           await play();
           return;
@@ -336,11 +350,17 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
           <button type="button" onClick={() => frameModel(true)}>{zh ? '重置取景' : 'Reset framing'}</button>
           <details className="bot-call-adjustment"><summary>{zh ? '神态与姿态' : 'Gaze & pose'}</summary><div className="bot-call-adjustment-body"><div className="bot-call-gesture-buttons"><button onClick={() => control.gesture('nod')}>{zh ? '点头' : 'Nod'}</button><button onClick={() => control.gesture('shake')}>{zh ? '摇头' : 'Shake'}</button><button onClick={() => control.gesture('blink')}>{zh ? '眨眼' : 'Blink'}</button></div>
           <label><input type="checkbox" checked={gazeEnabled} onChange={event => { setGazeEnabled(event.target.checked); saveBotCallPreferences(companion.id, { gazeEnabled: event.target.checked }); }} />{zh ? '视线跟随鼠标' : 'Follow pointer'}</label><label><input type="checkbox" checked={idleEnabled} onChange={event => { setIdleEnabled(event.target.checked); saveBotCallPreferences(companion.id, { idleEnabled: event.target.checked }); }} />{zh ? '自然待机动作' : 'Idle motion'}</label>
+          {control.hasBodyShape && <label className="bot-call-pose-slider"><span>{zh ? '体型' : 'Body shape'}</span><input type="range" min="0" max="1" step=".01" value={bodyShape} aria-label={zh ? '体型' : 'Body shape'} onChange={event => {
+            const value = Number(event.target.value);
+            setBodyShape(value);
+            control.bodyShape?.(value);
+            if (control.catalog.expressions.find(item => item.name === expression)?.params.includes('Clothes2')) setExpression('');
+          }} /><output>{Math.round(bodyShape * 100)}%</output></label>}
           {poseFields.map(([key, chinese, english, min, max, initial]) => <label className="bot-call-pose-slider" key={key}><span>{zh ? chinese : english}</span><input aria-label={zh ? chinese : english} type="range" min={min} max={max} step="0.02" value={pose[key] ?? initial} onChange={event => { const value = Number(event.target.value); setPose(current => ({ ...current, [key]: value })); control.pose({ [key]: value }); }} /><output>{(pose[key] ?? initial).toFixed(2)}</output></label>)}
           </div></details>
-          <details className="bot-call-adjustment"><summary>{zh ? '表情与动作' : 'Expressions & motions'}</summary><div className="bot-call-adjustment-body"><label>{zh ? '表情' : 'Expression'} <small>{control.catalog.expressions.length}</small><select aria-label={zh ? '选择模型表情' : 'Choose expression'} value={expression} onChange={event => { setExpression(event.target.value); if (event.target.value) control.expression(event.target.value); else { control.reset(); setPose({}); } }}><option value="">{zh ? '默认' : 'Default'}</option>{control.catalog.expressions.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+          <details className="bot-call-adjustment"><summary>{zh ? '表情与动作' : 'Expressions & motions'}</summary><div className="bot-call-adjustment-body"><label>{zh ? '表情' : 'Expression'} <small>{control.catalog.expressions.length}</small><select aria-label={zh ? '选择模型表情' : 'Choose expression'} value={expression} onChange={event => { setExpression(event.target.value); if (event.target.value) control.expression(event.target.value); else { control.reset(); setPose({}); setBodyShape(0); } }}><option value="">{zh ? '默认' : 'Default'}</option>{control.catalog.expressions.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
           <label>{zh ? '动作' : 'Motion'} <small>{control.catalog.motions.length}</small><select aria-label={zh ? '选择模型动作' : 'Choose motion'} value={motion} onChange={event => setMotion(event.target.value)}><option value="">{zh ? '选择动作' : 'Choose motion'}</option>{control.catalog.motions.map((item, index) => <option key={item.file} value={index}>{item.name}</option>)}</select></label><button disabled={!motion} onClick={() => control.motion(Number(motion))}>{zh ? '播放动作' : 'Play motion'}</button>
-          <button onClick={() => { control.reset(); setPose({}); setExpression(''); setMotion(''); }}>{zh ? '恢复默认姿态' : 'Reset pose'}</button>
+          <button onClick={() => { control.reset(); setPose({}); setBodyShape(0); setExpression(''); setMotion(''); }}>{zh ? '恢复默认姿态' : 'Reset pose'}</button>
           <small className="bot-call-credits">{control.catalog.credits}</small></div></details></>}
       </aside>;
   const editVoice = (text: string) => { setDraft(draft ? draft + '\n' + text : text); setComposerExpanded(true); };
@@ -348,7 +368,7 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
   const composerStatus = <div className="bot-call-composer-status">
     {modelError && <p className="bot-call-model-error" role="status">{modelError}</p>}
     <BotCallVoiceControls voice={voice} zh={zh} onStart={voice.start} onEdit={editVoice}
-      onInterrupt={() => { void interrupt().then(result => { if (result.ok) voice.interrupt(); }); }} />
+      onInterrupt={() => { silenceReply(); voice.interrupt(); void interrupt(); }} />
     {sendError && <p className="bot-call-send-error" role="alert">{sendError}</p>}
   </div>;
   const hangupButton = <button type="button" className="bot-call-hangup" aria-label={zh ? '挂断' : 'End call'} title={zh ? '挂断' : 'End call'} onClick={hangup}><BotIcon name="hangup" /></button>;
@@ -371,9 +391,10 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
     </>}
       </aside>;
   const inputActions = <>
-    {desktop.pet ? <button type="button" className="bot-call-pet-more" aria-label={zh ? '更多会面功能' : 'More meeting controls'} title={zh ? '更多会面功能' : 'More meeting controls'} aria-expanded={hudMenu} aria-controls={hudMenu ? petOptionsId : undefined}
-      onClick={() => { setHistoryOpen(false); setInteractions(false); setHudMenu(value => !value); }}><BotIcon name="more" /></button>
-      : composerExpanded && <button type="button" aria-label={zh ? '收起会面输入' : 'Collapse meeting input'} title={zh ? '收起会面输入' : 'Collapse meeting input'} disabled={voiceInputActive} onClick={() => setComposerExpanded(false)}><BotIcon name="chevron-down" /></button>}
+    {desktop.pet && <button type="button" className="bot-call-pet-more" aria-label={zh ? '更多会面功能' : 'More meeting controls'} title={zh ? '更多会面功能' : 'More meeting controls'} aria-expanded={hudMenu} aria-controls={hudMenu ? petOptionsId : undefined}
+      onClick={() => { setHistoryOpen(false); setInteractions(false); setHudMenu(value => !value); }}><BotIcon name="more" /></button>}
+    <button type="button" aria-label={zh ? '收起会面输入' : 'Collapse meeting input'} title={zh ? '收起会面输入' : 'Collapse meeting input'} disabled={voiceInputActive}
+      onClick={() => { if (desktop.pet) setHudMenu(false); setComposerExpanded(false); }}><BotIcon name="chevron-down" /></button>
     {hangupButton}
   </>;
   const question = messages.findLast(message => message.execution?.question && isCallTurnReply(message, turn) && !stage.ignored.has(message.id));
@@ -397,6 +418,14 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
       {!desktop.pet && <div className="bot-call-scene-shade" />}
       {meeting?.model && !modelError ? <><BotLive2DStage model={meeting.model} name={companion.name} desktopPet={desktop.pet} onReady={ready} onError={failed} />{!control && <p className="bot-call-loading" role="status">{zh ? '正在准备形象…' : 'Preparing the character…'}</p>}</>
         : <div className="bot-call-portrait"><div className="bot-call-portrait-frame"><BotAvatar companion={companion} large /></div><h2>{companion.name}</h2></div>}
+      {meeting && <BotCallDialogue key={`${turn?.id ?? topicId ?? 'empty'}:${stage.generation}`} turn={turn} messages={messages} baseline={meeting.baseline} ignored={stage.ignored} connectedAt={connectedAt}
+        speechApi={api} conversationId={conversationId} muted={muted} voiceHold={voiceHold} speechStop={stopReplySpeech}
+        catalog={meeting.model?.assets} stage={meeting.stage} control={control} modelLoading={!!meeting.model && !control && !modelError}
+        hidden={historyOpen || interactions || topicPanelOpen || desktop.pet && hudMenu} zh={zh}
+        interrupted={stage.interrupted} onPresent={recordPresentation} onPlayback={recordPlayback} onInterrupt={() => { void interrupt(); }} onNotice={setNotice}
+        onReplay={() => { if (!voice.state.enabled || voice.state.phase === 'error') setReplyAudioInterrupted(false); }}
+        onHistory={messageId => { setHistoryFocus(messageId); setInteractions(false); setHistoryOpen(true); }}
+        extra={question && <BotMessageBody message={{ ...question, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(question.id, id, text)} />} />}
       {!desktop.pet && hudMenu && meetingMenu}
       {notice && <button className="bot-call-notice" role="status" onClick={() => setNotice('')}>{notice} ×</button>}
     </div><section id="bot-call-history" className="bot-call-chat" hidden={!historyOpen && !interactions} aria-label={zh ? '会面聊天' : 'Conversation'}>
@@ -419,15 +448,8 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
         {message.execution?.question && <BotMessageBody message={{ ...message, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(message.id, id, text)} />}
       </article>)}
     </div></section></div>
-    <div className="bot-call-dock" ref={dock}>
-      {meeting && <BotCallDialogue key={`${turn?.id ?? topicId ?? 'empty'}:${stage.generation}`} turn={turn} messages={messages} baseline={meeting.baseline} ignored={stage.ignored} connectedAt={connectedAt}
-        speechApi={api} conversationId={conversationId} muted={muted}
-        catalog={meeting.model?.assets} stage={meeting.stage} control={control} modelLoading={!!meeting.model && !control && !modelError}
-        hidden={historyOpen || interactions || topicPanelOpen || desktop.pet && hudMenu} companion={companion} zh={zh}
-        interrupted={stage.interrupted} onPresent={recordPresentation} onPlayback={recordPlayback} onInterrupt={() => { void interrupt(); }}
-        onHistory={messageId => { setHistoryFocus(messageId); setInteractions(false); setHistoryOpen(true); }}
-        extra={question && <BotMessageBody message={{ ...question, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(question.id, id, text)} />} />}
-      <div className="bot-call-input-group">
+    <div className={`bot-call-dock${composerExpanded ? '' : ' is-collapsed'}`} ref={dock}>
+      {composerExpanded ? <div className="bot-call-input-group">
       {desktop.pet && hudMenu && <div className="bot-call-pet-options" id={petOptionsId}>
           <div className="bot-call-pet-toolbar">
             <span className="bot-call-pet-identity"><BotAvatar companion={companion} /><strong title={companion.name}>{companion.name}</strong></span>
@@ -436,14 +458,14 @@ export function BotCallWindow({ conversationId: directId, companion, api, mediaA
           {meetingMenu}
         </div>}
       {topics}
-    {composerExpanded || desktop.pet ? <div className="bot-call-composer-host">
+    <div className="bot-call-composer-host">
       <BotComposer meeting locale={locale} draft={draft} setDraft={setDraft} disabled={!conversationId} busy={sending} group={false} world={false} conversationId={conversationId}
         panel={null} setPanel={() => undefined} send={() => submit()} mediaApi={mediaApi} attachments={files} addingFiles={importing}
         addFiles={() => addFiles()} removeFile={id => setFiles(current => current.filter(file => file.id !== id))} sendSticker={media => submit(media)}
         extraTools={<>{composerTools}{inputActions}</>} showInputTools={!desktop.pet || hudMenu || voiceInputActive} compact status={composerStatus} onVoiceInputStart={voice.stop} onVoiceInputActivity={setVoiceInputActive} />
-    </div> : <><div className="bot-call-live-status">{composerStatus}</div>
-      <div className="bot-call-input-row"><button type="button" className="bot-call-input-entry" aria-label={zh ? '展开会面输入' : 'Expand meeting input'}
-        onClick={() => { setHudMenu(false); setComposerExpanded(true); }}>{draft || files.length ? (zh ? '继续草稿' : 'Continue draft') : (zh ? '说点什么…' : 'Say something…')}</button>{composerTools}{inputActions}</div></>}</div>
+    </div></div> : <button type="button" className="bot-call-input-entry" data-pet-drag={desktop.pet ? '' : undefined} aria-expanded="false"
+      aria-label={zh ? '展开会面输入' : 'Expand meeting input'} title={zh ? '展开会面输入' : 'Expand meeting input'}
+      onClick={() => { setHudMenu(false); setComposerExpanded(true); }}><img src={startupLogo} alt="" draggable={false} /></button>}
     </div></>}
   </section></div></BotCallDocument.Provider>, desktop.host);
 }

@@ -1,9 +1,10 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { access, copyFile, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import react from "@vitejs/plugin-react";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, normalizePath, type Plugin } from "vite";
 import { DEV_GENERATED_WATCH_PATTERNS } from './scripts/dev-watch-paths.mjs';
 
 /**
@@ -16,6 +17,11 @@ import { DEV_GENERATED_WATCH_PATTERNS } from './scripts/dev-watch-paths.mjs';
 const port = Number(process.env.WORLDLINEBOX_VITE_PORT || 5173);
 
 const rendererDir = path.dirname(fileURLToPath(import.meta.url));
+const originalCallRingtones = path.join(rendererDir, ".tools", "original-call-ringtones");
+const privateCallRingtones = new Map([
+  ["ringtones/dafeiyu.wav", "dafeiyu.wav"],
+  ["ringtones/phoebe.wav", "ringtone.wav"],
+]);
 const harmonyWindowsCss = path.resolve(
   rendererDir,
   "src/renderer/harmonyos-sans-sc-windows.css",
@@ -146,21 +152,30 @@ export default defineConfig({
     harmonyosFontFacePatchPlugin(),
     {
       name: "worldlinebox-stage-call-assets",
-      apply: "build",
+      configureServer(server) {
+        server.middlewares.use((request, _response, next) => {
+          const prefix = "/companion-call/";
+          const pathname = request.url?.split("?", 1)[0];
+          const file = pathname?.startsWith(prefix) && privateCallRingtones.get(pathname.slice(prefix.length));
+          if (file) {
+            const original = path.join(originalCallRingtones, file);
+            if (existsSync(original)) request.url = "/@fs/" + encodeURI(normalizePath(original));
+          }
+          next();
+        });
+      },
       async writeBundle(options) {
         if (!options.dir) return;
         const output = path.resolve(options.dir, "companion-call");
         if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS !== "1") {
           await rm(path.join(output, "deepseek"), { recursive: true, force: true });
+          await rm(path.join(output, "ringtones", "phoebe.wav"), { force: true });
           return;
         }
-        const originals = path.join(rendererDir, ".tools", "original-call-ringtones");
         await access(path.join(output, "deepseek", "call.model3.json"));
         await mkdir(path.join(output, "ringtones"), { recursive: true });
-        await Promise.all([
-          copyFile(path.join(originals, "ringtone.wav"), path.join(output, "ringtone.wav")),
-          copyFile(path.join(originals, "dafeiyu.wav"), path.join(output, "ringtones", "dafeiyu.wav")),
-        ]);
+        await Promise.all([...privateCallRingtones].map(([destination, original]) =>
+          copyFile(path.join(originalCallRingtones, original), path.join(output, destination))));
       },
     },
   ],

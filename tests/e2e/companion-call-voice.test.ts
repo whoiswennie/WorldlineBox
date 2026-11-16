@@ -185,6 +185,13 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     expect(opened.snapshot?.messages).toEqual([]);
     expect(await page.evaluate(() => 'companionBotSpeech' in Reflect.get(window, 'worldlinebox'))).toBe(false);
 
+    const figure = meeting.locator('.bot-call-live2d');
+    const framing = async () => ({ canvas: await figure.boundingBox(), figure: await figure.getAttribute('data-pet-figure') });
+    const originalFraming = await framing();
+    await expect(meeting.locator('.bot-call-dock > button img')).toBeVisible();
+    await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
+    expect(await framing()).toEqual(originalFraming);
+
     const voice = meeting.getByRole('button', { name: '连续语音对话', exact: true });
     await voice.click();
     await expect(meeting.locator('.bot-call-voice.is-listening')).toBeVisible({ timeout: 90_000 });
@@ -194,12 +201,12 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     const state = async () => (await request({ type: 'state', conversationId: callId })).snapshot!;
     const bubble = meeting.locator('.bot-call-bubble-text');
     await expect(bubble).toHaveText(firstLine, { timeout: 150_000 });
+    expect(await framing()).toEqual(originalFraming);
     await expect.poll(async () => {
       const pose = await renderedPose();
       return Math.min(pose?.tear ?? 0, pose?.hand ?? 0);
     }, { timeout: 2000, intervals: [40] }).toBeGreaterThan(.5);
-    await expect(meeting.locator('.bot-call-visual-novel header .bot-avatar img')).toHaveJSProperty('complete', true);
-    expect(await meeting.locator('.bot-call-visual-novel header .bot-avatar img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    await expect(meeting.locator('.bot-call-bubble .bot-avatar')).toHaveCount(0);
     expect(model.counters).toMatchObject({ stage: 1, invalid: 1, presentation: 1, final: 0, catalog: true });
     const live = await state(), firstTopic = live.chatRuntime!.topic!;
     const voiceText = live.messages.find(item => item.senderId === 'user')?.content;
@@ -207,7 +214,6 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     expect(live.messages.find(item => item.parts?.some(part => part.text === firstLine))?.status).toBe('running');
     await expect(meeting.locator('.bot-call-progress .bot-reply-progress-label')).toBeVisible();
     await expect(meeting.getByRole('group', { name: '当前表演' })).toContainText('流泪');
-    await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
     const assertDock = async () => {
       const dialogue = (await meeting.locator('.bot-call-visual-novel').boundingBox())!;
       const topics = (await meeting.getByRole('region', { name: '会面话题' }).boundingBox())!;
@@ -215,18 +221,35 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
       const frame = (await meeting.boundingBox())!;
       const progress = (await meeting.locator('.bot-call-progress').boundingBox())!;
       const bubble = (await meeting.locator('.bot-call-bubble').boundingBox())!;
-      expect(Math.abs((dialogue.x + dialogue.width / 2) - (frame.x + frame.width / 2))).toBeLessThan(1.5);
-      expect(progress.y + progress.height).toBeLessThanOrEqual(bubble.y);
+      expect(dialogue.x).toBeGreaterThanOrEqual(frame.x);
+      expect(dialogue.y).toBeGreaterThanOrEqual(frame.y);
+      expect(dialogue.x + dialogue.width).toBeLessThanOrEqual(frame.x + frame.width);
+      await expect(meeting.locator('.bot-call-dock .bot-call-visual-novel')).toHaveCount(0);
+      expect(progress.y).toBeGreaterThanOrEqual(bubble.y);
+      expect(progress.y + progress.height).toBeLessThanOrEqual(bubble.y + bubble.height);
       expect(dialogue.y + dialogue.height).toBeLessThanOrEqual(topics.y);
       expect(topics.y + topics.height).toBeLessThanOrEqual(composer.y);
       expect(composer.y + composer.height).toBeLessThanOrEqual(frame.y + frame.height);
     };
     await assertDock();
+    const dialogue = meeting.locator('.bot-call-visual-novel');
+    await expect(dialogue).toHaveAttribute('data-bubble-tail', /^(left|right)$/u);
+    const headGap = await figure.evaluate(stage => {
+      const [x, , w] = (stage.getAttribute('data-pet-head') ?? '').split(',').map(Number);
+      const left = stage.getBoundingClientRect().x + x!;
+      const bubble = stage.parentElement!.querySelector('.bot-call-bubble')!.getBoundingClientRect();
+      return Math.max(left - bubble.right, bubble.left - left - w!);
+    });
+    expect(headGap).toBeGreaterThanOrEqual(8);
+    expect(headGap).toBeLessThanOrEqual(16);
     await capture('live2d-meeting-dialogue');
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(950, 590));
     await assertDock();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1440, 940));
     await meeting.getByRole('button', { name: '收起会面输入', exact: true }).click();
+    await expect(meeting.getByRole('region', { name: '会面话题' })).toHaveCount(0);
+    await expect.poll(framing).toEqual(originalFraming);
+    await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
     await meeting.getByRole('button', { name: '自动播放', exact: true }).click();
     model.unblock();
     await expect.poll(async () => (await state()).messages.find(item => item.parts?.some(part => part.text === firstLine))?.status).toBe('sent');
@@ -243,12 +266,19 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await expect(bubble).toHaveText(finalLine);
     await expect.poll(async () => (await renderedPose())?.smugEyes ?? 0, { timeout: 1400 }).toBeGreaterThan(.75);
     await meeting.getByRole('button', { name: '继续自动播放', exact: true }).click();
-    await expect(meeting.locator('.bot-call-bubble-status')).toHaveText('回应结束 · 可以继续');
+    const review = meeting.getByRole('button', { name: '展开对白', exact: true });
+    await expect(review).toBeVisible({ timeout: 15_000 });
+    await expect(bubble).toHaveCount(0);
     if (process.platform === 'win32') {
       const openedPet = app.waitForEvent('window');
       await meeting.getByRole('button', { name: '切换为桌宠', exact: true }).click();
       const pet = await openedPet;
+      const petReview = pet.getByRole('button', { name: '展开对白', exact: true });
+      await petReview.click();
       await expect(pet.locator('.bot-call-bubble-text')).toHaveText(finalLine);
+      await pet.getByRole('button', { name: '收起对白', exact: true }).click();
+      await expect(pet.locator('.bot-call-bubble-text')).toHaveCount(0);
+      await petReview.click();
       const petWindow = await app.browserWindow(pet);
       const bytes = await petWindow.evaluate(async native => (await native.webContents.capturePage()).toPNG().toString('base64'));
       await writeFile(path.resolve('artifacts/superagent-bot-development/ui/companion-call-desktop-pet-dialogue.png'), Buffer.from(bytes, 'base64'));
@@ -263,7 +293,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
       await pet.getByRole('button', { name: '返回会面场景', exact: true }).click().catch(error => { if (!pet.isClosed()) throw error; });
       await closed;
       await expect(bubble).toHaveText(firstLine);
-    }
+    } else await review.click();
     await meeting.getByRole('button', { name: '完整对话', exact: true }).click();
     const history = meeting.locator('.bot-call-transcript');
     await expect(history).toContainText(longLine);
@@ -279,7 +309,6 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await meeting.getByRole('button', { name: '新话题', exact: true }).click();
     await expect.poll(async () => (await state()).chatRuntime?.topic?.id).not.toBe(firstTopic.id);
     expect((await state()).messages).toEqual([]);
-    await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
     const field = meeting.getByRole('textbox', { name: '发送消息…', exact: true });
     await field.fill('用第二个话题测试'); await field.press('Enter');
     await expect(bubble).toHaveText(fallbackLine, { timeout: 60_000 });
@@ -298,15 +327,17 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await field.fill('接续已经存在的话题'); await field.press('Enter');
     await expect.poll(async () => (await state()).messages.filter(item => item.senderId !== 'user' && item.status === 'sent').length, { timeout: 60_000 }).toBe(2);
     await expect(bubble).toHaveText('已进入这个会面话题。');
-    await expect(meeting.locator('.bot-call-bubble-status')).toHaveText('回应结束 · 可以继续');
+    await expect(review).toBeVisible({ timeout: 15_000 });
     await field.fill('中途打断验收'); await field.press('Enter');
     await expect(bubble).toHaveText(interruptedLine, { timeout: 60_000 });
     const oldReply = (await state()).messages.find(item => item.parts?.some(part => part.text === discardedLine));
     expect(oldReply?.status).toBe('running');
     await field.fill('换个问题继续'); await field.press('Enter');
     await expect(meeting.locator('.bot-call-user-line')).toContainText('换个问题继续');
-    await expect(meeting.locator('.bot-call-bubble-status')).toHaveText('正在回应…');
+    await expect(meeting.locator('.bot-call-bubble .bot-reply-progress-label')).toBeVisible();
     await expect(bubble).toHaveCount(0);
+    await expect(meeting.locator('.bot-call-bubble .bot-call-progress-dots i')).toHaveCount(3);
+    await capture('live2d-thinking-bubble');
     model.releaseFollowup();
     await expect(bubble).toHaveText('好，我们换个话题聊。', { timeout: 60_000 });
     const stopped = (await state()).messages.find(item => item.id === oldReply!.id);
@@ -412,7 +443,7 @@ test('real model chooses and renders scene-appropriate Live2D cues', async ({}, 
       const file = path.join(evidence, 'companion-call-real-' + turn.name + '.png');
       await writeFile(file, Buffer.from(image, 'base64'));
       await testInfo.attach(turn.name, { path: file, contentType: 'image/png' });
-      await expect(meeting.locator('.bot-call-bubble-status')).toHaveText('回应结束 · 可以继续', { timeout: 45_000 });
+      await expect(meeting.getByRole('button', { name: '展开对白', exact: true })).toBeVisible({ timeout: 45_000 });
     }
     await writeFile(path.join(evidence, 'companion-call-real-performance.json'), JSON.stringify(report, null, 2));
     await meeting.getByRole('button', { name: '挂断', exact: true }).click();
@@ -462,7 +493,7 @@ test('real model chooses and renders scene-appropriate Live2D cues', async ({}, 
       await expect(cue).toContainText(motion.label![0], { timeout: 45_000 });
       const picture = await application.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG().toString('base64'));
       await writeFile(path.join(evidence, `companion-call-portrait-${character.id}.png`), Buffer.from(picture, 'base64'));
-      await expect(meeting.locator('.bot-call-bubble-status')).toHaveText('回应结束 · 可以继续', { timeout: 75_000 });
+      await expect(meeting.getByRole('button', { name: '展开对白', exact: true })).toBeVisible({ timeout: 75_000 });
       await expect(meeting.locator('.bot-call-progress')).toHaveCount(0);
       await expect(cue).toHaveCount(0);
       const published = (await readReply())?.parts?.flatMap(part => part.presentation ? [{ text: part.text, ...part.presentation }] : []) ?? [];

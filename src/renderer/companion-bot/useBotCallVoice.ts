@@ -11,14 +11,17 @@ interface ExpectedReply { turn: number; ids: readonly string[] }
 const off: BotCallVoiceState = { phase: 'off', enabled: false, turn: 0 };
 
 /** Microphone/ASR presentation for the meeting topic, with exact reply receipts. */
-export function useBotCallVoice({ api = localSpeechApi(), connected, conversationId, companionId, messages, send }: {
+export function useBotCallVoice({ api = localSpeechApi(), connected, conversationId, companionId, messages, send, onSpeechStart }: {
   api?: WorldlineBoxLocalSpeechApi; connected: boolean; conversationId: string; companionId: string;
   messages: readonly BotMessage[]; send: BotCallSend;
+  onSpeechStart?(): void;
 }) {
   const [state, setState] = useState(off), [level, setLevel] = useState(0), [expected, setExpected] = useState<ExpectedReply>();
   const session = useRef<BotCallVoiceSession>(undefined), sendRef = useRef(send);
+  const speechStartRef = useRef(onSpeechStart);
   const transport = useRef<(text: string, requestId: string, perform: () => Promise<boolean | BotCallSendReceipt>) => Promise<boolean>>(undefined);
   useLayoutEffect(() => { sendRef.current = send; }, [send]);
+  useLayoutEffect(() => { speechStartRef.current = onSpeechStart; }, [onSpeechStart]);
   useEffect(() => {
     if (!connected || !api) return;
     let live = true, levelAt = 0;
@@ -35,9 +38,10 @@ export function useBotCallVoice({ api = localSpeechApi(), connected, conversatio
       return ok;
     };
     const current = new BotCallVoiceSession({ api,
-      captureFactory: () => new CallVoiceCapture({ onLevel: value => {
-        if (live && (value === 0 || performance.now() - levelAt > 80)) { levelAt = performance.now(); setLevel(value); }
-      } }),
+      captureFactory: () => new CallVoiceCapture({
+        onLevel: value => { if (live && (value === 0 || performance.now() - levelAt > 80)) { levelAt = performance.now(); setLevel(value); } },
+        onSpeechStart: () => { if (live && session.current === current) speechStartRef.current?.(); },
+      }),
       send: (text, requestId) => deliver(() => sendRef.current(text, requestId)),
       changed: next => { if (live) { setState(next); if (next.phase !== 'listening') setLevel(0); } },
     });
@@ -55,7 +59,9 @@ export function useBotCallVoice({ api = localSpeechApi(), connected, conversatio
     const replies = expected.ids.map(id => messages.find(message => message.id === id && message.conversationId === conversationId && message.senderId === companionId));
     const failed = replies.find(message => message && ['failed', 'cancelled'].includes(message.status));
     if (failed) { current.replyFailed(failed.error || '伙伴这次未能完成回复，可以继续打字或重新开启语音。', state.turn); return; }
-    if (replies.every(message => message?.status === 'sent')) current.readyForNextTurn(state.turn);
+    // Open capture before locally playing the first published page, even while the model is still generating.
+    if (replies.some(message => message?.parts?.some(part => part.presentation && part.text?.trim()))
+      || replies.every(message => message?.status === 'sent')) current.readyForNextTurn(state.turn);
   }, [state, expected, messages, conversationId, companionId]);
 
   const start = useCallback(() => { setExpected(undefined); void session.current?.start(); }, []);

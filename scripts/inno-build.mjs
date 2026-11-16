@@ -13,7 +13,7 @@
  *
  * 用法：node scripts/inno-build.mjs [--out <dir>] [--package <dir>]
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, statSync, mkdirSync, readFileSync, mkdtempSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -60,6 +60,14 @@ async function main() {
     : path.join(repoRoot, 'out', 'WorldlineBox-win32-x64');
   if (!existsSync(path.join(packageDir, 'WorldlineBox.exe'))) {
     fail(`Packaged app not found: ${packageDir} (run npm run package first)`);
+  }
+  const packageResources = path.join(packageDir, 'resources');
+  for (const [script, args] of [
+    ['stage-bundled-dsh.mjs', [path.join(packageResources, 'dsh-runtime')]],
+    ['stage-cabin-world.mjs', ['--verify', path.join(packageResources, 'cabin-world')]],
+  ]) {
+    const check = spawnSync(process.execPath, [path.join(repoRoot, 'scripts', script), ...args], { stdio: 'inherit' });
+    if (check.error || check.status !== 0) fail(`${script} could not verify the packaged installer input. Run npm run package first.`);
   }
 
   mkdirSync(outDir, { recursive: true });

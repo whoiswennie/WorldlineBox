@@ -5,6 +5,7 @@ export class BlinkController {
     random;
     nextBlinkAt = 0;
     blinkStartedAt = null;
+    reachedClosure = false;
     doubleBlinkQueued = false;
     rate;
     constructor(seed = 7, rate = 1) {
@@ -21,6 +22,7 @@ export class BlinkController {
     update(timeSeconds, focusLevel) {
         if (this.blinkStartedAt === null && timeSeconds >= this.nextBlinkAt) {
             this.blinkStartedAt = timeSeconds;
+            this.reachedClosure = false;
         }
         if (this.blinkStartedAt === null) {
             return { eyeBlinkL: 0, eyeBlinkR: 0 };
@@ -30,6 +32,15 @@ export class BlinkController {
         const holdDuration = 0.035;
         const openDuration = 0.13;
         const total = closeDuration + holdDuration + openDuration;
+        if (!this.reachedClosure && elapsed >= closeDuration) {
+            this.reachedClosure = true;
+            // A slower renderer can skip the entire closed phase between frames.
+            // Show the closure once and continue the opening on subsequent frames.
+            if (elapsed > closeDuration + holdDuration) {
+                this.blinkStartedAt = timeSeconds - closeDuration;
+                return { eyeBlinkL: 1, eyeBlinkR: 1 };
+            }
+        }
         let blink = 0;
         if (elapsed <= closeDuration) {
             blink = ease("easeIn", elapsed / closeDuration);

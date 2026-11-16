@@ -5,7 +5,8 @@ import { _electron as electron, expect, test, type Page } from '@playwright/test
 import type { BotRequest, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { BotMemoryCatalog, BotMemoryFullNote, BotMemoryRecallReport } from '../../src/shared/companion-bot-memory';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
-import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
+import { electronLaunchEnv, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
+import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 
 async function request(page: Page, input: BotRequest) {
   return page.evaluate(input => (Reflect.get(window, 'worldlinebox') as { companionBot: WorldlineBoxBotApi }).companionBot.request(input), input);
@@ -15,6 +16,93 @@ async function memory<T>(page: Page, input: BotRequest): Promise<T> {
   expect(result.ok, `${input.type}: ${result.error ?? 'missing successful receipt'}`).toBe(true);
   return result.memory as T;
 }
+
+test('maximized companion workspace keeps one chat summary after using the desktop pet and memory', async ({}, testInfo) => {
+  test.skip(process.platform !== 'win32', 'Requires the Windows caption buttons.');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-companion-maximize-'));
+  const application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+    WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
+  }, { gpu: 'hardware' }) });
+  try {
+    const page = await application.firstWindow();
+    const native = await application.browserWindow(page);
+    await native.evaluate(window => {
+      window.unmaximize();
+      window.setContentSize(1200, 760);
+    });
+    await page.locator('[data-application-module="companions"]').click();
+    const header = page.locator('.bot-chat-header h2');
+    await expect(header).toHaveText('大肥鱼');
+    await enableCallVisualFixture(application, page);
+    const memoryButton = page.getByRole('button', { name: '记忆', exact: true });
+    await expect(memoryButton).toBeVisible();
+    const search = page.locator('.bot-contact-search input');
+    await search.fill('大肥鱼');
+    await page.getByRole('button', { name: '最大化', exact: true }).click();
+    const restore = page.getByRole('button', { name: '向下还原', exact: true });
+    await expect(restore).toBeVisible();
+    const summaries = page.locator('.bot-workspace > .bot-chat-context');
+    await expect(summaries).toHaveCount(1);
+
+    const call = page.getByRole('dialog', { name: '与大肥鱼会面', exact: true });
+    const openPet = async () => {
+      await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+      await call.getByRole('button', { name: '接通', exact: true }).click();
+      const opened = application.waitForEvent('window');
+      await call.getByRole('button', { name: '切换为桌宠', exact: true }).click();
+      const pet = await opened;
+      const floating = pet.getByRole('dialog', { name: '与大肥鱼会面', exact: true });
+      await floating.getByRole('button', { name: '展开会面输入', exact: true }).click();
+      await floating.getByRole('button', { name: '更多会面功能', exact: true }).click();
+      return { pet, floating };
+    };
+    const { pet, floating } = await openPet();
+    const closed = pet.waitForEvent('close');
+    await floating.getByRole('button', { name: '返回会面场景', exact: true }).click().catch(error => { if (!pet.isClosed()) throw error; });
+    await closed;
+    await call.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
+    await expect(call).toHaveCount(0);
+    await expect(summaries).toHaveCount(1);
+
+    const second = await openPet();
+    const hungUp = second.pet.waitForEvent('close');
+    await second.floating.getByRole('button', { name: '挂断', exact: true }).click().catch(error => { if (!second.pet.isClosed()) throw error; });
+    await hungUp;
+    await expect(call).toHaveCount(0);
+    await expect(summaries).toHaveCount(1);
+    await expect(restore).toBeVisible();
+    await expect(search).toHaveValue('大肥鱼');
+    await page.screenshot({ path: testInfo.outputPath('companions-after-desktop-pet.png') });
+
+    const third = await openPet();
+    await memoryButton.click();
+    const dialog = page.getByRole('dialog', { name: '记忆工作台', exact: true });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: '新日记', exact: true }).click();
+    const diary = dialog.getByRole('textbox', { name: '日记正文' });
+    await diary.fill('桌宠返回时保留这篇日记草稿');
+    const nativePet = await application.browserWindow(third.pet);
+    const nativeClosed = third.pet.waitForEvent('close');
+    await nativePet.evaluate(window => { window.close(); });
+    await nativeClosed;
+    await expect(call).toBeVisible();
+    await expect(dialog).toBeHidden();
+    await call.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await expect(diary).toHaveValue('桌宠返回时保留这篇日记草稿');
+    await expect(summaries).toHaveCount(1);
+    await restore.click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: '关闭记忆工作台', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(summaries).toHaveCount(1);
+    await expect(search).toHaveValue('大肥鱼');
+  } finally {
+    await application.close();
+    removeCompanionTestDirectory(profile);
+  }
+});
 
 // eslint-disable-next-line no-empty-pattern -- Electron supplies its own real window.
 test('memory workspace manages real local VCP notes and inspects original recall without a chat model', async ({}, testInfo) => {

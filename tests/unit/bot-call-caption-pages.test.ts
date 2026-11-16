@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { buildCallCaptionPages, callCaptionPageAt } from '../../src/renderer/companion-bot/call-caption-pages';
+import { buildCallCaptionPages, callCaptionPageAt, callCaptionPlaybackPages } from '../../src/shared/companion-call-captions';
 
 it('preserves all source text and exposes contiguous UTF-16 offsets on grapheme boundaries', () => {
   const text = '  你好👩🏽‍💻！Hello e\u0301 world.\r\n这是下一段，包含🇨🇳和1️⃣。  '.repeat(9);
@@ -59,4 +59,8 @@ it('advances only once the next page contains revealed content and stays on the 
 
 it('handles empty captions without creating a blank artificial page', () => {
   expect(buildCallCaptionPages('', 80)).toEqual([]); expect(callCaptionPageAt([], 0)).toBe(0);
+});
+
+it('keeps explicit line breaks from stacking a long list inside one playback page', () => {
+  expect(callCaptionPlaybackPages('\n\n\n甲\n乙\n丙\n丁\n戊').map(page => page.text)).toEqual(['甲\n乙\n丙\n', '丁\n戊']);
 });

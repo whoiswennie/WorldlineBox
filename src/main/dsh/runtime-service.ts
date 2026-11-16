@@ -14,6 +14,7 @@ import { nodeRuntimePayloadShaFromInventory } from './node-runtime-payload';
 import { prepareOfficialNodeRuntime, validateNodeRuntimeInventory, validateOfficialNodeProgram, validateOfficialNodeRelease, type NodeInstallNetwork, type NodeInstallTools, type NodeRuntimeReceipt, type NodeRuntimeInstallPreparation, type OfficialNodeRelease } from './node-runtime-service';
 import { RuntimeIntegrity } from './runtime-integrity';
 import { DshTaskPreparationError, type DshTaskPreparationDiagnostic } from './task-preparation';
+import { bundledDshRelease, matchesBundledDshRelease, readBundledDshResource, runBundledDshArchiver, validateBundledDshProgram } from './bundled-runtime';
 
 function runtimeDifferences(sealed: TreeInventory, current: TreeInventory): NonNullable<DshTaskPreparationDiagnostic['differences']> {
   const before = new Map(sealed.files.map(file => [file.path, file])), after = new Map(current.files.map(file => [file.path, file]));
@@ -464,6 +465,41 @@ export class RuntimeService implements RuntimeServiceLike {
         try { await retryFileOperation(() => removeManaged(this.options.rootPath, staging)); }
         catch { await operation.log('Official runtime scratch cleanup deferred.').catch(() => undefined); }
       }
+    }
+  }
+  async installBundled(directory: string, archiver: string, operation: OperationContext): Promise<DshRuntime> {
+    const existing = this.records.find(matchesBundledDshRelease);
+    if (existing) return this.get(existing.id);
+    if (this.importing || this.maintaining || this.installingVersions.size) throw new Error('请等待其他运行版本操作完成后重试。');
+    this.importing = true;
+    const staging = path.join(this.options.rootPath, 'staging', `bundled-dsh-${bundledDshRelease.version}`);
+    const program = path.join(staging, 'program');
+    try {
+      await operation.update('verifying', 5);
+      const { archive, runtime } = await readBundledDshResource(directory, operation.signal);
+      await removeManaged(this.options.rootPath, staging);
+      await mkdir(staging, { recursive: true });
+      await assertOwnedDirectory(this.options.rootPath, staging);
+      await operation.update('extracting', 15);
+      await runBundledDshArchiver(archiver, ['x', '-y', '-bso0', archive], staging, operation.signal);
+      await operation.update('verifying', 65);
+      const receipt = await validateBundledDshProgram(program, operation.signal);
+      const cache = new Map<string, TreeHashCacheEntry>();
+      const seal = await inventoryTree(program, operation.signal, undefined, cache);
+      if (runtime.contentSha256 !== seal.contentSha256 || runtime.fileCount !== seal.fileCount
+        || runtime.byteLength !== seal.byteLength || runtime.dependencyLockSha256 !== receipt.dependencyLockSha256
+        || runtime.nodeVersion !== receipt.nodeVersion || runtime.npmVersion !== receipt.npmVersion) {
+        throw new Error('内置 DSH 运行文件校验失败。');
+      }
+      await validateNodeRuntimeInventory(program, runtime.version, seal, operation.signal);
+      const record = { ...runtime, source: `bundled:npm:@deepseek-ai/dsh@${runtime.version}`, installedAt: new Date().toISOString() };
+      await atomicRuntimeJson(path.join(staging, 'seal.json'), seal, operation.signal);
+      await atomicRuntimeJson(path.join(staging, 'artifact.json'), record, operation.signal);
+      return await this.commitArtifact(staging, record, seal, operation, cache);
+    } finally {
+      await retryFileOperation(() => removeManaged(this.options.rootPath, staging))
+        .catch(() => operation.log('Bundled runtime scratch cleanup deferred.').catch(() => undefined));
+      this.importing = false;
     }
   }
   async installNodeFromLock(lock:DshNodePackRuntimeLock,lockFile:string,operation:OperationContext):Promise<DshRuntime>{

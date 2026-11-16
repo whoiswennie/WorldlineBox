@@ -1,19 +1,9 @@
 import type { BotExecutionStep } from '../../shared/companion-bot';
 import { botToolActivityArgs, botToolActivityDescription, cleanBotActivityText as clean } from '../../shared/companion-bot-execution';
+import { botExecutionToolLabel } from '../../shared/companion-bot-progress';
+
 type Locale = 'zh-CN' | 'en';
-const labels: Record<string, [string, string]> = {
-  read: ['读取文件', 'Read file'], read_file: ['读取文件', 'Read file'], read_image: ['查看图片', 'View image'], write: ['写入文件', 'Write file'], edit: ['编辑文件', 'Edit file'],
-  shell: ['运行命令', 'Run command'], pwsh: ['运行命令', 'Run command'], bash: ['运行命令', 'Run command'], web_fetch: ['读取网页', 'Read page'], web_search: ['搜索网页', 'Search web'],
-  present: ['交付文件', 'Deliver files'], present_files: ['交付文件', 'Deliver files'], message_peer: ['伙伴协作', 'Collaborate'], companion_contact: ['伙伴私聊', 'Contact companion'],
-  sessions_spawn: ['启动子会话', 'Start subagent'], chat_send_sticker: ['发送表情', 'Send sticker'], chat_list_stickers: ['查找表情', 'Find stickers'], memory_search: ['检索记忆', 'Search memories'],
-};
 const browserLabels: Record<string, [string, string]> = { observe: ['查看页面', 'Inspect page'], read: ['读取网页', 'Read page'], click: ['点击网页元素', 'Click page element'], fill: ['填写网页内容', 'Fill page field'], navigate: ['打开网页', 'Navigate page'], scroll: ['滚动网页', 'Scroll page'], screenshot: ['截取网页', 'Capture page'], tabs: ['查看标签页', 'List tabs'], key: ['发送按键', 'Press key'] };
-export function botExecutionToolLabel(toolName: string | undefined, locale: Locale): string | undefined {
-  if (toolName === 'browser') return locale === 'zh-CN' ? '操作内置浏览器' : 'Use built-in browser';
-  if (toolName === 'asset_manager') return locale === 'zh-CN' ? '操作资产管理器' : 'Use asset manager';
-  const name = Object.keys(labels).find(name => toolName === name || toolName?.endsWith('_' + name));
-  return name ? labels[name]?.[locale === 'zh-CN' ? 0 : 1] : undefined;
-}
 /** Same native argument descriptions as DSH, rendered as text, not HTML.
  * Do not surface commands/credentials when an action has no safe description. */
 export function botExecutionActivity(step: BotExecutionStep, locale: Locale): { title: string; detail: string } {

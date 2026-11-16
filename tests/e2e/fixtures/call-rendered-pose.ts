@@ -12,11 +12,18 @@ export async function observeCallRenderedPose(page: Page) {
         tear: values[ids.indexOf('key2')],
         hand: values[ids.indexOf('Movement2')],
         smugEyes: values[ids.indexOf('key6')],
+        headInput: values[ids.indexOf('AngleX')],
+        headOutput: values[ids.indexOf('ParamAngleX')],
+        eyeOpen: values[ids.indexOf('ParamEyeLOpen')],
+        heart: values[ids.indexOf('key4')],
+        glasses: values[ids.indexOf('key11')],
+        bodyShape: values[ids.indexOf('Clothes2')],
       });
       update.call(this);
     };
   });
   return () => page.evaluate(() => Reflect.get(window, '__callRenderedPose') as {
-    tear: number; hand: number; smugEyes: number;
+    tear: number; hand: number; smugEyes: number; headInput: number; headOutput: number; eyeOpen: number;
+    heart: number; glasses: number; bodyShape: number;
   } | undefined);
 }

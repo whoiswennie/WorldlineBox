@@ -71,7 +71,7 @@ export function OfficialVersionPicker({ state, run, disabled = false, onManage, 
       const installed = state.runtimes.some(runtime => runtime.adapter === 'node-cli-web-v1' && runtime.version === entry.version);
       const installing = installingVersions.get(entry.version);
       const cleaning = state.pendingRuntimeDeletions?.includes(entry.version);
-      const showUpgrade = onUpgrade && instance && canCompare && currentVersion && compareDshVersions(entry.version, currentVersion) > 0;
+      const showUpgrade = onUpgrade && instance && !instance.isBundled && canCompare && currentVersion && compareDshVersions(entry.version, currentVersion) > 0;
       return <article className={`launcher-version-row${entry.recommended ? ' is-recommended' : ''}`} data-dsh-version={entry.version} key={entry.version}>
         <div className="launcher-version-info"><div className="launcher-version-title"><strong>DSH {entry.version}</strong>{entry.recommended ? <span className="launcher-badge">{t('launcher.recommendedVersion')}</span> : null}<span className="launcher-version-channel">{t(`launcher.versionChannels.${entry.channel}`)}</span></div><div className="launcher-version-description">{entry.publishedAt ? <time dateTime={entry.publishedAt}>{new Date(entry.publishedAt).toLocaleDateString()}</time> : null}<span>{entry.nodeRange ? `Node ${entry.nodeRange}` : t('launcher.runtimePreparedAutomatically')}</span><span>{t('launcher.nativeWebRuntime')}</span></div></div>
         <div className="launcher-actions">

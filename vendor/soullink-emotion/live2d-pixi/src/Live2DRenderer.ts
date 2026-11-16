@@ -16,6 +16,8 @@ export class Live2DRenderer {
   private deps: Live2DRendererDeps;
   private model: Live2DModelInstance | null = null;
   private latestParams: Live2DParamState = {};
+  private secondaryOffsets: Live2DParamState = {};
+  private restorePhysics?: () => void;
   private renderedParams: Live2DParamState = {};
   private lastNativeAnimToken = -1;
   private suppressedParamIds: Set<string> = new Set();
@@ -26,6 +28,7 @@ export class Live2DRenderer {
   private figureBounds?: PIXI.Rectangle;
   private beforeModelUpdate = () => {
     this.applyParametersNow();
+    this.applySecondaryOffsets();
     // Cubism restores saved values after updating geometry, so capture here.
     this.renderedParams = readCurrentParameters(this.model?.internalModel?.coreModel);
   };
@@ -104,6 +107,17 @@ export class Live2DRenderer {
     }
     cubism?.setClippingMaskBufferSize?.(1024);
     this.disableInternalEyeBlink();
+    const physics = this.model.internalModel?.physics;
+    if (physics) {
+      const evaluate = physics.evaluate;
+      physics.evaluate = (model, deltaSeconds) => {
+        // Cubism has already saved this frame's native motion baseline.
+        // Give physics the live inputs before its springs are evaluated.
+        this.applyParametersNow();
+        evaluate.call(physics, model, deltaSeconds);
+      };
+      this.restorePhysics = () => { physics.evaluate = evaluate; };
+    }
     this.model.internalModel?.on?.("beforeModelUpdate", this.beforeModelUpdate);
     this.model.anchor?.set(0.5, 0.52);
     this.figureBounds = this.measureFigure();
@@ -114,6 +128,11 @@ export class Live2DRenderer {
 
   setParameters(params: Live2DParamState) {
     this.latestParams = params;
+  }
+
+  /** Offsets applied to the rig's solved pose for this frame. */
+  setSecondaryOffsets(offsets: Live2DParamState): void {
+    this.secondaryOffsets = offsets;
   }
 
   /** Last pose used to update model geometry, including native motion and physics. */
@@ -213,7 +232,7 @@ export class Live2DRenderer {
     if (core?.getParameterCount && core.setParameterValueByIndex && core.getParameterDefaultValue) for (let index = 0; index < core.getParameterCount(); index++) {
       core.setParameterValueByIndex(index, core.getParameterDefaultValue(index), 1);
     }
-    core?.saveParameters?.(); this.latestParams = {}; this.suppressedParamIds.clear(); this.lastNativeAnimToken = -1;
+    core?.saveParameters?.(); this.latestParams = {}; this.secondaryOffsets = {}; this.suppressedParamIds.clear(); this.lastNativeAnimToken = -1;
   }
 
   setViewOffset(offset: { x: number; y: number }) {
@@ -281,6 +300,8 @@ export class Live2DRenderer {
   private removeModel() {
     if (!this.model) return;
 
+    this.restorePhysics?.();
+    this.restorePhysics = undefined;
     this.model.internalModel?.off?.("beforeModelUpdate", this.beforeModelUpdate);
     this.app.stage.removeChild(this.model);
     this.model.destroy({
@@ -290,6 +311,7 @@ export class Live2DRenderer {
     });
     this.model = null;
     this.renderedParams = {};
+    this.secondaryOffsets = {};
     // Reset native animation state so a fresh load re-applies the current directive.
     this.lastNativeAnimToken = -1;
     this.suppressedParamIds = new Set();
@@ -352,6 +374,19 @@ export class Live2DRenderer {
         continue;
       }
       coreModel.setParameterValueById(id, value, 1);
+    }
+  }
+
+  private applySecondaryOffsets(): void {
+    const core = this.model?.internalModel?.coreModel;
+    if (!core?.getParameterIndex || !core.getParameterValueByIndex || !core.setParameterValueByIndex) return;
+    const count = core.getParameterCount?.() ?? 0;
+    for (const [id, offset] of Object.entries(this.secondaryOffsets)) {
+      if (!offset || this.suppressedParamIds.has(id)) continue;
+      const index = core.getParameterIndex(id);
+      if (index < 0 || index >= count) continue;
+      // Cubism clamps the value to the parameter's own range.
+      core.setParameterValueByIndex(index, core.getParameterValueByIndex(index) + offset);
     }
   }
 }

@@ -14,7 +14,7 @@ export function BotCallVoiceControls({ voice, zh, onStart, onEdit, onInterrupt, 
     preparing: zh ? '正在准备麦克风与本地识别…' : 'Preparing microphone and local recognition…',
     listening: zh ? '正在聆听 · 停顿后发送' : 'Listening · pause to send',
     recognizing: zh ? '正在识别你说的话…' : 'Recognizing your speech…',
-    waiting: zh ? '麦克风暂停 · 可随时插话' : 'Microphone paused · you can speak again',
+    waiting: zh ? '等待伙伴回应' : 'Waiting for the companion',
     error: zh ? '语音已暂停，仍可打字交流' : 'Voice paused · you can still type',
   };
   return <section className={`bot-call-voice is-${state.phase}`} aria-label={zh ? '会面语音对话' : 'Voice conversation'}>

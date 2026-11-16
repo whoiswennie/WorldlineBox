@@ -11,11 +11,15 @@ const target = path.join(root, 'resources', 'cabin-world');
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const override = process.argv[2];
 const packaged = process.argv[3];
+const requiredFiles = ['CabinWorld.exe', 'LICENSE', 'bridge/bridge.mjs', 'bridge/cabin-host.mjs',
+  'bridge/catalog.json', 'bridge/openai-tools.json', 'bridge/update/modules.json',
+  ...['activity-duration', 'arcade', 'custom-furniture', 'discovery', 'first-run', 'processes', 'resident', 'update', 'weather']
+    .map(name => `bridge/lib/${name}.mjs`)];
 
 async function verify(directory) {
   const receipt = JSON.parse(await readFile(path.join(directory, 'release.json'), 'utf8'));
-  if (receipt.sha256 !== lock.sha256 || receipt.version !== lock.version) throw Error('Cabin World release does not match the lock.');
-  for (const file of ['CabinWorld.exe', 'bridge/bridge.mjs', 'bridge/openai-tools.json', 'LICENSE']) {
+  if (receipt.sha256 !== lock.sha256 || receipt.version !== lock.version || receipt.commit !== lock.commit) throw Error('Cabin World release does not match the lock.');
+  for (const file of requiredFiles) {
     if (!receipt.files[file]) throw Error(`Missing Cabin World release receipt for ${file}.`);
   }
   for (const [file, expected] of Object.entries(receipt.files)) {
@@ -41,7 +45,7 @@ else if (override || !await verify(target).then(() => true, () => false)) {
   try {
     for (const entry of new AdmZip(bytes).getEntries()) {
       if (entry.isDirectory) continue;
-      const match = /^CabinWorld\/((?:bridge\/[^:]+)|CabinWorld\.exe|cabinworld\.ini|LICENSE(?:-NOTES\.md)?|README\.md|third-party\/[^:]+)$/.exec(entry.entryName);
+      const match = /^CabinWorld\/(bridge\/(?:[^/:]+|lib\/[^/:]+|update\/[^/:]+)|CabinWorld\.exe|cabinworld\.ini|LICENSE(?:-NOTES\.md)?|README\.md|third-party\/[^:]+)$/.exec(entry.entryName);
       if (!match) continue;
       const file = match[1];
       if (file.includes('\\') || file.split('/').includes('..')) throw Error('Unsafe path in Cabin World archive.');
@@ -51,7 +55,7 @@ else if (override || !await verify(target).then(() => true, () => false)) {
       await writeFile(output, data);
       files[file] = hash(data);
     }
-    if (!files['CabinWorld.exe'] || !files['bridge/bridge.mjs'] || !files.LICENSE) throw Error('Incomplete Cabin World release.');
+    if (requiredFiles.some(file => !files[file])) throw Error('Incomplete Cabin World release.');
     for (const file of Object.keys(files)) {
       const destination = path.join(target, file);
       await mkdir(path.dirname(destination), { recursive: true });

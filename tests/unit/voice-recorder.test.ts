@@ -36,9 +36,9 @@ it('optionally reports levels and ends a voiced sentence after one second of sil
   recorder.cancel(); await capture?.finished;
 });
 
-function meteredFixture(options: { pendingResume?: boolean; failResume?: boolean } = {}) {
+function meteredFixture(options: { pendingResume?: boolean; failResume?: boolean; duration?: number } = {}) {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'performance'] });
-  const track = { stop: vi.fn() }, stopped = vi.fn();
+  const track = { stop: vi.fn() }, stopped = vi.fn(), renderFrom = vi.fn();
   const state = { amplitude: 0, failSample: false, resume: undefined as (() => void) | undefined,
     native: undefined as { onerror?: () => void } | undefined, contexts: [] as Array<{ close: ReturnType<typeof vi.fn>; source: { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> }; analyser: { connect: ReturnType<typeof vi.fn>; disconnect: ReturnType<typeof vi.fn> } }> };
   vi.stubGlobal('navigator', { mediaDevices: { getUserMedia: async () => ({ getTracks: () => [track] }) } });
@@ -55,15 +55,33 @@ function meteredFixture(options: { pendingResume?: boolean; failResume?: boolean
     constructor() { state.contexts.push(this); }
     createMediaStreamSource() { return this.source; } createAnalyser() { return this.analyser; }
     async resume() { if (options.pendingResume) await new Promise<void>(resolve => { state.resume = resolve; }); if (options.failResume) throw Error('resume failed'); }
-    async decodeAudioData() { return { duration: .5 }; }
+    async decodeAudioData() { return { duration: options.duration ?? .5 }; }
   });
   vi.stubGlobal('OfflineAudioContext', class {
-    destination = {}; createBufferSource() { return { buffer: undefined, connect() {}, start() {} }; }
+    destination = {}; createBufferSource() { return { buffer: undefined, connect() {}, start: renderFrom }; }
     async startRendering() { return { getChannelData: () => new Float32Array(8000) }; }
   });
-  return { track, stopped, state };
+  return { track, stopped, state, renderFrom };
 }
 
+it('reports sustained onset while recording and keeps a quarter second of audio before the first voiced sample', async () => {
+  const f = meteredFixture({ duration: 3 }), recorder = new VoiceRecorder(), onset = vi.fn();
+  const capture = await recorder.start(vi.fn(), { onSpeechStart: onset, speechPrerollSeconds: .25 });
+  f.state.amplitude = .06;
+  await vi.advanceTimersByTimeAsync(20);
+  f.state.amplitude = 0;
+  await vi.advanceTimersByTimeAsync(980);
+  expect(onset).not.toHaveBeenCalled();
+  f.state.amplitude = .06;
+  await vi.advanceTimersByTimeAsync(40);
+  expect(onset).toHaveBeenCalledOnce();
+  expect(f.stopped).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(1960);
+  recorder.stop();
+  const result = await capture!.finished;
+  expect(f.renderFrom).toHaveBeenCalledWith(0, .77, 2.23);
+  expect(result?.seconds).toBeCloseTo(2.23);
+});
 it('ignores initial silence and short noise, then releases a real utterance after a one-second pause without echo', async () => {
   const f = meteredFixture(), level = vi.fn(), silence = vi.fn(), recorder = new VoiceRecorder();
   const capture = await recorder.start(vi.fn(), { onLevel: level, silenceSeconds: 1, minSpeechSeconds: .25, onSilence: silence });

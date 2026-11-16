@@ -12,7 +12,7 @@ import { OfficialVersionCatalogue } from './official-versions';
 import { resolvePortableTools, type PortableToolchain } from '../portable-tools';
 import { PackDistributionService } from './pack-distribution';
 import { resolveDshWorkbenchIcon } from './workbench-icon';
-import { InstanceService, type DshHostStartupProgress } from './instance-service';
+import { InstanceService, assertInstanceUpgradeable, type DshHostStartupProgress } from './instance-service';
 import { DshCliTerminal } from './cli-terminal';
 import { PackService } from './packs';
 import { extractSealedArchive, writeSealedArchive } from './archive';
@@ -23,10 +23,13 @@ import type { CompanionInstanceLeaseKind } from './companion-instance-leases';
 import { restoreCompanionKeepAlive, type CompanionEnvironmentOwner } from './companion-keep-alive';
 import { DshHostUnavailableError } from './host-errors';
 import { CabinWorld, cabinBridgeOnline } from '../cabin-world';
+import { BotCabinWorldApp } from '../companion-bot/cabin-world-app';
 import { connectCabinPlugin } from './cabin-plugin';
+import { bundledDshArchive, bundledDshRelease, matchesBundledDshRelease } from './bundled-runtime';
 
 export class DshLauncher {
   private readonly cabin: CabinWorld;
+  readonly companionCabinApp: BotCabinWorldApp;
   private cabinPreparation?: Promise<void>;
   private readonly cabinPluginPath: string;
   async scheduledCabinOnline(): Promise<boolean> {
@@ -173,6 +176,7 @@ export class DshLauncher {
   private tools?: Promise<PortableToolchain>;
   private selectionEpoch = 0;
   private readonly rootPath: string;
+  private readonly bundledRuntime?: { directory: string; archiver: string };
   private readonly initialization: Promise<void>;
   private closed = false;
   private previousThrottling: boolean | undefined;
@@ -195,8 +199,20 @@ export class DshLauncher {
     private readonly onInstanceStopped?: (instanceId: string) => void,
     private readonly validateCompanion?: (companionId: string) => void) {
     this.rootPath = path.join(app.getPath('userData'), 'dsh');
-    const resources = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources');
+    const appPath = app.getAppPath();
+    const resources = app.isPackaged ? process.resourcesPath : path.join(appPath, 'resources');
+    if (process.platform === 'win32' && process.arch === 'x64') {
+      if (app.isPackaged) this.bundledRuntime = {
+        directory: path.join(resources, 'dsh-runtime'),
+        archiver: path.join(resources, 'app.asar.unpacked', 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
+      };
+      else if (process.env.WORLDLINEBOX_DISTRIBUTION === 'development') this.bundledRuntime = {
+        directory: path.join(appPath, '.tools', 'dsh-runtime-release', 'dsh-runtime'),
+        archiver: path.join(appPath, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'),
+      };
+    }
     this.cabin = new CabinWorld(path.join(resources, 'cabin-world'), path.join(app.getPath('userData'), 'cabin-world'), process.execPath);
+    this.companionCabinApp = new BotCabinWorldApp(this.cabin);
     this.cabinPluginPath = path.join(resources, 'dsh-cabin-world');
     const onChanged = () => {
       if (!this.ready || this.closed) return;
@@ -298,6 +314,7 @@ export class DshLauncher {
     await this.operations.init(); await this.runtimes.init(); await this.instances.init(); await this.packs.init(); await this.cliTerminal.init();
     const publications = await readJson<unknown[]>(path.join(this.rootPath, 'pack-publications.json')) ?? [];
     this.publications = publications.slice(0, 100).map(value => dshPackPublicationRecordSchema.parse(value));
+    await this.provisionBundledRuntime();
     this.ready = true;
     this.observeExecutionCapabilities();
     this.watchCompanionCapabilities(() => {
@@ -306,6 +323,20 @@ export class DshLauncher {
     });
     // Installation and actual execution own compatibility/integrity checks.
     // Listing the home page must never boot every installed runtime or CLI.
+  }
+  private async provisionBundledRuntime(): Promise<string | undefined> {
+    const bundled = this.bundledRuntime;
+    if (!bundled) return;
+    const installed = this.runtimes.list().filter(matchesBundledDshRelease);
+    if (installed.some(runtime => this.instances.hasBundledRuntime(runtime.id))) return;
+    // Development startup can use a release already installed in the shared profile or an offline build cache.
+    if (!app.isPackaged && !installed.length
+      && !await stat(path.join(bundled.directory, bundledDshArchive)).then(info => info.isFile(), () => false)) return;
+    return this.operations.runningId('runtime.bundle') ?? this.operations.run(
+      'runtime.bundle', `DSH ${bundledDshRelease.version}`, undefined, async op => {
+        const runtime = await this.runtimes.installBundled(bundled.directory, bundled.archiver, op);
+        await this.instances.ensureBundledInstance(runtime.id, op);
+      }, { type: 'runtime.bundle' });
   }
   private watchCompanionCapabilities(changed: () => void): void {
     for (const instance of this.instances.list()) {
@@ -360,7 +391,8 @@ export class DshLauncher {
     // Browsing/selecting a profile is not permission to start its processes.
     // Only the default profile is warmed automatically; explicit execution and
     // durable native-context bindings select other instances separately.
-    const defaultInstance = this.instances.list().find(value => value.isDefault);
+    const provisioningFallback = this.operations.runningId('runtime.bundle');
+    const defaultInstance = instance && (!provisioningFallback || instance.isBundled || instance.defaultSelectedByUser) ? instance : undefined;
     const defaultRuntime = this.runtimes.list().find(value => value.id === defaultInstance?.runtimeId);
     const prewarmIdentity = JSON.stringify([defaultInstance?.id, defaultInstance?.runtimeId, defaultRuntime?.contentSha256]);
     if (prewarmIdentity !== this.defaultPrewarmIdentity || mutation) {
@@ -526,6 +558,7 @@ export class DshLauncher {
       }
       case 'companion.environment.upgrade': {
         const own = await this.resolveCompanionInstance(request.companionId, request.name);
+        assertInstanceUpgradeable(own);
         return { ok: true, operationId: await this.operations.run(request.type, '升级伙伴共享执行环境', own.id,
           op => this.instances.upgradeCompanion(own.id, request.runtimeId, op)) };
       }
@@ -556,6 +589,7 @@ export class DshLauncher {
       case 'operation.pause': await this.operations.pause(request.operationId); return { ok: true, state: this.state() };
       case 'operation.resume': await this.operations.resume(request.operationId); return { ok: true, state: this.state() };
       case 'operation.retry': return this.handle(this.operations.retryRequest(request.operationId));
+      case 'runtime.bundle': return { ok: true, operationId: await this.provisionBundledRuntime() };
       case 'terminal.close': await this.cliTerminal.close(request.terminalId ?? this.cliTerminal.state().activeTerminalId); return { ok: true, state: this.state() };
       case 'terminal.clear': this.cliTerminal.clear(request.terminalId); return { ok: true, state: this.state() };
       case 'terminal.remove': await this.cliTerminal.remove(request.terminalId); return { ok: true, state: this.state() };
@@ -578,7 +612,9 @@ export class DshLauncher {
       case 'instance.upgrade-official': {
         const { instanceId, expectedRuntimeId, version } = request;
         const checkSource = () => {
-          if (this.instances.get(instanceId).runtimeId !== expectedRuntimeId) throw new Error('实例的运行版本已变更，请重新选择升级目标。');
+          const instance = this.instances.get(instanceId);
+          assertInstanceUpgradeable(instance);
+          if (instance.runtimeId !== expectedRuntimeId) throw new Error('实例的运行版本已变更，请重新选择升级目标。');
         };
         checkSource();
         const previous = this.runtimes.get(expectedRuntimeId).version;
@@ -606,6 +642,7 @@ export class DshLauncher {
         return { ok: true, operationId: await this.operations.run(request.type, '清理 DSH 下载缓存和残留文件', undefined, op => this.runtimes.cleanup(op)) };
       }
       case 'runtime.delete': {
+        if (this.instances.hasBundledRuntime(request.runtimeId)) throw new Error('内置兜底版本不可移除。');
         if (this.companionProvisioning) throw new Error('正在保存角色实例绑定，请稍后再删除运行版本。');
         if (this.operations.list().some(operation => operation.status === 'running' && operation.kind !== 'versions.refresh')) throw new Error('请等待当前运行环境操作结束后再删除该版本。');
         const used = runtimeReferences(this.state(), request.runtimeId).length > 0;

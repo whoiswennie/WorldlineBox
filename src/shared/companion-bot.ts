@@ -163,7 +163,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
   z.strictObject({ type: z.literal('conversation.pin'), conversationId: id, pinned: z.boolean() }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(2).optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(botAppIdSchema.options.length).optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
@@ -198,7 +198,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.observe'), conversationId: id, companionId: id }),
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
   z.strictObject({ type: z.literal('app.detach'), conversationId: id, topicId: id, appId: botAppIdSchema }),
-  z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.literal('asset-manager') }),
+  z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.enum(['asset-manager', 'cabin-world']), topicId: id.optional() }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
 export interface BotResponse { userName?: string; schedule?: CompanionScheduleState; callModel?: BotCallModel; callStage?: BotCallStage; interruptedReplyIds?: string[]; app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topicListStale?: boolean; topicListError?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
@@ -214,7 +214,7 @@ export interface WorldlineBoxBotApi {
   onSpeech?(listener: (event: BotSpeechEvent) => void): () => void;
 }
 export const botSpeechRequest = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('play'), id: z.string().uuid(), conversationId: id, messageId: id, partId: id.optional() }),
+  z.strictObject({ type: z.literal('play'), id: z.string().uuid(), conversationId: id, messageId: id, partId: id.optional(), pageIndex: z.number().int().nonnegative().optional() }),
   z.strictObject({ type: z.literal('stop'), id: z.string().uuid() }),
 ]);
 export type BotSpeechRequest = z.infer<typeof botSpeechRequest>;

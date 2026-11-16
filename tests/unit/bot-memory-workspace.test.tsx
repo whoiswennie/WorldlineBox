@@ -76,6 +76,30 @@ it('stops quiet catalog refresh when real receipts show the queue has completed'
   expect(count).toBe(2);
 });
 
+it('keeps the current note mounted during a slow refresh and allows Escape after focus loss', async () => {
+  const slowRefresh = deferred<BotResponse>();
+  let catalogRequests = 0;
+  await mount(request => request.type === 'memory.catalog'
+    ? ++catalogRequests === 1
+      ? Promise.resolve({ ok: true, memory: { items: [first], tags: [], total: 1,
+        activity: { originals: { archived: 18, pending: 0 }, capture: { queued: 0, running: 0, failed: 1, empty: 0, withNotes: 0, unknownDone: 0 } } } })
+      : slowRefresh.promise
+    : undefined);
+  const close = vi.fn();
+  await render('private-a', close);
+  await openFirst();
+  const row = host.querySelector('.bot-memory-row');
+  await click('刷新状态');
+  expect(host.querySelector('.bot-memory-row')).toBe(row);
+  expect(host.querySelector('.bot-memory-list')?.getAttribute('aria-busy')).toBe('true');
+  expect(host.textContent).toContain('完整原文，与列表预览不同');
+  await act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+  expect(close).toHaveBeenCalledOnce();
+  await act(() => slowRefresh.resolve({ ok: false, error: '读取暂时不可用' }));
+  expect(host.querySelector('.bot-memory-row')).toBe(row);
+  expect(host.textContent).toContain('读取暂时不可用');
+});
+
 it('keeps the memory workspace open when Escape belongs to Chinese input composition', async () => {
   await mount(); let closed = 0; await render('private-a', () => { closed++; });
   const dialog = host.querySelector<HTMLElement>('[role="dialog"]')!;

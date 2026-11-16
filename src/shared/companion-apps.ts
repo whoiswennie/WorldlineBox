@@ -1,8 +1,20 @@
 import { z } from 'zod';
 
-export const botAppIdSchema = z.enum(['browser', 'asset-manager']);
+export const botAppIdSchema = z.enum(['browser', 'asset-manager', 'cabin-world']);
 export type BotAppId = z.infer<typeof botAppIdSchema>;
-export interface BotAppConnection { id: BotAppId; libraryCount: number }
+export type BotAppConnection = { id: 'asset-manager'; libraryCount: number } | { id: 'cabin-world' };
+export const botAppTools = { browser: 'browser', 'asset-manager': 'asset_manager', 'cabin-world': 'cabin_world' } as const;
+
+export const companionCabinArgumentsSchema = z.strictObject({
+  tool: z.enum(['cabin_status', 'cabin_look', 'cabin_catalog', 'cabin_task', 'cabin_go', 'cabin_use', 'cabin_buy', 'cabin_eat', 'cabin_stop', 'cabin_restaurant', 'cabin_process', 'cabin_furniture']),
+  arguments: z.record(z.string(), z.unknown()).default({}),
+});
+export type CompanionCabinArguments = z.infer<typeof companionCabinArgumentsSchema>;
+const cabinParameters = z.toJSONSchema(companionCabinArgumentsSchema, { io: 'input' }); delete cabinParameters.$schema;
+export const COMPANION_CABIN_TOOL = {
+  name: botAppTools['cabin-world'], parameters: { type: 'object', ...cabinParameters },
+  description: '感知并生活在当前伙伴自己的小屋世界住户中，身份由宿主绑定。cabin_status 查看自身状态，cabin_look 查看身边的家具、动作和出口，cabin_catalog 按 query 查找物件；cabin_go 用 place 和可选 zone，cabin_use 用 object 和 use，cabin_buy/cabin_eat 用 product，cabin_restaurant 用 action 和可选 dish。用实际目录中的编号。任务返回 running 时，可以继续自然聊天，必要时用 cabin_task 和 taskId 查完成回执。只在确认 done 后说做完了；不要重复发起仍在执行的动作。',
+} as const;
 
 export const companionAssetArgumentsSchema = z.discriminatedUnion('action', [
   z.strictObject({ action: z.literal('tools'), query: z.string().max(200).default(''), offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(30).default(15) }),

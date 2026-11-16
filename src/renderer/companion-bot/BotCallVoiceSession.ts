@@ -156,7 +156,7 @@ export class BotCallVoiceSession {
     pending.promise = this.deliver(epoch).finally(() => { if (this.pendingTyped === pending) this.pendingTyped = undefined; });
     return pending.promise;
   }
-  /** Open the microphone once the associated reply finishes. */
+  /** Open the microphone as soon as the associated reply can be presented. */
   readyForNextTurn(turn = this.value.turn): void {
     if (this.closed || !this.value.enabled || turn !== this.value.turn || this.value.phase !== 'waiting') return;
     if (!this.prepared) {

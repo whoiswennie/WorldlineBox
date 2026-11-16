@@ -39,6 +39,7 @@ function launchApp(temporaryRoot: string, libraryPath: string, importFiles?: str
 }
 
 async function createLibrary(window: Page, libraryName: string) {
+  await window.locator('[data-application-module="assets"]').click();
   await window.getByRole("button", { name: "创建资源库" }).click();
   await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
   await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -110,6 +111,12 @@ test("renames an asset file from the context menu and renames the real file on d
       true,
     );
     expect(existsSync(path.join(libraryPath, "Assets", "hero.png"))).toBe(false);
+
+    await renamedCard.locator(".asset-caption-filename").dblclick();
+    const doubleClickInput = renamedCard.locator(".asset-inline-rename-input");
+    await expect(doubleClickInput).toBeVisible();
+    await expect(window.locator(".workspace-viewer")).toHaveCount(0);
+    await doubleClickInput.press("Escape");
   } finally {
     await application.close();
     rmSync(temporaryRoot, { recursive: true, force: true });

@@ -24,6 +24,8 @@ While work runs, necessary progress, question and continuation controls appear o
 
 **Stop** interrupts execution and preserves progress. Once DSH confirms the stop, **Continue execution** reconnects the original task and topic Session without typing or sending another message. Switching topics or restarting the app preserves this control. An interrupted result is not recorded as a completed diary entry. If a later message has already progressed in the same topic, continue from that latest reply instead.
 
+In a companion chat, choose **Apps → Cabin World** to open the built-in game. While the topic is connected, each new turn, queued task, and steering message automatically reads the resident's latest location, weather, and recent activities. The companion can also take walks or use furniture when it suits the conversation. Each companion has a resident shared across their topics. Chat continues if the game closes. Select **Cabin World** again to reconnect, or remove the chip above the composer to disconnect the topic. Your game save is kept.
+
 ## Memory
 
 Open **Memory** from the chat toolbar to enter the selected companion's **Memory workspace**. **Journal** lists notes and tags by page; select a note to read its full text. You can save a new note, edit a note, or select related notes and write an organized version. Originals are archived after the new note is confirmed available for recall. The brain can also search, inspect historical fragments, write and forget. Automatic encoding runs in the background and may make additional model calls; a finished reply does not imply its memory index is ready.

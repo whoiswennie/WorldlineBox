@@ -8,14 +8,18 @@ import { useBotCallVoice, type BotCallSendReceipt } from '../../src/renderer/com
 import type { VoiceRecording } from '../../src/renderer/companion-bot/voice-recorder';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-const microphones = vi.hoisted(() => ({ captures: [] as Array<{ stop: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn>; resolve(value: VoiceRecording | undefined): void }> }));
+const microphones = vi.hoisted(() => ({ captures: [] as Array<{ stop: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn>; speechStart(): void }> }));
 vi.mock('../../src/renderer/companion-bot/BotVoiceInput', () => ({ localSpeechApi: () => undefined }));
 vi.mock('../../src/renderer/companion-bot/call-voice-capture', () => ({ CallVoiceCapture: class {
   readonly finished: Promise<VoiceRecording | undefined>;
   resolve!: (value: VoiceRecording | undefined) => void;
   stop = vi.fn(() => this.resolve({ wave: new Uint8Array([82, 73, 70, 70, 1, 2]), seconds: 1 }));
   cancel = vi.fn(() => this.resolve(undefined));
-  constructor() { this.finished = new Promise(resolve => { this.resolve = resolve; }); microphones.captures.push(this); }
+  constructor(private callbacks: { onSpeechStart(): void }) {
+    this.finished = new Promise(resolve => { this.resolve = resolve; });
+    microphones.captures.push(this);
+  }
+  speechStart() { this.callbacks.onSpeechStart(); }
   async start() { return { finished: this.finished }; }
 } }));
 
@@ -54,6 +58,26 @@ it('handles a reply that settles before its send receipt', async () => {
   expect(microphones.captures).toHaveLength(1);
   await act(async () => { receipt.resolve({ ok: true, replyMessageIds: ['exact-reply'] }); await flush(); });
   expect(microphones.captures).toHaveLength(2); expect(voice.state.phase).toBe('listening');
+});
+it('already listens during a running reply and reports speech onset before recognizing the same recording', async () => {
+  const f = await fixture(), onSpeechStart = vi.fn();
+  await f.render({ onSpeechStart });
+  await f.begin();
+  await f.finish();
+  const parts = [{ id: 'cue', kind: 'text' as const, sequence: 1, text: '伙伴的第一段回答', presentation: {} }];
+  await f.render({ messages: [reply('exact-reply', { status: 'running', parts })] });
+  expect(voice.state.phase).toBe('listening');
+  expect(microphones.captures).toHaveLength(2);
+  f.request.mockClear();
+  const microphone = microphones.captures[1]!;
+  await act(() => microphone.speechStart());
+  expect(onSpeechStart).toHaveBeenCalledOnce();
+  expect(voice.state.phase).toBe('listening');
+  expect(microphone.stop).not.toHaveBeenCalled();
+  expect(f.request).not.toHaveBeenCalled();
+  await f.finish();
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'speech.transcribe' }));
+  expect(microphone.stop).toHaveBeenCalledOnce();
 });
 it('preserves the exact rich composer action and handles its failure without resending', async () => {
   const f = await fixture(); await f.begin();

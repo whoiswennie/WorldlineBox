@@ -51,6 +51,10 @@ function requireIndexedReceipt(receipt: unknown, sourceEventId: string): void {
   if (!indexed) throw Object.assign(new Error('Memory diary is durable but its indexing receipt is not confirmed'), { code: 'MEMORY_SYNC_TIMEOUT' });
 }
 
+// The capture job can retry its durable receipt. Give foreground recall a
+// turn on the same memory worker while vector ingestion continues.
+const captureIndexWaitMs = 300;
+
 export interface BotMemoryCaptureInput {
   brain: Pick<BotBrain, 'run'> & Partial<Pick<BotBrain, 'archive'>>;
   memory: Pick<BotMemoryService, 'remember'>;
@@ -141,7 +145,7 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
       || Array.from(input.answer).length > 2400 || deliveries.length > 16 || deliveries.some(item => Array.from(item.path).length > 256 || Array.from(item.description ?? '').length > 160) || Array.from(body).length > 11000;
     const diary: BotMemoryWrite = {
       sourceEventId: `${input.sourceEventId}:interaction:v3`, sourceRootEventId: input.sourceEventId, sourceMessageIds: sourceIds,
-      tags: '互动日记,原生会话已完成', waitForIndex: true,
+      tags: '互动日记,原生会话已完成', waitForIndex: true, indexTimeoutMs: captureIndexWaitMs,
       content: `${excerpt(body, 11000)}\n\nisExcerpt: ${isExcerpt}`,
     };
     const receipt = await input.memory.remember(input.scope, diary, input.signal);
@@ -193,7 +197,7 @@ export async function captureBotMemory(input: BotMemoryCaptureInput): Promise<{ 
       const write: BotMemoryWrite = { content: `${note.content}\n\n来源事件：${input.sourceEventId}\n来源消息：${fragment.sourceLabelIds.join(',')}`
         + (fragment.provenance ? `\n来源分段：${JSON.stringify(fragment.provenance)}` : ''),
       tags: note.tags.join(','), sourceEventId: `${input.sourceEventId}:capture:${policy === 1 ? '' : `v${policy}:`}${fragment.noteKey}${index}`, sourceRootEventId: input.sourceEventId,
-      sourceMessageIds: fragment.sourceIds, ...(policy === 3 ? { waitForIndex: true } : {}) };
+      sourceMessageIds: fragment.sourceIds, ...(policy === 3 ? { waitForIndex: true, indexTimeoutMs: captureIndexWaitMs } : {}) };
       const receipt = await input.memory.remember(input.scope, write, input.signal);
       input.signal?.throwIfAborted();
       if (receipt && typeof receipt === 'object' && 'withdrawn' in receipt && receipt.withdrawn === true) {

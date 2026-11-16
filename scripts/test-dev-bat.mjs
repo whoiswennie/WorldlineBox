@@ -114,6 +114,8 @@ async function run() {
   await mkdir(report); await ordinary(report, true);
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'worldlinebox-dev-bat-'));
   const userData = path.join(temporaryRoot, 'user-data'); const root = path.join(userData, 'dsh');
+  const stagedDsh = await lstat(path.join(toolsRoot, 'dsh-runtime-release', 'dsh-runtime', 'runtime.7z'))
+    .then(info => info.isFile(), () => false);
   const cdpPort = await findFreeTcpPort(32_000); const vitePort = await findFreeTcpPort(cdpPort + 1);
   const attach = loadWindowsJobHelper(); let child, job, browser, page, verifiedOwnedApp = false;
   let stdout = '', stderr = '', result, failure, ownedTreeStopped = false;
@@ -162,7 +164,7 @@ async function run() {
     const initial = await launcherState(page);
     if (!same(initial.rootPath, root)) throw new Error('CDP connected to a different application profile; no UI mutation is allowed.');
     verifiedOwnedApp = true;
-    expect(initial.supported).toBe(true); expect(initial.runtimes).toHaveLength(0); expect(initial.instances).toHaveLength(0);
+    expect(initial.supported).toBe(true);
     expect(initial.network?.settings.proxyMode).toBe('system'); expect(initial.network?.settings.npmRegistry).toBe('https://registry.npmjs.org');
     expect(inside(root, initial.cli.commandPath)).toBe(true);
     expect(await page.evaluate(() => ({ node: typeof globalThis.process, require: typeof globalThis.require }))).toEqual({ node: 'undefined', require: 'undefined' });
@@ -201,13 +203,33 @@ async function run() {
     expect(entries.some(entry => entry.scope === 'main.user-data' && same(entry.context?.path ?? '.', userData) && entry.context?.mode === 'e2e')).toBe(true);
     expect(entries.find(entry => entry.scope === 'main.portable-tools.deferred')?.level).toBe('info');
     expect(entries.some(entry => entry.scope === 'main.window.mount-failed' || entry.scope === 'dsh.launcher.initialization' && entry.level === 'error')).toBe(false);
-    const final = await launcherState(page); expect(final.instances).toHaveLength(0); expect(final.runtimes).toHaveLength(0);
+    if (stagedDsh) {
+      await expect.poll(async () => (await launcherState(page)).operations.find(operation => operation.kind === 'runtime.bundle')?.status,
+        { timeout: 360_000 }).toBe('succeeded');
+      await expect(page.locator('.launcher-instance-title h1')).toHaveText('WorldlineBox DSH');
+      await expect(page.locator('.launcher-instance-title')).toContainText('内置兜底实例');
+      await expect(page.getByRole('button', { name: '升级运行版本', exact: true })).toBeDisabled();
+      await expect(page.getByRole('button', { name: '归档实例', exact: true })).toBeDisabled();
+    }
+    const final = await launcherState(page);
+    if (stagedDsh) {
+      const release = await json(path.join(projectRoot, 'resources', 'dsh-runtime-release.json'));
+      expect(final.runtimes).toEqual([expect.objectContaining({ version: release.version })]);
+      const runtimeId = final.runtimes[0].id;
+      expect(final.instances).toEqual([expect.objectContaining({ isBundled: true, isDefault: true, runtimeId })]);
+      const removal = await page.evaluate(runtimeId => globalThis.worldlinebox.dshLauncher.request({ type: 'runtime.delete', runtimeId }), runtimeId);
+      expect(removal).toMatchObject({ ok: false, error: expect.stringContaining('内置兜底版本') });
+    } else {
+      expect(final.instances).toHaveLength(0);
+      expect(final.runtimes).toHaveLength(0);
+    }
     await writeFile(path.join(report, 'launcher-state.json'), JSON.stringify(final, null, 2));
     result = { ok: true, batch, setup, cdpPort, vitePort, cmdPid: child.pid, rendererUrl: page.url(), launchDurationMs,
       dependencyInstallation: false, nativeRebuild: false,
       firstModule: 'dsh', settingsPreserveModule: true, themes: ['light', 'dark'], portableToolsOnDemand: true,
       inactiveModulesUnloaded: true, noStartupDataWorkers: true, homeProcesses,
-      nativePreloadIpc: true, globalNetworkRail: true, globalNetworkLiveToggle: true, isolatedUserData: userData, runtimeInstalls: 0, modelCalls: 0 };
+      nativePreloadIpc: true, globalNetworkRail: true, globalNetworkLiveToggle: true, isolatedUserData: userData,
+      bundledRuntime: stagedDsh, runtimeInstalls: 0, modelCalls: 0 };
   } catch (error) { failure = error; }
   finally {
     if (page && !page.isClosed()) {

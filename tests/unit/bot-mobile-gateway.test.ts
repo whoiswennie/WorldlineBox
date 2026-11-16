@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { Client } from 'ssh2';
+import { DeepSeekSpeech } from '../../src/main/companion-bot/deepseek-speech';
 import { BotDshBrain, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { startMobileGateway } from '../../src/main/companion-bot/mobile-gateway';
@@ -50,11 +51,17 @@ it('routes a mobile attachment and one durable message into the same desktop top
     }
   }
   let gateway: Awaited<ReturnType<typeof startMobileGateway>>;
+  const speech = new DeepSeekSpeech(() => 'fixture');
+  const pcm = Buffer.from([1, 2, 3, 4, 5, 6]);
+  const synthesize = vi.spyOn(speech, 'play').mockImplementation(async (_text, _streaming, output) => {
+    await output(pcm.subarray(0, 3));
+    await output(pcm.subarray(3));
+  });
   const service = new BotService({ root, media, brain: new Brain(), memory: new NativeServiceMemory(root),
     model: () => ({ apiFormat: 'openai_chat', baseUrl: 'http://127.0.0.1:9', model: 'fixture', apiKey: 'fixture' }),
     onEvent: event => gateway?.notify(event) });
   const access = new MobileAccessSettings(root, async manager => {
-    gateway = await startMobileGateway({ root, access: manager, port, bot: async () => service, media: async () => media, report: () => undefined });
+    gateway = await startMobileGateway({ root, access: manager, port, speech, bot: async () => service, media: async () => media, report: () => undefined });
     return { host: '127.0.0.1', sshPort: 47832, fingerprint: `SHA256:${'A'.repeat(43)}`,
       close: () => gateway?.close(), connected: () => false, disconnect: () => undefined };
   }, async data => data);
@@ -67,6 +74,7 @@ it('routes a mobile attachment and one durable message into the same desktop top
     const call = (data: object) => fetch(`${base}/requests`, { method: 'POST', headers, body: JSON.stringify(data) });
     expect((await fetch(`${base}/health`)).status).toBe(401);
     expect((await fetch(`${base}/health`, { headers })).status).toBe(200);
+    expect(await (await fetch(`${base}/health`, { headers })).json()).toMatchObject({ pagedSpeech: true });
     expect((await call({ type: 'companion.data.clear', companionId: 'dummy', requestId: 'blocked' })).status).toBe(403);
     const directory = await (await call({ type: 'state' })).json();
     expect(directory.snapshot.companions[0]).not.toHaveProperty('persona');
@@ -83,6 +91,8 @@ it('routes a mobile attachment and one durable message into the same desktop top
     let live = '';
     while (!live.includes('正在汇总')) live += Buffer.from((await reader.read()).value!).toString();
     expect(live).toContain('"phase":"recalling-memory"');
+    expect(live).toContain('"label":"正在检索记忆"');
+    expect(live).toContain('"icon":"memory"');
     const upload = await fetch(`${base}/files?conversationId=${room}&name=input.csv`, { method: 'PUT', headers, body: 'n\n1\n2\n3\n' });
     expect(upload.status).toBe(201);
     const attachment = (await upload.json()).attachment;
@@ -105,6 +115,18 @@ it('routes a mobile attachment and one durable message into the same desktop top
     const state = await (await call({ type: 'state', conversationId: room })).json();
     const result = state.snapshot.messages.find((message: { id: string }) => message.id === accepted.replyMessageIds[0]);
     expect(result.topic.id).toBe(topic.id);
+    const audioUrl = `${base}/speech?conversationId=${room}&messageId=${result.id}`;
+    for (const encoding of ['gzip', 'identity']) {
+      const audio = await fetch(audioUrl, { headers: { ...headers, 'accept-encoding': encoding } });
+      expect(audio.status).toBe(200);
+      expect(audio.headers.get('content-encoding')).toBe(encoding === 'gzip' ? 'gzip' : null);
+      expect(Buffer.from(await audio.arrayBuffer())).toEqual(pcm);
+    }
+    expect(synthesize).toHaveBeenCalledWith(result.content, false, expect.any(Function), expect.any(AbortSignal));
+    const pageAudio = await fetch(`${audioUrl}&pageIndex=0`, { headers });
+    expect(Buffer.from(await pageAudio.arrayBuffer())).toEqual(pcm);
+    expect((await fetch(`${audioUrl}&pageIndex=-1`, { headers })).status).toBe(400);
+    expect(await (await fetch(`${audioUrl}&pageIndex=1`, { headers })).json()).toMatchObject({ error: '这段对白不存在。' });
     expect(calls).toHaveLength(1);
     expect(JSON.parse(calls[0]!.prompt).delivery).toMatchObject({
       speaker: { id: 'user', name: '林舟' },
@@ -139,6 +161,12 @@ it('routes a mobile attachment and one durable message into the same desktop top
     expect((await (await call({ ...quote, quoteMessageId: accepted.messageId })).json()).ok).toBe(false);
     await waitNative(() => service.store.getMessage(quoted.replyMessageIds[0])?.status === 'sent');
     expect(JSON.parse(calls.at(-1)!.prompt).message.quote).toMatchObject({ id: result.id, excerpt: '已汇总' });
+    const transcript = { type: 'state', conversationId: room, history: true };
+    expect((await (await call(transcript)).json()).snapshot).toMatchObject({ hasMore: false,
+      messages: expect.arrayContaining([expect.objectContaining({ id: quoted.messageId })]) });
+    const older = (await (await call({ ...transcript, before: quoted.message.sequence })).json()).snapshot;
+    expect(older.messages.map((message: { id: string }) => message.id)).toContain(accepted.messageId);
+    expect(older.messages.every((message: { sequence: number }) => message.sequence < quoted.message.sequence)).toBe(true);
     const uploadId = 'b59fd055-8bb4-4cd4-9ce3-2d5dcbb80781';
     const resumable = `${base}/upload?conversationId=${room}&id=${uploadId}`;
     const part = (offset: number, body: string) => fetch(`${resumable}&name=resume.txt&total=6&offset=${offset}`, { method: 'PUT', headers, body });

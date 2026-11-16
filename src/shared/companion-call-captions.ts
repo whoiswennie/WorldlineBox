@@ -1,4 +1,11 @@
 export interface CallCaptionPage { text: string; start: number; end: number }
+export const CALL_CAPTION_MAX_UNITS = 36;
+export const CALL_CAPTION_AUTO_HIDE_MS = 1800;
+export const callCaptionHoldMs = (text: string) => Math.min(8500, 900 + Array.from(text).length * 82);
+
+export function callCaptionPlaybackPages(text: string) {
+  return buildCallCaptionPages(text, CALL_CAPTION_MAX_UNITS, 3).filter(page => page.text.trim());
+}
 
 const MIN_CAPTION_UNITS = 8;
 const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
@@ -23,15 +30,19 @@ function breakPreference(text: string, start: number, end: number, grapheme: str
 }
 
 /** Split stable complete text; joining pages preserves every source character and space. */
-export function buildCallCaptionPages(text: string, maxUnits: number): CallCaptionPage[] {
+export function buildCallCaptionPages(text: string, maxUnits: number, maxLines = Infinity): CallCaptionPage[] {
   if (!text) return [];
   const capacity = Number.isFinite(maxUnits) ? Math.max(MIN_CAPTION_UNITS, maxUnits) : MIN_CAPTION_UNITS;
   const graphemes = [...segmenter.segment(text)].map(({ segment, index }) => ({ text: segment, start: index, end: index + segment.length, units: units(segment) }));
   const pages: CallCaptionPage[] = [];
   let cursor = 0;
   while (cursor < graphemes.length) {
-    let end = cursor, consumed = 0;
-    while (end < graphemes.length && consumed + graphemes[end]!.units <= capacity) consumed += graphemes[end++]!.units;
+    let end = cursor, consumed = 0, lineBreaks = 0;
+    while (end < graphemes.length && lineBreaks < maxLines && consumed + graphemes[end]!.units <= capacity) {
+      const grapheme = graphemes[end++]!;
+      consumed += grapheme.units;
+      if (/[\r\n]/u.test(grapheme.text)) lineBreaks++;
+    }
     if (end === cursor) end++;
     if (end < graphemes.length) {
       let position = 0, preferred = end, preference = 0;

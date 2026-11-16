@@ -57,6 +57,7 @@ const config: ForgeConfig = {
       process.env.VcpkgEnabled = 'false';
       const mediaPlatform = nativeMediaPlatform(platform, arch);
       if (mediaPlatform === 'win32-x64') runNodeGate('scripts/stage-cabin-world.mjs', [], { NODE_USE_ENV_PROXY: '1' });
+      runNodeGate('scripts/stage-cabin-plugin.mjs', []);
       if (mediaPlatform === 'win32-x64') runNodeGate('scripts/stage-mobile-tunnel.mjs', [], { NODE_USE_ENV_PROXY: '1' });
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
       runNodeGate('scripts/stage-bot-memory.mjs', []);
@@ -66,7 +67,10 @@ const config: ForgeConfig = {
       // Recover ignored media executables from the pinned WorldlineBox-Build
       // release when a clean checkout or a local replacement fails the gate.
       runNodeGate('scripts/media-binaries.mjs', ['ensure', '--platform', mediaPlatform]);
-      if (mediaPlatform === 'win32-x64') runNodeGate('scripts/portable-tools.mjs', ['release', '--release-root', packagedResourcesRoot]);
+      if (mediaPlatform === 'win32-x64') {
+        runNodeGate('scripts/portable-tools.mjs', ['release', '--release-root', packagedResourcesRoot]);
+        runNodeGate('scripts/stage-bundled-dsh.mjs', [], { NODE_USE_ENV_PROXY: '1' });
+      }
       // The browser extension is not shipped to a store yet; it ships inside
       // the app bundle (Contents/Resources/extension) for manual loading.
       // Rebuild it so the package always carries the current sources.
@@ -156,9 +160,10 @@ const config: ForgeConfig = {
     // checks against this copied directory.
     extraResource: [
       path.join(projectRoot, 'resources', 'dsh-bridge'),
-      path.join(projectRoot, 'resources', 'dsh-cabin-world'),
+      path.join(projectRoot, '.tools', 'cabin-plugin-release', 'dsh-cabin-world'),
       ...(process.platform === 'win32' ? [path.join(projectRoot, 'resources', 'cabin-world')] : []),
       ...(process.platform === 'win32' ? [path.join(projectRoot, '.tools', 'mobile-cloudflared')] : []),
+      ...(process.platform === 'win32' ? [path.join(projectRoot, '.tools', 'dsh-runtime-release', 'dsh-runtime')] : []),
       path.join(projectRoot, 'resources', 'dsh-demo-plugins'),
       path.join(projectRoot, '.tools', 'bot-memory-release', 'vcp-memory'),
       path.join(projectRoot, 'resources', 'embedding-models'),

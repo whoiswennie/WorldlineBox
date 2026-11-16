@@ -1,5 +1,5 @@
 import type { BotDshTool } from './dsh-brain';
-import { COMPANION_ASSET_CAPABILITY_TOOL } from '../../shared/companion-apps';
+import { botAppTools, COMPANION_ASSET_CAPABILITY_TOOL, COMPANION_CABIN_TOOL } from '../../shared/companion-apps';
 import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
 import { BOT_CALL_SEGMENT_LENGTH, BOT_CALL_MIN_DURATION_MS, BOT_CALL_MAX_DURATION_MS, botCallGestures } from '../../shared/companion-call';
 
@@ -8,7 +8,7 @@ const string = (description: string, maxLength = 16000) => ({ type: 'string', de
 const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。用户私聊可选agent_memory_scopes列出的本人参与且用户可查看的会话，包括伙伴私聊；不能传路径或其他伙伴。' };
 /** Application interaction tools augment native DSH tools without another agent loop. */
 export const BOT_TOOLS: BotDshTool[] = [
-COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL,
+COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL, COMPANION_CABIN_TOOL,
 { name: 'companion_schedule', description: '在用户私聊中按用户要求管理你自己的日程。list查看状态和ID；save新建或用原ID改写，修改前先读取并保留未要求修改的字段；toggle启停一项；settings控制该伙伴的日程总开关；delete移除一项。每天按电脑本地时间 HH:mm，或每隔指定分钟。首次使用按用户要求开启总开关。小屋世界计划设置 draft.cabinWorld 为 true，到点时游戏离线则跳过本次。日程触发时进入独立新话题。', parameters: object({ operation: { type: 'string', enum: ['list','settings','save','toggle','delete'] }, id: string('现有日程 ID',160), enabled: { type: 'boolean' }, draft: object({ title: string('日程名称',80), prompt: string('独立新会话能直接执行的任务说明',8000), enabled: { type: 'boolean' }, cabinWorld: { type: 'boolean' }, recurrence: { anyOf: [object({ kind: { const: 'daily', type: 'string' }, time: { type: 'string', pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d$' } }, ['kind','time']), object({ kind: { const: 'interval', type: 'string' }, minutes: { type: 'integer', minimum: 1, maximum: 10080 } }, ['kind','minutes'])] } }, ['title','prompt','enabled','recurrence']) }, ['operation']) },
 { name: 'companion_directory', description: '分页查找真实伙伴ID和姓名，用于联系伙伴；目录不包含私人提示词或记忆。', parameters: object({ query: { type: 'string', maxLength: 200 }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 64 } }, []) },
 { name: 'agent_conversations', description: '实时回查你本人参与的已发布聊天，不等VCP记忆索引。用户私聊可查询自己与伙伴的私聊及自己参加的用户群；其它受众只读当前房间。list列会话与最新消息索引；read选conversationId读最近一页，沿nextBefore读旧页；message按messageId分页读完整正文；contacts核实自己先前联系是否投递、对方是否实际回复或已向用户发布，仅返回关联回执元数据。已发不等于已回复，事件queued不等于没发消息。不能读其它伙伴的用户私聊或内部任务回执。', parameters: object({ operation: { type: 'string', enum: ['list', 'read', 'message', 'contacts'] }, conversationId: string('本人获准会话编号，read/message需要', 160), messageId: string('真实已发布消息编号，message需要', 160), companionId: string('contacts可选的目标伙伴编号，不能改变当前身份', 160), cursor: string('list的稳定分页游标', 160), before: { type: 'integer', minimum: 1 }, offset: { type: 'integer', minimum: 0, maximum: 1000000 }, limit: { type: 'integer', minimum: 1, maximum: 1200 } }, ['operation']) },
@@ -41,7 +41,8 @@ COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL,
 
 /** Unselected app declarations never enter native model requests. */
 export function botToolsForApps(apps: readonly string[] = [], meeting = false): BotDshTool[] {
-  const tools = BOT_TOOLS.filter(tool => tool.name === 'browser' ? apps.includes('browser') : tool.name === 'asset_manager' ? apps.includes('asset-manager') : true);
+  const excluded = Object.entries(botAppTools).filter(([id]) => !apps.includes(id)).map(([, name]): string => name);
+  const tools = BOT_TOOLS.filter(tool => !excluded.includes(tool.name));
   if (meeting) tools.push(
     { name: 'call_stage', description: '查看当前伙伴的会面表情、动作及使用说明。Live2D 模式返回可播放的模型资源和手势，头像模式返回可显示的预设表演。', parameters: object({}, []) },
     { name: 'call_present', description: '按顺序排入带台词、表情和动作的会面片段。根据当前语境配合角色的神态与动作。工具立即确认入队，第一句准备好就提交。', parameters: object({

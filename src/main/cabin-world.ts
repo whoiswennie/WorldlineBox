@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdir, readFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readFile, readdir, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { atomicJson } from './dsh/files';
@@ -36,6 +37,21 @@ export class CabinWorld {
     return !this.stopping && this.connected();
   }
 
+  async request(route: '/v1/events' | '/v1/tool', signal: AbortSignal, body?: object): Promise<Record<string, unknown>> {
+    const bridge = this.bridge;
+    if (this.stopping || !bridge?.pid || bridge.exitCode !== null || bridge.signalCode) throw Error('小屋世界离线。');
+    const info = JSON.parse(await readFile(this.bridgeJson, { encoding: 'utf8', signal })) as { pid?: number; url?: string; token?: string };
+    if (this.bridge !== bridge || this.stopping || info.pid !== bridge.pid || !/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(info.url ?? '') || !/^[a-f0-9]{48}$/.test(info.token ?? '')) {
+      throw Error('小屋世界连接尚未就绪。');
+    }
+    const response = await fetch(info.url! + route, {
+      method: body ? 'POST' : 'GET', body: body && JSON.stringify(body), signal, redirect: 'error',
+      headers: { authorization: `Bearer ${info.token}`, ...(body ? { 'content-type': 'application/json' } : {}) },
+    });
+    const result = await response.json() as Record<string, unknown>;
+    return response.ok ? result : { ...result, ok: false };
+  }
+
   private async connected(): Promise<boolean> {
     if (!this.bridge?.pid || this.bridge.exitCode !== null || this.bridge.signalCode) return false;
     return cabinBridgeOnline(this.bridgeJson, this.bridge.pid);
@@ -47,12 +63,40 @@ export class CabinWorld {
     return this.opening ??= this.start().finally(() => { this.opening = undefined; });
   }
 
+  private async prepareProfile() {
+    const layouts = path.join(this.data, 'layouts');
+    await mkdir(layouts, { recursive: true });
+    const featureFile = path.join(this.data, 'features.json');
+    if (await readFile(featureFile).catch(error => { if (error.code !== 'ENOENT') throw error; })) return;
+    const { modules } = JSON.parse(await readFile(path.join(this.resources, 'bridge', 'update', 'modules.json'), 'utf8')) as {
+      modules: Array<{ id: string; default: boolean }>;
+    };
+    const backup = path.join(this.data, 'backups', 'before-1.1');
+    for (const directory of ['saves', 'layouts', 'world']) {
+      const source = path.join(this.data, directory);
+      const entries = await readdir(source).catch(error => { if (error.code === 'ENOENT') return []; throw error; });
+      if (entries.some(entry => entry !== 'game-link.json')) {
+        await cp(source, path.join(backup, directory), { recursive: true, force: false,
+          filter: entry => path.basename(entry) !== 'game-link.json' });
+      }
+    }
+    // The 1.0 executable resolved furniture layouts one directory above its resource directory.
+    for (const room of ['home', 'arcade', 'shop', 'restaurant', 'park']) {
+      const filename = `${room}-grid-layout.json`;
+      await copyFile(path.join(path.dirname(this.resources), filename), path.join(layouts, filename), constants.COPYFILE_EXCL)
+        .catch(error => { if (!['ENOENT', 'EEXIST'].includes(error.code)) throw error; });
+    }
+    await atomicJson(featureFile, { version: 1, modules: Object.fromEntries(modules.map(module => [module.id, module.default])) });
+  }
+
   private async start() {
     if (process.platform !== 'win32') throw Error('内置小屋世界需要 Windows x64。');
     if (await this.connected()) return;
     const exe = path.join(this.resources, 'CabinWorld.exe');
     await readFile(path.join(this.resources, 'release.json'), 'utf8').catch(() => { throw Error('缺少内置小屋世界资源。开发环境请运行 node scripts/stage-cabin-world.mjs。'); });
-    await mkdir(this.data, { recursive: true });
+    // Cabin World's direct-entry check compares argv to the resolved module path.
+    const bridgeEntry = await realpath(path.join(this.resources, 'bridge', 'bridge.mjs'));
+    await this.prepareProfile();
     this.abort.signal.throwIfAborted();
     const config = path.join(this.data, 'managed-bridge-config.json');
     await atomicJson(config, { dataDir: this.data, gameExe: exe, launchGame: false, hostName: 'WorldlineBox', http: { port: 0 } });
@@ -60,18 +104,20 @@ export class CabinWorld {
     let failure: Error | undefined;
     const observe = (child: ChildProcess) => child.once('error', error => { failure = error; });
     if (!this.bridge || this.bridge.exitCode !== null || this.bridge.signalCode) {
-      this.bridge = observe(spawn(this.node, [path.join(this.resources, 'bridge', 'bridge.mjs'), '--config', config], {
+      this.bridge = observe(spawn(this.node, [bridgeEntry, '--config', config], {
         cwd: this.data, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: 'ignore', windowsHide: true,
       }));
     }
     if (!this.game || this.game.exitCode !== null || this.game.signalCode) {
-      this.game = observe(spawn(exe, ['--', '--data', this.data, '--save', path.join(this.data, 'saves')], { cwd: this.data, stdio: 'ignore' }));
+      this.game = observe(spawn(exe, ['--', '--data', this.data, '--save', path.join(this.data, 'saves'),
+        '--layout', path.join(this.data, 'layouts', 'home-grid-layout.json')], { cwd: this.data, stdio: 'ignore' }));
     }
     try {
       const until = Date.now() + 25000;
       do {
         if (failure) throw failure;
-        if (!this.bridge || !this.game || this.bridge.exitCode !== null || this.game.exitCode !== null || this.bridge.signalCode || this.game.signalCode) throw Error('小屋世界进程提前退出。');
+        if (!this.bridge || this.bridge.exitCode !== null || this.bridge.signalCode) throw Error(`小屋世界连接服务提前退出（${this.bridge?.exitCode ?? this.bridge?.signalCode ?? '未知'}）。`);
+        if (!this.game || this.game.exitCode !== null || this.game.signalCode) throw Error(`小屋世界游戏提前退出（${this.game?.exitCode ?? this.game?.signalCode ?? '未知'}）。`);
         if (await this.connected()) return;
         await delay(250, undefined, { signal: this.abort.signal });
       } while (Date.now() < until);

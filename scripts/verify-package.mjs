@@ -38,10 +38,15 @@ const resourcesPath =
     ? path.join(packageRoot, 'WorldlineBox.app', 'Contents', 'Resources')
     : path.join(packageRoot, 'resources');
 if (targetPlatform === 'win32-x64') {
+  const dsh = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/stage-bundled-dsh.mjs'), path.join(resourcesPath, 'dsh-runtime')], { stdio: 'inherit' });
+  if (dsh.error || dsh.status !== 0) throw dsh.error ?? new Error('Bundled DSH package verification failed.');
   const cabin = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/stage-cabin-world.mjs'), '--verify', path.join(resourcesPath, 'cabin-world')], { stdio: 'inherit' });
   if (cabin.error || cabin.status !== 0) throw cabin.error ?? new Error('Cabin World release verification failed.');
   const mobileTunnel = spawnSync(process.execPath, [path.join(projectRoot, 'scripts/stage-mobile-tunnel.mjs'), '--verify', path.join(resourcesPath, 'mobile-cloudflared')], { stdio: 'inherit' });
   if (mobileTunnel.error || mobileTunnel.status !== 0) throw mobileTunnel.error ?? new Error('Cloudflare Tunnel package verification failed.');
+  if (!existsSync(path.join(resourcesPath, 'app.asar.unpacked', 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe'))) {
+    throw new Error('Bundled DSH archive extractor is missing.');
+  }
 }
 for (const bundle of ['embedding-models', 'speech-models', 'speech-runtime']) {
   if (existsSync(path.join(resourcesPath, 'resources', bundle))) {
@@ -180,13 +185,15 @@ const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
 const callAssetPath = relative => path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
 const privateCallAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
-for (const relative of ['ringtone.wav', 'ringtones/dafeiyu.wav']) {
+const bundledCallRingtones = [['ringtone.wav', undefined], ['ringtones/dafeiyu.wav', 'dafeiyu.wav']];
+if (privateCallAssets) bundledCallRingtones.push(['ringtones/phoebe.wav', 'ringtone.wav']);
+for (const [relative, original] of bundledCallRingtones) {
   const wav = asar.extractFile(asarPath, callAssetPath(relative));
   if (wav.length < 44 || wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') {
     throw new Error(`Invalid bundled call ringtone: ${relative}`);
   }
-  const source = privateCallAssets
-    ? path.join(projectRoot, '.tools', 'original-call-ringtones', path.basename(relative))
+  const source = privateCallAssets && original
+    ? path.join(projectRoot, '.tools', 'original-call-ringtones', original)
     : path.join(projectRoot, 'public', 'companion-call', relative);
   if (!wav.equals(readFileSync(source))) throw new Error(`Wrong call audio in package: ${relative}`);
 }
@@ -199,8 +206,11 @@ if (privateCallAssets) {
     const asset = asar.statFile(asarPath, callAssetPath(modelRoot + file));
     if (!asset.size) throw new Error(`Empty bundled Live2D file: ${file}`);
   }
-} else if (asarFiles.some(file => file.replaceAll('\\', '/').includes('/companion-call/deepseek/'))) {
-  throw new Error('The public package contains a private Live2D asset.');
+} else if (asarFiles.some(file => {
+  const relative = file.replaceAll('\\', '/');
+  return relative.includes('/companion-call/deepseek/') || relative.endsWith('/companion-call/ringtones/phoebe.wav');
+})) {
+  throw new Error('The public package contains a private companion call asset.');
 }
 // Vendor-prefix optimization must not erase Chromium's actual fallback.
 // This checks emitted CSS rather than trusting the source declaration order.

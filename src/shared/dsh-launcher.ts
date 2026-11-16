@@ -29,6 +29,8 @@ export const dshInstanceSchema = z.object({
   browserPartition: z.string(), pid: z.number().optional(), port: z.number().optional(),
   lastError: z.string().optional(), lastExitCode: z.number().nullable().optional(),
   parentInstanceId: id.optional(), isDefault: z.boolean(),
+  defaultSelectedByUser: z.literal(true).optional(),
+  isBundled: z.literal(true).optional(),
   restartRequired: z.boolean().optional(),
   /** Historical owner metadata from private environments; not an exclusive binding. */
   companionId: z.string().min(1).max(160).optional(), companionName: name.optional(), keepAlive: z.boolean().optional(),
@@ -62,6 +64,7 @@ export const dshOperationSchema = z.object({
   download: z.object({ transferredBytes: z.number().int().nonnegative(), totalBytes: z.number().int().positive().optional(),
     speedBytesPerSecond: z.number().nonnegative(), paused: z.boolean(), canPause: z.boolean() }).optional(),
   retryRequest: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('runtime.bundle') }),
     z.object({ type: z.literal('runtime.install'), version: z.string().max(128) }),
     officialUpgradeRequest,
     z.object({ type: z.literal('pack.import-url'), manifestUrl: z.string().max(4096) }),
@@ -159,6 +162,7 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('companion.environment.upgrade'), companionId: z.string().min(1).max(160), name, runtimeId: id }),
   z.strictObject({ type: z.literal('versions.refresh'), ifStale: z.boolean().optional() }),
   z.strictObject({ type: z.literal('runtime.install'), version: officialVersion }),
+  z.strictObject({ type: z.literal('runtime.bundle') }),
   z.strictObject({ type: z.literal('network.save'), settings: dshNetworkSettingsSchema }),
   z.strictObject({ type: z.literal('network.patch'), patch: dshNetworkPatchSchema }),
   z.strictObject({ type: z.literal('network.proxy.toggle'), enabled: z.boolean() }),

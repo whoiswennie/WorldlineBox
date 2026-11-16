@@ -619,7 +619,7 @@ it('discards cancelled drafts and separates existing companions, new companions 
 it('does not close or replace a newer group draft when a cancelled editor save finishes late', async () => {
   await mount(); const pending = deferred<BotResponse>();
   override = request => request.type === 'companion.update' ? pending.promise : undefined;
-  await click('角色卡'); await click('基本资料'); await input(host.querySelector<HTMLInputElement>('.bot-editor-basics input[name=name]')!, 'Alice 的新名字'); await click('保存');
+  await click('角色卡'); await input(host.querySelector<HTMLInputElement>('.bot-editor-basics input[name=name]')!, 'Alice 的新名字'); await click('保存');
   expect(host.querySelector<HTMLButtonElement>('.bot-editor-basics .bot-editor-primary')!.disabled).toBe(true);
   await closeEditor(); await click('新群聊');
   await input(host.querySelector<HTMLInputElement>('.bot-modal input:not([type=checkbox])')!, '后打开的群');

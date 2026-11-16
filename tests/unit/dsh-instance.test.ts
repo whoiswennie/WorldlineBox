@@ -25,7 +25,7 @@ if(req.headers.authorization!=='Bearer '+token){res.writeHead(401).end();return;
 if(req.url==='/idle'){res.setHeader('content-type','application/json');const state=path.join(process.env.DSH_HOME,'idle-state.json');res.end(fs.existsSync(state)?fs.readFileSync(state):JSON.stringify({known:true,idle:true,activeTurns:0,backgroundJobs:0,pendingQuestions:0,pendingInbox:0,settling:0,activeSubagents:0}));return;}
 if(req.url==='/shutdown'){res.end('{}');setTimeout(()=>process.emit('SIGTERM'),5);return;}
 res.setHeader('content-type','application/json');res.end(JSON.stringify({protocol:'worldlinebox-native-web-host-v1',pid:process.pid,userProfile:process.env.USERPROFILE,home:process.env.DSH_HOME,version:process.env.FIXTURE_VERSION}));});
-server.listen(0,'127.0.0.1',()=>{if(process.env.FIXTURE_READY_MODE==='silent')return;console.log('dsh web: http://127.0.0.1:'+server.address().port+'/?fixture');if(process.env.FIXTURE_READY_MODE!=='web-only')console.log('WORLDLINEBOX_DSH_BRIDGE_READY '+server.address().port);});
+server.listen(0,'127.0.0.1',()=>{const marker=path.join(process.env.DSH_HOME,'first-attempt');if(process.env.FIXTURE_READY_MODE==='silent')return;if(process.env.FIXTURE_READY_MODE==='silent-once'&&!fs.existsSync(marker)){fs.writeFileSync(marker,String(process.pid));return;}console.log('dsh web: http://127.0.0.1:'+server.address().port+'/?fixture');if(process.env.FIXTURE_READY_MODE!=='web-only')console.log('WORLDLINEBOX_DSH_BRIDGE_READY '+server.address().port);});
 if(fs.existsSync(path.join(process.env.DSH_HOME,'fail-version'))&&fs.readFileSync(path.join(process.env.DSH_HOME,'fail-version'),'utf8')===process.env.FIXTURE_VERSION){fs.writeFileSync(path.join(process.env.DSH_HOME,'migration-data.txt'),'damaged by failed migration');process.exit(9);}
 process.on('SIGTERM',()=>server.close(()=>process.exit(0)));}
 `);
@@ -277,6 +277,25 @@ it.each(['silent', 'web-only'])('records which startup signal was missing on a %
   await (await f.service.ensureHost(instance.id)).health();
   expect(f.service.get(instance.id).status).toBe('running');
 });
+it('retries a silent first startup once and lets automatic and manual callers join the same recovery', async () => {
+  const f = await fixture(), instance = await f.service.create('Transient native startup', 'runtime-a');
+  const plan = f.serviceOptions.runtimes.plan;
+  f.serviceOptions.runtimes.plan = id => ({ ...plan(id), env: { ...plan(id).env, FIXTURE_READY_MODE: 'silent-once' } });
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => timeout(ms === 30000 ? 1200 : ms));
+  try {
+    const prewarm = f.service.ensureHost(instance.id, undefined, { automatic: true });
+    const open = f.service.ensureHost(instance.id);
+    const [first, second] = await Promise.all([prewarm, open]);
+    expect(first).toBe(second);
+    const originalPid = Number(await readFile(path.join(instance.homePath, 'first-attempt'), 'utf8'));
+    expect(first.pid).not.toBe(originalPid);
+    expect(f.service.get(instance.id)).toMatchObject({ status: 'running', pid: first.pid });
+    const commands = (await readFile(path.join(instance.homePath, 'commands.log'), 'utf8')).trim().split('\n');
+    expect(commands.filter(command => command.includes('"--no-open"'))).toHaveLength(2);
+    expect(f.startup.mock.calls.some(([phase]) => phase.phase === 'failed')).toBe(false);
+  } finally { deadline.mockRestore(); }
+});
 it('retains the real user environment and selects the native web profile in its user terminal', async () => {
   const f = await fixture(), instance = await f.service.create('Fish', 'runtime-a'); const selection = await f.service.prepareCli(instance.id);
   expect(selection.env.USERPROFILE).toBe(process.env.USERPROFILE); expect(selection.env.APPDATA).toBe(process.env.APPDATA);
@@ -295,6 +314,57 @@ it('backs up native data without dropping ordinary workspace directories and res
 });
 
 const upgradeOperation = () => ({ id: 'fixture-upgrade', signal: new AbortController().signal, update: vi.fn(async () => undefined), log: vi.fn(async () => undefined) });
+
+it('keeps one protected fallback alongside existing instances and preserves the selected executor on restart', async () => {
+  const f = await fixture();
+  const personal = await f.service.create('我的 DSH', 'runtime-b');
+  const sameRuntime = await f.service.create('Another instance', 'runtime-a');
+  await Promise.all([
+    f.service.ensureBundledInstance('runtime-a', upgradeOperation()),
+    f.service.ensureBundledInstance('runtime-a', upgradeOperation()),
+  ]);
+  const bundled = f.service.list().find(value => value.isBundled)!;
+  expect(f.service.list()).toHaveLength(3);
+  expect(bundled).toMatchObject({ name: 'WorldlineBox DSH', runtimeId: 'runtime-a', isDefault: true });
+  expect(f.service.get(personal.id).isDefault).toBe(false);
+  await f.service.selectExecutionInstance(bundled.id);
+  await f.service.selectExecutionInstance(sameRuntime.id);
+  expect(await f.service.handle({ type: 'instance.rename', instanceId: bundled.id, name: 'DSH' })).toMatchObject({ ok: true });
+  await f.service.shutdown();
+
+  const reopened = new InstanceService(f.serviceOptions);
+  cleanup.unshift(() => reopened.shutdown());
+  await reopened.init();
+  await reopened.ensureBundledInstance('runtime-a', upgradeOperation());
+  expect(reopened.list().filter(value => value.isBundled).map(value => value.id)).toEqual([bundled.id]);
+  expect(reopened.get(bundled.id)).toMatchObject({ name: 'WorldlineBox DSH', homePath: bundled.homePath });
+  expect(reopened.get(personal.id).name).toBe('我的 DSH');
+  expect(reopened.executionInstance()).toMatchObject({ id: sameRuntime.id, defaultSelectedByUser: true });
+  for (const type of ['instance.delete', 'instance.archive'] as const) {
+    expect(await reopened.handle({ type, instanceId: bundled.id })).toMatchObject({ ok: false, error: expect.stringContaining('内置兜底实例') });
+  }
+  await expect(reopened.remove(bundled.id)).rejects.toThrow('内置兜底实例');
+  await expect(reopened.upgradeCompanion(bundled.id, 'runtime-b', upgradeOperation())).rejects.toThrow('内置兜底实例');
+  const ordinaryArchive = await reopened.handle({ type: 'instance.archive', instanceId: sameRuntime.id });
+  expect(ordinaryArchive.ok).toBe(true);
+  await f.operations.settle();
+  expect(reopened.archivedInstances().map(value => value.id)).toEqual([sameRuntime.id]);
+  expect(reopened.executionInstance()).toMatchObject({ id: bundled.id, runtimeId: 'runtime-a' });
+});
+
+it('migrates a legacy implicit choice to the installed fallback without changing its instance data', async () => {
+  const f = await fixture(), personal = await f.service.create('Previous implicit default', 'runtime-b');
+  await f.service.ensureBundledInstance('runtime-a', upgradeOperation());
+  const bundled = f.service.list().find(value => value.isBundled)!;
+  await f.service.shutdown();
+  const registry = f.service.list().map(instance => ({ ...instance, isDefault: instance.id === personal.id }));
+  await writeFile(path.join(f.root, 'native-instances.json'), JSON.stringify(registry));
+  const reopened = new InstanceService(f.serviceOptions);
+  cleanup.unshift(() => reopened.shutdown());
+  await reopened.init();
+  expect(reopened.executionInstance()?.id).toBe(bundled.id);
+  expect(reopened.get(personal.id).homePath).toBe(personal.homePath);
+});
 it('shares one user-configured Host, login and plugin data across all companions without allocating profiles', async () => {
   const f = await fixture(), base = await f.service.create('Default', 'runtime-a');
   const first = await Promise.all(Array.from({ length: 6 }, (_, index) => f.service.ensureCompanion(`partner-${index}`, '伙伴', base)));

@@ -41,6 +41,15 @@ interface Host { child: ChildProcessWithoutNullStreams; client?: NativeHostClien
 const upgradeJournalSchema = z.object({ format: z.literal('worldlinebox-dsh-upgrade-v1'), previousRuntimeId: z.string(), snapshotId: z.string().uuid() });
 const manifestSchema = z.object({ format: z.literal('worldlinebox-native-dsh-backup-v1'), instance: dshInstanceSchema,
   runtimeContentSha256: z.string(), createdAt: z.string(), inventory: z.object({ contentSha256: z.string(), fileCount: z.number(), byteLength: z.number() }) });
+const bundledInstanceName = 'WorldlineBox DSH';
+const legacyBundledInstanceNames = new Set(['DSH', '我的 DSH', 'My DSH']);
+const silentHostStartupMs = 30_000;
+const hostStartupMs = 120_000;
+const silentHostStartup = new Error('DSH Web Host did not produce output during the first startup attempt.');
+
+export function assertInstanceUpgradeable(instance: DshInstance): void {
+  if (instance.isBundled) throw new Error('内置兜底实例使用固定版本。请创建其他实例并切换共享执行实例。');
+}
 // Dependencies are restored by the native package manager, never by rewriting pnpm links.
 const skipData = (relative: string) => {
   const value = relative.replaceAll('\\', '/');
@@ -91,6 +100,7 @@ export class InstanceService {
         || instance.browserPartition !== `persist:dsh-instance-${instance.id}`) throw new Error('DSH registry contains an unmanaged path.');
       if ('archivedAt' in instance) continue;
       await assertOwnedDirectory(this.options.rootPath, this.getRoot(instance.id));
+      if (instance.isBundled && legacyBundledInstanceNames.has(instance.name)) instance.name = bundledInstanceName;
       const journalPath = path.join(this.getRoot(instance.id), 'process.json');
       const journal = await readJson<ProcessIdentity>(journalPath);
       if (journal) {
@@ -114,7 +124,8 @@ export class InstanceService {
     // Migrate selection only. Existing homes, browser logins and plugin data
     // remain untouched; legacy companion ownership is historical metadata.
     const defaults = this.instances.filter(value => value.isDefault);
-    const selected = defaults[0] ?? this.instances.find(value => !value.companionId && value.name !== 'WorldlineBox 伙伴主脑')
+    const selected = defaults.find(value => value.defaultSelectedByUser) ?? this.instances.find(value => value.isBundled) ?? defaults[0]
+      ?? this.instances.find(value => !value.companionId && value.name !== 'WorldlineBox 伙伴主脑')
       ?? [...this.instances].filter(value => value.name !== 'WorldlineBox 伙伴主脑')
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))[0];
     for (const instance of this.instances) instance.isDefault = instance.id === selected?.id;
@@ -147,9 +158,7 @@ export class InstanceService {
       if (instance.runtimeId !== runtimeId) throw new Error('共享实例正在使用另一版本完成配置，请在创建后升级或切换。');
       return instance;
     });
-    const pending = this.create('共享 DSH', runtimeId).then(async instance => {
-      await this.selectExecutionInstance(instance.id); return this.get(instance.id);
-    });
+    const pending = this.create('共享 DSH', runtimeId);
     this.sharedProvisioning = pending;
     void pending.finally(() => { if (this.sharedProvisioning === pending) this.sharedProvisioning = undefined; }).catch(() => undefined);
     return pending;
@@ -161,7 +170,7 @@ export class InstanceService {
     dshInstanceSchema.shape.companionName.unwrap().parse(name);
     return this.selectExecutionInstance(instanceId);
   }
-  async selectExecutionInstance(instanceId: string): Promise<DshInstance> {
+  async selectExecutionInstance(instanceId: string, selectedByUser = true): Promise<DshInstance> {
     const instance = this.available(instanceId), runtime = this.options.runtimes.get(instance.runtimeId);
     if (!runtime || runtime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 实例。');
     const selected = await this.commitRegistry(async () => {
@@ -170,16 +179,24 @@ export class InstanceService {
       const current = this.available(instanceId), currentRuntime = this.options.runtimes.get(current.runtimeId);
       if (!currentRuntime || currentRuntime.adapter !== 'node-cli-web-v1') throw new Error('请选择已安装的原生 Node Web DSH 实例。');
       const records = this.list();
-      for (const record of records) record.isDefault = record.id === instanceId;
+      for (const record of records) {
+        record.isDefault = record.id === instanceId;
+        if (selectedByUser && record.isDefault) record.defaultSelectedByUser = true;
+        else delete record.defaultSelectedByUser;
+      }
       await this.writeInstanceRegistry(records);
-      for (const value of this.instances) value.isDefault = value.id === instanceId;
+      for (const value of this.instances) {
+        value.isDefault = value.id === instanceId;
+        if (selectedByUser && value.isDefault) value.defaultSelectedByUser = true;
+        else delete value.defaultSelectedByUser;
+      }
       return this.get(instanceId);
     });
     this.notifyChanged(); return selected;
   }
   /** Compatibility helper no longer allocates per-character environments. */
   async ensureCompanion(_companionId: string, _name: string, base: DshInstance): Promise<DshInstance> {
-    return this.executionInstance() ?? this.selectExecutionInstance(base.id);
+    return this.executionInstance() ?? this.selectExecutionInstance(base.id, false);
   }
   touchInstance(id: string): void {
     this.require(id); this.leases.touch(id);
@@ -369,10 +386,11 @@ export class InstanceService {
       throw new DshHostUnavailableError('startup', 'DSH 执行环境暂时无法连接：' + sanitizeOutput(error instanceof Error ? error.message : String(error)), id, error);
     }
   }
-  private async startHost(id: string, signal: AbortSignal): Promise<NativeHostClient> {
+  private async startHost(id: string, signal: AbortSignal, readinessDeadline?: AbortSignal): Promise<NativeHostClient> {
     // This shared preparation outlives an individual waiting turn, but profile
     // package-manager work cannot run forever before the old HTTP-only budget.
-    signal = AbortSignal.any([signal, AbortSignal.timeout(360000)]);
+    const firstAttempt = readinessDeadline === undefined;
+    if (firstAttempt) signal = AbortSignal.any([signal, AbortSignal.timeout(360000)]);
     const started = performance.now(), startedAt = new Date().toISOString();
     const progress = (phase: DshHostStartupProgress['phase'], error?: string) => {
       this.startupPhases.set(id, phase);
@@ -401,12 +419,16 @@ export class InstanceService {
       startupCheck = '准备实例配置和插件';
       await this.initializeProfile(instance, signal); signal.throwIfAborted();
       progress('starting-host');
-      startupCheck = '等待 DSH Web 地址和伙伴桥接服务就绪（最长 120 秒）';
       const prepared = performance.now();
-      await logStartup(`Starting DSH Web Host. Profile preparation took ${Math.round(prepared - started)} ms. Waiting for Web and bridge readiness.`);
+      startupCheck = '准备 DSH Host 运行环境';
+      const environment = await this.environment(instance);
+      signal.throwIfAborted();
+      startupCheck = '等待 DSH Web 地址和伙伴桥接服务就绪（最长 120 秒）';
+      await logStartup(`Starting DSH Web Host. Profile preparation took ${Math.round(prepared - started)} ms. Environment preparation took ${Math.round(performance.now() - prepared)} ms.`);
       const token = randomBytes(32).toString('hex');
       const child = await launchCli(plan, ['web', '--no-open', '--host', '127.0.0.1', '--port', '0'],
-        { ...await this.environment(instance), WORLDLINEBOX_DSH_BRIDGE_TOKEN: token }, instance.workspacePath);
+        { ...environment, WORLDLINEBOX_DSH_BRIDGE_TOKEN: token }, instance.workspacePath);
+      const spawned = performance.now();
       let resolveExit!: () => void; const finished = new Promise<void>(resolve => { resolveExit = resolve; });
       host = { child, finished, stopping: false }; this.hosts.set(id, host); const owned = host;
       let ready!: () => void, fail!: (error: Error) => void;
@@ -423,6 +445,7 @@ export class InstanceService {
         void appendFile(logPath, sanitizeOutput(value) + '\n').catch(() => undefined);
       };
       [child.stdout, child.stderr].forEach((stream, index) => stream.on('data', (chunk: Buffer) => {
+        hostOutput ||= chunk.length > 0;
         pending[index] += decoders[index]!.write(chunk); let boundary: number;
         while ((boundary = pending[index]!.indexOf('\n')) >= 0) { line(pending[index]!.slice(0, boundary).trimEnd()); pending[index] = pending[index]!.slice(boundary + 1); }
         if (pending[index]!.length > 256000) pending[index] = pending[index]!.slice(-128000);
@@ -434,12 +457,16 @@ export class InstanceService {
           : `Native DSH Web Host exited ${exitSignal ?? code}. See instance logs.`);
         fail(failure);
         if (this.hosts.get(id) === owned) {
-          this.hosts.delete(id); instance.status = owned.stopping ? 'stopped' : 'failed'; delete instance.pid; delete instance.port;
-          instance.lastExitCode = code;
-          if (!owned.stopping) instance.lastError = sanitizeOutput(failure.message);
+          this.hosts.delete(id);
+          const starting = instance.status === 'starting';
+          if (!starting) {
+            instance.status = owned.stopping ? 'stopped' : 'failed'; delete instance.pid; delete instance.port;
+            instance.lastExitCode = code;
+            if (!owned.stopping) instance.lastError = sanitizeOutput(failure.message);
+          }
           void (async () => {
             await rm(path.join(this.getRoot(id), 'process.json'), { force: true });
-            await this.changed(); await this.options.closeWorkbench(id);
+            if (!starting) { await this.changed(); await this.options.closeWorkbench(id); }
           })().catch(error => { instance.lastError = sanitizeOutput(String(error)); }).finally(resolveExit);
         } else {
           resolveExit();
@@ -447,17 +474,33 @@ export class InstanceService {
       });
       const identity = await inspectManagedProcess(child);
       if (child.pid && identity) await atomicJson(path.join(this.getRoot(id), 'process.json'), { pid: child.pid, executable: plan.executable, cli: plan.cli, createdAt: identity.createdAt });
-      const timeout = AbortSignal.any([signal, AbortSignal.timeout(120000)]);
-      await new Promise<void>((resolve, reject) => { const abort = () => reject(timeout.reason); timeout.addEventListener('abort', abort, { once: true });
-        readiness.then(resolve, reject).finally(() => timeout.removeEventListener('abort', abort)); if (timeout.aborted) abort(); });
+      readinessDeadline ??= AbortSignal.timeout(hostStartupMs);
+      const timeout = AbortSignal.any([signal, readinessDeadline]);
+      const silence = firstAttempt ? AbortSignal.timeout(silentHostStartupMs) : undefined;
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => reject(timeout.reason);
+        const retry = () => { if (!hostOutput) reject(silentHostStartup); };
+        timeout.addEventListener('abort', abort, { once: true });
+        silence?.addEventListener('abort', retry, { once: true });
+        readiness.then(resolve, reject).finally(() => {
+          timeout.removeEventListener('abort', abort);
+          silence?.removeEventListener('abort', retry);
+        });
+        if (timeout.aborted) abort();
+      });
       const announced = performance.now();
       startupCheck = '验证伙伴桥接服务身份和工作台登录';
       await Promise.all([
         owned.client!.health(timeout),
         verifyReadyUrl(owned.url!, timeout),
       ]);
-      await logStartup(`DSH Web Host announced readiness in ${Math.round(announced - prepared)} ms. Authenticated checks took ${Math.round(performance.now() - announced)} ms.`);
-      instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port); await this.changed(); progress('ready'); this.scheduleIdle(id); return owned.client!;
+      await logStartup(`DSH Web Host announced readiness in ${Math.round(announced - spawned)} ms. Authenticated checks took ${Math.round(performance.now() - announced)} ms.`);
+      timeout.throwIfAborted();
+      if (this.hosts.get(id) !== owned || child.exitCode !== null || child.signalCode !== null) throw new Error('DSH Web Host exited during startup. See instance logs.');
+      instance.status = 'running'; delete instance.restartRequired; instance.pid = child.pid; instance.port = Number(new URL(owned.url!).port);
+      await this.changed();
+      if (this.hosts.get(id) !== owned || child.exitCode !== null || child.signalCode !== null) throw new Error('DSH Web Host exited during startup. See instance logs.');
+      progress('ready'); this.scheduleIdle(id); return owned.client!;
     } catch (error) {
       let failure = error;
       if (error instanceof Error && error.name === 'TimeoutError') {
@@ -469,7 +512,15 @@ export class InstanceService {
       }
       await logStartup(`Startup failed while ${startupCheck}: ${failure instanceof Error ? failure.message : String(failure)}`);
       if (host) { host.stopping = true; await terminateOwnedProcess(host.child); await host.finished; }
-      instance.status = 'failed'; instance.lastError = sanitizeOutput(String(failure)); await this.changed(); progress('failed', instance.lastError); throw failure;
+      if (error === silentHostStartup && !signal.aborted && readinessDeadline && !readinessDeadline.aborted) {
+        await logStartup('Restarting the native Host once after 30 seconds without output.');
+        return this.startHost(id, signal, readinessDeadline);
+      }
+      if (signal.aborted && isDshHostUnavailableError(signal.reason)) throw signal.reason;
+      instance.status = 'failed'; if (host) instance.lastExitCode = host.child.exitCode;
+      delete instance.pid; delete instance.port;
+      instance.lastError = sanitizeOutput(failure instanceof Error ? failure.message : String(failure));
+      await this.changed(); progress('failed', instance.lastError); throw failure;
     } finally { this.startupPhases.delete(id); }
   }
   async stop(id: string, options: { automatic?: boolean } = {}): Promise<void> {
@@ -496,18 +547,40 @@ export class InstanceService {
     this.stops.set(id, pending); return pending;
   }
   async create(name: string, runtimeId: string, op?: OperationContext, companion?: Pick<DshInstance, 'companionId' | 'companionName' | 'parentInstanceId' | 'keepAlive'>): Promise<DshInstance> {
+    return (await this.createInstance(name, runtimeId, op, companion))!;
+  }
+  hasBundledRuntime(runtimeId: string): boolean {
+    return this.instances.some(value => value.isBundled && value.runtimeId === runtimeId);
+  }
+  async ensureBundledInstance(runtimeId: string, op: OperationContext): Promise<void> {
+    if (!this.hasBundledRuntime(runtimeId)) await this.createInstance(bundledInstanceName, runtimeId, op, undefined, true);
+  }
+  private async createInstance(name: string, runtimeId: string, op?: OperationContext,
+    companion?: Pick<DshInstance, 'companionId' | 'companionName' | 'parentInstanceId' | 'keepAlive'>,
+    bundled = false): Promise<DshInstance | undefined> {
     if (this.closing) throw new Error('DSH launcher is closing.'); this.options.runtimes.get(runtimeId); op?.signal.throwIfAborted();
     const id = randomUUID(), now = new Date().toISOString();
     const instance = dshInstanceSchema.parse({ id, name, runtimeId, ...this.paths(id), browserPartition: `persist:dsh-instance-${id}`,
-      profile: 'web', status: 'stopped', isDefault: !companion && !this.instances.some(value => value.isDefault), createdAt: now, updatedAt: now, ...companion });
+      profile: 'web', status: 'stopped', isDefault: !companion && !this.instances.some(value => value.isDefault),
+      ...(bundled ? { isBundled: true } : {}), createdAt: now, updatedAt: now, ...companion });
     try {
       await instanceEnvironment(this.getRoot(id), instance, this.options.runtimes.plan(runtimeId));
-      await this.commitRegistry(async () => {
+      const created = await this.commitRegistry(async () => {
         if (this.closing) throw new Error('DSH launcher is closing.'); op?.signal.throwIfAborted();
-        instance.isDefault = !companion && !this.instances.some(value => value.isDefault);
-        await this.writeInstanceRegistry([...this.list(), instance]);
+        if (bundled && this.hasBundledRuntime(runtimeId)) return false;
+        const current = this.instances.find(value => value.isDefault);
+        instance.isDefault = !companion && (!current || bundled && !current.defaultSelectedByUser && !current.isBundled);
+        const records = this.list();
+        if (instance.isDefault && current) records.find(value => value.id === current.id)!.isDefault = false;
+        await this.writeInstanceRegistry([...records, instance]);
+        if (instance.isDefault && current) current.isDefault = false;
         this.instances.push(instance);
+        return true;
       });
+      if (!created) {
+        await removeManaged(this.options.rootPath, this.getRoot(id));
+        return undefined;
+      }
     }
     catch (error) {
       await removeManaged(this.options.rootPath, this.getRoot(id)); throw error;
@@ -516,7 +589,9 @@ export class InstanceService {
   }
   /** Switch code only; all stable environment paths and browser identity are retained. */
   async upgradeCompanion(id: string, runtimeId: string, op: OperationContext): Promise<void> {
-    const instance = this.available(id), next = this.options.runtimes.get(runtimeId);
+    const instance = this.available(id);
+    assertInstanceUpgradeable(instance);
+    const next = this.options.runtimes.get(runtimeId);
     if (next.adapter !== 'node-cli-web-v1') throw new Error('伙伴需要原生 Node Web 运行环境。');
     if (runtimeId === instance.runtimeId) return;
     if (this.held(id, op.id) || this.starts.has(id)) throw new Error('伙伴环境仍在使用中，请等待任务、问题或工作台结束后升级。');
@@ -638,8 +713,10 @@ export class InstanceService {
       await this.commitRegistry(async () => {
         op.signal.throwIfAborted();
         const entry: DshArchivedInstance = { ...current, isDefault: false, status: 'stopped', archivedAt: new Date().toISOString(), runtimeVersion: version };
+        delete entry.defaultSelectedByUser;
         const active = this.instances.filter(instance => instance.id !== id);
-        const nextDefault = current.isDefault ? active.find(instance => !instance.companionId) ?? active[0] : undefined;
+        const nextDefault = current.isDefault
+          ? active.find(instance => instance.isBundled) ?? active.find(instance => !instance.companionId) ?? active[0] : undefined;
         const archive = [entry, ...this.archived];
         await this.writeInstanceRegistry(active.map(instance => instance === nextDefault ? { ...instance, isDefault: true } : instance), archive);
         this.touchInstance(id); this.leases.forget(id);
@@ -704,14 +781,19 @@ export class InstanceService {
   }
   async remove(id: string, operation?: OperationContext): Promise<void> {
     operation?.signal.throwIfAborted();
-    const instance = this.available(id, true, operation?.id); this.busy.add(id);
+    const instance = this.available(id, true, operation?.id);
+    if (instance.isBundled) throw new Error('内置兜底实例不可删除。');
+    this.busy.add(id);
     try {
       await this.options.closeWorkbench(id); await this.options.clearBrowserData(id);
       this.touchInstance(id); this.leases.forget(id);
       this.manualStops.delete(id); this.suspendedCompanions.delete(id);
       this.lastCompanionUse.delete(id);
       await removeManaged(this.options.rootPath, this.getRoot(id)); this.instances = this.instances.filter(value => value.id !== id);
-      if (instance.isDefault) { const next = this.instances.find(value => !value.companionId) ?? this.instances[0]; if (next) next.isDefault = true; }
+      if (instance.isDefault) {
+        const next = this.instances.find(value => value.isBundled) ?? this.instances.find(value => !value.companionId) ?? this.instances[0];
+        if (next) next.isDefault = true;
+      }
       await this.changed();
     } finally { this.busy.delete(id); }
   }
@@ -719,6 +801,13 @@ export class InstanceService {
     try {
       if (request.type === 'instance.rename') { this.available(request.instanceId).name = request.name; await this.changed(); return { ok: true }; }
       if (request.type === 'instance.default') { await this.selectExecutionInstance(request.instanceId); return { ok: true }; }
+      if ((request.type === 'instance.delete' || request.type === 'instance.archive')
+        && this.instances.some(value => value.id === request.instanceId && value.isBundled)) {
+        throw new Error('内置兜底实例不可归档或删除。');
+      }
+      if (request.type === 'instance.purge-archive' && this.archived.some(value => value.id === request.instanceId && value.isBundled)) {
+        throw new Error('内置兜底实例不可删除。');
+      }
       if (request.type === 'instance.logs') return { ok: true, text: sanitizeOutput((await readFile(path.join(this.getRoot(request.instanceId), 'logs', 'host.log'), 'utf8').catch(() => '')).slice(-128000)) };
       if (request.type === 'snapshot.delete') { const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
         await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'snapshots', snapshot.id)); this.snapshotRecords = this.snapshotRecords.filter(value => value.id !== snapshot.id); await this.changed(); return { ok: true }; }

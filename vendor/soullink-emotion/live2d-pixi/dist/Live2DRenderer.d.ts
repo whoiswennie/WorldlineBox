@@ -12,6 +12,8 @@ export declare class Live2DRenderer {
     private deps;
     private model;
     private latestParams;
+    private secondaryOffsets;
+    private restorePhysics?;
     private renderedParams;
     private lastNativeAnimToken;
     private suppressedParamIds;
@@ -34,6 +36,8 @@ export declare class Live2DRenderer {
         };
     }): Promise<Record<string, Live2DMotionParameterInfo>>;
     setParameters(params: Live2DParamState): void;
+    /** Offsets applied to the rig's solved pose for this frame. */
+    setSecondaryOffsets(offsets: Live2DParamState): void;
     /** Last pose used to update model geometry, including native motion and physics. */
     getParameters(): Live2DParamState;
     get suppressedParameterIds(): ReadonlySet<string>;
@@ -70,4 +74,5 @@ export declare class Live2DRenderer {
     private fitModel;
     private measureFigure;
     private applyParametersNow;
+    private applySecondaryOffsets;
 }

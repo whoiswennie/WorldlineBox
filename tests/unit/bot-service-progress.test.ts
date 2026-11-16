@@ -5,6 +5,7 @@ import path from 'node:path';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
+import { BotCabinWorldApp } from '../../src/main/companion-bot/cabin-world-app';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -13,12 +14,12 @@ async function until<T>(read: () => T | undefined | Promise<T | undefined>) {
   const end = Date.now() + 5000;
   for (;;) { const found = await read(); if (found !== undefined) return found; if (Date.now() >= end) throw new Error('Controlled service fixture timed out'); await new Promise(resolve => setTimeout(resolve, 5)); }
 }
-async function fixture(memoryError?: Error) {
+async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-real-progress-')), preparation = gate(), completion = gate(), reported: unknown[] = [];
   let run: BotDshRun | undefined, prepares = 0;
   const memory = new class extends BotMemoryService {
     override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-      prepares++; await preparation.promise; if (memoryError) throw memoryError;
+      prepares++; input.onPhase?.('recalling-memory'); await preparation.promise; if (memoryError) throw memoryError;
       return { requestId: input.requestId, inputHash: 'controlled', scope: input.scope, messages: input.messages, metadata: {}, evidence: '', events: [], omittedChars: 0, status: 'ready' };
     }
     override async finishTurn() { return { recorded: true }; }
@@ -29,24 +30,64 @@ async function fixture(memoryError?: Error) {
     override async close() {}
   }({ root, runtime: async () => { throw new Error('No native runtime for controlled fixture'); }, embedding: async () => { throw new Error('No paid embedding'); } });
   const host = vi.fn(async () => { throw new Error('Native adapter progress must not start DSH'); });
+  const steer = vi.fn<BotDshBrain['send']>(async () => undefined);
   const brain = new class extends BotDshBrain {
     override async run(input: BotDshRun): Promise<BotDshResult> {
       if (input.laneId.startsWith('memory-encoder-')) return { text: '{"notes":[]}', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
       run = input; await completion.promise;
       return { text: '你好，我在。', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
     }
+    override send(...args: Parameters<BotDshBrain['send']>) { return steer(...args); }
     override async archive() {}
   }({ getHost: host });
   const service = new BotService({ root, brain, memory, model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
-    onEvent: () => undefined, report: error => { reported.push(error); } });
+    cabinWorldApp, onEvent: () => undefined, report: error => { reported.push(error); } });
   const initial = (await service.handle({ type: 'state' })).snapshot!, conversationId = initial.conversations[0]!.id;
   cleanups.push(async () => { preparation.resolve(); completion.resolve(); await service.shutdown(); await rm(root, { recursive: true, force: true }); });
   const send = (content = '你好', room = conversationId) => service.handle({ type: 'message.send', conversationId: room, content, requestId: 'controlled' });
   const reply = async (room = conversationId) => (await service.handle({ type: 'state', conversationId: room })).snapshot!.messages.find(message => message.senderId !== 'user');
   let sequence = 0;
   const emit = (type: string, text?: string, toolName?: string) => run!.onEvent?.({ type, text, toolName, nativeStep: 4, sequence: ++sequence, receivedAt: new Date().toISOString() });
-  return { service, preparation, completion, reported, host, send, reply, emit, conversationId, get run() { return run; }, get prepares() { return prepares; } };
+  return { service, preparation, completion, reported, host, send, reply, emit, conversationId, steer, get run() { return run; }, get prepares() { return prepares; } };
 }
+
+it('automatically observes each started or steered task, keeping the same evidence on delivery retry', async () => {
+  let place = '小屋', reads = 0;
+  const cabin = new BotCabinWorldApp({ open: async () => undefined, async request(route, _signal, body) {
+    if (route === '/v1/events') return { events: [] };
+    const tool = body as { name: string; arguments: { actor?: string } };
+    if (tool.name === 'cabin_residents') return { ok: true, residents: [] };
+    reads++;
+    return { ok: true, connected: true, actor: tool.arguments.actor, position: { place } };
+  } });
+  const f = await fixture(undefined, cabin), conversationId = f.conversationId;
+  f.preparation.resolve();
+  const send = (content: string, delivery?: 'steer') => f.service.handle({ type: 'message.send', conversationId, content,
+    delivery, requestId: content, ...(content === '早啊' ? { apps: ['cabin-world' as const] } : {}) });
+  await send('早啊');
+  const first = await until(() => f.run);
+  expect(JSON.parse(first.prompt).cabinWorld).toMatchObject({ place: '小屋' });
+  expect(reads).toBe(1);
+
+  place = '公园';
+  f.steer.mockRejectedValueOnce(Error('acknowledgement lost'));
+  const guided = await send('再补一句', 'steer');
+  const initial = f.steer.mock.calls[0]![1].text;
+  expect(JSON.parse(initial).cabinWorld).toMatchObject({ place: '公园' });
+  expect(reads).toBe(2);
+
+  place = '小卖部';
+  await f.service.handle({ type: 'message.guide', conversationId, messageId: guided.messageId! });
+  expect(f.steer.mock.calls[1]![1].text).toBe(initial);
+  expect(reads).toBe(2);
+
+  await send('另一件事');
+  expect(reads).toBe(2);
+  f.completion.resolve();
+  const queued = await until(() => f.run && f.run.eventId !== first.eventId ? f.run : undefined);
+  expect(JSON.parse(queued.prompt).cabinWorld).toMatchObject({ place: '小卖部' });
+  expect(reads).toBe(3);
+});
 it('projects actual memory/model/compaction/tool phases, retaining text across tools and returning to generation without token-wide snapshots', async () => {
   const f = await fixture(); await f.send();
   await until(async () => (await f.reply())?.progress?.phase === 'recalling-memory' ? true : undefined);

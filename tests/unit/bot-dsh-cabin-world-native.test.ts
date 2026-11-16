@@ -8,6 +8,7 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { createBotNativeHost } from '../fixtures/bot-native-host';
 import { NativeServiceMemory } from '../fixtures/bot-native-service';
 import { CabinWorld } from '../../src/main/cabin-world';
+import { BotCabinWorldApp } from '../../src/main/companion-bot/cabin-world-app';
 import { connectCabinPlugin } from '../../src/main/dsh/cabin-plugin';
 import type { CompanionSchedule } from '../../src/shared/companion-schedule';
 
@@ -75,9 +76,11 @@ it.runIf(!!program && (!!bridgeJson || bundled))('creates a schedule in companio
     const client = await native.instances.ensureHost(native.instance.id);
     const catalog = await client.request<{ catalog: { items: Array<{ name: string }> } }>('/capabilities', {
       sessionId: 'cabin-discovery', cwd: native.instance.workspacePath, companion: true,
-      query: { kind: 'catalog', category: 'tool', query: prefix, limit: 15 },
+      query: { kind: 'catalog', category: 'tool', query: prefix, limit: 30 },
     });
-    expect(catalog.catalog.items.map(item => item.name)).toHaveLength(8);
+    const tools = catalog.catalog.items.map(item => item.name);
+    expect(tools).toEqual(expect.arrayContaining(calls.map(call => call.name)));
+    if (bundled) expect(tools).toEqual(expect.arrayContaining(['cabin_residents', 'cabin_process', 'cabin_furniture'].map(name => prefix + name)));
     stage = 'create schedule in chat';
     const baseUrl = `http://127.0.0.1:${address.port}`;
     service = new BotService({ root: path.join(native.root, 'service'),
@@ -146,3 +149,105 @@ it.runIf(!!program && (!!bridgeJson || bundled))('creates a schedule in companio
     finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   }
 }, 360000);
+
+it.runIf(!!program && bundled)('grounds ordinary native chat in a real resident, performs an activity, and keeps chatting offline and after detaching', async () => {
+  const native = await createBotNativeHost(program!);
+  const cabin = new CabinWorld(path.resolve('resources/cabin-world'), path.join(native.root, 'live-cabin'), process.execPath);
+  const cabinApp = new BotCabinWorldApp(cabin);
+  const companion = { id: 'cabin-ambient-test', name: '小屋验收伙伴' };
+  const signal = new AbortController().signal;
+  const greeting = '早啊', invitation = '出去透口气呀？', followup = '感觉怎么样？', work = '12乘以13是多少？';
+  const observations = new Map<string, { world?: Awaited<ReturnType<BotCabinWorldApp['observe']>>; tools: string[]; system: string }>();
+  let failure: unknown, receipt = '';
+  const asText = (content: unknown) => typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part.text ?? '').join('\n') : '';
+  const modelServer = createServer(async (request, response) => {
+    try {
+      let body = ''; for await (const chunk of request) body += chunk;
+      const wire = JSON.parse(body) as ModelRequest;
+      const envelope = wire.messages.filter(message => message.role === 'user').map(message => {
+        try { return JSON.parse(asText(message.content)); } catch { return undefined; }
+      }).findLast(value => value?.message?.id);
+      const prompt: string = envelope.message.content, world = envelope.cabinWorld;
+      const tools = (wire.tools ?? []).map(tool => tool.function.name);
+      const system = wire.messages.filter(message => message.role === 'system').map(message => asText(message.content)).join('\n');
+      observations.set(prompt, { world, tools, system });
+      const isToolResponse = wire.messages.at(-1)?.role === 'tool';
+      if (prompt === invitation && isToolResponse) receipt = asText(wire.messages.at(-1)!.content);
+      const call = prompt === invitation && !isToolResponse
+        ? { name: 'cabin_world', arguments: JSON.stringify({ tool: 'cabin_use', arguments: { object: 'bench', use: 'sit_bench', durationSeconds: 1, actor: 'xiaojingyu' } }) }
+        : undefined;
+      const content = prompt === greeting && world?.status === 'online' ? `早啊，我这儿${world.weather}。你今天起得挺早呀。`
+        : prompt === invitation ? '好啊，我去公园长椅那边坐一会儿。'
+        : prompt === followup && world?.recent?.length ? `刚才在${world.place}${world.recent.at(-1).activity}，缓过来一些了。你呢？`
+        : prompt === work ? '156。' : '嗯，我在呢。';
+      const delta = call ? { tool_calls: [{ index: 0, id: 'real-cabin-bench', type: 'function', function: call }] } : { content };
+      response.writeHead(200, { 'content-type': 'text/event-stream' }).end(
+        `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`
+        + `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: call ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 180, completion_tokens: 22 } })}\n\ndata: [DONE]\n\n`,
+      );
+    } catch (error) { failure = error; response.writeHead(500).end(); }
+  });
+  modelServer.listen(0, '127.0.0.1'); await once(modelServer, 'listening');
+  const { port } = modelServer.address() as { port: number };
+  let service: BotService | undefined;
+  try {
+    const client = await native.instances.ensureHost(native.instance.id);
+    const root = path.join(native.root, 'ambient-service');
+    service = new BotService({ root, brain: new BotDshBrain({ getHost: async () => ({ client, instance: native.instance }) }),
+      cabinWorldApp: cabinApp, memory: new NativeServiceMemory(path.join(root, 'memory')), onEvent() {},
+      model: () => ({ apiFormat: 'openai_chat', model: 'cabin-ambient-fixture', baseUrl: `http://127.0.0.1:${port}`, apiKey: 'local-no-billing', contextWindow: 32768, maxTokens: 2048 }) });
+    await service.handle({ type: 'state' });
+    service.store.createCompanion({ ...companion, persona: '平常语气和用户说话。' });
+    const { id: conversationId } = service.store.openDirect(companion.id);
+    let turn = 0;
+    const send = async (content: string) => {
+      const result = await service!.handle({ type: 'message.send', conversationId, content, requestId: `cabin-ambient-${++turn}` });
+      expect(result.ok, result.error).toBe(true);
+      const id = result.replyMessageIds![0]!;
+      await expect.poll(() => {
+        if (failure) throw failure;
+        const reply = service!.store.getMessage(id);
+        if (reply?.status === 'failed') throw Error(reply.error);
+        return reply?.status;
+      }, { timeout: 25000 }).toBe('sent');
+      return (await service!.handle({ type: 'state', conversationId })).snapshot!.messages.find(message => message.id === id)!;
+    };
+    const before = await send('在吗？');
+    expect(observations.get('在吗？')).toMatchObject({ world: undefined });
+    expect(observations.get('在吗？')!.tools).not.toContain('cabin_world');
+    expect(await cabin.online()).toBe(false);
+    const topicId = (await service.handle({ type: 'state', conversationId })).snapshot!.chatRuntime!.topic!.id;
+    expect(await service.handle({ type: 'app.connect', conversationId, topicId, appId: 'cabin-world' })).toMatchObject({ ok: true, app: { id: 'cabin-world' } });
+    const hello = await send(greeting);
+    expect(hello.content).toContain('早啊，我这儿');
+    expect(hello.execution?.sessionId).toBe(before.execution?.sessionId);
+    expect(hello.execution?.sessionId).toBeTruthy();
+    expect(observations.get(greeting)!.world).toMatchObject({ status: 'online', weather: expect.any(String) });
+    expect(observations.get(greeting)!.tools).toContain('cabin_world');
+    expect(observations.get(greeting)!.system).toContain('用户没提到小屋时');
+    expect((await send(work)).content).toBe('156。');
+    await send(invitation);
+    expect(receipt).toMatch(/status\W+running/);
+    await expect.poll(async () => {
+      const seen = await cabinApp.observe(companion, signal);
+      return seen.status === 'online' ? seen.recent : [];
+    }, { timeout: 45000 }).toEqual(expect.arrayContaining([expect.objectContaining({ activity: expect.stringContaining('长椅') })]));
+    const unchanged = await cabin.request('/v1/tool', signal, { name: 'cabin_status', arguments: { actor: 'xiaojingyu' } });
+    expect(unchanged.position).toMatchObject({ space: 'xjhome' });
+    expect((await send(followup)).content).toContain('长椅');
+    expect(observations.get(followup)!.world).toMatchObject({ status: 'online', place: expect.stringContaining('公园') });
+    await cabin.stop();
+    expect((await send('还在吗？')).content).toBe('嗯，我在呢。');
+    expect(observations.get('还在吗？')!.world).toEqual({ status: 'unavailable' });
+    expect(await cabin.online()).toBe(false);
+    expect(await service.handle({ type: 'app.detach', conversationId, topicId, appId: 'cabin-world' })).toMatchObject({ ok: true });
+    const removed = await send('好呀。');
+    expect(removed.execution?.sessionId).toBe(hello.execution?.sessionId);
+    expect(observations.get('好呀。')!.world).toBeUndefined();
+    expect(observations.get('好呀。')!.tools).not.toContain('cabin_world');
+  } finally {
+    await service?.shutdown(); await cabin.close();
+    try { await native.close(); }
+    finally { modelServer.closeAllConnections(); await new Promise<void>(resolve => modelServer.close(() => resolve())); }
+  }
+}, 180000);

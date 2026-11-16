@@ -18,14 +18,25 @@ async function renderRig(maskCount: number) {
   fixture.masks = maskCount; fixture.atlases = 1;
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} });
   const manager = { _clippingContextListForMask: Array.from({ length: maskCount }), release: fixture.release };
-  const core = {};
+  const pose: Record<string, number> = { ParamAngleX: 0, FrontHairX1: 0 };
+  const ids = Object.keys(pose);
+  const core = {
+    getParameterIndex: (id: string) => ids.indexOf(id), getParameterCount: () => ids.length,
+    setParameterValueById: (id: string, value: number) => { pose[id] = value; },
+    getParameterValueByIndex: (index: number) => pose[ids[index]!]!,
+    setParameterValueByIndex: (index: number, value: number) => { pose[ids[index]!] = value; },
+  };
+  const evaluate = vi.fn(() => { pose.FrontHairX1 = pose.ParamAngleX! / 30; pose.ParamAngleX = 0; });
+  const physics = { evaluate };
+  const on = vi.fn();
   const expressionManager = { currentExpression: {}, defaultExpression: {}, reserveExpressionIndex: -1,
     stopAllExpressions: fixture.stopExpressions, resetExpression: fixture.neutralExpression };
   fixture.model = { anchor: { set: vi.fn() }, scale: { set: vi.fn() }, width: 300, height: 600, destroy: vi.fn(), expression: fixture.expression, motion: fixture.motion,
-    internalModel: { coreModel: core, on: vi.fn(), off: vi.fn(), motionManager: { stopAllMotions: vi.fn(), expressionManager }, renderer: { _clippingManager: manager,
+    internalModel: { coreModel: core, physics, on, off: vi.fn(), motionManager: { stopAllMotions: vi.fn(), expressionManager }, renderer: { _clippingManager: manager,
       initialize: fixture.initialize.mockImplementation((_model, atlasCount) => { fixture.atlases = atlasCount; }), setClippingMaskBufferSize: fixture.maskSize } } };
   const renderer = new Live2DRenderer(document.createElement('div'), { cubismLoader: async () => undefined });
-  await renderer.load('local.model3.json'); return { renderer, core, expressionManager };
+  await renderer.load('local.model3.json');
+  return { renderer, core, expressionManager, pose, physics, evaluate, beforeModelUpdate: on.mock.calls[0]![1] as () => void };
 }
 it('allocates two independent mask atlases for the real 49-group rig instead of overlapping face masks', async () => {
   const { renderer, core } = await renderRig(49);
@@ -59,4 +70,18 @@ it('changes mouth ownership on an existing token without replaying the selected 
   expect(fixture.motion).toHaveBeenCalledExactlyOnceWith('Interaction', 2, 3); expect(fixture.expression).toHaveBeenCalledTimes(1);
   expect(renderer.suppressedParameterIds.has('key7')).toBe(true); expect(renderer.suppressedParameterIds.has('ParamMouthOpenY')).toBe(false);
   renderer.destroy();
+});
+
+it('feeds live inputs to physics and applies secondary motion over the solved pose, respecting native ownership', async () => {
+  const { renderer, physics, evaluate, beforeModelUpdate, pose } = await renderRig(12);
+  renderer.setParameters({ ParamAngleX: 15 });
+  renderer.setSecondaryOffsets({ FrontHairX1: .125 });
+  physics.evaluate(); beforeModelUpdate();
+  expect(pose).toEqual({ ParamAngleX: 15, FrontHairX1: .625 });
+  renderer.applyNativeAnimation({ token: 1, expression: null, motion: null, suppressParamIds: ['ParamAngleX', 'FrontHairX1'] });
+  pose.ParamAngleX = 6;
+  physics.evaluate(); beforeModelUpdate();
+  expect(pose).toEqual({ ParamAngleX: 0, FrontHairX1: .2 });
+  renderer.destroy();
+  expect(physics.evaluate).toBe(evaluate);
 });

@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BotCallWindow } from '../../src/renderer/companion-bot/BotCallWindow';
 import { botCallClock, botCallProfile } from '../../src/renderer/companion-bot/call-presentation';
-import type { BotMessage, BotRequest, BotSnapshot, BotEvent, BotResponse } from '../../src/shared/companion-bot';
+import type { BotMessage, BotRequest, BotSnapshot, BotEvent, BotResponse, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { BotLive2DControls } from '../../src/renderer/companion-bot/BotLive2DStage';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 
@@ -19,8 +19,11 @@ vi.mock('../../src/renderer/companion-bot/BotLive2DStage', async () => {
     return <div data-live2d-fixture />;
   } };
 });
-const voice = vi.hoisted(() => ({ available: false, stop: vi.fn(), start: vi.fn(), interrupt: vi.fn(), waitForPlayback: vi.fn(), finish: vi.fn(), retry: vi.fn(), sendAction: vi.fn(async (_text: string, _id: string, perform: () => Promise<{ ok: boolean }>) => (await perform()).ok) }));
-vi.mock('../../src/renderer/companion-bot/useBotCallVoice', () => ({ useBotCallVoice: () => ({ ...voice, state: { phase: voice.available ? 'listening' : 'off', enabled: voice.available, turn: 0 }, level: 0 }) }));
+const voice = vi.hoisted(() => ({ available: false, onset: undefined as (() => void) | undefined, stop: vi.fn(), start: vi.fn(), interrupt: vi.fn(), waitForPlayback: vi.fn(), finish: vi.fn(), retry: vi.fn(), sendAction: vi.fn(async (_text: string, _id: string, perform: () => Promise<{ ok: boolean }>) => (await perform()).ok) }));
+vi.mock('../../src/renderer/companion-bot/useBotCallVoice', () => ({ useBotCallVoice: ({ onSpeechStart }: { onSpeechStart(): void }) => {
+  voice.onset = onSpeechStart;
+  return { ...voice, state: { phase: voice.available ? 'listening' : 'off', enabled: voice.available, turn: 0 }, level: 0 };
+} }));
 vi.mock('../../src/renderer/companion-bot/voice-recorder', () => ({
   speechBase64: () => '',
   VoiceRecorder: class {
@@ -38,7 +41,7 @@ beforeEach(() => {
   vi.stubGlobal('Audio', class { loop = false; muted = false; volume = 0; play = vi.fn().mockResolvedValue(undefined); pause = vi.fn(); removeAttribute = vi.fn(); load = vi.fn(); constructor(readonly src: string) { sounds.push(this); } });
 });
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); root = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
-async function mount(initialDraft = '会面草稿', actor = companion, options: { model?: boolean; send?: () => Promise<BotResponse> } = {}) {
+async function mount(initialDraft = '会面草稿', actor = companion, options: { model?: boolean; send?: () => Promise<BotResponse>; speech?: Pick<WorldlineBoxBotApi, 'speech' | 'onSpeech'> } = {}) {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host); const hangup = vi.fn();
   let listener: ((event: BotEvent) => void) | undefined;
   const snapshot: BotSnapshot = { companions: [actor], messages: [], conversations: [], tasks: [], hasMore: false,
@@ -51,7 +54,7 @@ async function mount(initialDraft = '会面草稿', actor = companion, options: 
     if (input.type === 'message.send' && options.send) return options.send();
     return { ok: true };
   });
-  const api = { request, onEvent: (callback: (event: BotEvent) => void) => { listener = callback; return () => { listener = undefined; }; } };
+  const api = { request, ...options.speech, onEvent: (callback: (event: BotEvent) => void) => { listener = callback; return () => { listener = undefined; }; } };
   function Harness() {
     const [draft, setDraft] = useState(initialDraft);
     return <BotCallWindow conversationId="direct" companion={actor} api={api} draft={draft} setDraft={setDraft} locale="zh-CN" onHangup={hangup} onOpenUrl={() => undefined} />;
@@ -61,10 +64,10 @@ async function mount(initialDraft = '会面草稿', actor = companion, options: 
     snapshot.messages = messages; await act(async () => { listener?.({ type: 'changed', conversationId: 'meeting' }); await vi.advanceTimersByTimeAsync(40); });
   } };
 }
-const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text)!;
+const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!;
 it('waits for the user to connect, loops the ringtone and ends after exactly 60 seconds', async () => {
   const fixture = await mount(); expect(sounds[0]?.loop).toBe(true); expect(sounds[0]?.play).toHaveBeenCalledOnce(); expect(document.querySelector('.bot-call-ringing')).not.toBeNull();
-  expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
+  expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtones\/phoebe\.wav$/);
   await act(() => vi.advanceTimersByTime(59000)); expect(fixture.hangup).not.toHaveBeenCalled(); expect(document.querySelector('.bot-call-ringing')?.textContent).toContain('1 秒');
   await act(() => vi.advanceTimersByTime(1000)); expect(fixture.hangup).toHaveBeenCalledOnce();
 });
@@ -76,9 +79,9 @@ it('uses 大肥鱼’s theme by companion ID and mutes without restarting it', a
   await act(() => button('开启铃声').click()); expect(sound.muted).toBe(false);
   expect(sound.play).toHaveBeenCalledOnce();
 });
-it('uses the common ringtone for 菲比', async () => {
+it('uses the same default ringtone for 菲比 after renaming her', async () => {
   await mount('', { ...companion, id: 'phoebe', name: '自定义昵称' });
-  expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtone\.wav$/);
+  expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtones\/phoebe\.wav$/);
 });
 it('stops ringing on connect, cancels the ringing deadline and shows an avatar for an ordinary companion', async () => {
   const fixture = await mount(); await act(() => button('接通').click()); expect(sounds[0]?.pause).toHaveBeenCalled(); expect(sounds[0]?.removeAttribute).toHaveBeenCalledWith('src');
@@ -93,6 +96,11 @@ it('routes the bubble composer to the dedicated meeting and keeps native topic c
   const field = document.querySelector<HTMLTextAreaElement>('.bot-call-composer-host textarea')!;
   expect(field.value).toBe('会面草稿');
   expect(button('新话题')).toBeDefined(); expect(button('压缩').disabled).toBe(true);
+  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="收起会面输入"]')!.click());
+  expect(document.querySelector('.bot-call-dock')?.children).toHaveLength(1);
+  expect(document.querySelector('.bot-call-input-entry img')?.getAttribute('src')).toContain('startup-logo');
+  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="展开会面输入"]')!.click());
+  expect(document.querySelector<HTMLTextAreaElement>('.bot-call-composer-host textarea')?.value).toBe('会面草稿');
   await act(() => document.querySelector<HTMLButtonElement>('.bot-send')!.click());
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', conversationId: 'meeting', content: '会面草稿' }));
 });
@@ -128,9 +136,7 @@ it('displays only published segments while the native turn is still running, and
   const reply: BotMessage = { id: 'reply', eventId: 'event', conversationId: 'meeting', createdAt: new Date().toISOString(), senderId: actor.id,
     senderName: actor.name, sequence: 1, status: 'running', content: '后台正文不进入舞台', parts: [{ id: 'first', sequence: 1, kind: 'text', text, presentation: {} }] };
   await f.refresh([reply]);
-  const avatar = document.querySelector<HTMLImageElement>('.bot-call-visual-novel header .bot-avatar img');
-  expect(avatar?.src).toBe(document.querySelector<HTMLImageElement>('.bot-call-portrait img')?.src);
-  expect(avatar).not.toBeNull();
+  expect(document.querySelector('.bot-call-bubble .bot-avatar')).toBeNull();
   const page = () => document.querySelector('.bot-call-bubble-text')?.textContent ?? '';
   expect(page()).not.toBe(''); expect(page().length).toBeLessThan(text.length);
   expect(document.querySelector('.bot-call-window')?.textContent).not.toContain(reply.content);
@@ -188,6 +194,48 @@ const stageReply = (id: string, sequence: number, parts: BotMessage['parts'], st
   createdAt: new Date().toISOString(), sequence, status, content: '', parts,
 });
 
+it('holds each page through local audio completion and disconnects playback at voice onset', async () => {
+  voice.available = true;
+  const outputs: Array<{ onended?: () => void }> = [], disconnect = vi.fn();
+  vi.stubGlobal('AudioContext', class {
+    destination = {};
+    currentTime = 0;
+    createAnalyser() { return { fftSize: 512, connect() {}, disconnect }; }
+    createBuffer() { return { duration: 1, getChannelData: () => new Float32Array(1) }; }
+    createBufferSource() { const source = { connect() {}, start() {}, onended: undefined }; outputs.push(source); return source; }
+    async resume() {}
+    async close() {}
+  });
+  const speech = vi.fn<NonNullable<WorldlineBoxBotApi['speech']>>().mockResolvedValue({ ok: true });
+  let emit: Parameters<NonNullable<WorldlineBoxBotApi['onSpeech']>>[0] | undefined;
+  const f = await mount('', companion, { speech: { speech, onSpeech: listener => { emit = listener; return () => { emit = undefined; }; } } });
+  await act(() => button('接通').click());
+  const first = '甲'.repeat(36), second = '乙'.repeat(12);
+  await f.refresh([stageReply('reply', 1, [{ id: 'cue', kind: 'text', sequence: 1, text: first + second, presentation: {} }], 'running')]);
+  expect(caption()).toBe(first);
+  const playing = speech.mock.calls[0]![0];
+  expect(playing).toMatchObject({ type: 'play', partId: 'cue', pageIndex: 0 });
+  await act(() => {
+    emit?.({ id: playing.id, audio: new Uint8Array([0, 1]) });
+    emit?.({ id: playing.id, done: true });
+  });
+  await act(() => vi.advanceTimersByTimeAsync(9000));
+  expect(caption()).toBe(first);
+  await act(async () => { outputs[0]!.onended!(); await vi.advanceTimersByTimeAsync(20); });
+  await act(() => vi.advanceTimersByTimeAsync(20));
+  expect(caption()).toBe(second);
+  const next = speech.mock.calls.at(-1)![0];
+  expect(next).toMatchObject({ type: 'play', partId: 'cue', pageIndex: 1 });
+  disconnect.mockClear();
+  await act(() => {
+    voice.onset!();
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+  expect(speech).toHaveBeenLastCalledWith({ type: 'stop', id: next.id });
+  expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
+  expect(voice.interrupt).not.toHaveBeenCalled();
+});
+
 it('replays each recorded expression and motion when stepping and replaying from the beginning', async () => {
   const f = await mount('', companion, { model: true }); await act(() => button('接通').click());
   const first = { expression: 'smile', motion: 'wave', gesture: 'nod' as const, durationMs: 1600 };
@@ -196,14 +244,30 @@ it('replays each recorded expression and motion when stepping and replaying from
     { id: 'one', kind: 'text', sequence: 1, text: '第一段', presentation: first },
     { id: 'two', kind: 'text', sequence: 2, text: '第二段', presentation: second },
   ])]);
-  expect(live2d.present).toHaveBeenLastCalledWith(first);
-  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(second);
-  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(undefined);
-  await act(() => namedButton('上一段').click()); expect(live2d.present).toHaveBeenLastCalledWith(first);
-  await act(() => namedButton('下一段').click()); expect(live2d.present).toHaveBeenLastCalledWith(second);
-  await act(() => namedButton('从头播放').click()); expect(live2d.present).toHaveBeenLastCalledWith(first);
+  expect(live2d.present).toHaveBeenLastCalledWith(first, '第一段');
+  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(second, '第二段');
+  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(undefined, undefined);
+  await act(() => vi.advanceTimersByTime(1799));
+  expect(caption()).toBe('第二段');
+  await act(() => vi.advanceTimersByTime(1));
+  expect(caption()).toBeUndefined();
+  await act(() => namedButton('展开对白').click());
+  expect(caption()).toBe('第二段');
+  expect(live2d.present).toHaveBeenLastCalledWith(undefined, undefined);
+  await act(() => vi.advanceTimersByTime(2000)); expect(caption()).toBe('第二段');
+  await act(() => namedButton('收起对白').click());
+  expect(caption()).toBeUndefined();
+  await act(() => namedButton('展开对白').click());
+  expect(caption()).toBe('第二段');
+  await act(() => namedButton('上一段').click()); expect(live2d.present).toHaveBeenLastCalledWith(first, '第一段');
+  await act(() => namedButton('下一段').click()); expect(live2d.present).toHaveBeenLastCalledWith(second, '第二段');
+  await act(() => namedButton('从头播放').click()); expect(live2d.present).toHaveBeenLastCalledWith(first, '第一段');
   expect(caption()).toBe('第一段');
-  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(second);
+  await act(() => namedButton('收起对白').click());
+  await act(() => vi.advanceTimersByTime(1900)); expect(live2d.present).toHaveBeenLastCalledWith(second, '第二段');
+  expect(caption()).toBeUndefined();
+  await act(() => namedButton('展开对白').click());
+  expect(caption()).toBe('第二段');
   await act(() => button('打断').click());
   expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
 });
@@ -219,16 +283,19 @@ it('shows the submitted prompt while waiting and accepts only its associated rep
   await act(() => namedButton('发送 ↑').click());
   expect(caption()).toBeUndefined();
   expect(document.querySelector('.bot-call-user-line')?.textContent).toContain('新一轮问题');
-  expect(document.querySelector('.bot-call-bubble-status')?.textContent).toBe('正在回应…');
+  expect(document.querySelector('.bot-call-bubble .bot-reply-progress-label')?.textContent).toBe('正在回应…');
   await act(() => resolve({ ok: true, replyMessageIds: ['new'] }));
   await f.refresh([old, stageReply('unrelated', 3, [{ id: 'other', sequence: 1, kind: 'text', text: '无关台词', presentation: {} }])]);
   expect(caption()).toBeUndefined();
   const reply = stageReply('new', 2, [], 'running');
   await f.refresh([old, { ...reply, progress: { phase: 'using-tool', toolName: 'shell', activity: { step: 4, summary: '正在核对文件' } } }]);
   const progress = document.querySelector('.bot-call-progress')!;
-  expect(progress.textContent).toContain('第 4 步 · 运行命令');
-  expect(progress.textContent).toContain('正在核对文件');
-  expect(progress.nextElementSibling?.className).toBe('bot-call-bubble');
+  expect(progress.querySelector('.bot-reply-progress-label')?.textContent).toBe('运行命令');
+  expect(progress.querySelector('.bot-reply-progress-label')?.getAttribute('title')).toBe('正在核对文件');
+  expect(progress.querySelector('.bot-call-progress-meta')?.textContent).toContain('第 4 步');
+  expect(progress.parentElement?.className).toBe('bot-call-bubble');
+  await act(() => vi.advanceTimersByTime(2000));
+  expect(progress.querySelector('.bot-reply-progress-elapsed')?.textContent).toBe('2 秒');
   await f.refresh([old, stageReply('new', 2, [{ id: 'new-segment', sequence: 1, kind: 'text', text: '新的回应', presentation: {} }])]);
   expect(caption()).toBe('新的回应');
   expect(document.querySelector('.bot-call-progress')).toBeNull();

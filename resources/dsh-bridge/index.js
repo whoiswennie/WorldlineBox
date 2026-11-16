@@ -1161,7 +1161,7 @@ export async function apply(ctx) {
           }
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
           if (nativeSessionBusy(ctx, record.agent)) throw new Error('Companion lane is busy.');
-          const withoutApps = tools => (tools ?? []).filter(tool => !['browser', 'asset_manager'].includes(tool.name));
+          const withoutApps = tools => (tools ?? []).filter(tool => !['browser', 'asset_manager', 'cabin_world'].includes(tool.name));
           if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(withoutApps(record.bot.workerTools)) !== JSON.stringify(withoutApps(input.workerTools))) throw new Error('Companion tool selection changed; create a new lane epoch.');
           // Newer native loops freeze model identity before agent/request.
           // A cold suspend may have attached with the inert cancel-only model;
@@ -1188,7 +1188,7 @@ export async function apply(ctx) {
       if (request.method === 'POST' && url.pathname === '/bot/app-revoke') {
         const input = await body(request);
         if (typeof input.laneId !== 'string' || input.sessionId !== 'wlb-bot-' + createHash('sha256').update(input.laneId).digest('hex')
-          || !Array.isArray(input.names) || input.names.length > 2 || input.names.some(name => !['browser', 'asset_manager'].includes(name))
+          || !Array.isArray(input.names) || input.names.length > 3 || input.names.some(name => !['browser', 'asset_manager', 'cabin_world'].includes(name))
           || typeof input.system !== 'string' || input.system.length > 96000) throw new Error('Invalid application revocation.');
         const record = sessions.get(input.sessionId);
         if (record?.bot) {

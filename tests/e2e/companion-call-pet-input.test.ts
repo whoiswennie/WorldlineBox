@@ -16,6 +16,7 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
   const mouseEvent = user32.func('void mouse_event(uint32_t flags, uint32_t dx, uint32_t dy, uint32_t data, uintptr_t extra)');
   const windowFromPoint = user32.func('uintptr_t WindowFromPoint(int64_t point)');
   const getAncestor = user32.func('uintptr_t GetAncestor(uintptr_t window, uint32_t flags)');
+  const getWindowRect = user32.func('int GetWindowRect(uintptr_t window, uint8_t *rect)');
   const setThreadDpiAwarenessContext = user32.func('intptr_t SetThreadDpiAwarenessContext(intptr_t value)');
   const previousDpi = setThreadDpiAwarenessContext(-4);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-pet-input-'));
@@ -89,21 +90,48 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     await expect.poll(() => rootAt(corner)).toBe(underHandle);
     click(corner);
     await expect(probePage.locator('#under')).toHaveAttribute('data-clicks', '1');
-    mouseEvent(0x0800, 0, 0, (-120) >>> 0, 0);
-    await expect.poll(() => probePage.evaluate(() => scrollY)).toBeGreaterThan(0);
+    // Wheel delivery depends on Windows' inactive-scroll preference. Keep
+    // the application below focused while the pet stays topmost.
+    await app.evaluate(({ BrowserWindow }, { probeId, petId }) => {
+      BrowserWindow.fromId(probeId)?.focus();
+      BrowserWindow.fromId(petId)?.moveTop();
+    }, { probeId: probe.id, petId });
+    await expect.poll(() => app!.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)?.isFocused(), probe.id)).toBe(true);
+    await expect(async () => {
+      expect(setCursorPos(corner.x, corner.y)).toBe(1);
+      expect(rootAt(corner)).toBe(underHandle);
+      mouseEvent(0x0800, 0, 0, (-120) >>> 0, 0);
+      await expect.poll(() => probePage.evaluate(() => scrollY), { timeout: 400 }).toBeGreaterThan(0);
+    }).toPass({ timeout: 5000 });
+    await expect(probePage.locator('#under')).toHaveAttribute('data-clicks', '1');
+    const closeProbe = probePage.waitForEvent('close');
+    await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)?.destroy(), probe.id);
+    await closeProbe;
+    await nativePet.evaluate(native => { native.focus(); native.moveTop(); });
+    const orb = floating.getByRole('button', { name: '展开会面输入', exact: true });
+    const orbBox = (await orb.boundingBox())!;
+    expect(await orb.locator('img').boundingBox()).toEqual(orbBox);
+    const orbPoint = await nativeCoordinates({ x: orbBox.x + orbBox.width / 2, y: orbBox.y + orbBox.height / 2 });
+    await expect.poll(() => rootAt(orbPoint)).toBe(petHandle);
+    click(orbPoint);
     const more = floating.getByRole('button', { name: '更多会面功能' });
+    await expect(more).toBeVisible();
+    await nativePet.evaluate(native => native.moveTop());
     const box = (await more.boundingBox())!;
     const menuPoint = await nativeCoordinates({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
     await expect.poll(() => rootAt(menuPoint)).toBe(petHandle);
     click(menuPoint);
     await expect(more).toHaveAttribute('aria-expanded', 'true');
-    await expect(probePage.locator('#under')).toHaveAttribute('data-clicks', '1');
-    const closeProbe = probePage.waitForEvent('close');
-    await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)?.destroy(), probe.id);
-    await closeProbe;
-    const grip = (await floating.locator('[data-pet-drag]').boundingBox())!;
+    await floating.getByRole('button', { name: '收起会面输入', exact: true }).click();
+    const grip = (await orb.boundingBox())!;
     const start = await nativeCoordinates({ x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 });
     const startBounds = await nativePet.evaluate(native => native.getBounds());
+    const physicalSize = () => {
+      const rect = Buffer.alloc(16);
+      expect(getWindowRect(petHandle, rect)).toBe(1);
+      return [rect.readInt32LE(8) - rect.readInt32LE(0), rect.readInt32LE(12) - rect.readInt32LE(4)];
+    };
+    const startSize = physicalSize();
     await pet.evaluate(() => document.addEventListener('pointerdown', event => {
       if ((event.target as Element).closest('[data-pet-drag]')) document.documentElement.dataset.gripPressed = 'true';
     }));
@@ -116,7 +144,9 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
       expect(setCursorPos(moved.x, moved.y)).toBe(1);
       await expect.poll(async () => (await nativePet.evaluate(native => native.getBounds())).x).toBeLessThan(startBounds.x - 30);
     } finally { mouseEvent(4, 0, 0, 0, 0); }
-    expect(await nativePet.evaluate(native => native.getSize())).toEqual([startBounds.width, startBounds.height]);
+    // Electron's DIP rounding can change by one depending on the new pixel origin.
+    expect(physicalSize()).toEqual(startSize);
+    await expect(orb).toBeVisible();
     await nativePet.evaluate(native => native.setSize(1400, 1000));
     await expect.poll(async () => {
       const [width, height] = await nativePet.evaluate(native => native.getSize());
@@ -129,6 +159,8 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     await page.locator('[data-application-module="dsh"]').click();
     await expect(page.locator('[data-application-view="dsh"]')).toBeVisible();
     await expect(avatar).toBeVisible();
+    await orb.click();
+    await more.click();
     await floating.getByRole('button', { name: '返回会面场景' }).click().catch(error => { if (!pet.isClosed()) throw error; });
     await expect(gpt).toBeVisible();
     await expect(page.locator('[data-application-view="companions"]')).toBeVisible();

@@ -435,6 +435,30 @@ test("renames a folder inline from the context menu and keeps its assets visible
   }
 });
 
+test("double-clicks a folder name to rename it and opens the folder from its cover", async () => {
+  const temporaryRoot = mkdtempSync(path.join(tmpdir(), "worldlinebox-folder-caption-"));
+  const libraryName = "Folder Caption";
+  const application = await launchApp(temporaryRoot, path.join(temporaryRoot, libraryName));
+  try {
+    const window = await application.firstWindow();
+    await createLibrary(window, libraryName);
+    await createFolderViaSidebar(window, "原画");
+    await window.getByRole("button", { name: "资源库根目录", exact: true }).click();
+    const folderCard = window.locator(".folder-card", { hasText: "原画" });
+    await folderCard.locator(".folder-card-name").dblclick();
+    const input = window.locator(".folder-card-rename-input");
+    await expect(input).toBeFocused();
+    await input.fill("角色原画");
+    await input.press("Enter");
+    const renamed = window.locator(".folder-card", { hasText: "角色原画" });
+    await renamed.locator(".folder-card-cover").dblclick();
+    await expect(window.locator(".scope-crumb-label.is-current")).toHaveText("角色原画");
+  } finally {
+    await application.close();
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
 test("renames a folder card and pastes a cut and a copy into managed folders", async () => {
   test.skip(process.platform !== "win32", "Exercises the Windows native file clipboard.");
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), "worldlinebox-folder-clipboard-"));

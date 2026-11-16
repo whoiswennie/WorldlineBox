@@ -1,6 +1,6 @@
 import { VoiceRecorder, type VoiceRecording } from './voice-recorder';
 
-export interface CallVoiceCaptureOptions { onLevel?(level: number): void }
+export interface CallVoiceCaptureOptions { onLevel?(level: number): void; onSpeechStart?(): void }
 
 /** Meeting-specific sentence options over the shared microphone/WAV recorder. */
 export class CallVoiceCapture {
@@ -17,6 +17,8 @@ export class CallVoiceCapture {
     try {
       const captured = await this.recorder.start(() => { this.stopped = true; if (!this.cancelled) onLimit(); }, {
         onLevel: this.options.onLevel,
+        onSpeechStart: () => { if (!this.cancelled) this.options.onSpeechStart?.(); },
+        speechPrerollSeconds: .25,
         silenceSeconds: 1,
         minSpeechSeconds: .25,
         onSilence: () => { this.stopped = true; },

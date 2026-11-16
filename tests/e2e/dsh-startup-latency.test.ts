@@ -15,7 +15,8 @@ test('cold and repeated real native Host starts finish through the launcher with
   test.skip(process.platform !== 'win32' || !existsSync(explicitManager ?? fixtureFile), 'An inspected Windows native runtime is required.');
   const manager = explicitManager ?? path.join((JSON.parse(readFileSync(fixtureFile, 'utf8')) as { root: string }).root, 'manager');
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as DshRuntime[];
-  const runtime = runtimes.find(value => value.adapter === 'node-cli-web-v1'); expect(runtime).toBeTruthy();
+  const version = process.env.WORLDLINEBOX_DSH_STARTUP_VERSION;
+  const runtime = runtimes.find(value => value.adapter === 'node-cli-web-v1' && (!version || value.version === version)); expect(runtime).toBeTruthy();
   const root = mkdtempSync(path.join(tmpdir(), 'worldlinebox-startup-latency-')), profile = path.join(root, 'profile');
   if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('worldlinebox-startup-latency-')) throw Error('Invalid cleanup target.');
   await seedNativeRuntime(manager, runtime!, profile);

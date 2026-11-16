@@ -6,6 +6,7 @@ export declare class BlinkController {
     private random;
     private nextBlinkAt;
     private blinkStartedAt;
+    private reachedClosure;
     private doubleBlinkQueued;
     private rate;
     constructor(seed?: number, rate?: number);

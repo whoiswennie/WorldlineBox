@@ -28,7 +28,7 @@ import type { BotActivityBudgetPolicy } from './activity-budget';
 import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID } from '../../shared/builtin-bot-companions';
 import type { BotMediaService } from './media-service';
 import { botMessageEvidence } from '../../shared/bot-message-content';
-import type { BotClaim, BotEvent, BotMemoryJobInput, BotAttachmentGrant } from './types';
+import type { BotClaim, BotCompanion, BotEvent, BotMemoryJobInput, BotAttachmentGrant } from './types';
 import { botHandoffFile } from './task-handoff';
 import { isGroupStop } from './group-attention';
 import { BotTopics, type BotGuidance,type BotTopicTitleSync } from './topics';
@@ -37,8 +37,9 @@ import {botNativeContextSchema} from '../../shared/companion-native-context';
 import { browserPageContextSchema, type BrowserPageContext } from '../../shared/browser-page-context';
 import { companionBrowserArgumentsSchema, type CompanionBrowserArguments, type CompanionBrowserScope } from '../../shared/companion-browser';
 import type { CompanionBrowserResult } from '../browser/service';
-import { botAppIdSchema, companionAssetArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
+import { botAppIdSchema, botAppTools, companionAssetArgumentsSchema, companionCabinArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
 import type { BotAssetManagerApp } from './asset-manager-app';
+import type { BotCabinWorldApp } from './cabin-world-app';
 import { BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
 import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from './call-models';
 import { BotSchedules } from './schedules';
@@ -48,6 +49,7 @@ export interface BotServiceOptions {
   callAssetsRoot?: string;
   readLocalCallModel?(companionId: string): Promise<BotCallModel | undefined>;
   assetManagerApp?: Pick<BotAssetManagerApp, 'connect' | 'execute'>;
+  cabinWorldApp?: BotCabinWorldApp;
   resolveBrowserContext?(referenceId: string): BrowserPageContext;
   browserTool?(scope: CompanionBrowserScope, input: CompanionBrowserArguments, signal: AbortSignal): Promise<CompanionBrowserResult>;
   root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel;
@@ -364,6 +366,11 @@ export class BotService {
     const parsed = botAppIdSchema.array().safeParse(JSON.parse(this.store.getMetadata('topic-apps:' + topicId) || '[]'));
     return parsed.success ? parsed.data : [];
   }
+  private async observeCabin(topicId: string | undefined, companion: BotCompanion, signal: AbortSignal) {
+    if (!this.topicApps(topicId).includes('cabin-world')) return undefined;
+    const observation = await this.options.cabinWorldApp?.observe(companion, signal) ?? { status: 'unavailable' as const };
+    return this.topicApps(topicId).includes('cabin-world') ? observation : undefined;
+  }
   private chatRuntime(conversationId: string) {
     const runtime = this.topics.runtime(conversationId);
     const apps = this.topicApps(runtime.topic?.id);
@@ -425,6 +432,23 @@ export class BotService {
       case 'app.connect': {
         const room = this.store.getConversation(input.conversationId);
         if (!room?.memberIds.includes('user')) throw new Error('不能为这个聊天连接应用。');
+        if (input.appId === 'cabin-world') {
+          const enabled = room.memberIds.flatMap(id => {
+            const actor = id === 'user' ? undefined : this.store.getCompanion(id);
+            return actor && actor.enabled !== false ? [actor] : [];
+          });
+          if (!enabled.length) throw Error('请先选择一个启用的伙伴。');
+          if (!this.options.cabinWorldApp) throw Error('小屋世界应用暂不可用。');
+          if (input.topicId) this.topics.get(input.topicId, room.id);
+          await this.options.cabinWorldApp.connect(this.maintenanceAbort.signal, room.kind === 'direct' ? enabled[0] : undefined);
+          if (input.topicId) {
+            if (!this.store.getConversation(room.id)?.memberIds.includes('user')) throw Error('聊天权限已变化。');
+            this.topics.get(input.topicId, room.id);
+            this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify([...new Set([...this.topicApps(input.topicId), input.appId])]));
+            this.changed(room.id);
+          }
+          return { ok: true, app: { id: input.appId } };
+        }
         if (!this.options.assetManagerApp) throw new Error('资产管理器应用尚未就绪。');
         let connection;
         for (const actor of room.memberIds.filter(id => id !== 'user').map(id => this.store.getCompanion(id)).filter(actor => actor && actor.enabled !== false)) {
@@ -443,7 +467,7 @@ export class BotService {
           const event = this.store.eventForReply(item.messageId), actor = this.store.getCompanion(item.companionId);
           if (!event || !actor || !this.options.brain.revokeApplications) return;
           const system = buildNativeBotContext({ companion: actor, event, apps: this.topicApps(input.topicId), memories: '', files: [], conversation: this.store.getConversation(input.conversationId)!, companions: this.store.listCompanions() }).system;
-          try { await this.options.brain.revokeApplications(this.topics.lane(event), [input.appId === 'browser' ? 'browser' : 'asset_manager'], system); }
+          try { await this.options.brain.revokeApplications(this.topics.lane(event), [botAppTools[input.appId]], system); }
           catch (error) { this.options.report?.(error); } // Local authorization was already revoked; the next admission reconciles native declarations.
         })); this.changed(input.conversationId);
         return { ok: true };
@@ -573,8 +597,14 @@ export class BotService {
         if (input.type === 'message.send' && input.browserContextId && !browserContext) throw Error('内置浏览器连接不可用，请重新附加网页。');
         if (browserContext && input.type === 'message.send' && browserContext.referenceId !== input.browserContextId) throw Error('同一发送请求不能更换网页上下文。');
         const appIngressKey = 'app-ingress:' + input.conversationId + ':' + input.requestId;
-        const selectedApps = input.type === 'message.send' ? [...new Set([...(input.apps ?? []), ...(browserContext ? ['browser' as const] : [])])].sort() : [];
         const previousApps = this.store.getMetadata(appIngressKey);
+        const targetTopic = input.type === 'message.send' && !previousApps
+          ? input.topicId ? this.topics.get(input.topicId, input.conversationId) : !input.newTopic && !running ? this.topics.current(input.conversationId) : undefined
+          : undefined;
+        const inheritedTopic = targetTopic ?? (input.type === 'message.send' && !input.newTopic && !previousApps ? this.topics.current(input.conversationId) : undefined);
+        const inheritedApps: BotAppId[] = previousApps ? botAppIdSchema.array().parse(JSON.parse(previousApps))
+          : this.topicApps(inheritedTopic?.id).filter(id => id === 'cabin-world');
+        const selectedApps = input.type === 'message.send' ? [...new Set([...(input.apps ?? inheritedApps), ...(browserContext ? ['browser' as const] : [])])].sort() : [];
         if (previousApps && previousApps !== JSON.stringify(selectedApps)) throw Error('同一发送请求不能更换已附加的应用，请重新发送。');
         const quoteKey = 'message-quote-ingress:' + input.conversationId + ':' + input.requestId;
         const previousQuote = this.store.getMetadata(quoteKey);
@@ -605,8 +635,7 @@ export class BotService {
         }
         if (browserContext) { this.store.setMetadata('browser-context:' + result.message.id, JSON.stringify(browserContext)); this.store.setMetadata(browserKey, JSON.stringify(browserContext)); }
         if(input.type==='message.send'&&!this.store.getMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId)){
-          const topic=input.topicId?this.topics.get(input.topicId,input.conversationId):(!input.newTopic&&!running?this.topics.current(input.conversationId):undefined)
-            ??this.topics.create(input.conversationId,input.requestId,input.content,!running);
+          const topic=targetTopic ?? this.topics.create(input.conversationId,input.requestId,input.content,!running);
           this.topics.bind(result.events,topic);
           const apps = selectedApps;
           this.store.setMetadata('topic-apps:' + topic.id, JSON.stringify(apps));
@@ -845,10 +874,22 @@ export class BotService {
     const key=command.message_id+':'+command.event_id,prior=this.guidanceRuns.get(key);if(prior)return prior;
     const operation=(async()=>{
       const event=this.store.getEvent(command.event_id);if(!event)return;
+      const cabinKey = 'native-guidance-cabin:' + key;
+      const clearCabin = () => this.store.taskTransaction(sql => sql.prepare('DELETE FROM bot_metadata WHERE key=?').run(cabinKey));
       try{
-        await this.options.brain.send(this.topics.lane(event),{eventId:event.id,cwd:this.workspace(event.companionId),messageId:command.message_id,text:command.text,mode:'steer'});
-        if(!this.closed)this.topics.guidanceResult(command);
-      }catch(error){if(!this.closed){if((error as {code?:string})?.code==='BOT_GUIDANCE_NOT_ACCEPTED'){this.topics.guidanceNotAccepted(command);this.scheduler.wake();}else this.topics.guidanceResult(command,errorText(error));}}
+        let saved = this.store.getMetadata(cabinKey);
+        if (saved === undefined && !command.error) {
+          const companion = this.store.getCompanion(event.companionId);
+          const cabin = event.status === 'running' && companion
+            ? await this.observeCabin(this.topics.reference(event.id)?.id, companion, this.maintenanceAbort.signal) : undefined;
+          // DSH hashes the guidance body. A lost acknowledgement must replay the same observation.
+          saved = JSON.stringify(cabin ?? null);
+          this.store.setMetadata(cabinKey, saved);
+        }
+        const text = saved && saved !== 'null' ? JSON.stringify({ ...JSON.parse(command.text), cabinWorld: JSON.parse(saved) }) : command.text;
+        await this.options.brain.send(this.topics.lane(event),{eventId:event.id,cwd:this.workspace(event.companionId),messageId:command.message_id,text,mode:'steer'});
+        if(!this.closed){this.topics.guidanceResult(command);clearCabin();}
+      }catch(error){if(!this.closed){if((error as {code?:string})?.code==='BOT_GUIDANCE_NOT_ACCEPTED'){this.topics.guidanceNotAccepted(command);clearCabin();this.scheduler.wake();}else this.topics.guidanceResult(command,errorText(error));}}
       if(!this.closed)this.changed(command.conversation_id);
     })().finally(()=>this.guidanceRuns.delete(key));this.guidanceRuns.set(key,operation);return operation;
   }
@@ -894,7 +935,7 @@ export class BotService {
       await this.ensureConversationBindings(event.conversationId); signal.throwIfAborted();
       if (event.payload.groupAttention === true) this.store.promoteGroupReply(event.id, claim.leaseToken);
       await mkdir(cwd, { recursive: true });
-      progress({ phase: 'recalling-memory' });
+      progress({ phase: 'preparing-context' });
       await this.loadTombstones(scopeFor(event), event.id, phase => progress({ phase }));
       this.topics.refreshBeforeDispatch(event);nativeLaneId=this.topics.lane(event);
       this.store.bindEventNativeEpoch(event.id, this.store.getLane(event.laneId)!.epoch);
@@ -916,12 +957,16 @@ export class BotService {
       signal.throwIfAborted();
       const stage = meeting ? botCallCapabilities(await this.callModel(companion.id), companion.id) : undefined;
       const frozen = this.store.getMetadata(persistKey);
-      const context = frozen ? JSON.parse(frozen) as {system:string;prompt:string} : buildNativeBotContext({ companion, event,
-        memories: prepared.evidence, files: await this.verifiedAttachmentFiles(event, this.topics.inputAttachmentIds(event), undefined, signal),
-        apps: this.topicApps(this.topics.reference(event.id)?.id), conversation: room, stage, companions: this.store.listCompanions() });
+      const files = frozen ? [] : await this.verifiedAttachmentFiles(event, this.topics.inputAttachmentIds(event), undefined, signal);
+      const callback = await this.toolServer.forWorker(nativeLaneId, event.id);
+      if (event.source === 'schedule' && event.payload.cabinWorld === true && await this.skipOfflineSchedule(event)) return;
+      const topicId = this.topics.reference(event.id)?.id;
+      const cabinWorld = await this.observeCabin(topicId, companion, signal);
+      signal.throwIfAborted(); this.assertCurrentEvent(event);
+      const apps = this.topicApps(topicId);
+      const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files, conversation: room, stage, companions: this.store.listCompanions() });
+      const context = frozen ? JSON.parse(frozen) as typeof refreshed : refreshed;
       if (frozen) {
-        const apps = this.topicApps(this.topics.reference(event.id)?.id);
-        const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files: [], conversation: room, stage, companions: this.store.listCompanions() });
         context.system = refreshed.system;
         const envelope = JSON.parse(context.prompt) as Record<string, unknown>;
         const identities = JSON.parse(refreshed.prompt) as Record<string, unknown>;
@@ -931,19 +976,21 @@ export class BotService {
         context.prompt = JSON.stringify(envelope);
       }
       if (!frozen) this.store.setMetadata(persistKey, JSON.stringify(context));
+      if (apps.includes('cabin-world')) {
+        const envelope = JSON.parse(context.prompt) as Record<string, unknown>;
+        context.prompt = JSON.stringify({ ...envelope, cabinWorld: cabinWorld ?? { status: 'unavailable' } });
+      }
       this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(nativeLaneId), interruption: undefined });
       progress({ phase: 'waiting-model' });
-      const callback = await this.toolServer.forWorker(nativeLaneId, event.id);
       const allowedConversationIds = room.kind === 'direct' && room.memberIds.includes('user')
         ? this.store.conversations().filter(candidate => !candidate.dissolvedAt && candidate.memberIds.includes(event.companionId)
           && (candidate.memberIds.includes('user') || candidate.kind === 'peer' && candidate.userRole === 'observer')).map(candidate => candidate.id)
         : [room.id];
-      if (event.source === 'schedule' && event.payload.cabinWorld === true && await this.skipOfflineSchedule(event)) return;
       signal.throwIfAborted();
       const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt,
         resumeHost: this.store.getMetadata('native-interrupted:' + event.id) === '1',
         continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
-        model: this.options.model(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), meeting), callback, signal, role: 'worker', workerAccess: 'full',
+        model: this.options.model(), tools: [], workerTools: botToolsForApps(apps, meeting), callback, signal, role: 'worker', workerAccess: 'full',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds },
         workspaceTitle: companion.name, sessionTitle:this.topics.reference(event.id)?.title??Array.from(event.content).slice(0, 60).join(''),
         onEvent: update => {
@@ -1200,6 +1247,17 @@ export class BotService {
         const { segments } = z.strictObject({ segments: z.array(botCallSegmentSchema).min(1).max(8) }).parse(call.args);
         validateBotCallPerformance(stage, segments);
         return this.publishCallSegments(event, call.callId, segments);
+      }
+      case 'cabin_world': {
+        const stillAttached = () => this.topicApps(this.topics.reference(event.id)?.id).includes('cabin-world');
+        if (!stillAttached() || !this.options.cabinWorldApp) throw Error('请先在当前话题的“应用”中连接小屋世界。');
+        const actor = this.store.getCompanion(event.companionId)!;
+        const result = await this.options.cabinWorldApp.execute(actor, companionCabinArgumentsSchema.parse(args), signal, () => {
+          this.assertCurrentEvent(event);
+          return stillAttached();
+        });
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        return result;
       }
       case 'asset_manager': {
         this.assertCurrentEvent(event);
@@ -1508,7 +1566,8 @@ export class BotService {
         this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done', error: '来源已撤回，未继续编码或保存记忆。' });
         return;
       }
-      const pendingIndex = claim.job.kind === 'mutation' && claim.job.payload.operation === 'remember' && (error as { code?: string })?.code === 'MEMORY_SYNC_TIMEOUT';
+      const waitingForIndex = (error as { code?: string })?.code === 'MEMORY_SYNC_TIMEOUT';
+      const pendingIndex = waitingForIndex && (claim.job.kind === 'capture' || claim.job.kind === 'mutation' && claim.job.payload.operation === 'remember');
       this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: !this.closed && !pendingIndex && claim.job.attempts >= 5 ? 'failed' : 'retry',
         error: this.closed ? undefined : errorText(error), retryDelayMs: this.closed ? 0 : Math.min(60000, claim.job.attempts * 5000) });
       if (!this.closed && (!pendingIndex || claim.job.attempts === 1)) this.options.report?.(error);

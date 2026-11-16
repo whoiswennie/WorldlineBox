@@ -75,7 +75,7 @@ export function BotCompanionEditor({ kind, companion, companions, locale, api, i
     {tab === 'appearance' && <div className="bot-editor-tabpanel bot-editor-meeting"><BotCompanionAppearance companion={companion} locale={locale} active={!suspended} onMeet={onMeet} /><BotCompanionPerformance api={api} companionId={companion.id} locale={locale} /></div>}
     {tab === 'schedule' && <div className="bot-editor-tabpanel"><BotCompanionSchedules api={api} companionId={companion.id} locale={locale} /></div>}
   </div></div>;
-  return <div className="bot-modal-backdrop"><form className="bot-modal bot-companion-editor" onSubmit={event => void submit(event)} role="dialog" aria-modal="true" aria-label={title}
+  return <div className="bot-modal-backdrop" hidden={suspended}><form className="bot-modal bot-companion-editor" onSubmit={event => void submit(event)} role="dialog" aria-modal="true" aria-label={title}
     onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}>
     <h2>{title}</h2>
     {companion && builtin && <div className="bot-profile-preview"><BotAvatar companion={companion} large /><div><strong>{companion.name}</strong><p>{builtin.summary}</p>{companion.id === DEFAULT_BOT_COMPANION_ID && <small>{t.identity}</small>}</div></div>}

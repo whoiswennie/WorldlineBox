@@ -1,6 +1,7 @@
 import { ipcMain, screen, type BrowserWindow, type Point, type Rectangle } from 'electron';
-import { CALL_PET_CLOSED, CALL_PET_COMMAND, CALL_PET_MAX_HEIGHT, CALL_PET_MAX_WIDTH, CALL_PET_WINDOW } from '../../shared/companion-call-window';
+import { CALL_PET_CLOSED, CALL_PET_COMMAND, CALL_PET_MAX_HEIGHT, CALL_PET_MAX_WIDTH, isCallPetWindowName } from '../../shared/companion-call-window';
 import { moveWindowInPhysicalPixels } from '../capture-tools/desktop-regions';
+import { sendToLiveWebContents } from '../web-contents-send';
 
 const visiblePets = new WeakMap<BrowserWindow, BrowserWindow>();
 export const callPetFor = (owner: BrowserWindow) => visiblePets.get(owner);
@@ -41,7 +42,7 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
     if (details.isMainFrame && !details.isSameDocument) pet?.destroy();
   });
   ownerContents.setWindowOpenHandler(({ url, frameName }) => {
-    if (process.platform !== 'win32' || url !== 'about:blank' || frameName !== CALL_PET_WINDOW || pet) return { action: 'deny' };
+    if (process.platform !== 'win32' || url !== 'about:blank' || !isCallPetWindowName(frameName) || pet) return { action: 'deny' };
     const { workArea } = screen.getDisplayMatching(owner.getBounds());
     const { width, height } = petSize(workArea);
     return { action: 'allow', overrideBrowserWindowOptions: {
@@ -53,7 +54,7 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
     } };
   });
   ownerContents.on('did-create-window', (window, { frameName }) => {
-    if (frameName !== CALL_PET_WINDOW) return;
+    if (!isCallPetWindowName(frameName)) return;
     pet = window;
     previousThrottling = ownerContents.getBackgroundThrottling();
     ownerContents.setBackgroundThrottling(false);
@@ -79,13 +80,14 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
     window.on('resize', syncBounds);
     window.on('move', syncBounds);
     screen.on('display-metrics-changed', syncBounds);
+    syncBounds();
     window.once('closed', () => {
       screen.off('display-metrics-changed', syncBounds);
       pet = undefined; dragOffset = undefined; shape = []; shapeScale = 0;
       visiblePets.delete(owner);
       if (ownerContents.isDestroyed()) return;
       ownerContents.setBackgroundThrottling(previousThrottling);
-      ownerContents.send(CALL_PET_CLOSED);
+      sendToLiveWebContents(ownerContents, CALL_PET_CLOSED, frameName);
     });
   });
   const command = (event: Electron.IpcMainEvent, action: unknown) => {

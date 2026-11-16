@@ -14,6 +14,7 @@ export type Live2DModelInstance = PIXI.Container & {
     localTransform?: PIXI.Matrix;
     getDrawableVertices?: (index: number) => Float32Array;
     eyeBlink?: unknown;
+    physics?: { evaluate: (model: unknown, deltaSeconds: number) => void };
     motionManager?: {
       stopAllMotions(): void;
       expressionManager?: {

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import { CALL_PET_MAX_HEIGHT, CALL_PET_MAX_WIDTH, CALL_PET_WINDOW, type CallPetApi, type CallPetRect } from '../../shared/companion-call-window';
 
 export const BotCallDocument = createContext<Document | undefined>(undefined);
@@ -21,7 +21,7 @@ function copyCallStyles(target: Document): void {
 
 const petSurfaces = [
   '.bot-call-portrait-frame', '.bot-call-portrait h2', '.bot-call-loading', '.bot-call-notice',
-  '.bot-call-bubble', '.bot-call-progress', '.bot-call-topics', '.bot-call-composer-host',
+  '.bot-call-bubble', '.bot-call-review', '.bot-call-topics', '.bot-call-composer-host', '.bot-call-input-entry',
   '.bot-call-pet-options', '.bot-call-chat:not([hidden])', '.bot-topic-picker',
   '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel',
 ].join(',');
@@ -82,7 +82,7 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
   const api = (window as Window & { worldlinebox?: { companionCallPet?: CallPetApi } }).worldlinebox?.companionCallPet;
   const [host] = useState(() => document.createElement('div'));
   const [pet, setPet] = useState<Window>();
-  const active = useRef<Window>(undefined);
+  const active = useRef<{ window: Window; name: string }>(undefined);
   const [surface, setSurface] = useState(document);
   const moveHome = useCallback(() => {
     document.body.append(host);
@@ -94,36 +94,57 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
     moveHome();
     onModeChange?.(false, true);
   }, [moveHome, onModeChange]);
+  const onNativeClose = useEffectEvent((name: string) => {
+    if (active.current?.name === name) returnToScene();
+  });
   useLayoutEffect(() => {
     // The portal can already be in the child when React reconnects effects.
-    if (!host.isConnected) (active.current?.closed === false ? active.current.document : document).body.append(host);
-    const off = api?.onClosed(() => { if (active.current?.closed) returnToScene(); });
+    const child = active.current?.window;
+    if (!host.isConnected) (child?.closed === false ? child.document : document).body.append(host);
+    const off = api?.onClosed(name => onNativeClose(name));
     return () => {
       off?.();
       if (active.current) api?.command('close');
       host.remove();
     };
-  }, [api, host, returnToScene]);
+  }, [api, host]);
   useLayoutEffect(() => {
     if (!pet || pet.closed || !api) return;
     const target = pet.document;
-    let pointer: number | undefined;
+    let drag: { pointer: number; x: number; y: number; clickTarget: HTMLElement | null; moved: boolean } | undefined;
+    let suppressClick: HTMLElement | null = null;
     const start = (event: PointerEvent) => {
       const grip = (event.target as Element | null)?.closest<HTMLElement>('[data-pet-drag]');
-      if (!grip || event.button !== 0 || pointer !== undefined) return;
-      event.preventDefault();
-      pointer = event.pointerId;
-      grip.setPointerCapture(pointer);
+      if (!grip || event.button !== 0 || drag) return;
+      const clickTarget = grip.matches('button') ? grip : null;
+      if (!clickTarget) event.preventDefault();
+      suppressClick = null;
+      drag = { pointer: event.pointerId, x: event.screenX, y: event.screenY, clickTarget, moved: false };
+      grip.setPointerCapture(event.pointerId);
       api.command({ type: 'drag-start', x: event.screenX, y: event.screenY });
     };
     const move = (event: PointerEvent) => {
-      if (event.pointerId === pointer) api.command({ type: 'drag-move', x: event.screenX, y: event.screenY });
+      if (!drag || event.pointerId !== drag.pointer) return;
+      if (drag.clickTarget && !drag.moved && Math.hypot(event.screenX - drag.x, event.screenY - drag.y) < 5) return;
+      drag.moved = true;
+      api.command({ type: 'drag-move', x: event.screenX, y: event.screenY });
     };
-    const stop = () => { if (pointer !== undefined) { pointer = undefined; api.command('drag-end'); } };
-    const end = (event: PointerEvent) => { if (event.pointerId === pointer) stop(); };
+    const stop = () => {
+      if (!drag) return;
+      suppressClick = drag.moved ? drag.clickTarget : null;
+      drag = undefined;
+      api.command('drag-end');
+    };
+    const end = (event: PointerEvent) => { if (event.pointerId === drag?.pointer) stop(); };
+    const click = (event: MouseEvent) => {
+      if (event.detail && suppressClick?.contains(event.target as Node | null)) {
+        event.stopPropagation(); event.preventDefault(); suppressClick = null;
+      }
+    };
     const endings = ['pointerup', 'pointercancel', 'lostpointercapture'] as const;
     target.addEventListener('pointerdown', start);
     target.addEventListener('pointermove', move);
+    target.addEventListener('click', click, true);
     for (const type of endings) target.addEventListener(type, end);
     pet.addEventListener('blur', stop);
     const stopLayout = trackPetLayout(pet, host, api);
@@ -131,6 +152,7 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
       stopLayout();
       target.removeEventListener('pointerdown', start);
       target.removeEventListener('pointermove', move);
+      target.removeEventListener('click', click, true);
       for (const type of endings) target.removeEventListener(type, end);
       if (!pet.closed) pet.removeEventListener('blur', stop);
       stop();
@@ -141,12 +163,13 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
     if (active.current) {
       returnToScene(); api.command('return'); return true;
     }
-    const child = window.open('about:blank', CALL_PET_WINDOW);
+    const name = `${CALL_PET_WINDOW}:${crypto.randomUUID()}`;
+    const child = window.open('about:blank', name);
     if (!child) return false;
     try {
       copyCallStyles(child.document);
       child.document.body.append(host);
-      active.current = child;
+      active.current = { window: child, name };
       setSurface(child.document); setPet(child);
       onModeChange?.(true);
       return true;

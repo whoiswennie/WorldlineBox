@@ -184,9 +184,11 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
   }, [api, t, acceptState, refresh]);
 
   const selected = state?.instances.find((instance) => instance.id === selectedId)
+    ?? state?.instances.find((instance) => instance.isDefault)
     ?? state?.instances.find((instance) => instance.id === state.cli?.selectedInstanceId)
-    ?? state?.instances.find((instance) => instance.isDefault) ?? state?.instances[0];
+    ?? state?.instances[0];
   const runningOperations = state?.operations.filter((operation) => operation.status === 'running') ?? [];
+  const bundledSetup = runningOperations.find(operation => operation.kind === 'runtime.bundle');
   const latestFailure = notifications.failures[0];
   const selectedBusy = requesting || queuedStart === selected?.id || runningOperations.some((operation) => operation.instanceId === selected?.id);
   const disabled = requesting || !state?.supported;
@@ -221,7 +223,9 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
                 {selected && <label>
                   <span>{t('launcher.instanceSelection')}</span>
                   <select value={selected.id} onChange={event => setSelectedId(event.target.value)}>
-                    {state.instances.map(instance => <option key={instance.id} value={instance.id}>{instance.name}</option>)}
+                    {state.instances.map(instance => <option key={instance.id} value={instance.id}>
+                      {instance.isBundled ? `${instance.name} · ${t('launcher.bundledInstance')}` : instance.name}
+                    </option>)}
                   </select>
                 </label>}
                 <div className="launcher-actions">
@@ -234,6 +238,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
               : page === 'operations' ? <LauncherOperationsPage state={state} disabled={requesting} run={run} />
               : page === 'archived' ? <ArchivedInstances state={state} disabled={requesting} run={run} onOpenVersions={openVersions} onDelete={instance => setDialog({ kind: 'delete-instance', instance })} />
               : selected ? <InstanceDetails api={api} busy={selectedBusy} instance={selected} key={selected.id} onDialog={setDialog} onError={setError} onOpenVersions={openVersions} preparingStart={queuedStart === selected.id} run={run} state={state} />
+              : bundledSetup ? <EmptyState icon="box" title={t('launcher.bundledSetup', { version: bundledSetup.label })} description={operationPhase(t, bundledSetup.phase)} />
               : <EmptyState icon="box" title={t('launcher.noInstances')} description={t('launcher.noInstancesDescription')}><Button disabled={disabled} iconName={state.runtimes.length ? 'plus' : 'download'} onClick={state.runtimes.length ? openCreate : openVersions} variant="primary">{t(state.runtimes.length ? 'launcher.create' : 'launcher.getRuntime')}</Button></EmptyState>}
             </div>}
           </>}
@@ -294,7 +299,7 @@ function ArchivedInstances({ state, disabled, run, onOpenVersions, onDelete }: {
           <div className="launcher-actions">
             {!instance.purgePending && (available ? <Button disabled={busy} iconName="undo" onClick={() => void run({ type: 'instance.unarchive', instanceId: instance.id })}>{t('launcher.unarchiveInstance')}</Button>
               : <Button disabled={busy} onClick={onOpenVersions}>{t('launcher.getRuntime')}</Button>)}
-            <Button disabled={busy} iconName="trash" onClick={() => onDelete(instance)} variant="quiet">{t('launcher.deleteInstancePermanently')}</Button>
+            <Button disabled={busy || instance.isBundled} iconName="trash" onClick={() => onDelete(instance)} variant="quiet">{t('launcher.deleteInstancePermanently')}</Button>
           </div>
         </div>
         {instance.purgePending ? <p className="launcher-help" role="status">{t('launcher.archivePurgePending')}</p> : !available ? <p className="launcher-help">{t('launcher.archiveNeedsRuntime', { version: instance.runtimeVersion })}</p> : null}
@@ -317,10 +322,11 @@ function RuntimePage({ state, disabled, run, instance, onDelete, onUpgrade, view
     <section className="launcher-card launcher-acquisition"><div><h2>{t('launcher.localRuntimeImport')}</h2><p>{t('launcher.localRuntimeImportNote')}</p></div><div className="launcher-actions"><Button disabled={disabled} iconName="folder" onClick={() => void run({ type: 'runtime.import', sourceKind: 'directory' })}>{t('launcher.importDirectory')}</Button></div></section> : null}
     {view === 'installed' ? state.runtimes.length === 0 ? <div className="launcher-inline-empty">{t('launcher.noRuntimes')}</div> : state.runtimes.map((runtime) => {
       const count = state.instances.filter((instance) => instance.runtimeId === runtime.id).length;
+      const bundled = state.instances.some(instance => instance.isBundled && instance.runtimeId === runtime.id);
       const references = runtimeReferences(state, runtime.id);
       const referenced = references.length > 0;
       const runtimeBusy = state.operations.some((operation) => operation.status === 'running' && operation.kind.startsWith('runtime.'));
-      return <section className="launcher-card" data-dsh-runtime={runtime.id} key={runtime.id}><div className="launcher-card-heading"><div className="launcher-heading-icon"><Icon name="archive" size={22} /><div><h2>{t('launcher.runtimeIdentity', { version: runtime.version })}</h2><span>{t('launcher.referenced', { count })}</span></div></div><div className="launcher-actions"><Button disabled={disabled || runtimeBusy} iconName="check" onClick={() => void run({ type: 'runtime.verify', runtimeId: runtime.id })}>{t('launcher.verify')}</Button><Button disabled={disabled || referenced || runtimeBusy} iconName="trash" onClick={() => onDelete(runtime)} variant="quiet">{t('launcher.deleteRuntime')}</Button></div></div><dl className="launcher-metadata"><Meta label={t('launcher.nodeVersion')} value={runtime.nodeVersion} />{runtime.npmVersion ? <Meta label={t('launcher.npmVersion')} value={runtime.npmVersion} /> : null}<Meta label={t('launcher.installedAt')} value={formatDate(runtime.installedAt)} /><Meta label={t('launcher.storage')} value={t('launcher.files', { count: runtime.fileCount, size: formatBytes(runtime.byteLength) })} /></dl><details className="launcher-runtime-details"><summary>{t('launcher.runtimeArtifactDetails')}</summary><dl className="launcher-paths"><Meta label={t('launcher.adapter')} value={t('launcher.nodeAdapterDescription')} /><Meta label={t('launcher.source')} value={runtime.source} mono /><Meta label={t('launcher.sourceDigest')} value={runtime.sourceSha256} mono /><Meta label={t('launcher.contentDigest')} value={runtime.contentSha256} mono /></dl></details>{references.length ? <div className="launcher-runtime-references"><strong>{t('launcher.runtimeReferences')}</strong><ul>{references.map((reference, index) => <li key={index}>{t(`launcher.referenceKinds.${reference.kind}`)} - {reference.name}</li>)}</ul></div> : null}</section>;
+      return <section className="launcher-card" data-dsh-runtime={runtime.id} key={runtime.id}><div className="launcher-card-heading"><div className="launcher-heading-icon"><Icon name="archive" size={22} /><div><h2>{t('launcher.runtimeIdentity', { version: runtime.version })}</h2><span>{t('launcher.referenced', { count })}</span>{bundled ? <span className="launcher-badge">{t('launcher.bundledRuntime')}</span> : null}</div></div><div className="launcher-actions"><Button disabled={disabled || runtimeBusy} iconName="check" onClick={() => void run({ type: 'runtime.verify', runtimeId: runtime.id })}>{t('launcher.verify')}</Button><Button disabled={disabled || bundled || referenced || runtimeBusy} iconName="trash" onClick={() => onDelete(runtime)} variant="quiet">{t('launcher.deleteRuntime')}</Button></div></div><dl className="launcher-metadata"><Meta label={t('launcher.nodeVersion')} value={runtime.nodeVersion} />{runtime.npmVersion ? <Meta label={t('launcher.npmVersion')} value={runtime.npmVersion} /> : null}<Meta label={t('launcher.installedAt')} value={formatDate(runtime.installedAt)} /><Meta label={t('launcher.storage')} value={t('launcher.files', { count: runtime.fileCount, size: formatBytes(runtime.byteLength) })} /></dl><details className="launcher-runtime-details"><summary>{t('launcher.runtimeArtifactDetails')}</summary><dl className="launcher-paths"><Meta label={t('launcher.adapter')} value={t('launcher.nodeAdapterDescription')} /><Meta label={t('launcher.source')} value={runtime.source} mono /><Meta label={t('launcher.sourceDigest')} value={runtime.sourceSha256} mono /><Meta label={t('launcher.contentDigest')} value={runtime.contentSha256} mono /></dl></details>{references.length ? <div className="launcher-runtime-references"><strong>{t('launcher.runtimeReferences')}</strong><ul>{references.map((reference, index) => <li key={index}>{t(`launcher.referenceKinds.${reference.kind}`)} - {reference.name}</li>)}</ul></div> : null}</section>;
     }) : null}
   </div>;
 }

@@ -1,4 +1,5 @@
 .bot-history-backdrop { position:absolute;inset:var(--shell-toolbar-height,44px) 0 0;z-index:var(--ui-layer-modal-backdrop);display:grid;place-items:center;padding:24px;background:color-mix(in srgb,var(--ui-content-primary) 12%,transparent);backdrop-filter:blur(3px); }
+.bot-history-backdrop[hidden] { display:none; }
 .bot-history-dialog { display:flex;flex-direction:column;width:min(820px,100%);height:min(780px,100%);min-height:0;overflow:hidden;border:1px solid var(--ui-border-subtle);border-radius:16px;background:var(--ui-surface-raised);box-shadow:0 24px 80px color-mix(in srgb,var(--ui-content-primary) 18%,transparent); }
 .bot-history-heading { display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px 28px 14px;flex-shrink:0; }
 .bot-history-heading>div { display:flex;align-items:baseline;gap:12px;min-width:0; }

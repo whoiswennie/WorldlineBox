@@ -11,6 +11,7 @@ export class BlinkController {
   private random: () => number;
   private nextBlinkAt = 0;
   private blinkStartedAt: number | null = null;
+  private reachedClosure = false;
   private doubleBlinkQueued = false;
   private rate: number;
 
@@ -30,6 +31,7 @@ export class BlinkController {
   update(timeSeconds: number, focusLevel: number): BlinkState {
     if (this.blinkStartedAt === null && timeSeconds >= this.nextBlinkAt) {
       this.blinkStartedAt = timeSeconds;
+      this.reachedClosure = false;
     }
 
     if (this.blinkStartedAt === null) {
@@ -41,6 +43,15 @@ export class BlinkController {
     const holdDuration = 0.035;
     const openDuration = 0.13;
     const total = closeDuration + holdDuration + openDuration;
+    if (!this.reachedClosure && elapsed >= closeDuration) {
+      this.reachedClosure = true;
+      // A slower renderer can skip the entire closed phase between frames.
+      // Show the closure once and continue the opening on subsequent frames.
+      if (elapsed > closeDuration + holdDuration) {
+        this.blinkStartedAt = timeSeconds - closeDuration;
+        return { eyeBlinkL: 1, eyeBlinkR: 1 };
+      }
+    }
     let blink = 0;
 
     if (elapsed <= closeDuration) {

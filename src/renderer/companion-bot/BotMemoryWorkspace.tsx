@@ -63,12 +63,27 @@ function visibleTabStop(element: HTMLElement): boolean {
   return true;
 }
 /** Wide, audience-scoped memory management surface. A keyed body retires every request on a scope change. */
-export function BotMemoryWorkspace({ api, conversationId, companions, locale, title, onClose }: {
-  api: WorldlineBoxBotApi; conversationId: string; companions: readonly BotCompanion[]; locale: Locale; title: string; onClose(): void;
+export function BotMemoryWorkspace({ api, conversationId, companions, locale, title, onClose, suspended = false }: {
+  api: WorldlineBoxBotApi; conversationId: string; companions: readonly BotCompanion[]; locale: Locale; title: string; onClose(): void; suspended?: boolean;
 }) {
   const t = labels[locale], [owner, setOwner] = useState(companions[0]?.id ?? ''), [tab, setTab] = useState<'archive' | 'recall' | 'maintenance'>('archive'), container = useRef<HTMLElement>(null);
   const companion = companions.find(item => item.id === owner) ?? companions[0];
-  useEffect(() => { const previous = document.activeElement; container.current?.focus(); return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); }; }, []);
+  useEffect(() => {
+    if (suspended) return;
+    const previous = document.activeElement;
+    container.current?.focus();
+    return () => { if (previous instanceof HTMLElement && previous.isConnected) previous.focus(); };
+  }, [suspended]);
+  useEffect(() => {
+    if (suspended) return;
+    const closeAfterFocusLoss = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (event.target instanceof Node && container.current?.contains(event.target)) return;
+      onClose();
+    };
+    document.addEventListener('keydown', closeAfterFocusLoss);
+    return () => document.removeEventListener('keydown', closeAfterFocusLoss);
+  }, [onClose, suspended]);
   const keyboard = (event: KeyboardEvent<HTMLElement>) => {
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') { event.stopPropagation(); onClose(); }
@@ -78,7 +93,7 @@ export function BotMemoryWorkspace({ api, conversationId, companions, locale, ti
     if (event.shiftKey && (document.activeElement === first || document.activeElement === container.current)) { event.preventDefault(); last?.focus(); }
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
   };
-  return <div className="bot-memory-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
+  return <div className="bot-memory-backdrop" hidden={suspended} onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="bot-memory-workspace" ref={container} tabIndex={-1} role="dialog" aria-modal="true" aria-label={t.title} onKeyDown={keyboard}>
       <header className="bot-memory-heading">
         <div className="bot-memory-identity" title={title}><BotAvatar companion={companion} /><strong>{companion?.name}</strong><span>·</span><h2>{t.workspace}</h2></div>
@@ -92,7 +107,7 @@ export function BotMemoryWorkspace({ api, conversationId, companions, locale, ti
 }
 function MemoryBody({ api, conversationId, companion, locale, tab }: { api: WorldlineBoxBotApi; conversationId: string; companion: BotCompanion; locale: Locale; tab: 'archive' | 'recall' | 'maintenance' }) {
   const t = labels[locale];
-  const [catalog, setCatalog] = useState<BotMemoryCatalog>({ items: [], tags: [] }), [loading, setLoading] = useState(true), [error, setError] = useState(''), [notice, setNotice] = useState('');
+  const [catalog, setCatalog] = useState<BotMemoryCatalog>({ items: [], tags: [] }), [loading, setLoading] = useState<'page' | 'refresh' | undefined>('page'), [error, setError] = useState(''), [notice, setNotice] = useState('');
   const [search, setSearch] = useState(''), [query, setQuery] = useState(''), [tag, setTag] = useState('');
   const [cursor, setCursor] = useState<string>(), [previous, setPrevious] = useState<Array<string | undefined>>([]);
   const [selected, setSelected] = useState<Record<string, BotMemoryCatalogItem>>({}), [note, setNote] = useState<BotMemoryFullNote>(), [noteLoading, setNoteLoading] = useState(false), [activeId, setActiveId] = useState('');
@@ -107,30 +122,54 @@ function MemoryBody({ api, conversationId, companion, locale, tab }: { api: Worl
     return result.memory;
   }, [api, t]);
   const scope = { conversationId, companionId: companion.id };
-  const load = useCallback(async (quiet = false) => {
+  const load = useCallback(async (mode: 'page' | 'refresh' | 'poll' = 'page') => {
+    const quiet = mode === 'poll';
     if (quiet && catalogInFlight.current) return;
     const revision = ++listRevision.current; catalogInFlight.current = true;
-    if (!quiet) { automaticRefreshes.current = 0; setLoading(true); setError(''); }
+    if (mode !== 'poll') { automaticRefreshes.current = 0; setLoading(mode); setError(''); }
     try {
       const raw = record(await call({ type: 'memory.catalog', conversationId, companionId: companion.id, query: query || undefined, tag: tag || undefined, cursor, limit: 24 }));
       if (!Array.isArray(raw.items) || !Array.isArray(raw.tags)) throw new Error(t.receipt);
-      if (alive.current && revision === listRevision.current) setCatalog({ ...raw, items: raw.items.slice(0, 24) } as unknown as BotMemoryCatalog);
-    } catch (error) { if (alive.current && revision === listRevision.current && !quiet) { setCatalog({ items: [], tags: [] }); setError(failure(error, t)); } }
-    finally { if (revision === listRevision.current) { catalogInFlight.current = false; if (alive.current && !quiet) setLoading(false); } }
+      if (alive.current && revision === listRevision.current) {
+        const next = { ...raw, items: raw.items.slice(0, 24) } as unknown as BotMemoryCatalog;
+        const serialized = JSON.stringify(next);
+        setCatalog(current => JSON.stringify(current) === serialized ? current : next);
+      }
+    } catch (error) {
+      if (alive.current && revision === listRevision.current && !quiet) {
+        if (mode === 'page') setCatalog({ items: [], tags: [] });
+        setError(failure(error, t));
+      }
+    } finally {
+      if (revision === listRevision.current) {
+        catalogInFlight.current = false;
+        if (alive.current && !quiet) setLoading(undefined);
+      }
+    }
   }, [call, conversationId, companion.id, query, tag, cursor, t]);
   // IPC synchronization intentionally exposes pending state before the request;
   // results settle asynchronously and are fenced by the request revision.
   // eslint-disable-next-line react-hooks/set-state-in-effect -- start external catalog synchronization with its loading indicator
   useEffect(() => { void load(); }, [load]);
+  const activity = catalog.activity;
+  const pendingCapture = !!activity && activity.capture.queued + activity.capture.running + activity.originals.pending > 0;
   useEffect(() => {
-    const activity = catalog.activity;
-    if (tab !== 'archive' || !activity || !(activity.capture.queued + activity.capture.running + activity.originals.pending) || automaticRefreshes.current >= 12) return;
-    const timer = setTimeout(() => {
-      if (!alive.current || mutationLock.current) return;
-      automaticRefreshes.current++; void load(true);
-    }, 2500);
-    return () => clearTimeout(timer);
-  }, [catalog, load, tab]);
+    if (tab !== 'archive' || !pendingCapture || loading) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      if (stopped || automaticRefreshes.current >= 12) return;
+      timer = setTimeout(async () => {
+        if (!mutationLock.current && !catalogInFlight.current) {
+          automaticRefreshes.current++;
+          await load('poll');
+        }
+        schedule();
+      }, 2500);
+    };
+    schedule();
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [pendingCapture, load, loading, tab]);
   const read = async (id: string) => {
     const revision = ++noteRevision.current; setActiveId(id); setNote(undefined); setNoteLoading(true); setError(''); setEditing(false); setOrganizing(false); setCreating(false); createRequestId.current = undefined; setConfirmForget(false);
     try {
@@ -161,7 +200,7 @@ function MemoryBody({ api, conversationId, companion, locale, tab }: { api: Worl
       setNotice(kind === 'create' ? t.created : kind === 'forget' ? t.forgotten : kind === 'update' ? t.saved : t.organized); setEditing(false); setOrganizing(false); setCreating(false); setConfirmForget(false);
       if (kind === 'forget') { setNote(undefined); setActiveId(''); setSelected(current => Object.fromEntries(Object.entries(current).filter(([id]) => id !== note!.id))); }
       else { if (kind === 'organize') setSelected({}); if (kind === 'create') { setSearch(''); setQuery(''); setTag(''); setCursor(undefined); setPrevious([]); } await read(String(kind === 'create' ? created[0]!.id : receipt.id)); }
-      if (alive.current) await load();
+      if (alive.current) await load('refresh');
     } catch (error) { if (alive.current) setError(failure(error, t)); }
     finally { mutationLock.current = false; if (alive.current) setMutating(false); }
   };
@@ -174,15 +213,15 @@ function MemoryBody({ api, conversationId, companion, locale, tab }: { api: Worl
         <label className="bot-memory-search"><BotIcon name="search" /><input type="search" aria-label={t.search} placeholder={t.searchHint} disabled={mutating} value={search} maxLength={400} onChange={event => setSearch(event.target.value)} /><button type="submit" disabled={mutating}>{t.filter}</button></label>
         <label className="bot-memory-tag-filter"><BotIcon name="memory" /><select aria-label={t.tags} disabled={mutating} value={tag} onChange={event => { resetPage(); setTag(event.target.value); }}><option value="">{t.allTags}</option>{catalog.tags.map(item => <option key={item.name} value={item.name}>{item.name} ({item.count})</option>)}</select><span>{catalog.total === undefined ? '—' : catalog.total} {t.total}</span></label>
       </form>
-      {catalog.activity && <MemoryActivity activity={catalog.activity} locale={locale} onRefresh={() => void load()} disabled={loading || mutating} />}
-      <div className="bot-memory-list" aria-busy={loading}>{loading ? <p className="bot-memory-empty">{t.loading}</p> : !catalog.items.length ? <div className="bot-memory-empty"><BotIcon name="memory" /><strong>{catalog.activity && !query && !tag ? locale === 'zh-CN' ? '还没有提炼出的日记' : 'No distilled notes yet' : t.empty}</strong><span>{catalog.activity && !query && !tag ? locale === 'zh-CN' ? '原话保留情况见上方，也可以通过“原话关键词”回查。' : 'See archived originals above, or search History keywords.' : t.emptyHint}</span></div>
+      {catalog.activity && <MemoryActivity activity={catalog.activity} locale={locale} onRefresh={() => void load('refresh')} disabled={!!loading || mutating} />}
+      <div className="bot-memory-list" aria-busy={!!loading}>{loading === 'page' || (loading && !catalog.items.length) ? <p className="bot-memory-empty">{t.loading}</p> : !catalog.items.length ? <div className="bot-memory-empty"><BotIcon name="memory" /><strong>{catalog.activity && !query && !tag ? locale === 'zh-CN' ? '还没有提炼出的日记' : 'No distilled notes yet' : t.empty}</strong><span>{catalog.activity && !query && !tag ? locale === 'zh-CN' ? '原话保留情况见上方，也可以通过“原话关键词”回查。' : 'See archived originals above, or search History keywords.' : t.emptyHint}</span></div>
         : catalog.items.map(item => <article key={item.id} className={`bot-memory-row${activeId === item.id ? ' is-active' : ''}`} data-memory-note={item.id}>
           <input type="checkbox" aria-label={`${t.select} ${item.content?.slice(0, 32) || item.id}`} checked={!!selected[item.id]} disabled={mutating || !['indexed', 'pending'].includes(item.indexState) || !checksumValid(item.checksum) || selection.length >= 16 && !selected[item.id]} onChange={event => {
             const checked = event.target.checked; setSelected(current => { const next = { ...current }; if (checked && Object.keys(next).length < 16) next[item.id] = item; else delete next[item.id]; return next; });
           }} />
           <button type="button" className="bot-memory-row-open" disabled={mutating} onClick={() => void read(item.id)}><strong>{item.content?.split('\n').find(line => line.trim())?.slice(0, 64) || item.id.slice(0, 12)}</strong><p>{item.content?.split('\n').slice(1).join(' ').slice(0, 150) || item.content?.slice(64, 200) || ''}</p><div className="bot-memory-row-tags">{item.tags?.slice(0, 3).map(value => <span key={value}>{value}</span>)}</div><footer><time>{stamp(item.updatedAt || item.createdAt, locale, t.unprovided)}</time><small data-state={item.indexState}>{stateLabel(item.indexState, t)}</small></footer></button>
         </article>)}</div>
-      <div className="bot-memory-pagination"><button type="button" className="is-primary" aria-label={t.newNote} disabled={mutating || creating} onClick={beginCreate}><BotIcon name="plus" />{t.newNote}</button><button type="button" disabled={loading || mutating || !previous.length} onClick={() => { setCursor(previous.at(-1)); setPrevious(current => current.slice(0, -1)); }}>{t.previous}</button><span>{previous.length + 1} {t.page}</span><button type="button" disabled={loading || mutating || !catalog.nextCursor} onClick={() => { setPrevious(current => [...current, cursor]); setCursor(catalog.nextCursor); }}>{t.next}</button></div>
+      <div className="bot-memory-pagination"><button type="button" className="is-primary" aria-label={t.newNote} disabled={mutating || creating} onClick={beginCreate}><BotIcon name="plus" />{t.newNote}</button><button type="button" disabled={!!loading || mutating || !previous.length} onClick={() => { setCursor(previous.at(-1)); setPrevious(current => current.slice(0, -1)); }}>{t.previous}</button><span>{previous.length + 1} {t.page}</span><button type="button" disabled={!!loading || mutating || !catalog.nextCursor} onClick={() => { setPrevious(current => [...current, cursor]); setCursor(catalog.nextCursor); }}>{t.next}</button></div>
       {!!selection.length && <div className="bot-memory-selection"><span>{t.selected} <b>{selection.length}/16</b></span><button type="button" disabled={mutating} onClick={() => setSelected({})}>{t.clear}</button><button type="button" className="is-primary" disabled={mutating} onClick={() => { ++noteRevision.current; setNoteLoading(false); setCreating(false); createRequestId.current = undefined; setOrganizing(true); setEditing(false); setConfirmForget(false); setContent(''); setTags(''); setNotice(''); }}>{t.organize}</button></div>}
       </aside>
       <section className="bot-memory-reading" aria-busy={noteLoading || mutating}>

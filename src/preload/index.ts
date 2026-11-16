@@ -10,7 +10,7 @@ import { network } from './bridge/application-network';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
 import { companionBot } from './bridge/companion-bot';
-import { CALL_PET_CLOSED, CALL_PET_COMMAND, type CallPetApi, type CallPetCommand } from '../shared/companion-call-window';
+import { CALL_PET_CLOSED, CALL_PET_COMMAND, isCallPetWindowName, type CallPetApi, type CallPetCommand } from '../shared/companion-call-window';
 import { companionBotMedia } from './bridge/companion-bot-media';
 import { localSpeech } from './bridge/local-speech';
 import { automation } from './bridge/automation';
@@ -32,8 +32,10 @@ const e2eEnabled = process.env.WORLDLINEBOX_E2E === '1';
 const companionCallPet: CallPetApi = Object.freeze({
   supported: process.platform === 'win32',
   command(command: CallPetCommand) { ipcRenderer.send(CALL_PET_COMMAND, command); },
-  onClosed(listener: () => void) {
-    const handle = () => listener();
+  onClosed(listener: (name: string) => void) {
+    const handle = (_event: Electron.IpcRendererEvent, name: unknown) => {
+      if (isCallPetWindowName(name)) listener(name);
+    };
     ipcRenderer.on(CALL_PET_CLOSED, handle);
     return () => ipcRenderer.off(CALL_PET_CLOSED, handle);
   },
