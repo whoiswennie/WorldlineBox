@@ -39,8 +39,16 @@ async function discoverFiles(directory: string, depth = 0): Promise<string[]> {
   return files;
 }
 
-export async function readBotCallModel(root: string | undefined, companionId: string): Promise<BotCallModel | undefined> {
+export async function readBotCallModel(root: string | undefined, companionId: string, preferStaged = true): Promise<BotCallModel | undefined> {
   if (!root) return;
+  if (preferStaged) {
+    const staged = await readRegisteredModel(root, companionId, 'models-local.json');
+    if (staged) return staged;
+  }
+  return readRegisteredModel(root, companionId, 'models.json');
+}
+
+async function readRegisteredModel(root: string, companionId: string, registryFile: string): Promise<BotCallModel | undefined> {
   try {
     const base = await realpath(root);
     const read = async (file: string) => {
@@ -49,7 +57,7 @@ export async function readBotCallModel(root: string | undefined, companionId: st
       if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) throw Error('Model asset is outside the call directory.');
       return JSON.parse(await readFile(absolute, 'utf8')) as unknown;
     };
-    const registry = botCallModelRegistry.parse(await read('models.json'));
+    const registry = botCallModelRegistry.parse(await read(registryFile));
     if (!Object.hasOwn(registry, companionId)) return;
     const entry = registry[companionId]!;
     const folder = path.posix.dirname(entry.model), inModel = (file: string) => path.posix.join(folder, file);

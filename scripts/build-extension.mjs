@@ -110,6 +110,7 @@ async function bundleScriptEntries() {
     await build({
       configFile: false,
       root: rootDir,
+      publicDir: false,
       logLevel: 'warn',
       build: {
         target: 'chrome120',

@@ -39,16 +39,13 @@ test('plays the packaged ringtone from a fresh profile and stops it when ringing
     const privateAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
     if (privateAssets) {
       expect((await audio())?.duration).toBeCloseTo(127.147, 1);
-      await meeting.getByRole('button', { name: '接通', exact: true }).click();
-      await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible({ timeout: 30000 });
-      await expect(meeting.getByText('正在准备形象…', { exact: true })).toBeHidden({ timeout: 30000 });
-      await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
-      await expect.poll(audio).toMatchObject({ paused: true, src: null });
-      await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
-    } else {
-      await meeting.getByRole('button', { name: '取消', exact: true }).click();
     }
+    await meeting.getByRole('button', { name: '接通', exact: true }).click();
+    await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible({ timeout: 30000 });
+    await expect(meeting.getByText('正在准备形象…', { exact: true })).toBeHidden({ timeout: 30000 });
+    await expect(meeting.locator('.bot-call-live2d canvas')).toBeVisible();
     await expect.poll(audio).toMatchObject({ paused: true, src: null });
+    await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
     const file = privateAssets ? 'ringtones/phoebe.wav' : 'ringtone.wav';
     const duration = privateAssets ? 28.779 : 3.6;
     for (const name of ['菲比啾比', 'GPT']) {

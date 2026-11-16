@@ -1,0 +1,7 @@
+{
+  "builtin-dafeiyu": {
+    "model": "deepseek/call.model3.json",
+    "catalog": "deepseek/catalog.json",
+    "vts": "deepseek/大肥鱼.vtube.json"
+  }
+}

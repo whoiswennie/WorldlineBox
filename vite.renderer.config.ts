@@ -172,6 +172,7 @@ export default defineConfig({
           await access(path.join(output, "deepseek", "call.model3.json"));
         } else {
           await rm(path.join(output, "deepseek"), { recursive: true, force: true });
+          await rm(path.join(output, "models-local.json"), { force: true });
         }
         if (!privateRingtones) {
           await rm(path.join(output, "ringtones", "phoebe.wav"), { force: true });

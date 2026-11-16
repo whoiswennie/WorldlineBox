@@ -198,18 +198,27 @@ for (const [relative, original] of bundledCallRingtones) {
     : path.join(projectRoot, 'public', 'companion-call', relative);
   if (!wav.equals(readFileSync(source))) throw new Error(`Wrong call audio in package: ${relative}`);
 }
-if (localCallModel) {
-  const modelRoot = 'deepseek/';
-  const model = JSON.parse(asar.extractFile(asarPath, callAssetPath(modelRoot + 'call.model3.json')));
-  const { Moc, Textures, Physics } = model.FileReferences;
+function verifyCallModel(modelPath) {
+  const modelRoot = path.posix.dirname(modelPath);
+  const model = JSON.parse(asar.extractFile(asarPath, callAssetPath(modelPath)));
+  const { Moc, Textures, Physics, DisplayInfo, Expressions = [] } = model.FileReferences;
   if (!Moc || !Textures.length) throw new Error('Bundled Live2D manifest is missing its model or textures.');
-  for (const file of [Moc, ...Textures, Physics, 'MODEL-LICENSE.txt'].filter(Boolean)) {
-    const asset = asar.statFile(asarPath, callAssetPath(modelRoot + file));
+  for (const file of [Moc, ...Textures, Physics, DisplayInfo, ...Expressions.map(item => item.File), 'MODEL-LICENSE.txt'].filter(Boolean)) {
+    const asset = asar.statFile(asarPath, callAssetPath(path.posix.join(modelRoot, file)));
     if (!asset.size) throw new Error(`Empty bundled Live2D file: ${file}`);
   }
+}
+
+const callModels = JSON.parse(asar.extractFile(asarPath, callAssetPath('models.json')));
+if (callModels['builtin-dafeiyu']?.model !== 'arch-chan/arch-chan.model3.json') {
+  throw new Error('The built-in companion does not reference the bundled Arch-chan model.');
+}
+verifyCallModel(callModels['builtin-dafeiyu'].model);
+if (localCallModel) {
+  verifyCallModel('deepseek/call.model3.json');
 } else if (asarFiles.some(file => {
   const relative = file.replaceAll('\\', '/');
-  return relative.includes('/companion-call/deepseek/');
+  return relative.includes('/companion-call/deepseek/') || relative.endsWith('/companion-call/models-local.json');
 })) {
   throw new Error('The public package contains a private companion call asset.');
 }

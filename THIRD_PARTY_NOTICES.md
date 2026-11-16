@@ -120,7 +120,13 @@ SOFTWARE.
 
 Cabin World by VADS。应用附带上游 V1.1.0 的 Windows 运行文件和桥接资源，保持其原始内容；WorldlineBox 自己实现启动器界面与 DSH 插件。上游代码采用 MIT，美术、数据与文档采用 CC BY 4.0，Naiwa 素材的例外及 Godot 声明见随包的 `cabin-world/LICENSE`、`LICENSE-NOTES.md` 和 `third-party/`。 [Cabin World 原仓库](https://github.com/BabyBus2022/cabin-world) · [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
 
-感谢神宫凉子（原画、拆分）及霓虹猫_NeonNeko（Live2D 建模）提供 DeepSeek-chan。模型可供个人通过作者渠道获取，并在大肥鱼角色卡的「形象」页导入。Cubism Core、查看器和随包铃声的来源见通话素材声明。 [作者发布页面](https://www.bilibili.com/video/BV1KmxY66EZ3) · [通话素材声明](public/companion-call/NOTICE.md)
+### 伙伴通话素材
+
+Windows 和 Android 随包提供 RavioliMavioli 创作的 Arch-chan Live2D 模型，采用 CC0 1.0。随包文件将模型路径改为小写并配置了眨眼与口型参数。 [模型源文件](https://github.com/Speykious/arch-chan/tree/ed43dcf7e88d56f79d2e42fecb084bf6923f44e0/Live2D) · [CC0 授权文本](public/companion-call/arch-chan/MODEL-LICENSE.txt)
+
+感谢神宫凉子（原画、拆分）及霓虹猫_NeonNeko（Live2D 建模）提供 DeepSeek-chan。模型可供个人通过作者渠道获取，并在大肥鱼角色卡的「形象」页导入。项目合成的 `ringtone.wav` 和 `ringtones/dafeiyu.wav` 分别作为通用铃声和大肥鱼铃声随包提供。 [作者发布页面](https://www.bilibili.com/video/BV1KmxY66EZ3)
+
+`live2dcubismcore.min.js` 由 Live2D Inc. 提供，保留原始版权声明。 [Cubism Core](https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js) · [Live2D 专有软件许可](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)
 
 ## 本地语音识别：SenseVoiceSmall、sherpa-onnx 与 Silero VAD
 

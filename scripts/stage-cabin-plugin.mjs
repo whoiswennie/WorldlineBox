@@ -8,6 +8,7 @@ const target = path.join(root, '.tools', 'cabin-plugin-release', 'dsh-cabin-worl
 await mkdir(target, { recursive: true });
 await build({
   configFile: false,
+  publicDir: false,
   logLevel: 'warn',
   ssr: { noExternal: true },
   build: {
