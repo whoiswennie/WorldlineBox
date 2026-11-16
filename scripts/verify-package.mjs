@@ -185,6 +185,7 @@ const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
 const callAssetPath = relative => path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
 const privateCallAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
+const localCallModel = privateCallAssets || process.env.WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL === '1';
 const bundledCallRingtones = [['ringtone.wav', undefined], ['ringtones/dafeiyu.wav', 'dafeiyu.wav']];
 if (privateCallAssets) bundledCallRingtones.push(['ringtones/phoebe.wav', 'ringtone.wav']);
 for (const [relative, original] of bundledCallRingtones) {
@@ -197,20 +198,23 @@ for (const [relative, original] of bundledCallRingtones) {
     : path.join(projectRoot, 'public', 'companion-call', relative);
   if (!wav.equals(readFileSync(source))) throw new Error(`Wrong call audio in package: ${relative}`);
 }
-if (privateCallAssets) {
+if (localCallModel) {
   const modelRoot = 'deepseek/';
   const model = JSON.parse(asar.extractFile(asarPath, callAssetPath(modelRoot + 'call.model3.json')));
   const { Moc, Textures, Physics } = model.FileReferences;
   if (!Moc || !Textures.length) throw new Error('Bundled Live2D manifest is missing its model or textures.');
-  for (const file of [Moc, ...Textures, Physics].filter(Boolean)) {
+  for (const file of [Moc, ...Textures, Physics, 'MODEL-LICENSE.txt'].filter(Boolean)) {
     const asset = asar.statFile(asarPath, callAssetPath(modelRoot + file));
     if (!asset.size) throw new Error(`Empty bundled Live2D file: ${file}`);
   }
 } else if (asarFiles.some(file => {
   const relative = file.replaceAll('\\', '/');
-  return relative.includes('/companion-call/deepseek/') || relative.endsWith('/companion-call/ringtones/phoebe.wav');
+  return relative.includes('/companion-call/deepseek/');
 })) {
   throw new Error('The public package contains a private companion call asset.');
+}
+if (!privateCallAssets && asarFiles.some(file => file.replaceAll('\\', '/').endsWith('/companion-call/ringtones/phoebe.wav'))) {
+  throw new Error('The package contains a private companion ringtone.');
 }
 // Vendor-prefix optimization must not erase Chromium's actual fallback.
 // This checks emitted CSS rather than trusting the source declaration order.

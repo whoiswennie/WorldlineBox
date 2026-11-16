@@ -167,12 +167,16 @@ export default defineConfig({
       async writeBundle(options) {
         if (!options.dir) return;
         const output = path.resolve(options.dir, "companion-call");
-        if (process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS !== "1") {
+        const privateRingtones = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === "1";
+        if (privateRingtones || process.env.WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL === "1") {
+          await access(path.join(output, "deepseek", "call.model3.json"));
+        } else {
           await rm(path.join(output, "deepseek"), { recursive: true, force: true });
+        }
+        if (!privateRingtones) {
           await rm(path.join(output, "ringtones", "phoebe.wav"), { force: true });
           return;
         }
-        await access(path.join(output, "deepseek", "call.model3.json"));
         await mkdir(path.join(output, "ringtones"), { recursive: true });
         await Promise.all([...privateCallRingtones].map(([destination, original]) =>
           copyFile(path.join(originalCallRingtones, original), path.join(output, destination))));
