@@ -63,7 +63,7 @@ test('loads both built-in Live2D models in a clean video call without importing 
       const send = XMLHttpRequest.prototype.send;
       XMLHttpRequest.prototype.send = function (...args) {
         this.addEventListener('load', () => record(this.responseURL), { once: true });
-        return send.apply(this, args);
+        Reflect.apply(send, this, args);
       };
       const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
       Object.defineProperty(HTMLImageElement.prototype, 'src', {
