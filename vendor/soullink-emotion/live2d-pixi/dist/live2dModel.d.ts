@@ -13,6 +13,11 @@ export type Live2DModelInstance = PIXI.Container & {
         originalWidth?: number;
         originalHeight?: number;
         localTransform?: PIXI.Matrix;
+        draw?: (gl: WebGLRenderingContext) => void;
+        renderer?: {
+            saveProfile?: () => void;
+            restoreProfile?: () => void;
+        };
         getDrawableVertices?: (index: number) => Float32Array;
         eyeBlink?: unknown;
         physics?: {
@@ -47,6 +52,7 @@ export type Live2DModelInstance = PIXI.Container & {
                     minimumValues?: number[];
                     maximumValues?: number[];
                     defaultValues?: number[];
+                    values?: ArrayLike<number>;
                 };
             };
         };

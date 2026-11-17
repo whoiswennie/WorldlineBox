@@ -25,6 +25,7 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
   const assignPlayer=useCallback((element:HTMLMediaElement|null)=>{if(player.current&&player.current!==element)player.current.pause();player.current=element;},[]);
   const inline = variant === 'row' && media.kind !== 'sticker' && eligibility === 'inline' && ['image', 'audio', 'video'].includes(kind);
   const openPreview = () => { player.current?.pause(); setPreview(true); };
+  const enlarge = <button type="button" className="bot-attachment-enlarge" onClick={openPreview}>{zh ? '大窗查看' : 'Open viewer'}<BotIcon name="external" /></button>;
   const play = (current: HTMLMediaElement) => { for (const other of surface.querySelectorAll<HTMLMediaElement>('[data-bot-attachment-player]')) if (other !== current) other.pause(); };
   const closePreview = useCallback(() => setPreview(false), []);
   const tile = variant === 'tile', sticker = variant === 'row' && media.kind === 'sticker' && kind === 'image' && eligibility === 'inline';
@@ -51,10 +52,11 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
       {kind === 'video' && !playbackFailed && !preview && <video ref={assignPlayer} data-bot-attachment-player controls playsInline preload="none" src={media.url} aria-label={name} onPlay={event => play(event.currentTarget)} onError={() => setPlaybackFailed(true)} />}
       {kind === 'audio' && !playbackFailed && !preview && <audio ref={assignPlayer} data-bot-attachment-player controls preload="none" src={media.url} aria-label={name} onPlay={event => play(event.currentTarget)} onError={() => setPlaybackFailed(true)} />}
       {playbackFailed && <small role="status">{zh ? '此格式无法直接播放，可用系统应用打开。' : 'Use your system app to play this format.'}</small>}
-      <button type="button" className="bot-attachment-enlarge" onClick={openPreview}>{zh ? '大窗查看' : 'Open viewer'}<BotIcon name="external" /></button>
+      {kind === 'audio'
+        ? <BotVoiceMessage key={media.id} media={media} conversationId={conversationId} locale={locale} transcriptOnly trailingAction={enlarge} />
+        : enlarge}
     </div>}
     {error && !preview && <small className="bot-attachment-action-error" role="alert">{error}</small>}
-    {kind === 'audio' && eligibility === 'inline' && variant === 'row' && <BotVoiceMessage media={media} conversationId={conversationId} locale={locale} transcriptOnly />}
     {preview && kind !== 'file' && <BotMediaPreview media={media} api={api} conversationId={conversationId} locale={locale} kind={kind} imageUrl={imageUrl} onClose={closePreview} onOpenUrl={onOpenUrl} busy={saving || opening} actionError={error} onSave={api ? () => perform('attachment.save') : undefined} onSystemOpen={api ? () => perform('attachment.open') : undefined} />}
   </div>;
 }

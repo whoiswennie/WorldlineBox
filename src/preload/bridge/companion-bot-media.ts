@@ -4,6 +4,7 @@ import { resolveDroppedFilePaths } from '../dropped-files';
 
 const grantedDrops=new Set<string>();
 export const companionBotMedia:WorldlineBoxBotMediaApi=Object.freeze({
+  desktopCaptureSupported: process.platform === 'win32',
   hasClipboardFiles(conversationId:string){
     const parsed=botMediaRequestSchema.safeParse({type:'files.paste',conversationId});
     return parsed.success&&ipcRenderer.sendSync(BOT_MEDIA_CLIPBOARD_CHANNEL,parsed.data.conversationId)===true;

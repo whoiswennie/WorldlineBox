@@ -264,7 +264,8 @@ export async function startMobileGateway(options: Options) {
       const updates = messages.filter(message => tracked.has(message.id) || message.status === 'running' || message.status === 'queued').slice(-24);
       const projected = history ? messages : [...new Map([...selected, ...updates].map(message => [message.id, message])).values()].sort((a,b) => a.sequence - b.sequence);
       const projectedRoom = result.conversationId ?? ('conversationId' in input ? input.conversationId : undefined);
-      const meeting = !!projectedRoom && !!bot.store.getConversation(projectedRoom)?.meeting;
+      const meeting = input.type === 'call.open' || input.type === 'state' && input.surface === 'call'
+        || !!projectedRoom && bot.store.getConversation(projectedRoom)?.kind === 'direct';
       return json(res, 200, { ok: true, conversationId: result.conversationId, callStage: result.callStage,
         callModel: result.callModel && !result.callModel.modelUrl ? { model: result.callModel.model, manifest: result.callModel.manifest, vts: result.callModel.vtsParameters } : undefined,
         message: sent ? projectMessage(sent) : undefined, snapshot: {
@@ -294,7 +295,7 @@ export async function startMobileGateway(options: Options) {
     if (method === 'GET' && url.pathname === '/mobile/v1/call-asset') {
       const room = bot.store.getConversation(roomId.data);
       const relative = url.searchParams.get('path') ?? '';
-      if (!room?.meeting || !options.callAssetsRoot || !/^[^:\\?#%\x00]+\.(?:js|json|moc3|png)$/iu.test(relative)
+      if (room?.kind !== 'direct' || !options.callAssetsRoot || !/^[^:\\?#%\x00]+\.(?:js|json|moc3|png)$/iu.test(relative)
           || relative.split('/').some(segment => !segment || segment === '.' || segment === '..')) {
         throw new RequestError(404, '会面形象资源不可用。');
       }

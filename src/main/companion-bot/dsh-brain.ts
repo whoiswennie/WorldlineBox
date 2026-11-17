@@ -22,6 +22,7 @@ export interface BotDshAudience { conversationId: string; kind: 'direct' | 'grou
 export interface BotDshRun {
   audience?: BotDshAudience;
   laneId: string; eventId: string; cwd: string; system: string; prompt: string;
+  observationImages?: { data: string; name: string }[];
   model: BotDshModel; tools: readonly BotDshTool[]; callback: BotDshCallback;
   role?: 'brain' | 'worker'; instanceId?: string; signal?: AbortSignal;
   /** A user explicitly resumed this task after stopping its execution Host. */
@@ -204,6 +205,7 @@ export class BotDshBrain {
     try {
       const admitted = await client.request<{ accepted: boolean; result?: BotDshResult }>(`/bot/lanes/${sessionId}/turn`, {
         eventId: input.eventId, prompt: input.prompt, continueAfterSeq: input.continueAfterSeq, continuationPrompt: input.continuationPrompt, taskContinuation: input.taskContinuation,
+        observationImages: input.observationImages,
       }, input.signal);
       if (admitted.result) {
         terminal = true;

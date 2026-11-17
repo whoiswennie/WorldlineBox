@@ -19,7 +19,7 @@ export const localSpeechRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type LocalSpeechRequest = z.infer<typeof localSpeechRequestSchema>;
 export interface LocalSpeechStatus { phase: 'unprepared' | 'preparing' | 'standby' | 'loading' | 'ready' | 'transcribing' | 'failed'; completedBytes?: number; totalBytes?: number; error?: string }
-export interface LocalSpeechTranscript { text: string; audioSeconds: number; engine: 'sensevoice-int8-cpu' }
+export interface LocalSpeechTranscript { text: string; audioSeconds: number; engine: 'sensevoice-int8-cpu'; truncated?: true }
 export interface LocalSpeechResponse { ok: boolean; cancelled?: boolean; error?: string; status?: LocalSpeechStatus; transcript?: LocalSpeechTranscript; media?: BotMediaRef }
 export interface WorldlineBoxLocalSpeechApi { request(input: LocalSpeechRequest): Promise<LocalSpeechResponse> }
 

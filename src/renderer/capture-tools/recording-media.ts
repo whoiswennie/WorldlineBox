@@ -27,7 +27,7 @@ export function recordingBitrate(width: number, height: number) {
   return Math.round(Math.max(4_000_000, Math.min(16_000_000, width * height * 3)));
 }
 export function recordingMimeType(supported: (value: string) => boolean, audio: boolean) {
-  return (audio ? ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'] : ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']).find(supported) ?? '';
+  return (audio ? ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm'] : ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm']).find(supported) ?? '';
 }
 export function recordingClock(milliseconds: number) {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));

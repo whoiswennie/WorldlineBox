@@ -13,7 +13,8 @@ afterEach(async () => { for (const root of roots.splice(0)) {
 } });
 async function fixture(pointer = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-lfs-source-')); roots.push(root);
-  const directory = path.join(root, 'public/companion-call/deepseek'); await mkdir(directory, { recursive: true });
+  const directory = path.join(root, 'public/companion-call/dafeiyu'); await mkdir(directory, { recursive: true });
+  await writeFile(path.join(root, 'public/companion-call/models.json'), JSON.stringify({ 'builtin-dafeiyu': { model: 'dafeiyu/call.model3.json' } }));
   await writeFile(path.join(directory, 'call.model3.json'), JSON.stringify({ FileReferences: { Moc: 'model.moc3', Textures: ['texture.png'] } }));
   await writeFile(path.join(directory, 'model.moc3'), pointer ? 'version https://git-lfs.github.com/spec/v1\noid sha256:fixture\nsize 2048\n' : 'MOC3fixture');
   await writeFile(path.join(directory, 'texture.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
@@ -30,7 +31,7 @@ it('repairs a skipped LFS checkout and verifies the files again', async () => {
     return { status: 0 };
   });
   expect(await prepareSourceLfs(root, git)).toEqual({ verified: 2, hydrated: true });
-  expect(git.mock.calls.map(call => call[0])).toEqual([['lfs', 'version'], ['lfs', 'pull', '--include=public/companion-call/deepseek/**', '--exclude=']]);
+  expect(git.mock.calls.map(call => call[0])).toEqual([['lfs', 'version'], ['lfs', 'pull', '--include=public/companion-call/dafeiyu/**', '--exclude=']]);
 });
 it('rejects a successful Git exit that left pointers behind', async () => {
   const { root } = await fixture(true);

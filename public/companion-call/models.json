@@ -1,6 +1,12 @@
 {
   "builtin-dafeiyu": {
-    "model": "arch-chan/arch-chan.model3.json",
-    "catalog": "arch-chan/catalog.json"
+    "model": "dafeiyu/call.model3.json",
+    "catalog": "dafeiyu/catalog.json",
+    "vts": "dafeiyu/大肥鱼.vtube.json"
+  },
+  "yachiyo-runami": {
+    "model": "yachiyo/八千代辉夜姬.model3.json",
+    "catalog": "yachiyo/catalog.json",
+    "vts": "yachiyo/八千代辉夜姬.vtube.json"
   }
 }

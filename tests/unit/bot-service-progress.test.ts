@@ -6,6 +6,7 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotCabinWorldApp } from '../../src/main/companion-bot/cabin-world-app';
+import type { BotEvent } from '../../src/shared/companion-bot';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -40,15 +41,16 @@ async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp) {
     override send(...args: Parameters<BotDshBrain['send']>) { return steer(...args); }
     override async archive() {}
   }({ getHost: host });
+  const events: BotEvent[] = [];
   const service = new BotService({ root, brain, memory, model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
-    cabinWorldApp, onEvent: () => undefined, report: error => { reported.push(error); } });
+    cabinWorldApp, onEvent: event => { events.push(event); }, report: error => { reported.push(error); } });
   const initial = (await service.handle({ type: 'state' })).snapshot!, conversationId = initial.conversations[0]!.id;
   cleanups.push(async () => { preparation.resolve(); completion.resolve(); await service.shutdown(); await rm(root, { recursive: true, force: true }); });
   const send = (content = '你好', room = conversationId) => service.handle({ type: 'message.send', conversationId: room, content, requestId: 'controlled' });
-  const reply = async (room = conversationId) => (await service.handle({ type: 'state', conversationId: room })).snapshot!.messages.find(message => message.senderId !== 'user');
+  const reply = async (room = conversationId, surface?: 'call') => (await service.handle({ type: 'state', conversationId: room, surface })).snapshot!.messages.find(message => message.senderId !== 'user');
   let sequence = 0;
   const emit = (type: string, text?: string, toolName?: string) => run!.onEvent?.({ type, text, toolName, nativeStep: 4, sequence: ++sequence, receivedAt: new Date().toISOString() });
-  return { service, preparation, completion, reported, host, send, reply, emit, conversationId, steer, get run() { return run; }, get prepares() { return prepares; } };
+  return { service, preparation, completion, reported, host, send, reply, emit, conversationId, steer, events, get run() { return run; }, get prepares() { return prepares; } };
 }
 
 it('automatically observes each started or steered task, keeping the same evidence on delivery retry', async () => {
@@ -106,16 +108,21 @@ it('projects actual memory/model/compaction/tool phases, retaining text across t
 it('projects only the current step and short tool description into meeting progress', async () => {
   const f = await fixture();
   const meeting = (await f.service.handle({ type: 'call.open', conversationId: f.conversationId })).conversationId!;
-  await f.send('看一下文件', meeting); f.preparation.resolve(); await until(() => f.run);
+  expect(meeting).toBe(f.conversationId);
+  const sent = await f.service.handle({ type: 'message.send', conversationId: meeting, surface: 'call', content: '看一下文件', requestId: 'controlled' });
+  f.preparation.resolve(); await until(() => f.run);
   f.emit('reasoning', '内部推理正文');
   f.emit('tool_call', JSON.stringify({ description: '核对两份文件', command: 'SECRET' }), 'shell');
-  const active = await f.reply(meeting);
+  const active = await f.reply(meeting, 'call');
+  expect(active?.id).toBe(sent.replyMessageIds?.[0]);
+  expect((await f.reply())?.id).toBe(active?.id);
   expect(active).toMatchObject({ execution: { steps: [] }, progress: { phase: 'using-tool', toolName: 'shell', activity: { step: 4, summary: '核对两份文件' } } });
   expect(JSON.stringify(active)).not.toMatch(/SECRET|内部推理正文/u);
   f.emit('tool_result', '原始工具输出');
-  expect((await f.reply(meeting))?.progress).toEqual({ phase: 'preparing-context', toolName: undefined, activity: { step: 4, summary: undefined } });
+  expect((await f.reply(meeting, 'call'))?.progress).toEqual({ phase: 'preparing-context', toolName: undefined, activity: { step: 4, summary: undefined } });
   f.completion.resolve(); await until(async () => (await f.reply(meeting))?.status === 'sent' ? true : undefined);
   expect((await f.reply(meeting))?.progress).toBeUndefined();
+  expect((await f.reply())?.parts?.some(part => part.presentation && part.text === '你好，我在。')).toBe(true);
 });
 it('keeps a crashed memory preparation terminal and readable, preserves the source and reports the original technical error once', async () => {
   const original = Object.assign(new Error('Memory session closed (exit 3221226505)'), { code: 'MEMORY_SESSION_CLOSED' }), f = await fixture(original);

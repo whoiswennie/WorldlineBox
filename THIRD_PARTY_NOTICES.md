@@ -122,9 +122,11 @@ Cabin World by VADS。应用附带上游 V1.1.0 的 Windows 运行文件和桥�
 
 ### 伙伴通话素材
 
-Windows 和 Android 随包提供 RavioliMavioli 创作的 Arch-chan Live2D 模型，采用 CC0 1.0。随包文件将模型路径改为小写并配置了眨眼与口型参数。 [模型源文件](https://github.com/Speykious/arch-chan/tree/ed43dcf7e88d56f79d2e42fecb084bf6923f44e0/Live2D) · [CC0 授权文本](public/companion-call/arch-chan/MODEL-LICENSE.txt)
+Windows 和 Android 安装包经作者授权随包提供 DeepSeek-chan（大肥鱼）。原画及拆分为神宫凉子，Live2D 建模为霓虹猫_NeonNeko。 [模型使用须知](public/companion-call/dafeiyu/MODEL-LICENSE.txt) · [作者发布页面](https://www.bilibili.com/video/BV1KmxY66EZ3)
 
-感谢神宫凉子（原画、拆分）及霓虹猫_NeonNeko（Live2D 建模）提供 DeepSeek-chan。模型可供个人通过作者渠道获取，并在大肥鱼角色卡的「形象」页导入。项目合成的 `ringtone.wav` 和 `ringtones/dafeiyu.wav` 分别作为通用铃声和大肥鱼铃声随包提供。 [作者发布页面](https://www.bilibili.com/video/BV1KmxY66EZ3)
+月见八千代的角色设定参考《超时空辉夜姬！》官方资料和 Worldline 旧版伙伴设定。Windows 安装包内置雪熊企划制作的同人 Live2D 模型及头像，使用随世界线项目分发的授权版。 [随包分发许可](public/companion-call/yachiyo/MODEL-LICENSE.txt) · [官方角色资料](https://www.news.cho-kaguyahime.com/95/) · [雪熊企划发布页面](https://booth.pm/ja/items/8034348)
+
+项目合成的 `ringtone.wav` 和 `ringtones/dafeiyu.wav` 分别作为通用铃声和大肥鱼铃声随包提供。
 
 `live2dcubismcore.min.js` 由 Live2D Inc. 提供，保留原始版权声明。 [Cubism Core](https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js) · [Live2D 专有软件许可](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)
 

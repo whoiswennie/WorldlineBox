@@ -3,7 +3,7 @@ import type { Live2DRenderer } from '@soullink-emotion/live2d-pixi';
 import type { PartialFACSLikeState } from '@soullink-emotion/engine';
 import { type BotCallCue, type BotCallModel, type BotCallModelCatalog } from '../../shared/companion-call';
 import { botAssetUrl } from './BotAvatar';
-import { BOT_CALL_PORTRAIT_SCALE } from './call-presentation';
+import { BOT_CALL_ZOOM, usesAutomaticBotCallFraming, type BotCallFraming } from './call-preferences';
 import type { BotCallPerformance } from './call-performance';
 import { trackCallGaze } from './call-gaze';
 
@@ -18,12 +18,19 @@ export interface BotLive2DControls {
   presence?(value: 'idle' | 'waiting' | 'speaking'): void;
   audio?(value: number): void;
 }
-export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { model: BotCallModel; name: string; desktopPet: boolean; onReady(controls: BotLive2DControls): void; onError(message: string): void }) {
+export function BotLive2DStage({ model, name, desktopPet, framing, onReady, onError }: { model: BotCallModel; name: string; desktopPet: boolean; framing: BotCallFraming; onReady(controls: BotLive2DControls): void; onError(message: string): void }) {
   const host = useRef<HTMLDivElement>(null), performanceLayer = useRef<BotCallPerformance>(undefined), controls = useRef<BotLive2DControls>(undefined);
   const minimumResolution = useRef(1);
-  useLayoutEffect(() => { minimumResolution.current = desktopPet ? 2 : 1; }, [desktopPet]);
+  const frameRenderer = useRef<Live2DRenderer>(undefined);
+  const initialFraming = useRef(framing);
+  useLayoutEffect(() => {
+    minimumResolution.current = desktopPet ? 2 : 1;
+    frameRenderer.current?.syncFrameClock();
+  }, [desktopPet]);
+  useLayoutEffect(() => { initialFraming.current = framing; }, [framing]);
   useEffect(() => {
-    let cancelled = false, frame = 0, loaded = false, disposed = false, renderer: Live2DRenderer | undefined, resize: ResizeObserver | undefined, gaze: ReturnType<typeof trackCallGaze> | undefined;
+    let cancelled = false, loaded = false, disposed = false, renderer: Live2DRenderer | undefined, resize: ResizeObserver | undefined, gaze: ReturnType<typeof trackCallGaze> | undefined;
+    let stopFrame: (() => void) | undefined;
     let disposeAvatar: (() => void) | undefined;
     const dispose = () => { if (renderer && !disposed) { disposed = true; renderer.destroy(); } };
     const load = async () => {
@@ -31,6 +38,7 @@ export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { 
       const [{ Live2DRenderer, createScriptTagCubismLoader }, { createCallAvatar }] = await Promise.all([import('@soullink-emotion/live2d-pixi'), import('./call-avatar'), import('@pixi/unsafe-eval')]);
       if (cancelled || !host.current) return;
       const modelUrl = model.modelUrl ?? botAssetUrl('companion-call/' + model.model);
+      const automaticFraming = usesAutomaticBotCallFraming(model);
       const catalog = model.assets;
       const loadCore = createScriptTagCubismLoader(botAssetUrl('companion-call/live2dcubismcore.min.js'));
       renderer = new Live2DRenderer(host.current, { cubismLoader: async () => {
@@ -42,7 +50,18 @@ export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { 
         }
         throw Error('Live2D 运行库初始化超时。');
       } });
-      const parameters = await renderer.load(modelUrl, { automaticIdle: false, animations: model.manifest });
+      frameRenderer.current = renderer;
+      renderer.syncViewport(minimumResolution.current);
+      let { scale: viewScale, x: viewX, y: viewY, fullBody } = initialFraming.current;
+      const viewOffset = () => {
+        const width = host.current?.clientWidth ?? 0, height = host.current?.clientHeight ?? 0;
+        const portraitOffset = automaticFraming || fullBody ? 0 : Math.max(0, viewScale - 1) * .48;
+        return { x: width * viewX, y: height * (viewY + portraitOffset) };
+      };
+      renderer.setFullBody(fullBody);
+      renderer.setViewScale(viewScale);
+      renderer.setViewOffset(viewOffset());
+      const parameters = await renderer.load(modelUrl, { automaticIdle: false, automaticFraming, animations: model.manifest });
       await renderer.prepareNativeAnimations(catalog.expressions.map(item => item.name), catalog.motions);
       loaded = true;
       if (cancelled) { dispose(); return; }
@@ -50,7 +69,6 @@ export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { 
       performanceLayer.current = avatar.performance;
       disposeAvatar = avatar.dispose;
       gaze = trackCallGaze(host.current!, avatar.performance, undefined, false);
-      let viewScale = BOT_CALL_PORTRAIT_SCALE, viewX = 0, viewY = 0, fullBody = false;
       const reportFigure = () => {
         const bounds = renderer!.getFigureBounds();
         const node = host.current;
@@ -61,10 +79,9 @@ export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { 
         }
       };
       const frameView = (value = viewScale) => {
-        viewScale = Math.max(.4, Math.min(3, value));
-        const width = host.current?.clientWidth ?? 0, height = host.current?.clientHeight ?? 0;
+        viewScale = Math.max(BOT_CALL_ZOOM.min, Math.min(BOT_CALL_ZOOM.max, value));
         renderer!.setViewScale(viewScale);
-        renderer!.setViewOffset({ x: width * viewX, y: height * (viewY + (fullBody ? 0 : Math.max(0, viewScale - 1) * .48)) });
+        renderer!.setViewOffset(viewOffset());
         reportFigure();
       };
       frameView(); resize = new ResizeObserver(() => frameView()); resize.observe(host.current!);
@@ -83,13 +100,12 @@ export function BotLive2DStage({ model, name, desktopPet, onReady, onError }: { 
           reportFigure();
         }
         avatar.update(minimumResolution.current > 1 ? host.current?.ownerDocument.defaultView ?? undefined : undefined);
-        frame = requestAnimationFrame(update);
       };
       let lastRatio: number | undefined, lastMinimum = 0;
-      update(); onReady(controls.current);
+      update(); stopFrame = renderer.onFrame(update); onReady(controls.current);
     };
     void load().catch(error => { loaded = true; if (!cancelled) onError(error instanceof Error ? error.message : '形象暂时无法载入。'); dispose(); });
-    return () => { cancelled = true; cancelAnimationFrame(frame); resize?.disconnect(); gaze?.stop(); disposeAvatar?.(); performanceLayer.current = undefined; controls.current = undefined; if (loaded) dispose(); };
+    return () => { cancelled = true; stopFrame?.(); resize?.disconnect(); gaze?.stop(); disposeAvatar?.(); performanceLayer.current = undefined; controls.current = undefined; frameRenderer.current = undefined; if (loaded) dispose(); };
   }, [model, name, onReady, onError]);
   return <div className="bot-call-live2d" ref={host} aria-label={name + ' Live2D'} />;
 }

@@ -1,8 +1,6 @@
 import { readFile, writeFile, mkdir, cp, readdir, lstat } from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import AdmZip from 'adm-zip';
 
 const args = process.argv.slice(2), option = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : undefined; };
 const project = process.cwd();
@@ -24,21 +22,21 @@ if (reference) {
       lib: ['ES2022', 'DOM'], strict: true, skipLibCheck: true, declaration: true, outDir: 'dist', rootDir: 'src' }, include: ['src/**/*.ts'] }, null, 2));
   }
 }
-const archive = option('--model');
+const bundledModel = option('--bundled-model');
 const assetRoot = path.resolve(project, 'public', 'companion-call');
-if (archive) {
-  const modelRoot = path.join(assetRoot, 'deepseek'); await mkdir(modelRoot, { recursive: true });
-  const bytes = await readFile(archive), zip = new AdmZip(bytes), prefix = 'DeepSeek免费公皮/DeepSeek/';
-  for (const entry of zip.getEntries()) {
-    const name = entry.entryName.replaceAll('\\', '/');
-    if (entry.isDirectory || !name.startsWith(prefix) || !/\.(?:json|moc3|png|txt)$/iu.test(name)) continue;
-    const relative = name.slice(prefix.length), target = path.resolve(modelRoot, relative);
-    if (!relative || !target.startsWith(modelRoot + path.sep) || entry.header.size > 80 * 1024 * 1024) throw Error('Invalid model archive entry');
-    await mkdir(path.dirname(target), { recursive: true }); await writeFile(target, entry.getData());
-  }
-  const creditsEntry = zip.getEntries().find(entry => entry.entryName.endsWith('DeepSeek免费 Live2D 模型使用须知.txt'));
-  if (creditsEntry) await writeFile(path.join(modelRoot, 'MODEL-LICENSE.txt'), creditsEntry.getData());
-  const model = JSON.parse(await readFile(path.join(modelRoot, '大肥鱼.model3.json'), 'utf8'));
+const noticeName = 'DeepSeek免费 Live2D 模型使用须知.txt';
+if (args.includes('--model')) throw Error('Use --bundled-model with the approved model directory.');
+if (bundledModel) {
+  const modelRoot = path.join(assetRoot, 'dafeiyu');
+  const modelDirectory = path.resolve(bundledModel);
+  const manifestSource = path.join(modelDirectory, '大肥鱼.model3.json');
+  const model = JSON.parse(await readFile(manifestSource, 'utf8'));
+  const notice = await readFile(path.join(path.dirname(modelDirectory), noticeName));
+  await cp(modelDirectory, modelRoot, { recursive: true, filter: async filename => {
+    const info = await lstat(filename);
+    return info.isDirectory() || (info.isFile() && filename !== manifestSource && /\.(?:json|moc3|png)$/iu.test(filename));
+  } });
+  await writeFile(path.join(modelRoot, 'MODEL-LICENSE.txt'), notice);
   const expressions = await Promise.all((await readdir(path.join(modelRoot, 'Exp3'))).filter(name => name.endsWith('.exp3.json')).map(async name => {
     const data = JSON.parse(await readFile(path.join(modelRoot, 'Exp3', name), 'utf8'));
     return { name: name.replace('.exp3.json', ''), file: 'Exp3/' + name, params: data.Parameters.map(parameter => parameter.Id) };
@@ -53,7 +51,7 @@ if (archive) {
   model.FileReferences.Motions = Object.fromEntries(['Idle', 'Interaction'].map(group => [group, motions.filter(item => item.group === group).map(item => ({ File: item.file, FadeInTime: .3, FadeOutTime: .3 }))]));
   await writeFile(path.join(modelRoot, 'call.model3.json'), JSON.stringify(model, null, 2));
   await writeFile(path.join(modelRoot, 'catalog.json'), JSON.stringify({ expressions, motions, credits: 'DeepSeek-chan（大肥鱼）｜原画及拆分：神宫凉子｜Live2D 建模：霓虹猫_NeonNeko',
-    license: 'MODEL-LICENSE.txt', sourceSha256: createHash('sha256').update(bytes).digest('hex'), redistribution: 'Original model license applies; local user-provided installation.' }, null, 2));
+    license: 'MODEL-LICENSE.txt' }, null, 2));
   process.stdout.write(`Model: ${expressions.length} expressions, ${motions.length} motions. PSD is excluded.\n`);
 }
 const privateRingtones = path.join(project, '.tools', 'original-call-ringtones');

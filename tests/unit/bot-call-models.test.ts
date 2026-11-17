@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { expect, it } from 'vitest';
 import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from '../../src/main/companion-bot/call-models';
+import { importLocalCallModel, pruneLocalCallModelImports, readLocalCallModel, resetLocalCallModel, serveLocalCallModel } from '../../src/main/companion-bot/local-call-model';
 import { BUILTIN_BOT_COMPANIONS } from '../../src/shared/builtin-bot-companions';
 
 it('discovers VTS animations and parameters without a catalog, while preserving declared motion indices', async () => {
@@ -51,4 +52,49 @@ it('gives every built-in a distinct portrait catalog and rejects cross-character
     expect(() => validateBotCallPerformance(profile, [{ text: '回应', motion: 'invented' }])).toThrow('动作无效');
   }
   expect(() => validateBotCallPerformance(botCallCapabilities(undefined, 'claude'), [{ text: '回应', motion: 'measured-nod' }])).toThrow('动作无效');
+});
+
+it('loads folders per companion, keeps a working selection on failure, and restores the default', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-call-import-'));
+  const profile = path.join(root, 'profile');
+  const gpt = 'gpt', custom = 'companion-studio-test';
+  const model = async (name: string) => {
+    const wrapper = path.join(root, name);
+    const folder = path.join(wrapper, 'Export');
+    await mkdir(path.join(folder, '贴图'), { recursive: true });
+    await mkdir(path.join(folder, 'expressions'));
+    await Promise.all([
+      writeFile(path.join(folder, name + '.model3.json'), JSON.stringify({
+        Version: 3, FileReferences: { Moc: 'body.moc3', Textures: ['贴图\\face.png'] },
+      })),
+      writeFile(path.join(folder, 'body.moc3'), 'MOC3'),
+      writeFile(path.join(folder, '贴图', 'face.png'), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
+      writeFile(path.join(folder, 'expressions', 'smile.exp3.json'), JSON.stringify({ Parameters: [{ Id: 'ParamSmile' }] })),
+    ]);
+    return wrapper;
+  };
+  const request = (asset: string, modelUrl: string) => serveLocalCallModel(profile, new Request(new URL(asset, modelUrl)));
+  try {
+    const first = await model('舞台 A');
+    const second = await model('舞台 B');
+    await importLocalCallModel(profile, gpt, first);
+    await importLocalCallModel(profile, custom, second);
+    const original = (await readLocalCallModel(profile, gpt))!;
+    expect(original).toMatchObject({ localImport: true, model: 'model/舞台 A.model3.json', assets: { expressions: [{ name: 'smile' }] } });
+    expect((await request('贴图/face.png', original.modelUrl!)).status).toBe(200);
+    expect((await request('../../active.json', original.modelUrl!)).status).toBe(404);
+    await expect(importLocalCallModel(profile, gpt, path.join(first, 'Export', 'expressions'))).rejects.toThrow('找不到 .model3.json');
+    expect(await readLocalCallModel(profile, gpt)).toMatchObject({ modelUrl: original.modelUrl });
+    await importLocalCallModel(profile, gpt, second);
+    expect(await readLocalCallModel(profile, gpt)).toMatchObject({ model: 'model/舞台 B.model3.json' });
+    expect((await request('body.moc3', original.modelUrl!)).status).toBe(200);
+    await resetLocalCallModel(profile, gpt);
+    expect(await readLocalCallModel(profile, gpt)).toBeUndefined();
+    expect(await readLocalCallModel(profile, custom)).toMatchObject({ model: 'model/舞台 B.model3.json' });
+    await pruneLocalCallModelImports(profile);
+    expect((await request('body.moc3', original.modelUrl!)).status).toBe(404);
+    expect(await readLocalCallModel(profile, custom)).toBeDefined();
+  } finally {
+    if (path.dirname(root) === path.resolve(os.tmpdir()) && path.basename(root).startsWith('wlb-call-import-')) await rm(root, { recursive: true, force: true });
+  }
 });

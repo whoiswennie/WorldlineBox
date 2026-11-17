@@ -25,6 +25,12 @@ const defaults = profile([
 ]);
 
 const portraits: Readonly<Record<string, BotPortraitPerformance>> = {
+  'yachiyo-runami': profile([
+    choice('lively-welcome', '明快一笑', 'Bright smile', '像在月读迎接新朋友一样打招呼。', 'Welcome someone with the warmth of a Tsukuyomi greeting.'),
+    choice('smile-with-tears', '笑中带泪', 'Smile through tears', '听到真挚的心意或回想一段珍贵的经历。', 'Respond to heartfelt words or a cherished memory.'),
+  ], [
+    choice('tune-in', '侧耳听', 'Listen in', '听旋律或给还没说完的人一点时间。', 'Listen to a melody or give someone time to finish.'),
+  ]),
   'builtin-dafeiyu': profile([
     choice('bashful-smile', '嘴硬地笑', 'Bashful smile', '被夸时忍不住笑，回应仍带一点俏皮。', 'A playful reaction to sincere praise.'),
     choice('moved-to-tears', '感动落泪', 'Moved to tears', '失而复得或听到真挚心意时。', 'For a moving reunion or heartfelt words.'),

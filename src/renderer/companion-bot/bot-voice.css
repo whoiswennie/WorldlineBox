@@ -21,9 +21,19 @@
 .bot-voice-message .bot-voice-play-icon{display:grid;place-items:center;flex:0 0 30px;width:30px;height:30px;border-radius:50%;background:color-mix(in srgb,white 28%,transparent)}
 .bot-voice-wave{display:flex;align-items:center;justify-content:center;gap:3px;min-width:30px;margin-left:auto;height:20px}.bot-voice-wave i{display:block;width:2px;min-height:3px;border-radius:2px;background:currentColor;transform-origin:center}
 .bot-voice-duration{font-size:16px;line-height:1;font-variant-numeric:tabular-nums;white-space:nowrap}.bot-voice-bubble.is-playing .bot-voice-wave i{animation:bot-voice-wave .65s ease-in-out infinite alternate}
-.bot-voice-message>button:not(.bot-voice-bubble){align-self:inherit;width:auto;margin:0;padding:0 4px;border:0;background:transparent;color:var(--ui-content-tertiary);font-size:11px;cursor:pointer}
-.bot-voice-transcript{box-sizing:border-box;max-width:100%;max-height:300px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.75;margin:0;padding:10px 14px;border:1px solid var(--ui-border-subtle);border-radius:15px;background:var(--ui-surface-raised);color:var(--ui-content-primary)}
-.bot-voice-message.is-transcript-only{align-items:flex-start}.bot-voice-message audio[hidden]{display:none}.bot-voice-message [role=alert]{color:var(--ui-status-danger-content,#d55);font-size:11px}
+.bot-voice-actions{display:flex;align-items:center;flex-wrap:wrap;gap:5px}
+.bot-voice-message .bot-voice-actions>button{display:inline-flex;align-items:center;gap:5px;min-height:28px;margin:0;padding:3px 8px;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--ui-content-secondary);font:inherit;font-size:11px;line-height:1.3;white-space:nowrap;cursor:pointer}
+.bot-voice-message .bot-voice-actions>.bot-voice-transcribe{background:var(--ui-action-accent-soft);color:var(--ui-content-accent)}
+.bot-voice-message .bot-voice-actions>button:hover:not(:disabled){border-color:var(--ui-border-control);background:var(--ui-surface-hover)}
+.bot-voice-message .bot-voice-actions>button:focus-visible{outline:2px solid var(--ui-border-focus);outline-offset:2px}
+.bot-voice-message .bot-voice-actions>button:disabled{opacity:1;cursor:progress}
+.bot-voice-actions .bot-icon{width:14px;height:14px;flex:none}
+.bot-voice-caret{display:grid;place-items:center}.bot-voice-caret.is-expanded{transform:rotate(180deg)}
+.bot-voice-transcript{box-sizing:border-box;min-width:0;max-width:100%;max-height:248px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;white-space:pre-wrap;overflow-wrap:anywhere;text-align:left;user-select:text;font-size:13px;line-height:1.75;margin:0;padding:10px 12px;border:1px solid var(--ui-border-subtle);border-radius:9px;background:var(--ui-surface-raised);color:var(--ui-content-primary)}
+.bot-voice-transcript[hidden],.bot-voice-message audio[hidden]{display:none}
+.bot-voice-message.is-transcript-only{width:100%;max-width:100%;align-items:stretch}
+.is-transcript-only .bot-voice-actions{justify-content:space-between}
+.bot-voice-message-error{align-self:stretch;color:var(--ui-status-danger-content,#d55);font-size:11px;line-height:1.5;overflow-wrap:anywhere;text-align:left}
 @keyframes bot-voice-spin{to{transform:rotate(360deg)}}
 @keyframes bot-voice-wave{to{transform:scaleY(.35)}}
 @media(prefers-reduced-motion:reduce){.bot-voice-live-wave>i{transition:none}.bot-voice-spinner,.bot-voice-bubble.is-playing .bot-voice-wave i{animation:none}}

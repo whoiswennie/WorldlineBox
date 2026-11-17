@@ -2,6 +2,8 @@ import { SPEECH_RECORDING_SECONDS, SPEECH_SAMPLE_RATE } from '../../shared/local
 
 export interface VoiceRecording { wave: Uint8Array; seconds: number }
 export interface VoiceRecorderOptions {
+  stream?: MediaStream;
+  maxSeconds?: number;
   onLevel?(level: number): void;
   onSpeechStart?(): void;
   speechPrerollSeconds?: number;
@@ -40,8 +42,8 @@ export class VoiceRecorder {
   async start(onLimit: () => void, options: VoiceRecorderOptions = {}): Promise<{ startedAt: number; finished: Promise<VoiceRecording | undefined> } | undefined> {
     let failure: Error | undefined;
     try {
-      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') throw Error('当前环境无法使用麦克风。');
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      if ((!options.stream && !navigator.mediaDevices?.getUserMedia) || typeof MediaRecorder === 'undefined') throw Error('当前环境无法录音。');
+      this.stream = options.stream ?? await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       if (this.cancelled) { this.stream.getTracks().forEach(track => track.stop()); return undefined; }
       const recorder = new MediaRecorder(this.stream), chunks: Blob[] = []; let size = 0;
       let speechAt: number | undefined, onsetAt: number | undefined;
@@ -56,15 +58,15 @@ export class VoiceRecorder {
         if (size > 8 * 1024 * 1024) { fail(Error('录音过大，请重新录制。')); return; }
         if (event.data.size && !this.cancelled) chunks.push(event.data);
       };
-      recorder.onerror = () => fail(Error('麦克风录音中断。'));
+      recorder.onerror = () => fail(Error('录音中断。'));
       recorder.onstop = () => {
         clearTimeout(this.timer); this.stopLevels(); this.stream?.getTracks().forEach(track => track.stop());
         if (this.cancelled) { this.finish?.(undefined); return; }
         const offset = speechAt !== undefined && options.speechPrerollSeconds !== undefined
           ? Math.max(0, (speechAt - startedAt) / 1000 - options.speechPrerollSeconds) : 0;
-        void this.convert(new Blob(chunks, { type: recorder.mimeType }), offset).then(value => this.finish?.(this.cancelled ? undefined : value), error => this.reject?.(error instanceof Error ? error : Error('录音处理失败。')));
+        void this.convert(new Blob(chunks, { type: recorder.mimeType }), offset, options.maxSeconds).then(value => this.finish?.(this.cancelled ? undefined : value), error => this.reject?.(error instanceof Error ? error : Error('录音处理失败。')));
       };
-      recorder.start(1000); this.timer = setTimeout(() => { this.stop(); onLimit(); }, SPEECH_RECORDING_SECONDS * 1000);
+      recorder.start(1000); this.timer = setTimeout(() => { this.stop(); onLimit(); }, (options.maxSeconds ?? SPEECH_RECORDING_SECONDS) * 1000);
       const startedAt = performance.now();
       if (options.onLevel || options.silenceSeconds || options.onSpeechStart) {
         const context = new AudioContext(); this.captureContext = context; this.levelCallback = options.onLevel;
@@ -108,11 +110,11 @@ export class VoiceRecorder {
     const callback = this.levelCallback; this.levelCallback = undefined;
     try { callback?.(0); } catch { /* View errors cannot prevent stopping microphone tracks. */ }
   }
-  private async convert(blob: Blob, offset: number): Promise<VoiceRecording> {
+  private async convert(blob: Blob, offset: number, maxSeconds = SPEECH_RECORDING_SECONDS): Promise<VoiceRecording> {
     this.context = new AudioContext();
     try {
       const decoded = await this.context.decodeAudioData(await blob.arrayBuffer());
-      const seconds = Math.min(decoded.duration - offset, SPEECH_RECORDING_SECONDS);
+      const seconds = Math.min(decoded.duration - offset, maxSeconds);
       if (!Number.isFinite(seconds) || seconds < 0.25) throw Error('录音太短，请至少说一句话。');
       const offline = new OfflineAudioContext(1, Math.ceil(seconds * SPEECH_SAMPLE_RATE), SPEECH_SAMPLE_RATE);
       const source = offline.createBufferSource(); source.buffer = decoded; source.connect(offline.destination); source.start(0, offset, seconds);

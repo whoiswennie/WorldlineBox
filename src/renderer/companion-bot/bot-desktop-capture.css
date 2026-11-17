@@ -1,0 +1,112 @@
+.bot-desktop-capture { flex:none; }
+.bot-desktop-capture > button { display:grid; place-items:center; }
+.bot-capture-controls-row { display:flex; justify-content:flex-end; min-width:0; }
+.bot-capture-controls-row:empty, .bot-capture-status-row:empty { display:none; }
+.bot-composer-dock > .bot-capture-controls-row, .bot-capture-status-row { margin-bottom:6px; }
+
+.bot-desktop-capture-panel {
+  display:grid; gap:7px; width:min(100%,224px); padding:10px 11px;
+  border:1px solid var(--ui-border-control); border-radius:13px;
+  background:var(--ui-surface-raised); color:var(--ui-content-primary); font-size:12px;
+  box-shadow:0 5px 20px #142c4e25;
+}
+.bot-desktop-capture-panel header { display:flex; justify-content:space-between; align-items:center; font-size:13px; }
+.bot-desktop-capture-panel button { font:inherit; cursor:pointer; }
+.bot-desktop-capture-panel button:disabled { cursor:default; opacity:.52; }
+.bot-desktop-capture-panel header button {
+  display:grid; place-items:center; width:24px; height:24px; padding:0; border:0; border-radius:6px;
+  background:transparent; color:var(--ui-content-secondary);
+}
+.bot-desktop-capture-panel header button svg { width:13px; height:13px; }
+.bot-desktop-capture-panel header button:hover { background:var(--ui-surface-hover); color:var(--ui-content-primary); }
+.bot-presence-settings { display:grid; gap:8px; }
+.bot-presence-settings > label { display:flex; align-items:center; justify-content:space-between; gap:6px; color:var(--ui-content-secondary); }
+.bot-presence-settings select, .bot-presence-settings button, .bot-call-window .bot-presence-settings button {
+  min-height:29px; padding:3px 7px; border:1px solid var(--ui-border-control); border-radius:7px;
+  background:var(--ui-surface-raised); color:var(--ui-content-primary); font:inherit;
+}
+.bot-presence-settings select { max-width:72%; }
+.bot-presence-settings button { font-weight:600; }
+.bot-presence-settings button:hover { background:var(--ui-surface-hover); }
+.bot-presence-settings button.is-quiet, .bot-call-window .bot-presence-settings button.is-quiet { justify-self:end; min-height:23px; padding:2px 4px; border-color:transparent; color:var(--ui-content-secondary); font-weight:400; }
+
+.bot-capture-status-row { display:flex; flex-wrap:wrap; gap:5px; min-width:0; }
+.bot-call-status-row:has(> .bot-presence-status) { flex-wrap:wrap; }
+.bot-call-status-row:has(> .bot-presence-status) > :not(.bot-presence-status) { flex-basis:110px; }
+.bot-call-status-row > .bot-presence-status { flex:0 1 auto; order:1; }
+.bot-presence-status {
+  display:inline-flex; align-items:center; gap:5px; width:max-content; max-width:100%; min-width:0;
+  padding:3px 4px 3px 9px; border:1px solid var(--ui-border-control); border-radius:999px;
+  background:var(--ui-surface-raised); color:var(--ui-content-primary); font-size:11px;
+  box-shadow:0 3px 12px #142c4e20;
+}
+.bot-presence-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--ui-content-secondary); }
+.bot-presence-status[data-mode=active] .bot-presence-dot { background:#36a472; }
+.bot-presence-status > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bot-presence-status > span[role=alert] { color:var(--ui-status-danger-content); }
+.bot-presence-countdown {
+  flex:none; min-width:4.8ch; padding:2px 5px; border-radius:999px; background:var(--ui-surface-hover);
+  color:var(--ui-content-secondary); font-size:10px; font-variant-numeric:tabular-nums; text-align:center;
+}
+.bot-presence-status > button, .bot-call-window .bot-presence-status > button {
+  display:grid; place-items:center; flex:none; width:24px; height:24px; min-height:0; padding:0;
+  border:0; border-radius:50%; background:transparent; color:var(--ui-content-secondary); box-shadow:none;
+}
+.bot-presence-status > button:hover, .bot-call-window .bot-presence-status > button:hover { background:var(--ui-surface-hover); color:var(--ui-content-primary); }
+.bot-presence-status > button svg { width:13px; height:13px; }
+
+.bot-desktop-capture-status {
+  display:flex; align-items:center; gap:5px; min-width:0; min-height:31px;
+  padding:3px 6px; border:1px solid var(--ui-border-control); border-radius:12px;
+  background:var(--ui-surface-raised); color:var(--ui-content-primary); font-size:11px;
+  box-shadow:0 3px 12px #142c4e19;
+}
+.bot-desktop-capture-status > .bot-icon { flex:none; width:14px; height:14px; }
+.bot-desktop-capture-status > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bot-desktop-capture-status > span[role=alert] { color:var(--ui-status-danger-content); }
+.bot-desktop-capture-status > button, .bot-call-window .bot-desktop-capture-status > button {
+  display:grid; place-items:center; flex:none; min-width:24px; min-height:23px; border:0; padding:2px; border-radius:6px;
+  background:transparent; color:var(--ui-content-secondary);
+}
+.bot-desktop-capture-status > button:hover { background:var(--ui-surface-hover); color:var(--ui-content-primary); }
+.bot-call-composer-host .bot-desktop-capture > button {
+  width:34px; height:34px; border:0; border-radius:9px; background:transparent; color:var(--ui-content-secondary);
+}
+.bot-call-composer-host .bot-desktop-capture > button:hover,
+.bot-call-composer-host .bot-desktop-capture > button[aria-expanded=true] { background:var(--ui-surface-hover); color:var(--ui-content-primary); }
+
+.bot-presence-archive {
+  box-sizing:border-box; width:min(960px, calc(100% - 48px)); height:min(660px, calc(100% - 72px)); max-height:none;
+  padding:0; overflow:hidden; border:1px solid var(--ui-border-control); border-radius:18px;
+  background:var(--ui-surface-raised); color:var(--ui-content-primary); box-shadow:0 24px 80px #142c4e42;
+}
+.bot-presence-archive[open] { display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
+.bot-presence-archive::backdrop { background:#121b3259; }
+.bot-presence-archive header, .bot-presence-archive footer { display:flex; align-items:center; gap:10px; padding:14px 20px; }
+.bot-presence-archive header { justify-content:space-between; border-bottom:1px solid var(--ui-border-control); }
+.bot-presence-archive footer { justify-content:flex-end; border-top:1px solid var(--ui-border-control); }
+.bot-presence-archive h2 { margin:0 0 4px; font-size:19px; }
+.bot-presence-archive small { color:var(--ui-content-secondary); }
+.bot-presence-archive button {
+  display:inline-flex; align-items:center; gap:8px; min-height:32px; padding:5px 10px;
+  border:1px solid var(--ui-border-control); border-radius:8px; background:var(--ui-surface-raised); color:inherit; font:inherit; cursor:pointer;
+}
+.bot-presence-archive button:disabled { opacity:.45; cursor:default; }
+.bot-presence-archive button:hover:not(:disabled) { background:var(--ui-surface-hover); }
+.bot-presence-archive button svg { flex:none; width:17px; height:17px; }
+.bot-presence-archive-body { display:grid; min-height:0; grid-template-columns:minmax(172px, 25%) minmax(0,1fr); }
+.bot-presence-archive-body ol { margin:0; padding:8px; list-style:none; overflow:auto; border-right:1px solid var(--ui-border-control); }
+.bot-presence-archive-body li button { width:100%; min-height:48px; justify-content:flex-start; border-color:transparent; text-align:left; }
+.bot-presence-archive-body li button[aria-current=true] { background:var(--ui-surface-hover); border-color:var(--ui-border-control); }
+.bot-presence-archive-body li time, .bot-presence-archive-body li small { display:block; }
+.bot-presence-archive-body li time { font-variant-numeric:tabular-nums; font-size:12px; }
+.bot-presence-archive-preview {
+  display:flex; min-width:0; min-height:0; padding:16px; flex-direction:column; align-items:center; justify-content:center; gap:8px; overflow:hidden;
+}
+.bot-presence-archive-preview video, .bot-presence-archive-preview img { display:block; min-height:0; max-width:100%; max-height:calc(100% - 24px); object-fit:contain; }
+.bot-presence-archive-preview small { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width:540px) {
+  .bot-presence-archive { width:calc(100% - 20px); }
+  .bot-presence-archive-body { grid-template-columns:minmax(0,1fr); grid-template-rows:105px minmax(0,1fr); }
+  .bot-presence-archive-body ol { border-right:0; border-bottom:1px solid var(--ui-border-control); }
+}

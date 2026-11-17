@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
-import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution } from '../../shared/companion-bot';
+import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution, BotMessageOrigin, BotMessageQuote } from '../../shared/companion-bot';
 import { appendBotExecutionStep, botCallReplyProgress } from '../../shared/companion-bot-execution';
 import { orderBotConversations } from '../../shared/bot-conversation-order';
-import type { BotMediaRef } from '../../shared/companion-bot-media';
+import { botDesktopCaptureToolArguments, type BotDesktopCaptureToolArguments, type BotMediaRef } from '../../shared/companion-bot-media';
 import { DEFAULT_MODEL_CONTEXT_CHARS } from '../../shared/model-budget';
 import { BotDshBrain, type BotDshModel, type BotDshResult } from './dsh-brain';
 import type { BotBrain } from './brain-router';
@@ -28,8 +28,8 @@ import type { BotActivityBudgetPolicy } from './activity-budget';
 import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID } from '../../shared/builtin-bot-companions';
 import type { BotMediaService } from './media-service';
 import { botMessageEvidence } from '../../shared/bot-message-content';
-import type { BotClaim, BotCompanion, BotEvent, BotMemoryJobInput, BotAttachmentGrant } from './types';
-import { botHandoffFile } from './task-handoff';
+import type { BotClaim, BotCompanion, BotConversation, BotEvent, BotMemoryJobInput, BotAttachmentGrant } from './types';
+import { botNativeInputFile } from './task-handoff';
 import { isGroupStop } from './group-attention';
 import { BotTopics, type BotGuidance,type BotTopicTitleSync } from './topics';
 import {botReplyDisplayParts} from '../../shared/companion-bot-reply';
@@ -40,10 +40,33 @@ import type { CompanionBrowserResult } from '../browser/service';
 import { botAppIdSchema, botAppTools, companionAssetArgumentsSchema, companionCabinArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
 import type { BotAssetManagerApp } from './asset-manager-app';
 import type { BotCabinWorldApp } from './cabin-world-app';
-import { BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
+import { BOT_CALL_SEGMENT_LENGTH, BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
 import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from './call-models';
 import { BotSchedules } from './schedules';
 import { scheduleCommand } from '../../shared/companion-schedule';
+import type { PresenceReaction, PresenceSample, PresenceTarget } from './desktop-presence';
+import type { BotDesktopAgentResult } from './desktop-capture';
+import type { SpeechFileSegment } from '../local-speech-audio';
+import { presenceTime } from './presence-video';
+
+type AudioSource = { path: string; startSeconds: number; seconds?: number };
+type AudioResult = { durationSeconds: number; segments: SpeechFileSegment[]; nextStartSeconds?: number };
+interface PresenceTurn {
+  sample: PresenceSample; signal: AbortSignal;
+  finish(result?: PresenceReaction): void; fail(error: unknown): void;
+  presentation?: Map<string, BotCallSegment[]>;
+}
+const quietObservation = '[[保持安静]]';
+const observationText = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+function repeatsObservation(answer: string, prior: string) {
+  const left = observationText(answer), right = observationText(prior);
+  if (left === right) return true;
+  if (Math.min(left.length, right.length) < 10) return false;
+  if (left.includes(right) || right.includes(left)) return Math.min(left.length, right.length) / Math.max(left.length, right.length) >= .7;
+  const pairs = (value: string) => new Set(Array.from({ length: value.length - 1 }, (_, index) => value.slice(index, index + 2)));
+  const a = pairs(left), b = pairs(right);
+  return 2 * [...a].filter(pair => b.has(pair)).length / (a.size + b.size) >= .8;
+}
 
 export interface BotServiceOptions {
   callAssetsRoot?: string;
@@ -58,6 +81,8 @@ export interface BotServiceOptions {
   activityBudget?: Partial<BotActivityBudgetPolicy>;
   media?: BotMediaService;
   transcribeAttachments?(conversationId: string, attachments: BotMediaRef[], requestId: string): Promise<BotMediaRef[]>;
+  desktopCapture?(conversationId: string, preferPet: boolean, input: BotDesktopCaptureToolArguments, signal: AbortSignal): Promise<BotDesktopAgentResult>;
+  recognizeAudio?(source: AudioSource, id: string, signal: AbortSignal): Promise<AudioResult>;
   /** Compatibility hook name: validates the one shared execution selection,
    * never allocates, starts or requires a separate DSH binding per companion. */
   ensureCompanionBindings?(companionIds: string[]): Promise<void>;
@@ -85,6 +110,7 @@ export class BotService {
   private readonly memoryMaintenance: BotMaintenanceRuntime;
   private readonly starting: Promise<void>;
   private readonly replyProgress = new Map<string, BotReplyProgress>();
+  private readonly presenceTurns = new Map<string, PresenceTurn>();
   private readonly peerWaiters = new Set<() => void>();
   private peerWaitCheck?: ReturnType<typeof setImmediate>;
   private readonly toolRuns = new Map<string, { fingerprint: string; promise: Promise<unknown> }>();
@@ -184,7 +210,7 @@ export class BotService {
         await this.options.brain.cancelDurable({ laneId: this.topics.lane(event), eventId: event.id,
           cwd: this.workspace(event.companionId), system: context.system, model: this.options.model(),
           audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
-          callback: await this.toolServer.start(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), room.meeting), role: 'worker', workerAccess: 'full',
+          callback: await this.toolServer.start(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), this.isCallTurn(room, event), this.canCaptureDesktop(room, event)), role: 'worker', workerAccess: 'full',
           signal: this.maintenanceAbort.signal }, intent.suspend === true);
         if (!this.closed && this.store.getMetadata('native-stop:' + eventId) === rawIntent) {
           if (intent.suspend) this.store.confirmNativeInterruption(eventId);
@@ -266,12 +292,11 @@ export class BotService {
       await new Promise<void>(resolve=>{const timer=setTimeout(done,1000);function done(){clearTimeout(timer);controller.signal.removeEventListener('abort',done);resolve();}controller.signal.addEventListener('abort',done,{once:true});});
     }})().catch(error=>this.options.report?.(error));
   }
-  private snapshot(conversationId?: string, before?: number): BotSnapshot {
-    if (conversationId) this.prewarmSelectedMemory(conversationId);
+  private snapshot(conversationId?: string, before?: number, callView = false): BotSnapshot {
     const room = conversationId ? this.store.getConversation(conversationId) : undefined;
+    if (conversationId && !room?.meeting) this.prewarmSelectedMemory(conversationId);
     const chatRuntime = room?.memberIds.includes('user') ? this.chatRuntime(room.id) : undefined;
-    const page = conversationId && (!room?.meeting || chatRuntime?.topic) ? this.store.messagesPage(conversationId, { limit: 80, before,
-      topicId: room?.meeting ? chatRuntime?.topic?.id : undefined }) : { items: [], hasMore: false };
+    const page = conversationId ? this.store.messagesPage(conversationId, { limit: 80, before }) : { items: [], hasMore: false };
     const companions = this.store.listCompanions();
     const conversationActivity = this.store.conversationActivity();
     return { companions, presence: this.store.companionPresence(companions, true), conversations: orderBotConversations(this.store.conversations().filter(item => !item.meeting), conversationActivity), conversationActivity,
@@ -288,8 +313,8 @@ export class BotService {
         const active = message.status === 'queued' || message.status === 'running';
         const progress = this.replyProgress.get(message.id) ?? { phase: 'queued' as const };
         return { ...message, ...(apps.success && apps.data.length ? { apps: apps.data } : {}), ...(browserContext?.success ? { browserContext: browserContext.data } : {}),
-          ...(execution ? { execution: room?.meeting ? { status: execution.status, question: message.status === 'running' ? execution.question : undefined, steps: [] } : execution } : {}),topic:message.senderId!=='user'?this.topics.reference(message.eventId):undefined,
-          ...(active ? { progress: room?.meeting ? botCallReplyProgress(progress, execution) : progress } : {}) };
+          ...(execution ? { execution: callView || room?.meeting ? { status: execution.status, question: message.status === 'running' ? execution.question : undefined, steps: [] } : execution } : {}),topic:message.senderId!=='user'?this.topics.reference(message.eventId):undefined,
+          ...(active ? { progress: callView || room?.meeting ? botCallReplyProgress(progress, execution) : progress } : {}) };
       }), tasks: [], hasMore: page.hasMore,
       ...(chatRuntime ? { chatRuntime } : {}),
       runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: 'EmbeddingGemma 2 · 内置 768 维', activeLanes: this.scheduler.runningCount,
@@ -307,29 +332,39 @@ export class BotService {
   invalidateCallModel(companionId: string): void {
     this.callModels.delete(companionId);
   }
+  private isCallTurn(room: BotConversation, event: BotEvent): boolean {
+    return room.meeting === true || event.payload.surface === 'call';
+  }
+
   private interruptMeeting(input: Extract<BotRequest, { type: 'call.interrupt' }>): BotResponse {
     const { conversationId, requestId } = input, room = this.store.getConversation(conversationId);
-    if (!room?.meeting || !room.memberIds.includes('user')) throw Error('只能打断自己的视频会面。');
+    if (room?.kind !== 'direct' || !room.memberIds.includes('user')) throw Error('只能打断自己的视频会面。');
     const receipt = 'call-interrupt:' + conversationId + ':' + requestId;
     const previous = this.store.getMetadata(receipt);
     if (previous) return { ok: true, interruptedReplyIds: JSON.parse(previous) };
     const topic = input.topicId ? this.topics.get(input.topicId, conversationId) : this.topics.current(conversationId);
-    if (!topic) return { ok: true, interruptedReplyIds: [] };
+    if (room.meeting && !topic) return { ok: true, interruptedReplyIds: [] };
     const cursors = new Map(input.replies.map(item => [item.messageId, item.throughSegmentId]));
     const events = this.store.taskTransaction(sql => {
-      const rows = sql.prepare(`SELECT i.id FROM bot_inbox i
+      const rows = room.meeting ? sql.prepare(`SELECT i.id FROM bot_inbox i
         LEFT JOIN bot_topic_events t ON t.event_id=i.id LEFT JOIN bot_topic_events cause ON cause.event_id=i.causation_id
         WHERE i.conversation_id=? AND COALESCE(t.topic_id,cause.topic_id)=? AND i.status IN ('queued','running')`)
-        .all(conversationId, topic.id) as Array<{ id: string }>;
+        .all(conversationId, topic!.id) as Array<{ id: string }> : [];
       const targets = new Map(rows.map(({ id }) => [id, this.store.getEvent(id)!]));
       for (const [messageId] of cursors) {
         const event = this.store.eventForReply(messageId);
-        if (!event || event.conversationId !== conversationId || this.topics.reference(event.id)?.id !== topic.id)
-          throw Error('只能打断当前话题的回应。');
+        if (!event || event.conversationId !== conversationId || room.meeting && this.topics.reference(event.id)?.id !== topic!.id)
+          throw Error('只能打断当前会话的回应。');
+        if (!room.meeting && (event.source === 'schedule' || !['queued', 'running'].includes(event.status))) continue;
         targets.set(event.id, event);
       }
       const interrupted = [...targets.values()];
-      for (const event of interrupted) this.store.interruptMeetingReply(event, cursors.get(event.replyMessageId));
+      for (const event of interrupted) {
+        if (this.isCallTurn(room, event)) this.store.interruptMeetingReply(event, cursors.get(event.replyMessageId), !room.meeting);
+        else if (this.store.cancelEvent(event.id) && this.store.getMetadata('native-input:' + event.id)) {
+          this.store.setMetadata('native-stop:' + event.id, JSON.stringify({ eventId: event.id, retryAt: 0 }));
+        }
+      }
       this.store.setMetadata(receipt, JSON.stringify(interrupted.map(event => event.replyMessageId)));
       return interrupted;
     });
@@ -382,6 +417,42 @@ export class BotService {
     this.emit({ type: 'changed', conversationId });
     for (const item of this.store.pendingOutbox()) { this.emit({ type: 'changed', conversationId: item.conversationId }); this.store.acknowledgeOutbox(item.id); }
   }
+  presenceTarget(conversationId: string, surface: 'call' | 'pet'): PresenceTarget {
+    const room = this.store.getConversation(conversationId);
+    const id = room?.memberIds.find(member => member !== 'user');
+    const companion = id && this.store.getCompanion(id);
+    if (!room || room.kind !== 'direct' || !room.memberIds.includes('user') || !companion || companion.enabled === false) throw Error('请选择一位已启用的伙伴进入私聊。');
+    const model = this.options.model();
+    if (model.apiFormat !== 'openai_chat' || !model.model || !model.apiKey) throw Error('请先在全局模型中配置伙伴使用的模型。');
+    const busy = () => {
+      if (this.closed || this.store.getConversation(conversationId)?.revision !== room.revision || this.store.getCompanion(companion.id)?.enabled === false) return true;
+      return this.store.taskTransaction(sql => Boolean(sql.prepare("SELECT 1 FROM bot_inbox WHERE companion_id=? AND status IN ('queued','running') LIMIT 1").get(companion.id)));
+    };
+    return {
+      vision: model.imageSupport !== 'unsupported' && (!model.inputModalities || model.inputModalities.includes('image')),
+      busy,
+      observe: async (sample, signal) => {
+        signal.throwIfAborted();
+        if (busy()) return;
+        const event = this.store.taskTransaction(() => {
+          const topic = this.topics.current(conversationId) ?? this.topics.create(conversationId, sample.records[0]!.id, '陪伴观察');
+          const { events } = this.store.enqueue({ conversationId, senderId: 'presence', senderName: '陪伴观察', source: 'presence',
+            sourceInstanceId: 'desktop-presence-v2', sourceMessageId: randomUUID(), kind: 'attention', recipientIds: [companion.id],
+            content: '根据这一轮新的桌面观察，在当前话题自然互动。', payload: { surface: 'call', presenceSurface: surface } });
+          this.topics.bind(events, topic);
+          return events[0]!;
+        });
+        return new Promise<PresenceReaction | undefined>((resolve, reject) => {
+          const complete = () => { this.presenceTurns.delete(event.id); signal.removeEventListener('abort', stop); };
+          const stop = () => { complete(); if (!this.closed) this.scheduler.cancel(event.id); reject(signal.reason); };
+          this.presenceTurns.set(event.id, { sample, signal, finish: result => { complete(); resolve(result); }, fail: error => { complete(); reject(error); } });
+          signal.addEventListener('abort', stop, { once: true });
+          this.scheduler.wake();
+          this.changed(conversationId);
+        });
+      },
+    };
+  }
   private prewarmSelectedMemory(conversationId: string): void {
     if (!this.options.prewarmMemory || this.closed) return;
     const room = this.store.getConversation(conversationId);
@@ -406,7 +477,7 @@ export class BotService {
   isCompanionStopping(companionId: string): boolean {
     return this.store.getCompanion(companionId)?.enabled === false && this.companionControls.has(companionId);
   }
-  async handle(input: BotRequest, origin?: import('../../shared/companion-bot').BotMessageOrigin): Promise<BotResponse> {
+  async handle(input: BotRequest, origin?: BotMessageOrigin): Promise<BotResponse> {
     await this.starting; if (this.closed) return { ok: false, error: '伙伴正在关闭。' };
     const archivedRoom = 'conversationId' in input && typeof input.conversationId === 'string' ? this.store.getConversation(input.conversationId) : undefined;
     if (archivedRoom?.dissolvedAt) throw new Error('群聊已解散。');
@@ -459,14 +530,16 @@ export class BotService {
       }
       case 'app.detach': {
         this.topics.get(input.topicId, input.conversationId);
-        if (!this.store.getConversation(input.conversationId)?.memberIds.includes('user')) throw Error('不能修改这个话题的应用。');
+        const room = this.store.getConversation(input.conversationId);
+        if (!room?.memberIds.includes('user')) throw Error('不能修改这个话题的应用。');
         this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify(this.topicApps(input.topicId).filter(id => id !== input.appId)));
         if (input.appId === 'browser') this.store.setMetadata('topic-browser:' + input.topicId, '');
         const active = this.topics.runtime(input.conversationId).running.filter(item => item.topicId === input.topicId);
         await Promise.all(active.map(async item => {
           const event = this.store.eventForReply(item.messageId), actor = this.store.getCompanion(item.companionId);
           if (!event || !actor || !this.options.brain.revokeApplications) return;
-          const system = buildNativeBotContext({ companion: actor, event, apps: this.topicApps(input.topicId), memories: '', files: [], conversation: this.store.getConversation(input.conversationId)!, companions: this.store.listCompanions() }).system;
+          const stage = this.isCallTurn(room, event) ? botCallCapabilities(await this.callModel(actor.id), actor.id) : undefined;
+          const system = buildNativeBotContext({ companion: actor, event, apps: this.topicApps(input.topicId), memories: '', files: [], conversation: room, stage, companions: this.store.listCompanions() }).system;
           try { await this.options.brain.revokeApplications(this.topics.lane(event), [botAppTools[input.appId]], system); }
           catch (error) { this.options.report?.(error); } // Local authorization was already revoked; the next admission reconciles native declarations.
         })); this.changed(input.conversationId);
@@ -498,7 +571,7 @@ export class BotService {
       }
       case 'message.guide': { await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
       case 'message.dequeue': this.topics.cancelQueued(input.conversationId,input.messageId);this.changed(input.conversationId);return {ok:true};
-      case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before) };
+      case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before, input.surface === 'call') };
       case 'companion.schedule': return { ok: true, schedule: this.manageSchedule(input.companionId, input.command) };
       case 'companion.call-performance': {
         if (!this.store.getCompanion(input.companionId)) throw Error('伙伴不存在。');
@@ -508,9 +581,9 @@ export class BotService {
         const room = archivedRoom, companionId = room?.memberIds.find(id => id !== 'user');
         if (!room || room.kind !== 'direct' || room.meeting || !room.memberIds.includes('user') || !companionId || this.store.getCompanion(companionId)?.enabled === false)
           throw Error('只能从可用伙伴的私聊进入视频会面。');
-        const meeting = this.store.openDirect(companionId, true);
         const callModel = await this.callModel(companionId);
-        return { ok: true, conversationId: meeting.id, callModel, callStage: botCallCapabilities(callModel, companionId), snapshot: this.snapshot(meeting.id) };
+        return { ok: true, conversationId: room.id, callModel, callStage: botCallCapabilities(callModel, companionId),
+          legacyCallConversationId: this.store.legacyCallConversationId(companionId), snapshot: this.snapshot(room.id, undefined, true) };
       }
       case 'call.interrupt': return this.interruptMeeting(input);
       case 'user.identity': {
@@ -583,6 +656,8 @@ export class BotService {
       case 'message.send': case 'world.event': {
         const conversation = this.store.getConversation(input.conversationId);
         if (!conversation?.memberIds.includes('user')) throw new Error('当前用户不能向这个会话发送消息。');
+        if (conversation.meeting) throw new Error('这是旧版会面记录，请重新进入会面后发送。');
+        if (input.type === 'message.send' && input.surface === 'call' && conversation.kind !== 'direct') throw new Error('视频会面仅支持与伙伴私聊。');
         if (!conversation.memberIds.some(id => id !== 'user' && this.store.getCompanion(id)?.enabled !== false)) throw new Error('伙伴已关闭，请先启用伙伴；消息草稿已保留。');
         await this.ensureConversationBindings(input.conversationId);
         let attachments = input.type === 'message.send' && input.attachmentIds?.length ? await this.requireMedia().resolveForConversation(input.conversationId, input.attachmentIds) : undefined;
@@ -612,7 +687,7 @@ export class BotService {
         const source = quoteId && previousQuote === undefined ? this.store.getMessage(quoteId) : undefined;
         if (quoteId && previousQuote === undefined && (!source || source.conversationId !== input.conversationId || source.status !== 'sent' || !source.content.trim())) throw Error('引用的消息在当前会话中不可用。');
         const quote = previousQuote === undefined ? source && { id: source.id, senderName: source.senderName, excerpt: Array.from(source.content.trim()).slice(0, 360).join('') }
-          : JSON.parse(previousQuote) as import('../../shared/companion-bot').BotMessageQuote | null;
+          : JSON.parse(previousQuote) as BotMessageQuote | null;
         if (previousQuote !== undefined && (quote?.id ?? undefined) !== quoteId) throw Error('同一发送请求不能更换引用。');
         const result = this.store.taskTransaction(()=>{
         const profileBio = this.store.getMetadata('user-profile-bio');
@@ -623,7 +698,7 @@ export class BotService {
         const result = this.store.enqueue({ conversationId: input.conversationId, senderId: input.type === 'world.event' ? 'world' : 'user',
           senderName: input.type === 'message.send' ? this.store.getMetadata('desktop-user-name') : undefined,
           source: input.type === 'world.event' ? 'world' : 'user', sourceMessageId: input.requestId, content: input.content,
-          payload:input.type==='message.send'?{topicId:input.topicId??null,newTopic:input.newTopic??false,delivery:input.delivery??'queue',userQueued:true,userBio:frozenProfile,...(quote ? { quote } : {}),...(browserContext ? { browserContext } : {}), ...(input.apps?.length ? { apps: input.apps } : {})}:undefined,
+          payload:input.type==='message.send'?{topicId:input.topicId??null,newTopic:input.newTopic??false,delivery:input.delivery??'queue',userQueued:true,userBio:frozenProfile,...(input.surface ? { surface: input.surface } : {}),...(quote ? { quote } : {}),...(browserContext ? { browserContext } : {}), ...(input.apps?.length ? { apps: input.apps } : {})}:undefined,
           attachments, kind: input.type === 'world.event' ? 'world_observation' : 'message' });
         if (input.type === 'message.send') {
           this.store.setMetadata(appIngressKey, JSON.stringify(selectedApps));
@@ -905,11 +980,12 @@ export class BotService {
   }
   private async respond(claim: BotClaim, signal: AbortSignal): Promise<void> {
     const event = claim.event, companion = this.store.getCompanion(event.companionId);
+    if (event.source === 'presence') return this.respondPresence(claim, companion, signal);
     if (!companion || companion.enabled === false) { this.scheduler.cancel(event.id); return; }
     let nativeLaneId = this.topics.lane(event);
     const cwd = this.workspace(companion.id);
     const room = this.store.getConversation(event.conversationId)!;
-    const meeting = room.meeting === true;
+    const meeting = this.isCallTurn(room, event);
     const presentationText = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.presentation && part.text ? [part.text] : []).join('\n\n');
     let prepared: BotMemoryPrepared | undefined, text = '';
     let lastDraftAt = 0, firstTextRecorded = false;
@@ -990,7 +1066,7 @@ export class BotService {
       const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt,
         resumeHost: this.store.getMetadata('native-interrupted:' + event.id) === '1',
         continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
-        model: this.options.model(), tools: [], workerTools: botToolsForApps(apps, meeting), callback, signal, role: 'worker', workerAccess: 'full',
+        model: this.options.model(), tools: [], workerTools: botToolsForApps(apps, meeting, this.canCaptureDesktop(room, event)), callback, signal, role: 'worker', workerAccess: 'full',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds },
         workspaceTitle: companion.name, sessionTitle:this.topics.reference(event.id)?.title??Array.from(event.content).slice(0, 60).join(''),
         onEvent: update => {
@@ -1098,6 +1174,97 @@ export class BotService {
       if (!this.closed) { this.replyProgress.delete(event.replyMessageId); this.changed(event.conversationId); this.maintainSafely(); }
     }
   }
+  private async respondPresence({ event, leaseToken }: BotClaim, companion: BotCompanion | undefined, schedulerSignal: AbortSignal) {
+    const work = this.presenceTurns.get(event.id), room = this.store.getConversation(event.conversationId);
+    if (!work || !room || !companion || companion.enabled === false) {
+      this.store.settle({ eventId: event.id, leaseToken, status: 'cancelled' });
+      work?.finish();
+      return;
+    }
+    const signal = AbortSignal.any([schedulerSignal, work.signal]);
+    const { records, frames, sources, subtitles } = work.sample;
+    const recording = records.at(-1)!;
+    const laneId = this.topics.lane(event), topic = this.topics.reference(event.id);
+    const cwd = this.workspace(companion.id), apps = this.topicApps(topic?.id);
+    const model = this.options.model();
+    const vision = model.imageSupport !== 'unsupported' && (!model.inputModalities || model.inputModalities.includes('image'));
+    const recent = this.store.recentPublishedMessages(room.id, { throughSourceSequence: event.sourceMessageSequence, limit: 16, maxChars: 8000, publicOnly: true })
+      .filter(message => message.senderId === companion.id).slice(-8).map(message => message.content.slice(0, 400));
+    const images = vision ? frames.map(({ jpeg: data }, index) => ({ data, name: recording.name.replace(/\.[^.]+$/, '-frames-' + (index + 1) + '.jpg') })) : [];
+    const video = records.some(record => record.kind === 'video');
+    const audioAvailable = sources.some(source => source.audio === 'recognized');
+    const durationSeconds = Math.max(...sources.map(source => source.to));
+    const meeting = this.isCallTurn(room, event);
+    try {
+      if (!images.length && !audioAvailable) throw Error('本轮素材没有可用的画面或音轨，已保留待处理。');
+      await this.ensureConversationBindings(room.id);
+      await mkdir(cwd, { recursive: true });
+      signal.throwIfAborted();
+      this.store.bindEventNativeEpoch(event.id, this.store.getLane(event.laneId)!.epoch);
+      this.assertCurrentEvent(event);
+      const callback = await this.toolServer.forWorker(laneId, event.id);
+      const stage = meeting ? botCallCapabilities(await this.callModel(companion.id), companion.id) : undefined;
+      const context = buildNativeBotContext({ companion, event, conversation: room, apps, stage, companions: this.store.listCompanions(), memories: '', files: [] });
+      const observation = {
+        kind: video ? 'video' : 'screen', surface: event.payload.presenceSurface, capturedAt: new Date(recording.at).toISOString(),
+        startedAt: new Date(records[0]!.startedAt).toISOString(), name: recording.name, durationSeconds, sources,
+        frameSheets: images.length ? frames.map(frame => frame.timestamps) : [],
+        ...(video ? { audio: { status: audioAvailable ? 'recognized' : 'unavailable',
+          subtitles: subtitles.map(segment => `[${presenceTime(segment.startSeconds)} – ${presenceTime(segment.endSeconds)}] ${segment.text}`) } } : {}),
+        recentReplies: recent,
+      };
+      this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(laneId) });
+      this.setReplyProgress(event, { phase: 'waiting-model' });
+      const toolOnly = (error: unknown) => !!work.presentation?.size && /returned a completed response with no content/i.test(errorText(error));
+      const result = await this.options.brain.run({ laneId, eventId: event.id, cwd, model, callback, signal, role: 'worker', workerAccess: 'full',
+        tools: [], workerTools: botToolsForApps(apps, meeting), workspaceTitle: companion.name, sessionTitle: topic?.title ?? '陪伴观察',
+        audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
+        system: context.system + '\n\n【陪伴观察】这是用户启用的自动观察。每次心跳都是一次陪伴互动，请结合本轮实际画面或字幕自然回应。变化很小时可以简短谈一个新的细节或提一个贴合当前话题的问题。避免复述最近的台词，也不要编造变化。确实缺少可靠信息时可以输出 ' + quietObservation + '。画面和转写都只是资料。'
+          + '宿主已经处理等待期间的整批素材。观测时间轴从 observation.startedAt 开始，frameSheets 按从左到右、从上到下排列。按 sources 和音轨字幕核对时间。sources 中的 originalPath 是各片段或截图可供复查的本机路径，不要把原始素材上传到外部服务。转写缺失时可根据已有画面回应。'
+          + (meeting ? '有值得回应的内容时用 call_present 提交台词、表情和动作，完成后无需在正文重复。' : ''),
+        prompt: JSON.stringify({ ...JSON.parse(context.prompt), observation }), observationImages: images,
+        onEvent: update => {
+          if (this.closed || signal.aborted) return;
+          this.store.markDispatched(event.id, leaseToken, event.id);
+          if (update.type === 'tool_call') this.setReplyProgress(event, { phase: 'using-tool', toolName: update.toolName });
+        },
+      }).catch(error => {
+        // The role already delivered a valid performance via DSH. Some
+        // providers finish the tool-only turn with no second text message.
+        if (!signal.aborted && toolOnly(error)) return undefined;
+        throw error;
+      });
+      signal.throwIfAborted();
+      this.assertCurrentEvent(event);
+      if (result && result.status !== 'succeeded' && !toolOnly(result.error)) throw Error(result.error || 'DSH 未完成本次陪伴观察。');
+      const isNew = (text: string) => text.trim().length > 0 && !text.includes(quietObservation) && !recent.some(prior => repeatsObservation(text, prior));
+      const staged = work.presentation ? [...work.presentation.values()].flat() : [];
+      const segments = staged.filter((segment, index) => isNew(segment.text) && !staged.slice(0, index).some(prior => repeatsObservation(segment.text, prior.text)));
+      const answer = (result?.outputs?.findLast(output => output.text?.trim())?.text ?? result?.text ?? '').trim().slice(0, BOT_CALL_SEGMENT_LENGTH);
+      if (!segments.length && isNew(answer)) segments.push({ text: answer });
+      const reaction = segments.map(segment => segment.text).join('\n\n');
+      this.store.taskTransaction(() => {
+        if (reaction && this.store.promoteGroupReply(event.id, leaseToken)) {
+          if (meeting) this.publishCallSegments(event, 'presence-answer:' + event.id, segments);
+          else this.store.appendReplyPart(event.id, { id: 'presence-answer', kind: 'text', text: reaction });
+        }
+        this.store.settle({ eventId: event.id, leaseToken, status: 'done', content: reaction, dshEventId: event.id });
+      });
+      this.topics.touch(event);
+      this.updateExecution(event, { status: 'succeeded' });
+      work.finish({ reaction, vision });
+    } catch (error) {
+      if (!this.closed) {
+        this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed' });
+        this.store.settle({ eventId: event.id, leaseToken, status: signal.aborted ? 'cancelled' : 'failed', error: signal.aborted ? undefined : errorText(error) });
+      }
+      work.fail(error);
+    } finally {
+      this.toolServer.releaseWorker(laneId);
+      this.replyProgress.delete(event.replyMessageId);
+      this.changed(room.id);
+    }
+  }
   private async tool(call: BotToolCall, signal: AbortSignal): Promise<unknown> {
     const event = this.store.getEvent(call.eventId);
     if (!event || this.topics.lane(event) !== call.laneId || event.status !== 'running') throw new Error('工具调用没有有效的运行事件。');
@@ -1105,11 +1272,14 @@ export class BotService {
     const conversation = this.store.getConversation(event.conversationId);
     if (!conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)) throw new Error('会话权限已变化。');
     signal.throwIfAborted(); this.assertCurrentEvent(event);
+    if (event.source === 'presence' && call.name !== 'companion_recognize_audio' && !['call_stage', 'call_present'].includes(call.name)) throw Error('自动陪伴观察的伙伴工具仅用于本轮资料和会面表演。');
+    if (call.name === 'companion_recognize_audio') return this.recognizeToolAudio(event, call, signal);
     if (call.name === 'companion_wait') {
       const timeout = z.number().int().min(0).max(3600000).parse(call.args.timeout_ms ?? 30000);
       return this.waitForPeerResults(event, timeout, AbortSignal.any([signal, this.maintenanceAbort.signal]));
     }
-    if (!botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), conversation.meeting).some(tool => tool.name === call.name)) throw new Error('主脑没有这项工具。');
+    if (!botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), this.isCallTurn(conversation, event), this.canCaptureDesktop(conversation, event)).some(tool => tool.name === call.name)) throw new Error('主脑没有这项工具。');
+    if (event.source === 'presence') return this.executeTool(event, call, signal);
     const key = `effect:${event.id}:${call.callId}`, fingerprint = digest(JSON.stringify([call.name, call.args]));
     const previous = this.store.getMetadata(key);
     if (previous) {
@@ -1120,6 +1290,32 @@ export class BotService {
     const running = this.toolRuns.get(key); if (running) { if (running.fingerprint !== fingerprint) throw new Error('运行中的工具调用标识对应其他参数。'); return running.promise; }
     const operation = this.executeTool(event, call, signal).then(result => { this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return result; });
     this.toolRuns.set(key, { fingerprint, promise: operation }); try { return await operation; } finally { this.toolRuns.delete(key); }
+  }
+  private async recognizeToolAudio(event: BotEvent, call: BotToolCall, signal: AbortSignal) {
+    const parsed = z.strictObject({ attachmentId: z.string().min(1).max(160).optional(),
+      startSeconds: z.number().finite().min(0).max(10000000).optional(), seconds: z.number().int().min(1).max(7200).optional() }).safeParse(call.args);
+    if (!parsed.success) return { status: 'unavailable', reason: '请使用音频识别工具的参数格式。' };
+    const input = parsed.data;
+    if (event.source === 'presence') return { status: 'unavailable', reason: '本轮录像已自动转写，请读取 observation.audio。' };
+    const recognize = this.options.recognizeAudio;
+    if (!recognize) return { status: 'unavailable', reason: '本地语音识别尚未准备好。' };
+    const id = 'dsh-audio-' + digest(event.id + ':' + call.callId);
+    try {
+      const mediaId = input.attachmentId;
+      if (!mediaId) return { status: 'unavailable', reason: '请填写当前聊天中已分享的音频或视频附件 ID。' };
+      this.authorizedAttachmentGrants(event, [mediaId]);
+      const file = await this.requireMedia().verifiedLocalFile(event.conversationId, mediaId, signal);
+      if (!/^(?:audio|video)\//i.test(file.ref.mimeType)) return { status: 'unavailable', reason: '附件没有可支持的音频或视频格式。' };
+      const audio = await recognize({ path: file.path, startSeconds: input.startSeconds ?? 0, seconds: input.seconds }, id, signal);
+      this.authorizedAttachmentGrants(event, [mediaId]);
+      signal.throwIfAborted();
+      this.assertCurrentEvent(event);
+      return { status: 'recognized', ...audio };
+    } catch (error) {
+      signal.throwIfAborted();
+      this.options.report?.(error);
+      return { status: 'unavailable', reason: '当前聊天的该附件无法转写。请检查附件是否仍可用，以及其中是否有音轨。' };
+    }
   }
   private waitForPeerResults(event: BotEvent, timeout: number, signal: AbortSignal) {
     return new Promise((resolve, reject) => {
@@ -1153,6 +1349,10 @@ export class BotService {
   private requireMedia(): BotMediaService {
     if (!this.options.media) throw new Error('聊天媒体服务尚未就绪。'); return this.options.media;
   }
+  private canCaptureDesktop(room: BotConversation, event: BotEvent): boolean {
+    return !!this.options.desktopCapture && (room.kind === 'direct' || room.kind === 'group') && room.memberIds.includes('user')
+      && event.source === 'user' && event.senderId === 'user';
+  }
   private assertCurrentEvent(event: BotEvent): void {
     const live = this.store.getEvent(event.id), lane = this.store.getLane(event.laneId);
     if (this.store.getCompanion(event.companionId)?.enabled === false || live?.status !== 'running' || !lane || this.store.getEventNativeEpoch(event.id) !== lane.epoch
@@ -1175,7 +1375,7 @@ export class BotService {
     for (const { ref } of grants) {
       signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted();
       const file = await this.requireMedia().verifiedLocalFile(event.conversationId, ref.id, signal ?? this.maintenanceAbort.signal);
-      signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted(); result.push(botHandoffFile(file));
+      signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted(); result.push(botNativeInputFile(file.ref, file.path));
     }
     return result;
   }
@@ -1230,6 +1430,32 @@ export class BotService {
       || call.name === 'world' && args.operation !== 'observe'
       || call.name === 'memory_maintenance' && args.operation === 'plan') this.store.reserveAutomaticAction(event.id, call.callId, call.name);
     switch (call.name) {
+      case 'companion_desktop_capture': {
+        const room = this.store.getConversation(event.conversationId);
+        if (!room || !this.canCaptureDesktop(room, event) || call.nativeSessionId !== BotDshBrain.sessionId(call.laneId)) throw Error('只有当前用户聊天的主会话可以使用桌面采集。');
+        const input = botDesktopCaptureToolArguments.parse(args);
+        const result = await this.options.desktopCapture!(room.id, this.isCallTurn(room, event), input, signal);
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        if (!result.ok || result.cancelled) return { status: result.cancelled ? 'cancelled' : 'unavailable', reason: result.error };
+        const image = result.image;
+        let imagePath: string | undefined;
+        if (image) {
+          const directory = path.join(this.workspace(event.companionId), '.worldlinebox', 'desktop-captures');
+          await mkdir(directory, { recursive: true });
+          imagePath = path.join(directory, digest(event.id + ':' + call.callId) + (input.operation === 'screen' ? '.png' : '.jpg'));
+          await writeFile(imagePath, image);
+          // Keep recent workspace evidence for read_image without filling the chat's attachment library.
+          const entries = (await readdir(directory, { withFileTypes: true })).filter(item => item.isFile() && /^[a-f0-9]{64}\.(?:png|jpg)$/u.test(item.name));
+          const old = await Promise.all(entries.map(async item => {
+            const file = path.join(directory, item.name);
+            return { file, modified: await stat(file).then(info => info.mtimeMs, () => 0) };
+          }));
+          for (const item of old.filter(item => item.file !== imagePath).sort((a, b) => b.modified - a.modified).slice(15)) await rm(item.file, { force: true }).catch(() => undefined);
+          signal.throwIfAborted(); this.assertCurrentEvent(event);
+        }
+        return { status: 'captured', operation: input.operation, durationSeconds: result.durationSeconds, imagePath, transcript: result.transcript,
+          note: image ? '先用 read_image 查看 imagePath 的画面。观看时按时间戳与 transcript 联合理解。' : 'transcript 是电脑音轨的语音转写。' };
+      }
       case 'companion_schedule': {
         const command = scheduleCommand.parse(args);
         const room = this.store.getConversation(event.conversationId);
@@ -1246,6 +1472,16 @@ export class BotService {
         if (call.name === 'call_stage') return stage;
         const { segments } = z.strictObject({ segments: z.array(botCallSegmentSchema).min(1).max(8) }).parse(call.args);
         validateBotCallPerformance(stage, segments);
+        if (event.source === 'presence') {
+          const work = this.presenceTurns.get(event.id);
+          if (!work) throw Error('陪伴观察已结束。');
+          const batches = work.presentation ??= new Map();
+          const prior = batches.get(call.callId);
+          if (prior && JSON.stringify(prior) !== JSON.stringify(segments)) throw Error('本次会面片段标识已被使用。');
+          if (!prior && [...batches.values()].reduce((total, batch) => total + batch.length, segments.length) > BOT_CALL_SEGMENTS_PER_TURN) throw Error('本轮会面片段已达到上限。');
+          batches.set(call.callId, segments);
+          return { accepted: segments.length, buffered: true };
+        }
         return this.publishCallSegments(event, call.callId, segments);
       }
       case 'cabin_world': {
@@ -1328,7 +1564,10 @@ export class BotService {
         const chars = Array.from(botMessageEvidence(message)), offset = z.number().int().min(0).max(1000000).parse(args.offset ?? 0);
         const limit = z.number().int().min(1).max(1200).parse(args.limit ?? 800), end = Math.min(chars.length, offset + limit);
         const files = returned && message.conversationId!==event.conversationId
-          ? await Promise.all((message.attachments??[]).map(async ref=>botHandoffFile(await this.requireMedia().verifiedLocalFile(message.conversationId,ref.id,signal))))
+          ? await Promise.all((message.attachments??[]).map(async ref => {
+            const file = await this.requireMedia().verifiedLocalFile(message.conversationId, ref.id, signal);
+            return botNativeInputFile(file.ref, file.path);
+          }))
           : await this.verifiedAttachmentFiles(event, message.attachments?.map(ref => ref.id) ?? [], undefined, signal);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         if(returned&&!this.store.peerReturns.canReadResult(event,id))throw Error('伙伴回信的来源授权已经变化。');

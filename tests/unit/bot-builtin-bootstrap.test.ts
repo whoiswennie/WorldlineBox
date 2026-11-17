@@ -6,7 +6,7 @@ import path from 'node:path';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService } from '../../src/main/companion-bot/memory-service';
-import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import { BUILTIN_BOT_COMPANIONS, DEFAULT_BOT_COMPANION_ID, YACHIYO_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
 import { removeOwnedDirectorySync } from '../helpers/remove-owned-test-directory';
 
 const services: BotService[] = [], roots: string[] = [];
@@ -51,6 +51,10 @@ it('ships the original artwork bytes and the user-provided mini reference behind
   }
   for (const builtin of BUILTIN_BOT_COMPANIONS) {
     expect(builtin.persona.length).toBeGreaterThan(500);
+    if (builtin.id === YACHIYO_BOT_COMPANION_ID) {
+      expect(builtin.portrait.url).toBe('worldlinebox://call-model/yachiyo/portrait.png');
+      continue;
+    }
     for (const relative of [builtin.portrait.url, builtin.referenceImage]) if (relative) {
       expect(relative).toMatch(/^companion-bot\/builtins\/[a-z0-9-]+\/[a-z0-9-]+\.(png|jpg)$/);
       expect((await readFile(path.join('public', relative))).length).toBeGreaterThan(1000);

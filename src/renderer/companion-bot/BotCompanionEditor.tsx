@@ -72,7 +72,11 @@ export function BotCompanionEditor({ kind, companion, companions, locale, api, i
       <footer><button type="submit" className="bot-editor-primary" disabled={saving || !name.trim() || !validConcurrency}>{saving ? locale === 'zh-CN' ? '正在保存…' : 'Saving…' : t.save}</button></footer>
     </form>
     </div>
-    {tab === 'appearance' && <div className="bot-editor-tabpanel bot-editor-meeting"><BotCompanionAppearance companion={companion} locale={locale} active={!suspended} onMeet={onMeet} /><BotCompanionPerformance api={api} companionId={companion.id} locale={locale} /></div>}
+    {tab === 'appearance' && <div className="bot-editor-tabpanel bot-editor-meeting">
+      <BotCompanionPerformance api={api} companionId={companion.id} locale={locale}>
+        <BotCompanionAppearance companion={companion} locale={locale} active={!suspended} onMeet={onMeet} />
+      </BotCompanionPerformance>
+    </div>}
     {tab === 'schedule' && <div className="bot-editor-tabpanel"><BotCompanionSchedules api={api} companionId={companion.id} locale={locale} /></div>}
   </div></div>;
   return <div className="bot-modal-backdrop" hidden={suspended}><form className="bot-modal bot-companion-editor" onSubmit={event => void submit(event)} role="dialog" aria-modal="true" aria-label={title}

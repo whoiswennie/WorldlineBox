@@ -43,6 +43,10 @@ const fallbackLine = '晚上好，今天又在这个点找我了？啥事啊。'
 const fallbackReasoning = 'INTERNAL_REASONING_DO_NOT_DISPLAY';
 const interruptedLine = '这一段已经开始呈现。';
 const discardedLine = '这是被打断后应丢弃的表演。';
+const scheduleRequest = '请安排一个一分钟后只执行一次的验收提醒';
+const scheduleTitle = '共享会话一分钟提醒';
+const schedulePrompt = '触发时向用户报告共享会话验收已完成';
+const scheduleReport = '一分钟到了，共享会话验收已完成。';
 
 async function startMeetingModel() {
   let unblock!: () => void, releaseInterrupted!: () => void, releaseFollowup!: () => void;
@@ -50,6 +54,7 @@ async function startMeetingModel() {
   const interruptGate = new Promise<void>(resolve => { releaseInterrupted = resolve; });
   const followupGate = new Promise<void>(resolve => { releaseFollowup = resolve; });
   const counters = { stage: 0, invalid: 0, presentation: 0, compact: 0, final: 0, catalog: false, followupContext: false, privateTools: false, plainTurns: 0, rejectedToolChoices: 0 };
+  let scheduledRequests = 0;
   const server = createServer(async (request, response) => {
     if (request.method !== 'POST') {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -75,6 +80,16 @@ async function startMeetingModel() {
     else if (envelope.includes('普通聊天基线')) {
       counters.privateTools = offered.includes('call_present');
       content = '普通聊天仍直接回复。';
+    } else if (envelope.includes(scheduleRequest)) {
+      if (outcomes === 0) call = { name: 'companion_schedule', args: { operation: 'settings', enabled: true } };
+      else if (outcomes === 1) call = { name: 'companion_schedule', args: { operation: 'save', draft: {
+        title: scheduleTitle, prompt: schedulePrompt, recurrence: { kind: 'once', minutes: 1 }, enabled: true,
+      } } };
+      else call = { name: 'call_present', args: { segments: [{ text: '已安排一分钟后的提醒。' }] } };
+      if (outcomes === 3) { call = undefined; content = '已安排一分钟后的提醒。'; }
+    } else if (envelope.includes(schedulePrompt)) {
+      if (++scheduledRequests === 1) { request.socket.destroy(); return; }
+      content = scheduleReport;
     } else if (offered.includes('call_present')) {
       counters.catalog ||= envelope.includes('"mode":"live2d"') && envelope.includes('call.model3.json') && envelope.includes('Interaction:6') && envelope.includes('脸红');
       if (envelope.includes('中途打断验收')) {
@@ -115,16 +130,100 @@ async function startMeetingModel() {
       usage: { prompt_tokens: 8000, completion_tokens: 45, total_tokens: 8045 } }) + '\n\ndata: [DONE]\n\n');
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  return { baseUrl: 'http://127.0.0.1:' + (server.address() as { port: number }).port, counters, unblock, releaseFollowup,
+  return { baseUrl: 'http://127.0.0.1:' + (server.address() as { port: number }).port, counters, unblock, releaseFollowup, get scheduledRequests() { return scheduledRequests; },
     close: async () => { unblock(); releaseInterrupted(); releaseFollowup(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
+
+test('reports a one-minute companion schedule in chat, video and desktop pet after a transport reset', async () => {
+  test.setTimeout(300_000);
+  const manager = process.env.WORLDLINEBOX_CALL_TEST_DSH_MANAGER ?? path.join(process.env.APPDATA ?? '.', 'WorldlineBox', 'dsh');
+  const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8').catch(() => '[]')) as DshRuntime[];
+  const runtime = runtimes.find(item => item.version === '0.2.2-rc.3') ?? runtimes.find(item => item.version === '0.2.2-rc.2');
+  test.skip(!runtime || process.platform !== 'win32', 'Requires Windows desktop pet and a sealed DSH runtime.');
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-voice-'));
+  const launch = resolveElectronLaunchOptions();
+  await seedNativeRuntime(manager, runtime!, profile);
+  await stageCallMemory(launch.cwd);
+  const model = await startMeetingModel();
+  const app = await electron.launch({ ...launch, env: electronLaunchEnv({
+    WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_DSH_SILENT: '1',
+    WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
+  }) });
+  try {
+    const page = await app.firstWindow();
+    await app.evaluate(({ app, BrowserWindow }, expected) => {
+      if (app.getPath('userData') !== expected) throw Error('Schedule acceptance must use its own profile');
+      const window = BrowserWindow.getAllWindows()[0]!;
+      window.on('show', () => window.hide()); window.hide(); window.setSize(1440, 940);
+      window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false);
+    }, profile);
+    expect((await page.evaluate(baseUrl => (Reflect.get(window, 'worldlinebox') as Bridge).llm.setConfig({
+      apiFormat: 'openai_chat', model: 'meeting-protocol-fixture', baseUrl, apiKey: 'localhost-only-fixture',
+    }), model.baseUrl)).ok).toBe(true);
+    await page.locator('[data-application-module="companions"]').click();
+    const setup = page.locator('[data-shared-dsh-setup]');
+    await setup.getByRole('combobox', { name: '选择 DSH 版本' }).selectOption(runtime!.id);
+    await setup.getByRole('button', { name: '创建并共享', exact: true }).click();
+    await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeEnabled({ timeout: 90_000 });
+    const request = (input: BotRequest) => page.evaluate(payload => (Reflect.get(window, 'worldlinebox') as Bridge).companionBot.request(payload), input);
+    const companionId = 'builtin-dafeiyu';
+    const conversationId = (await request({ type: 'conversation.open', companionId })).conversationId!;
+    await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+    const dialog = { name: '与大肥鱼会面', exact: true };
+    const video = page.getByRole('dialog', dialog);
+    await video.getByRole('button', { name: '接通', exact: true }).click();
+    await expect(video.locator('.bot-call-live2d canvas')).toBeVisible({ timeout: 60_000 });
+    const ordinary = await request({ type: 'message.send', conversationId, requestId: 'from-chat', content: '普通聊天基线' });
+    expect(ordinary.ok, ordinary.error).toBe(true);
+    await expect(video.locator('.bot-call-bubble-text')).toHaveText('普通聊天仍直接回复。', { timeout: 50_000 });
+    await video.getByRole('button', { name: '展开会面输入' }).click();
+    const composer = video.getByRole('textbox', { name: '发送消息…', exact: true });
+    await composer.fill(scheduleRequest); await composer.press('Enter');
+    const findSchedule = async () => (await request({ type: 'companion.schedule', companionId, command: { operation: 'list' } })).schedule?.items.find(item => item.title === scheduleTitle);
+    const state = (surface?: 'call') => request({ type: 'state', conversationId, surface });
+    const assertTurnHealthy = async () => {
+      const failure = (await state()).snapshot?.messages.findLast(message => message.senderId === companionId && message.status === 'failed');
+      if (failure) throw Error(failure.error || 'Companion schedule turn failed');
+      return findSchedule();
+    };
+    await expect.poll(assertTurnHealthy, { timeout: 40_000 }).toMatchObject({ enabled: true, recurrence: { kind: 'once', minutes: 1 } });
+    const due = (await findSchedule())!.nextAt;
+    const petOpening = app.waitForEvent('window');
+    await video.getByRole('button', { name: '会面菜单', exact: true }).click();
+    await video.getByRole('button', { name: '切换为桌宠', exact: true }).click();
+    const pet = await petOpening;
+    const floating = pet.getByRole('dialog', dialog);
+    await expect(floating.locator('.bot-call-live2d canvas')).toBeVisible();
+    await expect(floating.locator('.bot-call-bubble-text')).toHaveText(scheduleReport, { timeout: 85_000 });
+    await expect.poll(findSchedule).toMatchObject({ enabled: false, lastRun: { status: 'done', at: expect.any(Number) } });
+    expect((await findSchedule())!.lastRun!.at).toBeGreaterThanOrEqual(due);
+    expect(model.scheduledRequests).toBe(2);
+    const normalMessages = (await state()).snapshot!.messages;
+    const report = normalMessages.filter(message => message.senderId === companionId && message.content === scheduleReport);
+    expect(report).toHaveLength(1);
+    expect(normalMessages.filter(message => message.senderId === 'schedule' && message.content === schedulePrompt)).toHaveLength(1);
+    expect(normalMessages.some(message => message.senderId === 'user' && message.content === scheduleRequest)).toBe(true);
+    expect((await state('call')).snapshot?.messages.find(message => message.id === report[0]!.id)).toMatchObject({ content: scheduleReport, status: 'sent' });
+    await expect(page.locator(`[data-bot-message="${report[0]!.id}"]`)).toContainText(scheduleReport);
+    await floating.getByRole('button', { name: '更多会面功能', exact: true }).click();
+    const petClosed = pet.waitForEvent('close');
+    await floating.getByRole('button', { name: '返回会面场景', exact: true }).click().catch(error => { if (!pet.isClosed()) throw error; });
+    await petClosed;
+    await video.getByRole('button', { name: '会面聊天记录', exact: true }).click();
+    await expect(video.locator(`[data-call-message="${report[0]!.id}"]`)).toContainText(scheduleReport);
+  } finally {
+    await app.close();
+    await model.close();
+    await removeVoiceProfile(profile);
+  }
+});
 
 // eslint-disable-next-line no-empty-pattern -- Real Electron, Chromium recording, SenseVoice, native DSH and the bundled Live2D model.
 test('video meeting presents DSH tool segments live after voice input and keeps native topic history', async ({}, testInfo) => {
   test.setTimeout(480_000);
   const manager = process.env.WORLDLINEBOX_CALL_TEST_DSH_MANAGER ?? path.join(process.env.APPDATA ?? '.', 'WorldlineBox', 'dsh');
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8').catch(() => '[]')) as DshRuntime[];
-  const runtime = runtimes.find(item => item.version === '0.2.2-rc.2') ?? runtimes.find(item => item.version === '0.2.2-rc.1');
+  const runtime = runtimes.find(item => item.version === '0.2.2-rc.3') ?? runtimes.find(item => item.version === '0.2.2-rc.2') ?? runtimes.find(item => item.version === '0.2.2-rc.1');
   const wave = path.resolve('tests/fixtures/media/sensevoice-zh.wav');
   test.skip(!runtime || !existsSync(wave) || !existsSync(path.resolve('resources/speech-models/model.int8.onnx')), 'Requires a sealed DSH runtime and local SenseVoice test assets.');
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-voice-'));
@@ -142,6 +241,21 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
       window.on('show', () => window.hide()); window.hide(); window.setMinimumSize(0, 0); window.setSize(1440, 940);
       window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false);
     }, profile);
+    await page.evaluate(() => {
+      const devices = navigator.mediaDevices;
+      const capture = devices.getUserMedia.bind(devices);
+      let utterancePlayed = false;
+      devices.getUserMedia = async constraints => {
+        const stream = await capture(constraints);
+        const tracks = stream.getAudioTracks();
+        if (tracks.length) {
+          // Keep the second listen window open without replaying the recorded utterance.
+          if (utterancePlayed) for (const track of tracks) track.enabled = false;
+          utterancePlayed = true;
+        }
+        return stream;
+      };
+    });
     const capture = async (name: string) => {
       const bytes = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG().toString('base64'));
       const file = testInfo.outputPath(name + '.png'); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, Buffer.from(bytes, 'base64')); await testInfo.attach(name, { path: file, contentType: 'image/png' });
@@ -157,10 +271,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     const setup = page.locator('[data-shared-dsh-setup]');
     await setup.getByRole('combobox', { name: '选择 DSH 版本' }).selectOption(runtime!.id);
     await setup.getByRole('button', { name: '创建并共享', exact: true }).click();
-    await expect.poll(() => page.evaluate(async () => {
-      const launcher = await (Reflect.get(window, 'worldlinebox') as Bridge).dshLauncher.request({ type: 'state' });
-      return launcher.ok ? launcher.state?.executionReadiness?.status : launcher.error;
-    }), { timeout: 240_000, intervals: [1000, 2000, 4000] }).toBe('ready');
+    await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeEnabled({ timeout: 90_000 });
     const request = (input: BotRequest) => page.evaluate(payload => (Reflect.get(window, 'worldlinebox') as Bridge).companionBot.request(payload), input);
     const direct = (await request({ type: 'conversation.open', companionId: 'builtin-dafeiyu' })).conversationId!;
     const normal = await request({ type: 'message.send', conversationId: direct, content: '普通聊天基线', requestId: 'normal' });
@@ -180,9 +291,9 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     const renderedPose = await observeCallRenderedPose(page);
     const opened = await request({ type: 'call.open', conversationId: direct });
     const callId = opened.conversationId!;
-    expect(callId).not.toBe(direct);
+    expect(callId).toBe(direct);
     expect(opened.callModel?.assets.motions.length).toBeGreaterThan(0);
-    expect(opened.snapshot?.messages).toEqual([]);
+    expect(opened.snapshot?.messages.some(item => item.id === normal.messageId)).toBe(true);
     expect(await page.evaluate(() => 'companionBotSpeech' in Reflect.get(window, 'worldlinebox'))).toBe(false);
 
     const figure = meeting.locator('.bot-call-live2d');
@@ -209,7 +320,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await expect(meeting.locator('.bot-call-bubble .bot-avatar')).toHaveCount(0);
     expect(model.counters).toMatchObject({ stage: 1, invalid: 1, presentation: 1, final: 0, catalog: true });
     const live = await state(), firstTopic = live.chatRuntime!.topic!;
-    const voiceText = live.messages.find(item => item.senderId === 'user')?.content;
+    const voiceText = live.messages.findLast(item => item.senderId === 'user')?.content;
     expect(voiceText).toMatch(/[\p{Script=Han}]{2,}/u);
     expect(live.messages.find(item => item.parts?.some(part => part.text === firstLine))?.status).toBe('running');
     await expect(meeting.locator('.bot-call-progress .bot-reply-progress-label')).toBeVisible();
@@ -299,7 +410,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await expect(history).toContainText(longLine);
     await expect(history).not.toContainText(hiddenBody);
     await expect(history).not.toContainText('这段无效的表演不应发布。');
-    await expect(history).not.toContainText('普通聊天基线');
+    await expect(history).toContainText('普通聊天基线');
     await meeting.getByRole('button', { name: '收起会面面板', exact: true }).click();
     await meeting.getByRole('button', { name: /^上下文(?:已用|待统计)/u }).click();
     await expect(meeting.getByRole('dialog', { name: 'DSH 上下文' })).toBeVisible();
@@ -308,7 +419,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await expect(meeting.locator('.bot-topic-notice')).toContainText(/压缩/, { timeout: 60_000 });
     await meeting.getByRole('button', { name: '新话题', exact: true }).click();
     await expect.poll(async () => (await state()).chatRuntime?.topic?.id).not.toBe(firstTopic.id);
-    expect((await state()).messages).toEqual([]);
+    expect((await state()).messages.some(item => item.content === voiceText)).toBe(true);
     const field = meeting.getByRole('textbox', { name: '发送消息…', exact: true });
     await field.fill('用第二个话题测试'); await field.press('Enter');
     await expect(bubble).toHaveText(fallbackLine, { timeout: 60_000 });
@@ -323,9 +434,9 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await meeting.locator('.bot-topic-current').click();
     await meeting.locator('[data-topic-id="' + firstTopic.id + '"] .bot-topic-open').click();
     await expect.poll(async () => (await state()).chatRuntime?.topic?.id).toBe(firstTopic.id);
-    expect((await state()).messages.some(item => item.content === '用第二个话题测试')).toBe(false);
+    expect((await state()).messages.some(item => item.content === '用第二个话题测试')).toBe(true);
     await field.fill('接续已经存在的话题'); await field.press('Enter');
-    await expect.poll(async () => (await state()).messages.filter(item => item.senderId !== 'user' && item.status === 'sent').length, { timeout: 60_000 }).toBe(2);
+    await expect.poll(async () => (await state()).messages.find(item => item.parts?.some(part => part.text === '已进入这个会面话题。'))?.status, { timeout: 60_000 }).toBe('sent');
     await expect(bubble).toHaveText('已进入这个会面话题。');
     await expect(review).toBeVisible({ timeout: 15_000 });
     await field.fill('中途打断验收'); await field.press('Enter');
@@ -342,8 +453,8 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await expect(bubble).toHaveText('好，我们换个话题聊。', { timeout: 60_000 });
     const stopped = (await state()).messages.find(item => item.id === oldReply!.id);
     expect(stopped?.status).toBe('cancelled');
-    expect(stopped?.parts?.filter(part => part.presentation).map(part => part.text)).toEqual([interruptedLine]);
-    expect((await request({ type: 'state', conversationId: direct })).snapshot?.messages.some(item => item.content === voiceText)).toBe(false);
+    expect(stopped?.parts?.filter(part => part.presentation).map(part => part.text)).toEqual([interruptedLine, discardedLine]);
+    expect((await request({ type: 'state', conversationId: direct })).snapshot?.messages.some(item => item.content === voiceText)).toBe(true);
     await meeting.getByRole('button', { name: '挂断', exact: true }).click();
     await expect(meeting).toHaveCount(0);
     await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
@@ -351,7 +462,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await meeting.getByRole('button', { name: '会面聊天记录', exact: true }).click();
     await expect(history).toContainText(finalLine);
     await expect(history).toContainText('接续已经存在的话题');
-    await expect(history).not.toContainText(discardedLine);
+    await expect(history).toContainText(discardedLine);
     expect(errors).toEqual([]);
   } finally {
     model.unblock();

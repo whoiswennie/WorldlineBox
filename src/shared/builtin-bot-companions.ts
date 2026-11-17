@@ -1,7 +1,9 @@
 import { LEGACY_BUILTIN_BOTS, LEGACY_DEEPSEEK_APPEARANCES } from './builtin-bot-legacy';
 import { BUILTIN_CHARACTER_PERSONAS } from './builtin-character-personas';
+import { CALL_MODEL_HOST } from './companion-call';
 
 export const DEFAULT_BOT_COMPANION_ID = 'builtin-dafeiyu';
+export const YACHIYO_BOT_COMPANION_ID = 'yachiyo-runami';
 export interface BotPortrait {
   url: string;
 }
@@ -55,6 +57,11 @@ export const BUILTIN_BOT_COMPANIONS: readonly BuiltinBotCompanion[] = [
       { label: '全身立绘', url: 'companion-bot/builtins/claude/standing.png' },
       { label: '原始形象设定', url: 'companion-bot/builtins/claude/user-reference.png' },
     ],
+  },
+  {
+    id: YACHIYO_BOT_COMPANION_ID, name: '月见八千代', summary: '月读管理者兼顶级主播 · 元气温柔，喜欢守望每个人的创作。',
+    persona: BUILTIN_CHARACTER_PERSONAS[YACHIYO_BOT_COMPANION_ID]!,
+    portrait: { url: `worldlinebox://${CALL_MODEL_HOST}/yachiyo/portrait.png` },
   },
 ];
 

@@ -7,6 +7,13 @@ it('projects the final committed body and media without changing the stored sour
   const parts=[{id:'last',kind:'text' as const,sequence:30,text:'最终正文'},{id:'early',kind:'text' as const,sequence:10,text:'过程正文'},{id:'caption',kind:'media' as const,sequence:20,text:'表情台词'}];
   expect(botReplyPresentation(parts).content).toBe('最终正文');expect(parts[1]!.text).toBe('过程正文');expect(botReplyPresentation([parts[2]!]).content).toBe('');
 });
+it('shows every published call segment in the text chat', () => {
+  const parts = [
+    { id: 'second', kind: 'text' as const, sequence: 2, text: '第二句', presentation: {} },
+    { id: 'first', kind: 'text' as const, sequence: 1, text: '第一句', presentation: {} },
+  ];
+  expect(botReplyPresentation(parts).content).toBe('第一句\n\n第二句');
+});
 it('keeps an early substantive answer, media and the last response in native order despite asynchronous arrival',()=>{
   const parts=botReplyDisplayParts([{id:'last',kind:'text',sequence:30,text:'处理结束'},{id:'answer',kind:'text',sequence:10,text:'关键结论已经在这里'},{id:'sticker',kind:'media',sequence:20,text:'给你一张表情'}]);
   expect(parts.map(part=>part.text)).toEqual(['关键结论已经在这里','给你一张表情','处理结束']);

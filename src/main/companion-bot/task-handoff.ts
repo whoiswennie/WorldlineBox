@@ -5,6 +5,14 @@ export interface BotHandoffFile {
   id: string; name: string; mimeType: string; size: number; sha256?: string;
   path: string; analysisBlocked?: boolean; previewLimitReason?: string;
 }
+export type BotNativeInputFile = BotHandoffFile | (Omit<BotHandoffFile, 'path'> & { audioRecognition: true });
+export function botNativeInputFile(ref: BotMediaRef, filePath?: string): BotNativeInputFile {
+  if (/^(?:audio|video)\//i.test(ref.mimeType)) {
+    const { id, name, size, mimeType, sha256 } = ref;
+    return { id, name, size, mimeType, sha256, audioRecognition: true };
+  }
+  return botHandoffFile({ ref, path: filePath! });
+}
 export function botTaskFileEvidence(files: readonly BotHandoffFile[]) {
   return files.map(({ name, mimeType, size, sha256, path: filePath, analysisBlocked, previewLimitReason }) =>
     ({ name, mimeType, size, sha256, path: filePath, ...(analysisBlocked ? { analysisBlocked, reason: previewLimitReason } : {}) }));

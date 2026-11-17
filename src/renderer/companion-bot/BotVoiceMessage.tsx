@@ -1,12 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { localSpeechApi } from './BotVoiceInput';
+import { BotIcon } from './BotIcon';
 import './bot-voice.css';
 
-export function BotVoiceMessage({ media, conversationId, locale, transcriptOnly = false }: { media: BotMediaRef; conversationId: string; locale: 'zh-CN' | 'en'; transcriptOnly?: boolean }) {
+export function BotVoiceMessage({ media, conversationId, locale, transcriptOnly = false, trailingAction }: {
+  media: BotMediaRef; conversationId: string; locale: 'zh-CN' | 'en'; transcriptOnly?: boolean; trailingAction?: ReactNode;
+}) {
   const zh = locale === 'zh-CN', api = localSpeechApi();
   const [expanded, setExpanded] = useState(false), [transcript, setTranscript] = useState(media.transcript), [error, setError] = useState(''), [busy, setBusy] = useState(false);
   const [requestId] = useState(() => crypto.randomUUID());
+  const transcriptId = useId();
   const audio = useRef<HTMLAudioElement>(null), [playing, setPlaying] = useState(false);
   const duration = Math.ceil(media.voice?.durationSeconds ?? media.transcript?.audioSeconds ?? 0);
   useEffect(() => { const element = audio.current; return () => { element?.pause(); }; }, []);
@@ -15,8 +19,14 @@ export function BotVoiceMessage({ media, conversationId, locale, transcriptOnly 
     if (busy) return;
     if (transcript) { setExpanded(!expanded); return; }
     if (!api) return; setBusy(true); setError('');
-    try { const result = await api.request({ type: 'speech.attachment', conversationId, attachmentId: media.id, requestId }); if (!result.ok) throw Error(result.error ?? '转写失败。'); setTranscript(result.transcript); setExpanded(true); }
-    catch (failure) { setError(failure instanceof Error ? failure.message : '转写失败。'); } finally { setBusy(false); }
+    try {
+      const result = await api.request({ type: 'speech.attachment', conversationId, attachmentId: media.id, requestId });
+      if (result.cancelled) return;
+      if (!result.ok || !result.transcript) throw Error(result.error ?? (zh ? '转写失败，请重试。' : 'Transcription failed. Try again.'));
+      setTranscript(result.transcript); setExpanded(true);
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : zh ? '转写失败，请重试。' : 'Transcription failed. Try again.');
+    } finally { setBusy(false); }
   };
   const play = async () => {
     if (!audio.current) return;
@@ -31,7 +41,17 @@ export function BotVoiceMessage({ media, conversationId, locale, transcriptOnly 
     </button>
     <audio ref={audio} preload="none" src={media.url} hidden onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
   </>}
-    {(api || transcript) && <button type="button" disabled={busy} aria-expanded={expanded} onClick={() => void convert()}>{busy ? zh ? '正在转写…' : 'Transcribing…' : expanded ? zh ? '收起文字' : 'Hide text' : zh ? '转文字' : 'Show transcript'}</button>}
-    {expanded && <p className="bot-voice-transcript">{transcript?.text || (zh ? '没有识别到语音' : 'No speech detected')}</p>}{error && <small role="alert">{error}</small>}
+    {(api || transcript || trailingAction) && <div className="bot-voice-actions">
+      {(api || transcript) && <button className="bot-voice-transcribe" type="button" disabled={busy} aria-expanded={expanded} aria-controls={transcriptId} onClick={() => void convert()}>
+        {busy ? <span className="bot-voice-spinner" aria-hidden="true" /> : <BotIcon name="file" />}
+        <span role={busy ? 'status' : undefined}>{busy ? zh ? '正在转写…' : 'Transcribing…' : expanded ? zh ? '收起文字' : 'Hide transcript' : zh ? '转文字' : 'Show transcript'}</span>
+        {transcript && <span className={expanded ? 'bot-voice-caret is-expanded' : 'bot-voice-caret'}><BotIcon name="chevron-down" /></span>}
+      </button>}
+      {trailingAction}
+    </div>}
+    <section className="bot-voice-transcript" id={transcriptId} hidden={!expanded} aria-label={zh ? '语音转写' : 'Transcript'}>
+      {expanded && (transcript?.text || (zh ? '没有识别到语音' : 'No speech detected'))}
+    </section>
+    {error && <small className="bot-voice-message-error" role="alert">{error}</small>}
   </div>;
 }

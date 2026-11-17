@@ -133,9 +133,10 @@ export interface BotSnapshot {
 export interface BotHistoryPage { items: BotMessage[]; hasMore: boolean; nextBefore?: number }
 export const botRequestSchema = z.discriminatedUnion('type', [
   ...botMemoryMaintenanceSchemas,
-  z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional() }),
+  z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional(), surface: z.literal('call').optional() }),
   z.strictObject({ type: z.literal('call.open'), conversationId: id }),
   z.strictObject({ type: z.literal('call.model.import'), companionId: id }),
+  z.strictObject({ type: z.literal('call.model.reset'), companionId: id }),
   z.strictObject({ type: z.literal('user.identity'), name: z.string().trim().min(1).max(80).regex(/^[^\x00-\x1f\x7f]+$/u).optional(), bio: z.string().trim().max(800).optional() }),
   z.strictObject({ type: z.literal('companion.call-performance'), companionId: id }),
   z.strictObject({ type: z.literal('call.interrupt'), conversationId: id, topicId: id.optional(), requestId: id,
@@ -163,7 +164,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
   z.strictObject({ type: z.literal('conversation.pin'), conversationId: id, pinned: z.boolean() }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(botAppIdSchema.options.length).optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(botAppIdSchema.options.length).optional(), surface: z.literal('call').optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
@@ -219,4 +220,4 @@ export const botSpeechRequest = z.discriminatedUnion('type', [
 ]);
 export type BotSpeechRequest = z.infer<typeof botSpeechRequest>;
 export type BotSpeechEvent = { id: string; audio?: Uint8Array; done?: boolean; error?: string };
-export interface BotResponse { userBio?: string }
+export interface BotResponse { userBio?: string; legacyCallConversationId?: string }

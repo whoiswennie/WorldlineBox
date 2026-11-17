@@ -2,6 +2,7 @@ import { WebSocket, type ClientOptions } from 'ws';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import type { BotMessage } from '../../shared/companion-bot';
 import { callCaptionPlaybackPages } from '../../shared/companion-call-captions';
+import { botReplyPresentation } from '../../shared/companion-bot-reply';
 
 const endpoint = 'https://api.deepseek.com/v1/tools/';
 const maxRecording = 8 * 1024 * 1024;
@@ -10,7 +11,7 @@ const speechError = (status: number) => new Error(`DeepSeek 语音服务请求�
 export function speechText(message: BotMessage | undefined, conversationId: string, partId?: string, pageIndex?: number) {
   if (!message || message.conversationId !== conversationId || message.senderId === 'user') throw Error('当前会话中没有这条伙伴消息。');
   const text = partId ? message.parts?.find(part => part.id === partId && part.presentation)?.text
-    : message.status === 'sent' ? message.content : undefined;
+    : message.status === 'sent' ? (message.parts?.length ? botReplyPresentation(message.parts).content : message.content) : undefined;
   if (!text?.trim()) throw Error('这条消息没有可朗读的内容。');
   if (pageIndex === undefined) return text;
   const page = callCaptionPlaybackPages(text)[pageIndex];

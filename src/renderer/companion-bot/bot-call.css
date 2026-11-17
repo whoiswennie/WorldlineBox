@@ -247,7 +247,7 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 }
 .bot-call-dock>* { pointer-events:auto; }
 .bot-call-dock.is-collapsed,.is-desktop-pet .bot-call-dock.is-collapsed {
-  inset-inline:auto 16px;width:auto;margin:0;
+  inset-inline:auto 16px;width:auto;max-width:calc(100% - 32px);margin:0;
 }
 .bot-call-window .bot-call-input-entry {
   width:50px;height:50px;padding:0;border:0;border-radius:50%;overflow:hidden;
@@ -257,8 +257,10 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 .bot-call-window .bot-call-input-entry:hover { box-shadow:0 5px 20px #2266ab55; }
 .bot-call-input-entry:hover>img { filter:brightness(1.1); }
 .bot-call-input-entry>img { display:block;width:100%;height:100%;border-radius:50%;object-fit:cover;pointer-events:none; }
-.bot-call-visual-novel {
+:is(.bot-call-visual-novel,.bot-call-pet-progress) {
   --call-text:#2c2850;--call-muted:#625978;--call-paper:#fffdfb;--call-edge:#c9c6e6;--call-accent:#6b5394;
+}
+.bot-call-visual-novel {
   position:absolute;z-index:5;pointer-events:none;
   display:flex;flex-direction:column;align-items:center;
   min-width:0;color:var(--call-text);animation:bot-call-appear .16s ease-out both;
@@ -286,12 +288,30 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 .bot-call-visual-novel[data-bubble-tail=left]::after { top:var(--bot-call-tail-center,50%);left:-4px;border-bottom:1px solid var(--call-edge);border-left:1px solid var(--call-edge); }
 .bot-call-visual-novel[data-bubble-tail=right]::after { top:var(--bot-call-tail-center,50%);right:-4px;border-top:1px solid var(--call-edge);border-right:1px solid var(--call-edge); }
 .bot-call-bubble {
-  display:grid;grid-template-columns:minmax(0,1fr);gap:5px;
+  display:flex;flex-direction:column;gap:5px;
   width:fit-content;max-width:100%;min-height:0;overflow:auto;scrollbar-width:thin;
   padding:9px 12px 6px;border:1px solid var(--call-edge);border-radius:23px;
   background:var(--call-paper);box-shadow:0 4px 15px #21143b2e;
 }
+.bot-call-bubble>* { flex:none; }
 .bot-call-bubble[data-waiting] { padding:5px 10px; }
+.bot-call-pet-progress {
+  position:absolute;z-index:5;inset-inline-start:12px;
+  bottom:calc(var(--bot-call-dock-height) + var(--bot-call-dock-bottom) + 8px);
+  width:max-content;max-width:calc(100% - 24px);
+  padding:4px 8px;border:1px solid var(--call-edge);border-radius:15px;
+  background:var(--call-paper);color:var(--call-text);box-shadow:0 3px 12px #21143b24;
+}
+.bot-call-pet-progress .bot-call-progress { justify-content:flex-start;gap:6px; }
+.bot-call-status-row { display:flex;gap:6px;align-items:stretch;min-width:0; }
+.bot-call-status-row:empty { display:none; }
+.bot-call-status-row > * { min-width:0;max-width:100%;flex:1 1 0; }
+.bot-call-status-row > :only-child { flex:0 1 auto; }
+.bot-call-status-row > .bot-call-pet-progress { position:static;width:auto;max-width:100%;order:0; }
+.bot-call-status-row .bot-call-progress-copy,
+.bot-call-status-row .bot-call-progress-line { min-width:0; }
+.bot-call-status-row .bot-reply-progress-label { overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }
+.bot-call-status-row > .bot-desktop-capture-status { order:1; }
 .bot-call-cues,.bot-call-user-line {
   position:absolute;width:1px;height:1px;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap;
 }
@@ -325,14 +345,14 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 }
 .bot-call-bubble-controls>span { white-space:nowrap;font-variant-numeric:tabular-nums; }
 .bot-call-bubble-controls>span>i { padding:0 2px;font-style:normal; }
-.bot-call-window .bot-call-bubble :is(.bot-call-bubble-controls button,.bot-call-interrupt) {
+.bot-call-window :is(.bot-call-bubble-controls button,.bot-call-bubble .bot-call-interrupt,.bot-call-pet-progress .bot-call-interrupt) {
   min-width:26px;height:26px;padding:0 4px;border:0;border-radius:50%;
   background:transparent;color:var(--call-muted);font-size:11px;white-space:nowrap;
 }
-.bot-call-bubble :is(.bot-call-bubble-controls,.bot-call-interrupt) .bot-icon { width:14px;height:14px;flex:none; }
-.bot-call-window .bot-call-bubble :is(.bot-call-bubble-controls button,.bot-call-interrupt):hover:enabled,
+.bot-call-window :is(.bot-call-bubble-controls,.bot-call-interrupt) .bot-icon { width:14px;height:14px;flex:none; }
+.bot-call-window :is(.bot-call-bubble-controls button,.bot-call-bubble .bot-call-interrupt,.bot-call-pet-progress .bot-call-interrupt):hover:enabled,
 .bot-call-window .bot-call-bubble-controls button[aria-pressed=true] { background:#f1eafa;color:var(--call-accent); }
-.bot-call-window .bot-call-bubble button.bot-call-interrupt { color:var(--ui-status-danger-content); }
+.bot-call-window button.bot-call-interrupt { color:var(--ui-status-danger-content); }
 .bot-call-window .bot-call-bubble button.bot-call-bubble-collapse { background:#f1eafa;color:var(--call-accent); }
 .bot-call-window .bot-call-bubble button.bot-call-bubble-collapse:hover:enabled { background:#e8dcf5; }
 .bot-call-log-bubble { width:fit-content;margin:0 0 6px;padding:8px 11px;border-radius:11px;background:var(--ui-surface-pane);color:var(--ui-content-primary);line-height:1.58; }
@@ -392,6 +412,7 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 }
 .is-desktop-pet .bot-call-connected,.is-desktop-pet .bot-call-scene { background:transparent; }
 .bot-call-input-group { position:relative;display:grid;gap:5px;min-width:0; }
+.bot-call-input-group[hidden] { display:none; }
 .is-desktop-pet .bot-call-window.is-connected {
   --pet-edge:var(--ui-border-control);--pet-ink:var(--ui-content-primary);--pet-muted:var(--ui-content-secondary);
 }
@@ -399,6 +420,7 @@ body:has(.bot-call-overlay)>.bot-attachment-viewer-backdrop { z-index:calc(var(-
 .is-desktop-pet .bot-call-portrait-frame { box-shadow:none; }
 .is-desktop-pet .bot-call-loading { width:max-content;max-width:calc(100% - 24px);margin-inline:auto; }
 .is-desktop-pet .bot-call-live2d { inset:6px 0 18px; }
+.is-desktop-pet .bot-call-bubble-text { max-height:clamp(3.25em,13dvh,6.25em);overscroll-behavior:contain; }
 .bot-call-composer-host {
   --bot-panel:var(--ui-surface-raised);--bot-panel-soft:var(--ui-surface-pane);
   --bot-edge:var(--ui-border-control);--bot-accent:var(--ui-content-accent);--bot-accent-bright:#7ca8d5;

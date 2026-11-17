@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import type { BotMessage, WorldlineBoxBotApi } from '../../shared/companion-bot';
 import { botCallGestureLabels, botCallMotionId, type BotCallCue, type BotCallModelCatalog, type BotCallStage } from '../../shared/companion-call';
 import { callCaptionPlaybackPages, CALL_CAPTION_AUTO_HIDE_MS, callCaptionHoldMs } from '../../shared/companion-call-captions';
@@ -8,6 +9,7 @@ import { BotCallProgress } from './BotReplyProgress';
 import { speechPlaybackKey, useBotSpeech } from './useBotSpeech';
 import { observeCallBubble } from './call-bubble-placement';
 import { useBotCallDocument } from './call-pet';
+import { botReplyPresentation } from '../../shared/companion-bot-reply';
 
 interface Beat { id: string; messageId: string; partId?: string; sequence: number; text: string; cue: BotCallCue }
 export interface BotCallPlayback {
@@ -21,12 +23,38 @@ export interface BotCallTurn {
   failed?: boolean;
 }
 
-export function isCallTurnReply(message: BotMessage, turn?: BotCallTurn): boolean {
-  return message.senderId !== 'user' && (!turn || !!turn.replyIds?.includes(message.id));
+export function isLiveCallReply(message: BotMessage, companionId: string, connectedAt: number, activeAtConnect: ReadonlySet<string>): boolean {
+  return message.senderId === companionId && (Date.parse(message.createdAt) >= connectedAt || activeAtConnect.has(message.id));
 }
 
-export function BotCallDialogue({ messages, baseline, ignored, connectedAt, catalog, stage, control, modelLoading, hidden, zh, onHistory, onPresent, onPlayback, onInterrupt, onNotice, onReplay, interrupted, extra, turn, speechApi, conversationId, muted, voiceHold, speechStop }: {
+function scrollCaption(node: HTMLElement, duration: number): (() => void) | undefined {
+  const view = node.ownerDocument.defaultView;
+  if (!view || view.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const started = view.performance.now();
+  const initial = node.scrollTop;
+  const lead = Math.min(900, duration * .25);
+  const travel = Math.max(1, duration - lead - Math.min(700, duration * .2));
+  let frame = view.requestAnimationFrame(advance);
+  function advance(now: number) {
+    const fraction = Math.max(0, Math.min(1, (now - started - lead) / travel));
+    const limit = node.scrollHeight - node.clientHeight;
+    if (limit > initial) node.scrollTop = initial + (limit - initial) * fraction;
+    if (fraction < 1) frame = view!.requestAnimationFrame(advance);
+  }
+  const stop = () => view.cancelAnimationFrame(frame);
+  const inputs = ['wheel', 'pointerdown', 'keydown'] as const;
+  for (const input of inputs) node.addEventListener(input, stop, { passive: true });
+  return () => {
+    stop();
+    for (const input of inputs) node.removeEventListener(input, stop);
+  };
+}
+
+export function BotCallDialogue({ messages, baseline, ignored, connectedAt, activeAtConnect, companionId, catalog, stage, control, modelLoading, hidden, desktopPet, progressTarget, zh, onHistory, onPresent, onPlayback, onInterrupt, onNotice, onReplay, interrupted, extra, turn, speechApi, conversationId, muted, voiceHold, speechStop }: {
   messages: readonly BotMessage[]; baseline: ReadonlySet<string>; connectedAt: number; control?: BotLive2DControls; hidden: boolean;
+  companionId: string; activeAtConnect: ReadonlySet<string>;
+  desktopPet?: boolean;
+  progressTarget?: HTMLElement | null;
   catalog?: BotCallModelCatalog;
   stage?: BotCallStage;
   modelLoading?: boolean;
@@ -51,7 +79,7 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
     speechStop.current = stopSpeech;
     return () => { if (speechStop.current === stopSpeech) speechStop.current = undefined; };
   }, [speechStop, stopSpeech]);
-  const [timeline, setTimeline] = useState<{ source?: readonly BotMessage[]; ignored?: ReadonlySet<string>; turn?: BotCallTurn; beats: Beat[] }>({ beats: [] });
+  const [timeline, setTimeline] = useState<{ source?: readonly BotMessage[]; ignored?: ReadonlySet<string>; beats: Beat[] }>({ beats: [] });
   let beats = timeline.beats;
   const [position, setPosition] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -62,22 +90,23 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
   const startedAt = useRef(0);
   const completedThrough = useRef(-1);
   const bubble = useRef<HTMLElement>(null);
-  if (timeline.source !== messages || timeline.ignored !== ignored || timeline.turn !== turn) {
+  const caption = useRef<HTMLParagraphElement>(null);
+  if (timeline.source !== messages || timeline.ignored !== ignored) {
     const incoming = messages.flatMap((message): Beat[] => {
-      if (ignored.has(message.id) || !isCallTurnReply(message, turn)
-        || (Date.parse(message.createdAt) < connectedAt && !['queued', 'running'].includes(message.status))) return [];
+      if (ignored.has(message.id) || !isLiveCallReply(message, companionId, connectedAt, activeAtConnect)) return [];
       const presentation = message.parts?.filter(part => part.presentation && part.text?.trim()) ?? [];
       if (presentation.length) return presentation.flatMap(part => baseline.has(part.id) ? [] : [{
         id: part.id, partId: part.id, messageId: message.id, sequence: part.sequence, text: part.text!, cue: part.presentation!,
       }]);
       const id = `message:${message.id}`;
-      return message.status === 'sent' && message.content.trim() && !baseline.has(id)
-        ? [{ id, messageId: message.id, sequence: message.sequence, text: message.content, cue: {} }] : [];
+      const text = message.parts?.length ? botReplyPresentation(message.parts).content : message.content;
+      return message.status === 'sent' && text.trim() && !baseline.has(id)
+        ? [{ id, messageId: message.id, sequence: message.sequence, text, cue: {} }] : [];
     });
     const known = new Set(beats.map(beat => beat.id));
     const added = incoming.filter(beat => !known.has(beat.id));
     if (added.length) beats = [...beats, ...added];
-    setTimeline({ source: messages, ignored, turn, beats });
+    setTimeline({ source: messages, ignored, beats });
   }
   const pages = useMemo(() => beats.flatMap(beat => {
     const pages = callCaptionPlaybackPages(beat.text).map((page, speechPage) => ({ ...page, beat, speechPage, hold: callCaptionHoldMs(page.text) }));
@@ -105,17 +134,19 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
   const expression = currentCue?.expression ? stage?.expressions.find(item => item.name === currentCue.expression) : undefined;
   const motion = currentCue?.motion ? stage?.motions.find(item => item.id === currentCue.motion) : undefined;
   const gesture = currentCue?.gesture && stage?.gestures.includes(currentCue.gesture) ? botCallGestureLabels[currentCue.gesture][language] : undefined;
-  const latest = messages.findLast(message => isCallTurnReply(message, turn) && !ignored.has(message.id)
-    && (Date.parse(message.createdAt) >= connectedAt || ['queued', 'running'].includes(message.status)));
-  const pending = latest ? ['queued', 'running'].includes(latest.status)
-    : !!turn && !turn.failed && (turn.replyIds === undefined || (!interrupted && turn.replyIds.length > 0));
+  const liveReplies = messages.filter(message => !ignored.has(message.id) && isLiveCallReply(message, companionId, connectedAt, activeAtConnect));
+  const latest = liveReplies.at(-1);
+  const running = liveReplies.findLast(message => ['queued', 'running'].includes(message.status));
+  const waitingForReceipt = !!turn && !turn.failed && !interrupted && (turn.replyIds === undefined
+    || turn.replyIds.some(id => !messages.some(message => message.id === id) && !ignored.has(id)));
+  const pending = !!running || waitingForReceipt;
   const noPresentation = latest?.status === 'sent' && !latest.content.trim() && !latest.parts?.some(part => part.presentation) && !latest.attachments?.length;
   const error = latest?.status === 'failed';
   const presenting = !!page && (pageKey !== expired || position + 1 < pages.length);
   const completed = !!page && !pending && !presenting && !paused && !extra;
   const collapsed = !!page && bubbleMode === 'collapsed';
   const active = !!pending || presenting;
-  const status = turn?.failed ? (zh ? '消息未发出' : 'Message not sent')
+  const status = turn?.failed && !latest ? (zh ? '消息未发出' : 'Message not sent')
     : error || noPresentation ? (zh ? '这次会面回应未能发布，请再试一次。' : 'The meeting reply could not be published. Try again.')
     : latest?.status === 'cancelled' ? (zh ? '这次回应已中止' : 'The reply stopped')
       : presenting ? (paused ? (zh ? '呈现已暂停' : 'Presentation paused') : (zh ? '正在呈现' : 'Presenting'))
@@ -178,14 +209,21 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
   const interruptLabel = zh ? '打断' : 'Interrupt';
   const expandLabel = zh ? '展开对白' : 'Expand dialogue';
   const collapseLabel = zh ? '收起对白' : 'Collapse dialogue';
-  const shown = !hidden && !!(page || status || extra);
+  const separateProgress = !!desktopPet && pending;
+  const shown = !hidden && !!(page || extra || !separateProgress && status);
+  const showProgress = separateProgress && !hidden;
   const surface = useBotCallDocument();
   useLayoutEffect(() => {
     const node = bubble.current, scene = node?.closest<HTMLElement>('.bot-call-scene');
     if (node && scene) return observeCallBubble(node, scene);
   }, [shown, surface, modelLoading]);
+  const hold = page?.hold ?? 0;
+  useEffect(() => {
+    const node = caption.current;
+    if (desktopPet && shown && !collapsed && !paused && !modelLoading && !voiceHold && pageKey !== expired && node && hold) return scrollCaption(node, hold);
+  }, [desktopPet, shown, collapsed, paused, modelLoading, voiceHold, pageKey, expired, replay, hold, surface]);
 
-  if (!shown) return null;
+  if (!shown && !showProgress) return null;
   const interrupt = active && <button type="button" className="bot-call-interrupt" disabled={!!turn && !turn.replyIds}
     aria-label={interruptLabel} title={interruptLabel} onClick={() => {
       if (!pending && position <= completedThrough.current && completedThrough.current + 1 >= pages.length) {
@@ -193,7 +231,7 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
       } else onInterrupt();
     }}><BotIcon name="stop" /></button>;
   const visibleStatus = !page || turn?.failed || error || noPresentation || latest?.status === 'cancelled';
-  return <section ref={bubble} className="bot-call-visual-novel" aria-label={zh ? '伙伴当前回应' : 'Current companion reply'}
+  const dialogue = shown && <section ref={bubble} className="bot-call-visual-novel" aria-label={zh ? '伙伴当前回应' : 'Current companion reply'}
     data-call-dialogue-message={beat?.messageId} data-call-segment={beat?.id} data-bubble-collapsed={collapsed || undefined}>
     {collapsed ? <button type="button" className="bot-call-review" aria-expanded="false" aria-label={expandLabel} title={expandLabel}
       onClick={() => setBubbleView(replyKey && (paused || !active) ? { reply: replyKey, mode: 'reviewing' } : undefined)}>
@@ -206,11 +244,11 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
         {gesture && <span>{gesture}</span>}
       </div>}
       {turn && !page && <p className="bot-call-user-line">{zh ? '我' : 'You'} {turn.content || (zh ? '发送了附件' : 'Sent an attachment')}</p>}
-      {page && <p className="bot-call-bubble-text" key={page.beat.id + ':' + page.start + ':' + replay} aria-live="polite">{page.text}</p>}
+      {page && <p ref={caption} className="bot-call-bubble-text" key={page.beat.id + ':' + page.start + ':' + replay} aria-live="polite" tabIndex={desktopPet ? 0 : undefined}>{page.text}</p>}
       {speechError && <p className="bot-sr-only" role="status">{speechError}</p>}
       {!pending && status && <p className={`bot-call-bubble-status${visibleStatus ? '' : ' bot-sr-only'}`} role="status">{status}</p>}
       {extra}
-      {pending && <BotCallProgress message={latest} zh={zh} action={interrupt} />}
+      {pending && !separateProgress && <BotCallProgress message={running} zh={zh} action={interrupt} />}
       {page && <footer className="bot-call-bubble-controls">
             <button type="button" aria-label={historyLabel} title={historyLabel} onClick={() => onHistory(page.beat.messageId)}><BotIcon name="history" /></button>
             <button type="button" aria-label={zh ? '从头播放' : 'Replay from start'} title={zh ? '从头播放' : 'Replay from start'} onClick={() => step(0, true)}><BotIcon name="replay" /></button>
@@ -225,4 +263,9 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, cata
       </footer>}
     </div>}
   </section>;
+  const progress = showProgress && <div className="bot-call-pet-progress"><BotCallProgress message={running} zh={zh} action={interrupt} /></div>;
+  return <>
+    {dialogue}
+    {progressTarget === undefined ? progress : progressTarget && progress && createPortal(progress, progressTarget)}
+  </>;
 }

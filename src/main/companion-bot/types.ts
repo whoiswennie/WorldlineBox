@@ -4,7 +4,7 @@ import type { BotReplyProgress, BotReplyTiming, BotReplyPart } from '../../share
 export type BotConversationKind = 'direct' | 'group' | 'world' | 'peer';
 export type BotMessageStatus = 'queued' | 'running' | 'sent' | 'failed' | 'cancelled';
 export type BotEventStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
-export type BotSource = 'user' | 'companion' | 'group' | 'world' | 'task' | 'gateway' | 'schedule';
+export type BotSource = 'user' | 'companion' | 'group' | 'world' | 'task' | 'gateway' | 'schedule' | 'presence';
 export type BotSenderType = 'user' | 'companion' | 'service' | 'world';
 export interface BotCompanion {
   id: string; name: string; persona: string; createdAt: string; updatedAt: string; activePersonaId?: string; enabled?: boolean; workerConcurrency?: number;

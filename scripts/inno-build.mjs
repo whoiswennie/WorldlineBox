@@ -96,7 +96,7 @@ async function main() {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(stagedExe)) hash.update(chunk);
   const stagedChecksum = stagedExe + '.sha256';
-  const filename = process.env.WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL === '1' ? 'WorldlineBoxSetup-private.exe' : 'WorldlineBoxSetup.exe';
+  const filename = 'WorldlineBoxSetup.exe';
   writeFileSync(stagedChecksum, `${hash.digest('hex')}  ${filename}\n`);
   const setupExe = path.join(outDir, filename);
   for (let attempt = 0; ; attempt++) {

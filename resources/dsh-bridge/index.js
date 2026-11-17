@@ -21,6 +21,8 @@ const textOf = message => (message?.content ?? []).filter(block => block.type ==
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const peerWaitNoticeKind = 'worldlinebox-bot-peer-results';
 const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question'];
+const meetingTool = name => name === 'call_stage' || name === 'call_present';
+const rootOnlyTool = name => meetingTool(name) || name === 'companion_desktop_capture';
 /** One coherent observation per native model attempt. Frames are transport
  * fragments, not Agent Loop phases; publish cumulative snapshots at a UI rate. */
 export function observeAssistantStream(record, nativeSessionId, frame, publish, now = Date.now()) {
@@ -180,7 +182,7 @@ export async function createBotProvider(ctx) {
       const profile = { provider, displayName: 'WorldlineBox companion', piProvider,
         modelErrors: new Map(), configuredMaxTokens: new Map([[model.model, output]]),
         streamIdleTimeoutMs: 120000, maxRequestImageBytes: 1024 * 1024, requestImagePixelBudget: 1048576, requestImageMaxBytes: 524288,
-        retryPolicy: { mode: 'normal', maxRetries: 2, retryableCodes: ['NETWORK', 'TIMEOUT', 'RATE_LIMIT'], initialDelayMs: 500, maxDelayMs: 3000, jitterRatio: 0.1 } };
+        retryPolicy: { mode: 'normal', maxRetries: 2, retryableCodes: ['TRANSPORT', 'NETWORK', 'TIMEOUT', 'RATE_LIMIT'], initialDelayMs: 500, maxDelayMs: 3000, jitterRatio: 0.1 } };
       secrets.set(profile, model.apiKey);
       profiles = new Map(profiles).set(provider, profile);
       if (!registration) registration = ctx.llm.registerAdapter([...profiles.keys()], adapter);
@@ -685,8 +687,9 @@ export async function apply(ctx) {
     const callback = owner.bot.callback, endpoint = new URL(callback.url);
     if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.pathname !== '/bot/tool'
       || !/^[a-f0-9]{64}$/.test(callback.token)) throw new Error('Invalid worker callback.');
-    const hostWait = name === 'chat_ask_user' || name === 'companion_wait';
-    const response = await fetch(callback.url, { method: 'POST', signal: hostWait ? signal : AbortSignal.any([signal, AbortSignal.timeout(name === 'asset_manager' ? 660000 : 120000)]),
+    const hostWait = name === 'chat_ask_user' || name === 'companion_wait' || name === 'companion_recognize_audio';
+    const timeout = name === 'asset_manager' ? 660000 : name === 'companion_desktop_capture' ? 240000 : 120000;
+    const response = await fetch(callback.url, { method: 'POST', signal: hostWait ? signal : AbortSignal.any([signal, AbortSignal.timeout(timeout)]),
       headers: { authorization: 'Bearer ' + callback.token, 'content-type': 'application/json' },
       body: JSON.stringify({ laneId: owner.bot.laneId, eventId: owner.bot.eventId, name, args, callId,
         ...(native?{nativeSessionId:native.nativeSessionId,nativeCallId:native.nativeCallId,rootSessionId:owner.id,rootSequence:owner.agent.session.seq}:{}) }) });
@@ -698,9 +701,8 @@ export async function apply(ctx) {
     record.workerToolAgents ??= new Map();
     let registrations = record.workerToolAgents.get(agent);
     if (!registrations) { registrations = new Map(); record.workerToolAgents.set(agent, registrations); record.disposers.push(() => { for (const entry of registrations.values()) entry.dispose(); registrations.clear(); record.workerToolAgents.delete(agent); }); }
-    const meetingTool = name => name === 'call_stage' || name === 'call_present';
     const ownsStage = !record.callbackOwner && String(agent.session.id) === record.id;
-    const schemas = ((record.callbackOwner ?? record).bot.workerTools ?? []).filter(schema => ownsStage || !meetingTool(schema.name));
+    const schemas = ((record.callbackOwner ?? record).bot.workerTools ?? []).filter(schema => ownsStage || !rootOnlyTool(schema.name));
     for (const [name, entry] of registrations) {
       if (!schemas.some(schema => schema.name === name && JSON.stringify(schema) === entry.schema)) { entry.dispose(); registrations.delete(name); }
     }
@@ -712,6 +714,7 @@ export async function apply(ctx) {
         async execute(args, exec) {
           if (recordFor(exec.agent) !== record || exec.signal.aborted) throw new Error('The host tool is outside this worker task.');
           if (meetingTool(schema.name) && (!ownsStage || record.status !== 'running' || exec.agent !== record.agent)) throw new Error('Only the active meeting session can control the stage.');
+          if (schema.name === 'companion_desktop_capture' && (!ownsStage || record.status !== 'running' || exec.agent !== record.agent)) throw new Error('Desktop capture belongs to the active user turn.');
           if (!(record.callbackOwner ?? record).bot.workerTools?.some(tool => tool.name === schema.name)) throw new Error('This application has been disconnected.');
           const ref = nativeCallRef(record.callbackOwner ?? record, exec.agent, exec.callId);
           if (schema.name === 'call_present') {
@@ -1161,8 +1164,10 @@ export async function apply(ctx) {
           }
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
           if (nativeSessionBusy(ctx, record.agent)) throw new Error('Companion lane is busy.');
-          const withoutApps = tools => (tools ?? []).filter(tool => !['browser', 'asset_manager', 'cabin_world'].includes(tool.name));
-          if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(withoutApps(record.bot.workerTools)) !== JSON.stringify(withoutApps(input.workerTools))) throw new Error('Companion tool selection changed; create a new lane epoch.');
+          // The same topic can move between text and video. Stage tools are
+          // refreshed at the idle boundary alongside the attached apps.
+          const fixedTools = tools => (tools ?? []).filter(tool => !rootOnlyTool(tool.name) && !['browser', 'asset_manager', 'cabin_world', 'chat_list_files', 'companion_recognize_audio'].includes(tool.name));
+          if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(fixedTools(record.bot.workerTools)) !== JSON.stringify(fixedTools(input.workerTools))) throw new Error('Companion tool selection changed; create a new lane epoch.');
           // Newer native loops freeze model identity before agent/request.
           // A cold suspend may have attached with the inert cancel-only model;
           // select the real model before resuming that same native Session.
@@ -1355,12 +1360,22 @@ export async function apply(ctx) {
           }
         }
         const { freezeMessage } = await import('@deepseek-ai/dsh-llm');
+        const content = [{ type: 'text', text: input.prompt }];
+        const images = input.observationImages ?? (input.observationImage ? [input.observationImage] : []);
+        if (!Array.isArray(images) || images.length > 6
+          || images.some(image => typeof image?.data !== 'string' || typeof image.name !== 'string' || image.name.length > 160)
+          || images.reduce((total, image) => total + image.data.length, 0) > 700000) throw Error('Invalid companion observation images.');
+        if (images.length) {
+          const { admitEncodedImages } = await import('@deepseek-ai/dsh-attachment');
+          const attachments = await admitEncodedImages(ctx.get('attachments'), images.map(image => ({ mediaType: 'image/jpeg', data: image.data, name: image.name })));
+          for (const attachment of attachments) content.push({ type: 'image', attachment });
+        }
         await botAtomicJson(pendingFile, { eventId: input.eventId });
         record.bot.eventId = input.eventId; record.bot.suspended = false; record.bot.inputContextCommitted = false; record.text = ''; record.reason = undefined; record.lastError = undefined; record.artifacts = []; record.outputCheckpoint = undefined;
         record.revision++; record.status = 'running'; record.cancelled = false; record.admissions++;
         try {
           record.agent.followup(freezeMessage({ id: 'worldlinebox-bot:' + input.eventId, role: 'user',
-            content: [{ type: 'text', text: input.prompt }], source: { kind: 'worldlinebox-bot', form: 'relay', ...(record.bot.audience ? { worldlineboxAudience: record.bot.audience } : {}) } }));
+            content, source: { kind: 'worldlinebox-bot', form: 'relay', ...(images.length ? { summary: '陪伴观察' } : {}), ...(record.bot.audience ? { worldlineboxAudience: record.bot.audience } : {}) } }));
           await ctx.sessions.flush(record.agent.session);
           await botWriteReceipt(record, { eventId: input.eventId, status: 'accepted' });
           await rm(pendingFile, { force: true });

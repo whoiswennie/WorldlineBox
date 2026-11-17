@@ -5,13 +5,17 @@ const fixture = vi.hoisted(() => ({ model: undefined as unknown, atlases: 1, mas
 vi.mock('pixi.js', () => ({ Application: class {
   view = document.createElement('canvas');
   stage = { addChild: vi.fn(), removeChild: fixture.remove };
+  ticker = { elapsedMS: 16, maxFPS: 0, lastTime: 0, add: vi.fn(), remove: vi.fn(), stop: vi.fn(), update: vi.fn() };
+  screen = { width: 0, height: 0 };
+  renderer = { resolution: 1, resize: (width: number, height: number) => Object.assign(this.screen, { width, height }) };
   destroy = vi.fn();
-} }));
+}, UPDATE_PRIORITY: { HIGH: 25 } }));
 vi.mock('pixi-live2d-display/cubism4', () => ({ Live2DModel: { from: async () => fixture.model } }));
 vi.mock('../../vendor/soullink-emotion/live2d-pixi/dist/motionParameters', () => ({
   loadCDIParameterMeta: async () => ({}), buildMotionParameters: () => ({}), readCurrentParameters: () => ({}),
 }));
 import { Live2DRenderer } from '../../vendor/soullink-emotion/live2d-pixi/dist/Live2DRenderer';
+import { optimizeCubismScreenDraw } from '../../vendor/soullink-emotion/live2d-pixi/dist/screenDraw';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.clearAllMocks(); });
 async function renderRig(maskCount: number) {
@@ -84,4 +88,89 @@ it('feeds live inputs to physics and applies secondary motion over the solved po
   expect(pose).toEqual({ ParamAngleX: 0, FrontHairX1: .2 });
   renderer.destroy();
   expect(physics.evaluate).toBe(evaluate);
+});
+
+it('avoids synchronous framebuffer reads on the dedicated canvas and keeps the SDK path for render textures', () => {
+  const framebuffer = {}, gl = { FRAMEBUFFER_BINDING: 36006, getParameter: vi.fn((_parameter: number) => framebuffer) };
+  const saveProfile = vi.fn(), restoreProfile = vi.fn();
+  const cubism = { saveProfile, restoreProfile };
+  const renderTexture = { current: null as object | null };
+  const draw = vi.fn((context: typeof gl) => {
+    cubism.saveProfile();
+    const bound = context.getParameter(context.FRAMEBUFFER_BINDING);
+    cubism.restoreProfile();
+    return bound;
+  });
+  const model = { draw, renderer: cubism };
+  optimizeCubismScreenDraw(model as never, { gl, renderTexture } as never);
+  for (let frame = 0; frame < 100; frame++) model.draw(gl);
+  expect(gl.getParameter).not.toHaveBeenCalled();
+  expect(saveProfile).not.toHaveBeenCalled();
+  expect(restoreProfile).not.toHaveBeenCalled();
+  expect(draw.mock.results.every(result => result.value === null)).toBe(true);
+  renderTexture.current = {};
+  model.draw(gl);
+  expect(gl.getParameter).toHaveBeenCalledOnce();
+  expect(saveProfile).toHaveBeenCalledOnce();
+  expect(restoreProfile).toHaveBeenCalledOnce();
+  expect(draw.mock.results.at(-1)?.value).toBe(framebuffer);
+});
+
+it('uses one bounded ticker, protects physical DPI and restores detail after sustained recovery', async () => {
+  vi.stubGlobal('devicePixelRatio', 1.5);
+  const { renderer } = await renderRig(12);
+  const app = Reflect.get(renderer, 'app') as {
+    ticker: { elapsedMS: number; maxFPS: number; add: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> };
+    renderer: { resolution: number };
+  };
+  const host = Reflect.get(renderer, 'container') as HTMLElement;
+  Object.defineProperties(host, { clientWidth: { value: 470 }, clientHeight: { value: 610 } });
+  renderer.syncViewport(2);
+  const update = vi.fn();
+  const remove = renderer.onFrame(update);
+  const tick = app.ticker.add.mock.calls[0]![0] as () => void;
+  expect(app.ticker.maxFPS).toBe(0);
+  expect(app.ticker.add).toHaveBeenCalledExactlyOnceWith(tick, undefined, 25);
+  for (let frame = 0; frame < 130; frame++) tick();
+  expect(app.renderer.resolution).toBe(2);
+  app.ticker.elapsedMS = 1200; tick();
+  expect(app.renderer.resolution).toBe(2);
+  app.ticker.elapsedMS = 48;
+  for (let frame = 0; frame < 24; frame++) tick();
+  expect(app.renderer.resolution).toBe(1.6);
+  for (let frame = 0; frame < 150; frame++) tick();
+  expect(app.renderer.resolution).toBe(1.5);
+  expect(update).toHaveBeenLastCalledWith(48);
+  app.ticker.elapsedMS = 500; tick();
+  app.ticker.elapsedMS = 16;
+  for (let frame = 0; frame < 150; frame++) tick();
+  expect(app.renderer.resolution).toBe(1.5);
+  for (let frame = 0; frame < 140; frame++) tick();
+  expect(app.renderer.resolution).toBe(1.9);
+  for (let frame = 0; frame < 260; frame++) tick();
+  expect(app.renderer.resolution).toBe(2);
+  app.ticker.elapsedMS = 48;
+  for (let frame = 0; frame < 45; frame++) tick();
+  expect(app.renderer.resolution).toBe(1.5);
+  vi.stubGlobal('devicePixelRatio', 1.75);
+  renderer.syncViewport(2);
+  expect(app.renderer.resolution).toBe(2);
+  remove();
+  expect(app.ticker.remove).toHaveBeenCalledExactlyOnceWith(tick);
+  renderer.destroy();
+});
+
+it.each([60, 90, 120, 144, 165, 240])('paces at 60 fps on a %i Hz display without catch-up frames', async refresh => {
+  const { renderer } = await renderRig(12);
+  const ticker = Reflect.get(renderer, 'app').ticker as { update: ReturnType<typeof vi.fn> };
+  let pending: FrameRequestCallback | undefined;
+  const schedule = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { pending = callback; return 1; });
+  const cancel = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => { pending = undefined; });
+  try {
+    const detach = renderer.onFrame(() => undefined);
+    for (let frame = 0; frame < refresh * 3; frame++) pending?.(frame * 1000 / refresh);
+    expect(ticker.update).toHaveBeenCalledTimes(180);
+    pending?.(6000); expect(ticker.update).toHaveBeenCalledTimes(181);
+    detach(); expect(pending).toBeUndefined();
+  } finally { renderer.destroy(); schedule.mockRestore(); cancel.mockRestore(); }
 });

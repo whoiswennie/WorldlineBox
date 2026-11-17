@@ -8,11 +8,12 @@ import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createInterface } from 'node:readline';
 import { SPEECH_MAX_TRANSCRIPT, validateSpeechWave, type LocalSpeechStatus, type LocalSpeechTranscript } from '../shared/local-speech';
-import { speechPcmChunks, transcribeSpeechFile } from './local-speech-audio';
+import { speechPcmChunks, transcribeSpeechFile, type SpeechFileOptions, type SpeechFileSegment, type SpeechRecognition } from './local-speech-audio';
 
 interface Asset { path: string; url: string; bytes: number; sha256: string }
 interface Options { root: string; resources: string; appPath: string; ffmpeg?: () => string | undefined; fetchFn?: typeof fetch }
-interface Worker { child: ChildProcessWithoutNullStreams; exited: Promise<void>; read?: { resolve(value: { text?: string; ready?: boolean; error?: string }): void; reject(error: Error): void } }
+type WorkerResponse = Partial<SpeechRecognition> & { ready?: boolean; error?: string };
+interface Worker { child: ChildProcessWithoutNullStreams; exited: Promise<void>; read?: { resolve(value: WorkerResponse): void; reject(error: Error): void } }
 const supportedPlatforms = ['win32-x64', 'darwin-arm64', 'darwin-x64', 'linux-x64', 'linux-arm64'];
 
 /** Application-wide CPU service. One resident worker, at most three accepted operations. */
@@ -28,14 +29,15 @@ export class LocalSpeechService {
   private disposed = false;
   constructor(private readonly options: Options) {}
   status(): LocalSpeechStatus { return { ...this.state }; }
+  isIdle(): boolean { return !this.disposed && this.active.size === 0; }
   cancel(id: string): void { this.active.get(id)?.abort(); }
   async close(): Promise<void> { this.disposed = true; for (const work of this.active.values()) work.abort(); await this.tail.catch(() => undefined); await this.stop(); }
-  async run<T>(id: string, work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async run<T>(id: string, work: (signal: AbortSignal) => Promise<T>, streaming = false): Promise<T> {
     if (this.disposed) throw Error('本地语音服务已关闭。');
     if (this.active.has(id)) throw Error('语音请求已在处理中。');
     if (this.active.size >= 3) throw Error('语音识别繁忙，请稍后重试。');
     const controller = new AbortController(); this.active.set(id, controller);
-    const timeout = setTimeout(() => controller.abort(), 20 * 60_000);
+    const timeout = streaming ? undefined : setTimeout(() => controller.abort(), 20 * 60_000);
     const result = this.tail.catch(() => undefined).then(async () => { controller.signal.throwIfAborted(); return work(controller.signal); });
     this.tail = result;
     try { return await result; }
@@ -107,7 +109,7 @@ export class LocalSpeechService {
       signal.throwIfAborted(); this.assets = directory; this.state = { phase: 'standby' };
     } catch (error) { this.state = { phase: 'failed', error: error instanceof Error ? error.message : '模型准备失败。' }; throw error; }
   }
-  private read(worker: Worker, signal: AbortSignal): Promise<{ text?: string; ready?: boolean; error?: string }> {
+  private read(worker: Worker, signal: AbortSignal): Promise<WorkerResponse> {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => { worker.child.kill(); reject(Error('本地语音模型响应超时。')); }, 120_000);
       const abort = () => { worker.child.kill(); reject(signal.reason instanceof Error ? signal.reason : Error('已取消语音识别。')); };
@@ -132,7 +134,7 @@ export class LocalSpeechService {
     lines.on('line', line => {
       try {
         if (line.length > 300000) throw Error('语音模型返回内容过长。');
-        const value = JSON.parse(line) as { text?: string; ready?: boolean; error?: string };
+        const value = JSON.parse(line) as WorkerResponse;
         worker.read?.resolve(value);
       } catch { worker.read?.reject(Error('语音模型返回无效数据。')); child.kill(); }
     });
@@ -144,29 +146,42 @@ export class LocalSpeechService {
     try { const ready = await this.read(worker, signal); if (!ready.ready) throw Error('本地语音模型启动失败。'); return worker; }
     catch (error) { await this.stop(); throw error; }
   }
-  private async recognize(pcm: Buffer, signal: AbortSignal): Promise<string> {
+  private async recognize(pcm: Buffer, signal: AbortSignal, timing = false): Promise<SpeechRecognition> {
     const worker = await this.start(signal); this.state = { phase: 'transcribing' };
     try {
       const response = this.read(worker, signal);
-      worker.child.stdin.write(JSON.stringify({ pcm: pcm.toString('base64') }) + '\n');
+      worker.child.stdin.write(JSON.stringify({ pcm: pcm.toString('base64'), timing }) + '\n');
       const value = await response;
       if (value.error || typeof value.text !== 'string' || value.text.length > SPEECH_MAX_TRANSCRIPT) throw Error(value.error || '语音识别返回无效内容。');
-      return value.text;
+      const spans = value.spans?.filter(span => typeof span.text === 'string' && Number.isFinite(span.startSeconds)
+        && Number.isFinite(span.endSeconds) && span.startSeconds >= 0 && span.endSeconds >= span.startSeconds && span.endSeconds <= pcm.length / 32000);
+      return { text: value.text, spans };
     } catch (error) { await this.stop(); throw error; }
   }
   async transcribeWave(bytes: Buffer, signal: AbortSignal): Promise<LocalSpeechTranscript> {
     const audioSeconds = validateSpeechWave(bytes); let text = '';
     for await (const chunk of speechPcmChunks(Readable.from([bytes.subarray(44)]), signal)) {
-      const part = await this.recognize(chunk, signal);
+      const { text: part } = await this.recognize(chunk, signal);
       if (text.length + part.length + 1 > SPEECH_MAX_TRANSCRIPT) throw Error('转写结果过长，请缩短录音。');
       if (part) text += (text ? '\n' : '') + part;
     }
     return { text, audioSeconds, engine: 'sensevoice-int8-cpu' };
   }
-  async transcribeFile(file: string, signal: AbortSignal): Promise<LocalSpeechTranscript> {
+  async *transcribeWaveSegments(bytes: Buffer, signal: AbortSignal): AsyncGenerator<SpeechFileSegment> {
+    validateSpeechWave(bytes);
+    let offset = 0;
+    for await (const chunk of speechPcmChunks(Readable.from([bytes.subarray(44)]), signal)) {
+      const { text, spans } = await this.recognize(chunk, signal, true);
+      const end = offset + chunk.length / 32000;
+      if (spans?.length) for (const span of spans) yield { text: span.text, startSeconds: offset + span.startSeconds, endSeconds: offset + span.endSeconds };
+      else if (text.trim()) yield { text, startSeconds: offset, endSeconds: end };
+      offset = end;
+    }
+  }
+  async transcribeFile(file: string, signal: AbortSignal, writeSegment?: (segment: SpeechFileSegment) => Promise<void>, options?: SpeechFileOptions): Promise<LocalSpeechTranscript> {
     await access(file); const ffmpeg = this.options.ffmpeg?.(); if (!ffmpeg) throw Error('音频解码组件尚未准备好。');
     await this.start(signal);
-    const result = await transcribeSpeechFile({ ffmpeg, file, signal, recognize: (pcm, abort) => this.recognize(pcm, abort) });
+    const result = await transcribeSpeechFile({ ffmpeg, file, signal, writeSegment, options, recognize: (pcm, abort) => this.recognize(pcm, abort, options?.alignToStart) });
     return { ...result, engine: 'sensevoice-int8-cpu' };
   }
   private async stop(): Promise<void> {

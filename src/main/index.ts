@@ -12,9 +12,10 @@ import { startMobileSsh } from './companion-bot/mobile-ssh';
 import { hasFixedMobilePublicEndpoint, startMobilePublicTunnel } from './companion-bot/mobile-public-tunnel';
 import { MOBILE_ACCESS_CHANNEL, mobileSettingsRequest } from '../shared/mobile-access';
 import { bindCallPetWindow, callPetFor } from './companion-bot/call-pet-window';
-import { importDafeiyuModel, readLocalCallModel, serveLocalCallModel } from './companion-bot/local-call-model';
+import { createBotDesktopCapture } from './companion-bot/desktop-capture';
+import type { SpeechFileSegment } from './local-speech-audio';
+import { importLocalCallModel, pruneLocalCallModelImports, readLocalCallModel, resetLocalCallModel, serveLocalCallModel } from './companion-bot/local-call-model';
 import { CALL_MODEL_HOST } from '../shared/companion-call';
-import { DEFAULT_BOT_COMPANION_ID } from '../shared/builtin-bot-companions';
 import type { BotDataCleanupService } from './companion-bot/data-cleanup';
 import { BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, botSpeechRequest } from '../shared/companion-bot';
 import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
@@ -5255,7 +5256,8 @@ async function startApplication(): Promise<void> {
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
   let mobileGateway: Awaited<ReturnType<typeof startMobileGateway>>;
-  const localCallModelRoot = path.join(app.getPath('userData'), 'companion-call-model');
+  const callModelProfile = app.getPath('userData');
+  await pruneLocalCallModelImports(callModelProfile).catch(error => logger?.error('companion-call-model.prune', error));
   const ensureBotMediaService = ():Promise<BotMediaService> => {
     if (botDataCleanup?.busy) return Promise.reject(new Error('正在后台清理伙伴聊天与记忆，请稍后重试。'));
     return botMediaService ??= import('./companion-bot/media-service').then(async ({BotMediaService})=>new BotMediaService({
@@ -5321,7 +5323,7 @@ async function startApplication(): Promise<void> {
         getHost: getWorkerHost });
       const brain = worker;
       botService = new BotService({ root, brain,
-        readLocalCallModel: companionId => readLocalCallModel(localCallModelRoot, companionId),
+        readLocalCallModel: companionId => readLocalCallModel(callModelProfile, companionId),
         scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
         cabinWorldApp: launcher?.companionCabinApp,
         callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), "public", "companion-call") : path.join(__dirname, "..", "renderer", MAIN_WINDOW_VITE_NAME, "companion-call"), prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
@@ -5361,6 +5363,31 @@ async function startApplication(): Promise<void> {
             }
             return result;
           });
+        },
+        desktopCapture: process.platform === 'win32' ? async (conversationId, preferPet, input, signal) => {
+          const owner = mainWindow;
+          if (!owner || owner.isDestroyed()) return { ok: false, error: '请先打开当前聊天或桌宠。' };
+          return desktopCapture.runForAgent(owner, conversationId, preferPet, input, signal);
+        } : undefined,
+        recognizeAudio: async (source, id, signal) => {
+          signal.throwIfAborted();
+          const speech = ensureLocalSpeech(), cancel = () => speech.cancel(id);
+          signal.addEventListener('abort', cancel, { once: true });
+          try {
+            return await speech.run(id, async local => {
+              const segments: SpeechFileSegment[] = [];
+              let chars = 0, nextStartSeconds: number | undefined;
+              const result = await speech.transcribeFile(source.path, AbortSignal.any([signal, local]), async segment => {
+                if (nextStartSeconds !== undefined) return;
+                const startSeconds = segment.startSeconds + source.startSeconds;
+                if (segments.length >= 160 || segments.length > 0 && chars + segment.text.length > 8000) { nextStartSeconds = startSeconds; return; }
+                const text = segment.text.slice(0, 8000);
+                segments.push({ text, startSeconds, endSeconds: segment.endSeconds + source.startSeconds });
+                chars += text.length;
+              }, { startSeconds: source.startSeconds, maxSeconds: source.seconds, alignToStart: true });
+              return { durationSeconds: result.audioSeconds, segments, nextStartSeconds };
+            }, true);
+          } finally { signal.removeEventListener('abort', cancel); }
         },
         model: () => { const { connection, limits } = currentBotModel(); return { ...connection, imageSupport: modelCapabilities.imageSupport(connection), contextWindow: limits.window, contextWindowSource: limits.source, maxTokens: limits.maxTokens, maxOutputTokens: limits.maxOutputTokens }; },
         onEvent: event => {
@@ -5506,16 +5533,19 @@ async function startApplication(): Promise<void> {
     const parsed = botRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };
     try {
-      if (parsed.data.type === 'call.model.import') {
-        if (parsed.data.companionId !== DEFAULT_BOT_COMPANION_ID) throw Error('当前只支持导入大肥鱼的 Live2D 模型。');
-        const selection = await dialog.showOpenDialog(mainWindow, {
-          title: '选择作者发布的大肥鱼模型 ZIP', properties: ['openFile'], filters: [{ name: 'ZIP', extensions: ['zip'] }],
-        });
-        if (selection.canceled || !selection.filePaths[0]) return { ok: true };
-        await importDafeiyuModel(localCallModelRoot, selection.filePaths[0]);
+      if (parsed.data.type === 'call.model.import' || parsed.data.type === 'call.model.reset') {
+        const { companionId } = parsed.data;
         const service = await ensureBotService();
-        service.invalidateCallModel(parsed.data.companionId);
-        return await service.handle({ type: 'companion.call-performance', companionId: parsed.data.companionId });
+        if (!service.store.getCompanion(companionId)) throw Error('伙伴不存在。');
+        if (parsed.data.type === 'call.model.import') {
+          const selection = await dialog.showOpenDialog(mainWindow, {
+            title: '选择 Live2D 模型文件夹', properties: ['openDirectory'],
+          });
+          if (selection.canceled || !selection.filePaths[0]) return { ok: true };
+          await importLocalCallModel(callModelProfile, companionId, selection.filePaths[0]);
+        } else await resetLocalCallModel(callModelProfile, companionId);
+        service.invalidateCallModel(companionId);
+        return await service.handle({ type: 'companion.call-performance', companionId });
       }
       if (parsed.data.type === 'companion.data.clear.status') return { ok: true, cleanup: await botDataCleanup!.status(parsed.data.companionId) };
       if (parsed.data.type === 'companion.data.clear') {
@@ -5538,15 +5568,26 @@ async function startApplication(): Promise<void> {
     if(!parsed.success||!botCanImportConversationMedia(botService?.store.getConversation(parsed.data.conversationId)))return;
     event.returnValue=readFilePathsFromClipboard(createFileClipboardDeps()).length>0;
   });
+  const desktopCapture = createBotDesktopCapture(ensureLocalSpeech, () => resolveHostMediaBinaries()?.ffmpegPath);
+  app.once('before-quit', () => desktopCapture.stopPresence());
   ipcMain.handle(BOT_MEDIA_CHANNEL,async(event,input:unknown):Promise<BotMediaResponse>=>{
     if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return{ok:false,error:'无权访问伙伴附件。'};
     const parsed=botMediaRequestSchema.safeParse(input);if(!parsed.success)return{ok:false,error:'附件请求格式不正确。'};
     try{
-      const service=await ensureBotService(),request=parsed.data;await service.handle({type:'state',conversationId:request.conversationId});
+      const owner=mainWindow,request=parsed.data;
+      if(request.type==='desktop.cancel'){desktopCapture.cancel(request);return{ok:true};}
+      const service=await ensureBotService();
+      if (!('surface' in request)) await service.handle({type:'state',conversationId:request.conversationId});
       const room=service.store.getConversation(request.conversationId);
       if(!botCanInspectConversation(room))throw new Error('附件会话不存在或不对用户开放。');
       if(['files.pick','files.paste','files.import','pack.pick','pack.import'].includes(request.type)&&!botCanImportConversationMedia(room))throw new Error('正在旁观伙伴私聊，不能向这段私聊添加附件。');
       const media=await ensureBotMediaService();
+      if ('surface' in request) {
+        if (!room || !['direct', 'group'].includes(room.kind) || !botCanImportConversationMedia(room)) throw Error('当前聊天无法添加桌面采集内容。');
+        if (request.type === 'desktop.presence.start' && request.meeting !== true) throw Error('陪伴模式只能在视频会面或桌宠中启动。');
+        return await desktopCapture.capture(owner, request, media, () => service.presenceTarget(request.conversationId,
+          request.surface === 'pet' ? 'pet' : 'call'));
+      }
       const dialogOwner=callPetFor(mainWindow)??mainWindow;
       switch(request.type){
         case 'packs.list':return{ok:true,packs:await media.listPacks(request)};
@@ -7099,7 +7140,7 @@ async function startApplication(): Promise<void> {
   protocol.handle("worldlinebox", async (request) => {
     try {
       const url = new URL(request.url);
-      if (url.hostname === CALL_MODEL_HOST) return serveLocalCallModel(localCallModelRoot, request);
+      if (url.hostname === CALL_MODEL_HOST) return serveLocalCallModel(callModelProfile, request);
       if(url.hostname==='bot-media')return(await ensureBotMediaService()).response(request);
       if (url.hostname === APP_ASSET_HOST) {
         // Bundled app assets (e.g. .hdr environment maps) that the packaged

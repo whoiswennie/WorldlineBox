@@ -1,5 +1,5 @@
 import type { BotCompanion, BotCompanionPresence } from '../../shared/companion-bot';
-import { botAssetUrl } from './BotAvatar';
+import { BotPortraitImage } from './BotAvatar';
 import { builtinBotCompanion } from '../../shared/builtin-bot-companions';
 import './bot-peer-avatar.css';
 
@@ -11,7 +11,7 @@ export function BotPeerAvatar({ companions, presence, locale }: { companions: re
   return <span className="bot-peer-avatar bot-group-collage" data-count={visible.length} aria-hidden="true"
     title={companions.map(person => person.name).join('、') + (busy ? locale === 'en' ? ` · ${busy} working` : ` · ${busy} 位伙伴有任务` : '')}>
     {visible.map(person => { const portrait = builtinBotCompanion(person.id)?.portrait; return <span className="bot-group-portrait" key={person.id} data-companion-id={person.id}>
-      {portrait ? <img alt="" src={botAssetUrl(portrait.url)} draggable={false} /> : person.name.slice(0, 1)}
+      {portrait ? <BotPortraitImage key={portrait.url} url={portrait.url} fallback={person.name.slice(0, 1)} /> : person.name.slice(0, 1)}
     </span>; })}
   </span>;
 }

@@ -289,29 +289,32 @@ export class BotMediaService {
   }
   /** Bytes originate in Main's native clipboard, never a renderer path or URL. */
   async importClipboardImage(conversationId:string,bytes:Buffer):Promise<BotMediaRef>{
-    if(!bytes.length||bytes.length>BOT_MEDIA_PREVIEW_LIMITS.image)throw Error('剪贴板图片过大。');
+    return this.importCapturedImage(conversationId, bytes, 'clipboard');
+  }
+  async importCapturedImage(conversationId:string,bytes:Buffer,source:'clipboard'|'screen'):Promise<BotMediaRef>{
+    if(!bytes.length||bytes.length>BOT_MEDIA_PREVIEW_LIMITS.image)throw Error('图片为空或过大。');
     await sharp(bytes,{limitInputPixels:100_000_000}).metadata();
     const sha256=createHash('sha256').update(bytes).digest('hex');
     return this.serial(conversationId,async(manifest,home)=>{
-      const id='f_'+sha256+'_clipboard',object='objects/'+sha256;let item=manifest.media.find(item=>item.id===id);
+      const id='f_'+sha256+'_'+source,object='objects/'+sha256;let item=manifest.media.find(item=>item.id===id);
       if(!item){
         try{await writeFile(path.join(home,object),bytes,{flag:'wx',mode:0o600});}
         catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;await this.verifyObject(home,{object,sha256,size:bytes.length} as StoredMedia);}
         const preview=await this.attachmentImagePreview(home,object,bytes.length).catch(()=>({}));
-        item={...preview,id,object,sha256,size:bytes.length,name:'剪贴板图片.png',mimeType:'image/png',kind:'file',url:''};manifest.media.push(item);
+        item={...preview,id,object,sha256,size:bytes.length,name:source==='screen'?'屏幕截图.png':'剪贴板图片.png',mimeType:'image/png',kind:'file',url:''};manifest.media.push(item);
       }
       await atomicManifest(path.join(home,'manifest.json'),manifest);return this.reference(item,conversationId);
     });
   }
   /** Persist only canonical, bounded microphone recordings; no renderer-supplied paths or transcript. */
-  async importVoice(conversationId:string,bytes:Buffer,transcript:LocalSpeechTranscript):Promise<BotMediaRef>{
+  async importVoice(conversationId:string,bytes:Buffer,transcript:LocalSpeechTranscript,source:'microphone'|'system'='microphone'):Promise<BotMediaRef>{
     const durationSeconds=validateSpeechWave(bytes),sha256=createHash('sha256').update(bytes).digest('hex');
     return this.serial(conversationId,async(manifest,home)=>{
-      const id='v_'+sha256,object='objects/'+sha256;let item=manifest.media.find(item=>item.id===id);
+      const id=(source==='system'?'system_':'v_')+sha256,object='objects/'+sha256;let item=manifest.media.find(item=>item.id===id);
       if(!item){
         try{await writeFile(path.join(home,object),bytes,{flag:'wx',mode:0o600});}
         catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;await this.verifyObject(home,{object,sha256,size:bytes.length} as StoredMedia);}
-        item={id,object,sha256,size:bytes.length,name:'语音消息.wav',mimeType:'audio/wav',kind:'file',url:'',voice:{durationSeconds},transcript};manifest.media.push(item);
+        item={id,object,sha256,size:bytes.length,name:source==='system'?'电脑声音.wav':'语音消息.wav',mimeType:'audio/wav',kind:'file',url:'',voice:{durationSeconds},transcript};manifest.media.push(item);
       }
       await atomicManifest(path.join(home,'manifest.json'),manifest);return this.reference(item,conversationId);
     });

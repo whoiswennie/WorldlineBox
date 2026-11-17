@@ -8,12 +8,13 @@ import type { BotCompanion } from '../../shared/companion-bot';
 import { BotMentionPicker } from './BotMentionPicker';
 import { botMentionOptions, botMentionQuery, insertBotMention, type BotMentionOption } from './bot-mentions';
 import { BotVoiceInput } from './BotVoiceInput';
+import { BotDesktopCapture } from './BotDesktopCapture';
 
 const copy = {
   'zh-CN': { emoji: '表情', emojiTitle: '常用表情', memory: '记忆', history: '聊天记录', message: '发送消息…', send: '发送 ↑', keyboard: 'Enter 发送，Shift + Enter 换行', world: '发布世界事件' },
   en: { emoji: 'Emoji', emojiTitle: 'Common emoji', memory: 'Memory', history: 'Chat history', message: 'Write a message…', send: 'Send ↑', keyboard: 'Enter to send, Shift + Enter for a new line', world: 'Publish world event' },
 };
-export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, meeting = false, showInputTools = true, compact = false }: {
+export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, meeting = false, showInputTools = true, compact = false, desktopCapture }: {
   locale: 'zh-CN' | 'en'; draft: string; setDraft(value: string): void; disabled: boolean; busy: boolean; group: boolean; world: boolean;
   panel: 'memory' | 'history' | null; setPanel(value: 'memory' | 'history' | null): void; send(kind?: 'message' | 'world'): Promise<unknown>;
   mediaApi?: WorldlineBoxBotMediaApi; conversationId: string; attachments?: readonly BotMediaRef[]; addingFiles?: boolean;
@@ -22,10 +23,18 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
   sendVoice?(media: BotMediaRef): Promise<void>;
   extraTools?: ReactNode; status?: ReactNode; topicControls?: ReactNode;
   onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; meeting?: boolean; showInputTools?: boolean; compact?: boolean;
+  desktopCapture?: { surface: 'chat' | 'pet'; attach(media: BotMediaRef[]): void; statusTarget?: HTMLElement | null; controlsTarget?: HTMLElement | null };
 }) {
   const surface = useBotCallDocument();
   const t = copy[locale], field = useRef<HTMLTextAreaElement>(null), popup = useRef<HTMLDivElement>(null);
   const [showExpressions, setShowExpressions] = useState(false), [expressionTab, setExpressionTab] = useState<'emoji' | 'stickers'>('emoji');
+  const [captureBusy, setCaptureBusy] = useState(false);
+  const [captureFileRequest, setCaptureFileRequest] = useState(0);
+  const [captureStatus, setCaptureStatus] = useState<HTMLDivElement | null>(null);
+  const [captureControls, setCaptureControls] = useState<HTMLDivElement | null>(null);
+  const canTranscribeFile = !!desktopCapture && !!mediaApi?.desktopCaptureSupported && !disabled && !busy && !addingFiles && attachments.length < 16;
+  const draftNow = useRef(draft);
+  useLayoutEffect(() => { draftNow.current = draft; }, [draft]);
   const mentionId = 'bot-mentions-' + useId().replace(/[^A-Za-z0-9_-]/gu, ''), composing = useRef(false);
   const [selection, setSelection] = useState({ start: draft.length, end: draft.length }), [focused, setFocused] = useState(false);
   const [composition, setComposition] = useState(false), [dismissed, setDismissed] = useState(''), [activeMention, setActiveMention] = useState({ key: '', index: 0 });
@@ -57,16 +66,33 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
     setDraft(draft.slice(0, start) + emoji + draft.slice(end)); setShowExpressions(false);
     requestAnimationFrame(() => { field.current?.focus(); field.current?.setSelectionRange(start + emoji.length, start + emoji.length); });
   };
-  return <div className="bot-composer-dock">{topicControls}<form className={`bot-composer${compact ? ' is-compact' : ''}`} onSubmit={event => { event.preventDefault(); void send(); }}>
+  return <div className="bot-composer-dock">{desktopCapture?.surface === 'chat' && <>
+    <div className="bot-capture-controls-row" ref={setCaptureControls} /><div className="bot-capture-status-row" ref={setCaptureStatus} />
+  </>}
+    {topicControls}<form className={`bot-composer${compact ? ' is-compact' : ''}`} onSubmit={event => { event.preventDefault(); if (!captureBusy) void send(); }}>
     <div className="bot-compose-tools">{showInputTools && <><div className="bot-emoji-anchor bot-expression-tools" ref={popup}>
       <button type="button" disabled={disabled} aria-label={t.emoji} title={locale === 'zh-CN' ? '表情与表情包' : 'Emoji and stickers'} aria-expanded={showExpressions} onClick={() => setShowExpressions(!showExpressions)}><BotIcon name="smile" /></button>
       {showExpressions && <BotStickerPicker api={mediaApi} initialTab={expressionTab} onTabChange={setExpressionTab} sendDisabled={busy} conversationId={conversationId} locale={locale}
         onEmoji={insertEmoji} onClose={() => setShowExpressions(false)}
         onSelect={media => { setShowExpressions(false); void sendSticker(media); }} />}
     </div>
-      {mediaApi && <button type="button" disabled={disabled || addingFiles} title={locale === 'zh-CN' ? '添加文件（也可拖入）' : 'Attach files (or drop here)'} aria-label={locale === 'zh-CN' ? '添加文件' : 'Attach files'} onClick={() => void addFiles()}><BotIcon name="file" /></button>}
+      {mediaApi && <button type="button" disabled={disabled || addingFiles}
+        title={locale === 'zh-CN' ? (canTranscribeFile ? '添加文件 · 右键转写音视频文件' : '添加文件（也可拖入）') : (canTranscribeFile ? 'Attach files · Right-click to transcribe media' : 'Attach files (or drop here)')}
+        aria-label={locale === 'zh-CN' ? '添加文件' : 'Attach files'} onClick={() => void addFiles()}
+        onContextMenu={event => { if (canTranscribeFile) { event.preventDefault(); setCaptureFileRequest(value => value + 1); } }}>
+        <BotIcon name="file" /></button>}
       <BotVoiceInput key={conversationId} conversationId={conversationId} locale={locale} disabled={disabled || busy || addingFiles} textOnly={!sendVoice} onText={text => setDraft((draft ? draft + '\n' : '') + text)} onVoice={sendVoice} onStart={onVoiceInputStart} onActivityChange={onVoiceInputActivity} />
       </>}
+      {desktopCapture && mediaApi?.desktopCaptureSupported && <BotDesktopCapture key={conversationId + ':' + desktopCapture.surface} api={mediaApi} conversationId={conversationId} locale={locale} surface={desktopCapture.surface}
+        statusTarget={desktopCapture.statusTarget ?? (desktopCapture.surface === 'chat' ? captureStatus : null)}
+        controlsTarget={desktopCapture.controlsTarget ?? (desktopCapture.surface === 'chat' ? captureControls : null)}
+        meeting={meeting}
+        allowPresence={meeting}
+        fileRequest={captureFileRequest} onBusy={setCaptureBusy} onAttachment={media => {
+          desktopCapture.attach(media);
+          if (!draftNow.current.trim()) setDraft(locale === 'zh-CN'
+            ? '请看看这份音频转写。' : 'Take a look at this audio transcript.');
+        }} />}
       {extraTools}
       {!meeting && <><span className="bot-tool-separator" />
       {(['memory', 'history'] as const).map(key => <button key={key} type="button" disabled={disabled} title={t[key]} aria-label={t[key]} aria-pressed={panel === key} onClick={() => setPanel(panel === key ? null : key)}><BotIcon name={key} /><span className="bot-sr-only">{t[key]}</span></button>)}</>}
@@ -91,8 +117,8 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
           else if (mentions.length) setActiveMention({ key: mentionKey, index: (selectedMention + (event.key === 'ArrowDown' ? 1 : -1) + mentions.length) % mentions.length });
           return;
         }
-        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(); }
+        if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); if (!captureBusy) void send(); }
       }} />
-    <div className="bot-compose-footer"><small>{t.keyboard}</small>{world && <button type="button" disabled={disabled || !draft.trim() || busy || addingFiles || !!attachments.length} onClick={() => void send('world')}>{t.world}</button>}<button className="bot-send" aria-label={t.send} disabled={disabled || (!draft.trim() && !attachments.length) || attachments.length > 16 || busy || addingFiles}><span className="bot-sr-only">{t.send}</span><BotIcon name="arrow" /></button></div>
+    <div className="bot-compose-footer"><small>{t.keyboard}</small>{world && <button type="button" disabled={disabled || !draft.trim() || busy || addingFiles || !!attachments.length} onClick={() => void send('world')}>{t.world}</button>}<button className="bot-send" aria-label={t.send} disabled={disabled || (!draft.trim() && !attachments.length) || attachments.length > 16 || busy || addingFiles || captureBusy}><span className="bot-sr-only">{t.send}</span><BotIcon name="arrow" /></button></div>
   </form>{status}</div>;
 }

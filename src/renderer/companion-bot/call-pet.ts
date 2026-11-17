@@ -21,8 +21,9 @@ function copyCallStyles(target: Document): void {
 
 const petSurfaces = [
   '.bot-call-portrait-frame', '.bot-call-portrait h2', '.bot-call-loading', '.bot-call-notice',
-  '.bot-call-bubble', '.bot-call-review', '.bot-call-topics', '.bot-call-composer-host', '.bot-call-input-entry',
+  '.bot-call-bubble', '.bot-call-pet-progress', '.bot-call-review', '.bot-call-topics', '.bot-call-composer-host', '.bot-call-input-entry',
   '.bot-call-pet-options', '.bot-call-chat:not([hidden])', '.bot-topic-picker',
+  '.bot-desktop-capture-panel', '.bot-desktop-capture-status', '.bot-presence-status',
   '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel',
 ].join(',');
 

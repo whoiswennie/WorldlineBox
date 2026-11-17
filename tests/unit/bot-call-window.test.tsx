@@ -3,6 +3,9 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { BotCallWindow } from '../../src/renderer/companion-bot/BotCallWindow';
+import { BotCallDialogue } from '../../src/renderer/companion-bot/BotCallDialogue';
+import { BotDesktopCapture } from '../../src/renderer/companion-bot/BotDesktopCapture';
+import type { BotMediaResponse, WorldlineBoxBotMediaApi } from '../../src/shared/companion-bot-media';
 import { botCallClock, botCallProfile } from '../../src/renderer/companion-bot/call-presentation';
 import type { BotMessage, BotRequest, BotSnapshot, BotEvent, BotResponse, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { BotLive2DControls } from '../../src/renderer/companion-bot/BotLive2DStage';
@@ -47,7 +50,7 @@ async function mount(initialDraft = '会面草稿', actor = companion, options: 
   const snapshot: BotSnapshot = { companions: [actor], messages: [], conversations: [], tasks: [], hasMore: false,
     runtime: { engine: 'dsh-native', memory: 'vcp-memory', embedding: '', activeLanes: 0, ready: true, dataRoot: '' } };
   const request = vi.fn(async (input: BotRequest): Promise<BotResponse> => {
-    if (input.type === 'call.open') return { ok: true, conversationId: 'meeting', snapshot: { ...snapshot },
+    if (input.type === 'call.open') return { ok: true, conversationId: 'direct', snapshot: { ...snapshot },
       callModel: options.model ? { model: 'test.model3.json', catalog: 'test.json', assets: { expressions: [], motions: [], credits: '', license: '' } } : undefined };
     if (input.type === 'state') return { ok: true, snapshot: { ...snapshot } };
     if (input.type === 'call.interrupt') return { ok: true, interruptedReplyIds: input.replies.map(reply => reply.messageId) };
@@ -61,7 +64,7 @@ async function mount(initialDraft = '会面草稿', actor = companion, options: 
   }
   await act(() => root!.render(<Harness />));
   return { hangup, request, refresh: async (messages: BotMessage[]) => {
-    snapshot.messages = messages; await act(async () => { listener?.({ type: 'changed', conversationId: 'meeting' }); await vi.advanceTimersByTimeAsync(40); });
+    snapshot.messages = messages; await act(async () => { listener?.({ type: 'changed', conversationId: 'direct' }); await vi.advanceTimersByTimeAsync(40); });
   } };
 }
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!;
@@ -89,7 +92,7 @@ it('stops ringing on connect, cancels the ringing deadline and shows an avatar f
   await act(() => vi.advanceTimersByTime(61000)); expect(fixture.hangup).not.toHaveBeenCalled(); expect(document.querySelector('.bot-call-duration')?.textContent).toBe('01:01');
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="挂断"]')!.click()); expect(fixture.hangup).toHaveBeenCalledOnce();
 });
-it('routes the bubble composer to the dedicated meeting and keeps native topic controls available', async () => {
+it('routes the bubble composer to the shared private chat and keeps native topic controls available', async () => {
   const f = await mount(); expect(document.querySelector('.bot-composer')).toBeNull();
   await act(() => button('接通').click());
   expect(f.request).toHaveBeenCalledWith({ type: 'call.open', conversationId: 'direct' });
@@ -102,7 +105,7 @@ it('routes the bubble composer to the dedicated meeting and keeps native topic c
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="展开会面输入"]')!.click());
   expect(document.querySelector<HTMLTextAreaElement>('.bot-call-composer-host textarea')?.value).toBe('会面草稿');
   await act(() => document.querySelector<HTMLButtonElement>('.bot-send')!.click());
-  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', conversationId: 'meeting', content: '会面草稿' }));
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', conversationId: 'direct', content: '会面草稿', surface: 'call' }));
 });
 it('stops continuous listening when one-click dictation starts, until it closes', async () => {
   voice.available = true;
@@ -180,7 +183,7 @@ it('interrupts the live queue at its visible segment and drops late old snapshot
     ] };
   await f.refresh([reply]);
   await act(() => button('打断').click());
-  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt', conversationId: 'meeting', replies: [{ messageId: 'live', throughSegmentId: 'visible' }] }));
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt', conversationId: 'direct', replies: [{ messageId: 'live', throughSegmentId: 'visible' }] }));
   expect(document.querySelector('.bot-call-bubble-status')?.textContent).toBe('已打断 · 可以继续');
   await f.refresh([reply]);
   await act(() => vi.advanceTimersByTime(10000));
@@ -272,7 +275,7 @@ it('replays each recorded expression and motion when stepping and replaying from
   expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
 });
 
-it('shows the submitted prompt while waiting and accepts only its associated reply', async () => {
+it('shows the submitted prompt while waiting and presents reports from a different topic', async () => {
   let resolve!: (response: BotResponse) => void;
   const sent = new Promise<BotResponse>(done => { resolve = done; });
   const f = await mount('新一轮问题', companion, { send: () => sent });
@@ -285,8 +288,6 @@ it('shows the submitted prompt while waiting and accepts only its associated rep
   expect(document.querySelector('.bot-call-user-line')?.textContent).toContain('新一轮问题');
   expect(document.querySelector('.bot-call-bubble .bot-reply-progress-label')?.textContent).toBe('正在回应…');
   await act(() => resolve({ ok: true, replyMessageIds: ['new'] }));
-  await f.refresh([old, stageReply('unrelated', 3, [{ id: 'other', sequence: 1, kind: 'text', text: '无关台词', presentation: {} }])]);
-  expect(caption()).toBeUndefined();
   const reply = stageReply('new', 2, [], 'running');
   await f.refresh([old, { ...reply, progress: { phase: 'using-tool', toolName: 'shell', activity: { step: 4, summary: '正在核对文件' } } }]);
   const progress = document.querySelector('.bot-call-progress')!;
@@ -299,4 +300,63 @@ it('shows the submitted prompt while waiting and accepts only its associated rep
   await f.refresh([old, stageReply('new', 2, [{ id: 'new-segment', sequence: 1, kind: 'text', text: '新的回应', presentation: {} }])]);
   expect(caption()).toBe('新的回应');
   expect(document.querySelector('.bot-call-progress')).toBeNull();
+  const scheduled = { ...stageReply('scheduled', 3, []), content: '一分钟提醒已完成。', topic: { id: 'schedule', title: '日程提醒' } };
+  await f.refresh([old, stageReply('new', 2, [{ id: 'new-segment', sequence: 1, kind: 'text', text: '新的回应', presentation: {} }]), scheduled]);
+  await act(() => vi.advanceTimersByTime(1500));
+  expect(caption()).toBe(scheduled.content);
+  await act(() => button('完整对话').click());
+  expect(document.querySelector('.bot-call-transcript')?.textContent).toContain(scheduled.content);
+});
+
+it('keeps desktop pet progress and interruption outside the caption as the reply streams', async () => {
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  const onInterrupt = vi.fn(), ignored = new Set<string>(), baseline = new Set<string>();
+  const turn = { id: 'turn', content: '问题', replyIds: ['reply'] };
+  const render = async (message: BotMessage) => {
+    await act(() => root!.render(<BotCallDialogue messages={[message]} baseline={baseline} ignored={ignored} connectedAt={0}
+      turn={turn} companionId={companion.id} activeAtConnect={baseline} desktopPet zh hidden={false} modelLoading interrupted={false}
+      onInterrupt={onInterrupt} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} onHistory={() => undefined} />));
+  };
+  const waiting = { ...stageReply('reply', 1, [], 'running'), progress: { phase: 'waiting-model' as const } };
+  await render(waiting);
+  expect(document.querySelector('.bot-call-bubble')).toBeNull();
+  const pill = () => document.querySelector('.bot-call-pet-progress');
+  expect(pill()?.textContent).toContain('等待模型响应');
+  const text = { id: 'segment', sequence: 1, kind: 'text' as const, text: '这行正文应该完整显示。', presentation: {} };
+  await render({ ...waiting, parts: [text], progress: { phase: 'recalling-memory' } });
+  expect(caption()).toBe(text.text);
+  expect(document.querySelector('.bot-call-bubble .bot-call-progress')).toBeNull();
+  expect(pill()?.textContent).toContain('正在检索记忆');
+  await act(() => pill()!.querySelector<HTMLButtonElement>('button[aria-label="打断"]')!.click());
+  expect(onInterrupt).toHaveBeenCalledOnce();
+  await render(stageReply('reply', 1, [text]));
+  expect(pill()).toBeNull();
+  expect(caption()).toBe(text.text);
+});
+
+it('shows active desktop capture and DSH progress in the same dock row without an overlay', async () => {
+  host = document.createElement('div');
+  const surface = document.createElement('div'), statusRow = document.createElement('div');
+  host.append(surface, statusRow); document.body.append(host); root = createRoot(surface);
+  let finish!: (result: BotMediaResponse) => void;
+  const work = new Promise<BotMediaResponse>(resolve => { finish = resolve; });
+  const api: WorldlineBoxBotMediaApi = { request: vi.fn(input => input.type === 'desktop.transcribe' ? work : Promise.resolve({ ok: true })), getDroppedFilePaths: () => [] };
+  const waiting = { ...stageReply('reply', 1, [], 'running'), progress: { phase: 'recalling-memory' as const } };
+  const baseline = new Set<string>();
+  const noop = () => undefined;
+  const render = (fileRequest: number) => root!.render(<>
+    <BotCallDialogue messages={[waiting]} baseline={baseline} ignored={baseline} connectedAt={0}
+      companionId={companion.id} activeAtConnect={baseline} desktopPet zh hidden={false} interrupted={false} progressTarget={statusRow}
+      onInterrupt={() => undefined} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} onHistory={() => undefined} />
+    <BotDesktopCapture api={api} conversationId="direct" surface="pet" locale="zh-CN" statusTarget={statusRow}
+      onAttachment={noop} onBusy={noop} fileRequest={fileRequest} />
+  </>);
+  await act(() => render(0));
+  await act(() => render(1));
+  expect(statusRow.querySelector('.bot-call-pet-progress')?.textContent).toContain('正在检索记忆');
+  expect(statusRow.querySelector('.bot-desktop-capture-status')?.textContent).toContain('正在分段转写音轨');
+  expect(host.querySelector('.bot-desktop-capture-panel')).toBeNull();
+  await act(() => finish({ ok: true, cancelled: true }));
+  expect(statusRow.querySelector('.bot-desktop-capture-status')).toBeNull();
+  expect(statusRow.querySelector('.bot-call-pet-progress')).not.toBeNull();
 });

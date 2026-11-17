@@ -14,6 +14,8 @@ const paths = {
   'phone-off': 'M3 14c5-5 13-5 18 0l-2 5-5-1v-3h-4v3l-5 1z',
   hangup: 'M3 14c4.8-6.7 13.2-6.7 18 0l-1.7 2.5-4.3-1v-2.3a7.5 7.5 0 0 0-6 0v2.3l-4.3 1z',
   volume: 'M11 4L5 9H2v6h3l6 5zM15 8a6 6 0 0 1 0 8M18 4a11 11 0 0 1 0 16',
+  screen: 'M3 4h18v13H3zM12 17v4M8 21h8',
+  video: 'M3 6h13a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H3zM18 10l4-2v8l-4-2',
   image: 'M3 4h18v16H3zM3 15l5-5 5 5 3-3 5 5M15 8h.01',
   sparkles: 'M12 2l3 7 7 3-7 3-3 7-3-7-7-3 7-3zM20 2v4M18 4h4',
   plus: 'M12 5v14M5 12h14',

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { LocalSpeechRequest, LocalSpeechResponse, WorldlineBoxLocalSpeechApi } from '../../src/shared/local-speech';
 import { BotVoiceInput } from '../../src/renderer/companion-bot/BotVoiceInput';
 import { BotVoiceMessage } from '../../src/renderer/companion-bot/BotVoiceMessage';
+import { BotAttachment } from '../../src/renderer/companion-bot/BotAttachment';
 
 const capture = vi.hoisted(() => ({ resolve: undefined as undefined | ((value: { wave: Uint8Array; seconds: number } | undefined) => void), cancel: vi.fn(), start: vi.fn(), onLevel: undefined as undefined | ((level: number) => void), onLimit: undefined as undefined | (() => void) }));
 vi.mock('../../src/renderer/companion-bot/voice-recorder', () => ({
@@ -69,6 +70,22 @@ it('renders the original recording without preloading audio and expands its pers
   await act(() => root!.render(<BotVoiceMessage media={voice} conversationId="room" locale="zh-CN" />));
   expect(host.querySelector('audio')?.preload).toBe('none'); expect(host.textContent).not.toContain(voice.transcript.text);
   await click('转文字'); expect(host.textContent).toContain(voice.transcript.text);
+});
+it('keeps audio attachment actions and the expandable transcript inside its player card', async () => {
+  host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+  await act(() => root!.render(<BotAttachment media={{ ...voice, voice: undefined }} conversationId="room" locale="zh-CN" />));
+  const card = host.querySelector('.bot-attachment-inline-preview')!;
+  const actions = card.querySelector('.bot-voice-actions')!;
+  expect(actions.textContent).toBe('转文字大窗查看');
+  const button = actions.querySelector('.bot-voice-transcribe')!;
+  const transcript = card.querySelector<HTMLElement>('.bot-voice-transcript')!;
+  expect(button.getAttribute('aria-controls')).toBe(transcript.id);
+  expect(transcript.hidden).toBe(true);
+  await click('转文字');
+  expect(transcript.hidden).toBe(false);
+  expect(transcript.textContent).toBe(voice.transcript.text);
+  await click('收起文字');
+  expect(transcript.hidden).toBe(true);
 });
 it('ends a recording with Space without sending a voice before its send action', async () => {
   const fixture = await mount(); await click('录音发语音');

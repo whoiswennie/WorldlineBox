@@ -185,7 +185,6 @@ const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
 const callAssetPath = relative => path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
 const privateCallAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
-const localCallModel = privateCallAssets || process.env.WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL === '1';
 const bundledCallRingtones = [['ringtone.wav', undefined], ['ringtones/dafeiyu.wav', 'dafeiyu.wav']];
 if (privateCallAssets) bundledCallRingtones.push(['ringtones/phoebe.wav', 'ringtone.wav']);
 for (const [relative, original] of bundledCallRingtones) {
@@ -198,29 +197,43 @@ for (const [relative, original] of bundledCallRingtones) {
     : path.join(projectRoot, 'public', 'companion-call', relative);
   if (!wav.equals(readFileSync(source))) throw new Error(`Wrong call audio in package: ${relative}`);
 }
-function verifyCallModel(modelPath) {
+function verifyCallModel(modelPath, extraFiles) {
   const modelRoot = path.posix.dirname(modelPath);
   const model = JSON.parse(asar.extractFile(asarPath, callAssetPath(modelPath)));
-  const { Moc, Textures, Physics, DisplayInfo, Expressions = [] } = model.FileReferences;
+  const { Moc, Textures, Physics, DisplayInfo, Expressions = [], Motions = {} } = model.FileReferences;
   if (!Moc || !Textures.length) throw new Error('Bundled Live2D manifest is missing its model or textures.');
-  for (const file of [Moc, ...Textures, Physics, DisplayInfo, ...Expressions.map(item => item.File), 'MODEL-LICENSE.txt'].filter(Boolean)) {
-    const asset = asar.statFile(asarPath, callAssetPath(path.posix.join(modelRoot, file)));
-    if (!asset.size) throw new Error(`Empty bundled Live2D file: ${file}`);
+  const animations = [...Expressions, ...Object.values(Motions).flat()];
+  const required = [modelPath, ...extraFiles, ...[Moc, ...Textures, Physics, DisplayInfo, ...animations.map(item => item.File), 'MODEL-LICENSE.txt']
+    .filter(Boolean).map(file => path.posix.join(modelRoot, file))];
+  for (const file of required) {
+    const bytes = asar.extractFile(asarPath, callAssetPath(file));
+    if (!bytes.length || !bytes.equals(readFileSync(path.join(projectRoot, 'public', 'companion-call', file))))
+      throw new Error(`Bundled Live2D file is missing, empty or different from source: ${file}`);
+    if (file.endsWith('.moc3') && bytes.subarray(0, 4).toString('ascii') !== 'MOC3'
+      || file.endsWith('.png') && !bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+      throw new Error(`Bundled Live2D file is not a materialized model or texture: ${file}`);
+    }
   }
+  console.log(`Verified bundled Live2D model ${modelPath} with ${required.length} files.`);
 }
 
 const callModels = JSON.parse(asar.extractFile(asarPath, callAssetPath('models.json')));
-if (callModels['builtin-dafeiyu']?.model !== 'arch-chan/arch-chan.model3.json') {
-  throw new Error('The built-in companion does not reference the bundled Arch-chan model.');
+const expectedCallModels = [
+  ['builtin-dafeiyu', 'dafeiyu/call.model3.json', []],
+  ['yachiyo-runami', 'yachiyo/八千代辉夜姬.model3.json', ['yachiyo/portrait.png']],
+];
+for (const [id, modelPath, extraFiles] of expectedCallModels) {
+  const entry = callModels[id];
+  if (entry?.model !== modelPath || !entry.catalog || !entry.vts) {
+    throw new Error(`The built-in companion ${id} must reference its bundled model, catalog and VTS configuration.`);
+  }
+  verifyCallModel(modelPath, [entry.catalog, entry.vts, ...extraFiles]);
 }
-verifyCallModel(callModels['builtin-dafeiyu'].model);
-if (localCallModel) {
-  verifyCallModel('deepseek/call.model3.json');
-} else if (asarFiles.some(file => {
-  const relative = file.replaceAll('\\', '/');
-  return relative.includes('/companion-call/deepseek/') || relative.endsWith('/companion-call/models-local.json');
-})) {
-  throw new Error('The public package contains a private companion call asset.');
+const callModelFiles = asarFiles.map(file => file.replaceAll('\\', '/')).filter(file => (
+  /\/companion-call\/.*(?:\.model3\.json|\.moc3)$/i.test(file)
+));
+if (callModelFiles.length !== 4 || callModelFiles.some(file => !expectedCallModels.some(([, model]) => file.includes('/companion-call/' + path.posix.dirname(model) + '/')))) {
+  throw new Error('The package must contain both built-in companion Live2D models.');
 }
 if (!privateCallAssets && asarFiles.some(file => file.replaceAll('\\', '/').endsWith('/companion-call/ringtones/phoebe.wav'))) {
   throw new Error('The package contains a private companion ringtone.');

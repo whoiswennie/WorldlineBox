@@ -61,7 +61,7 @@ export function BotCompanionSchedules({ api, companionId, locale }: { api: World
   const visible = filtered.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
   const stamp = (value: number) => formatter.format(value);
   return <section className="bot-settings-scroll bot-schedule-panel">
-    <header className="bot-settings-section-heading"><h3>{t('日程', 'Schedule')}</h3><p>{t('到点后，伙伴会在新的 DSH 会话中按任务提示词执行。WorldlineBox 需要保持运行。', 'At the scheduled time, the companion runs the task prompt in a new DSH session. WorldlineBox must be running.')}</p></header>
+    <header className="bot-settings-section-heading"><h3>{t('日程', 'Schedule')}</h3><p>{t('WorldlineBox 运行时，伙伴会按时执行并在私聊和已接通的会面中汇报。', 'While WorldlineBox is running, the companion reports scheduled results in chat and in the active call.')}</p></header>
     <div className="bot-schedule-toolbar">
       <label><input type="checkbox" role="switch" checked={!!state?.enabled} disabled={!state || busy} onChange={event => void change({ operation: 'settings', enabled: event.target.checked })} />{t('启用这位伙伴的日程', 'Enable this companion’s schedules')}</label>
       <button type="button" onClick={() => { setEditId(undefined); setDraft(emptyDraft); }}>{t('新增日程', 'New schedule')}</button>
@@ -72,9 +72,15 @@ export function BotCompanionSchedules({ api, companionId, locale }: { api: World
       <label>{t('名称', 'Name')}<input autoFocus value={draft.title} required maxLength={80} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
       <label>{t('任务提示词', 'Task prompt')}<textarea required rows={6} maxLength={8000} value={draft.prompt} onChange={event => setDraft({ ...draft, prompt: event.target.value })} /></label>
       <div className="bot-schedule-fields">
-        <label>{t('触发方式', 'Trigger')}<select value={draft.recurrence.kind} onChange={event => setDraft({ ...draft, recurrence: event.target.value === 'daily' ? { kind: 'daily', time: '09:00' } : { kind: 'interval', minutes: 60 } })}><option value="daily">{t('每日定时', 'Daily at a set time')}</option><option value="interval">{t('固定间隔', 'Fixed interval')}</option></select></label>
+        <label>{t('触发方式', 'Trigger')}<select value={draft.recurrence.kind} onChange={event => {
+          const kind = event.target.value;
+          setDraft({ ...draft, recurrence: kind === 'daily' ? { kind, time: '09:00' }
+            : kind === 'once' ? { kind, minutes: 1 } : { kind: 'interval', minutes: 60 } });
+        }}><option value="daily">{t('每日定时', 'Daily at a set time')}</option><option value="interval">{t('固定间隔', 'Fixed interval')}</option><option value="once">{t('仅一次', 'Once')}</option></select></label>
         {draft.recurrence.kind === 'daily' ? <label>{t('本地时间', 'Local time')}<input type="time" required value={draft.recurrence.time} onChange={event => setDraft({ ...draft, recurrence: { kind: 'daily', time: event.target.value } })} /></label>
-          : <label>{t('间隔分钟', 'Minutes')}<input type="number" min={1} max={10080} required value={draft.recurrence.minutes || ''} onChange={event => setDraft({ ...draft, recurrence: { kind: 'interval', minutes: Number(event.target.value) } })} /></label>}
+          : <label>{draft.recurrence.kind === 'once' ? t('延迟分钟', 'Delay in minutes') : t('间隔分钟', 'Interval in minutes')}<input type="number" min={1} max={10080} required value={draft.recurrence.minutes || ''} onChange={event => {
+            if (draft.recurrence.kind !== 'daily') setDraft({ ...draft, recurrence: { ...draft.recurrence, minutes: Number(event.target.value) } });
+          }} /></label>}
         <label><input type="checkbox" checked={draft.enabled} onChange={event => setDraft({ ...draft, enabled: event.target.checked })} />{t('启用', 'Enabled')}</label>
         <label><input type="checkbox" checked={scheduleUsesCabin({ ...draft, cabinWorld: false }) || draft.cabinWorld === true} disabled={scheduleUsesCabin({ ...draft, cabinWorld: false })} onChange={event => setDraft({ ...draft, cabinWorld: event.target.checked })} />{t('需要小屋世界在线', 'Requires Cabin World online')}</label>
       </div>
@@ -83,25 +89,28 @@ export function BotCompanionSchedules({ api, companionId, locale }: { api: World
     <div className="bot-schedule-toolbar bot-schedule-filters">
       <input type="search" aria-label={t('搜索日程', 'Search schedules')} placeholder={t('搜索名称或任务提示词', 'Search names or prompts')} value={query} onChange={event => { setQuery(event.target.value); setPage(0); }} />
       <select aria-label={t('筛选日程', 'Filter schedules')} value={filter} onChange={event => { setFilter(event.target.value); setPage(0); }}>
-        <option value="all">{t('全部日程', 'All schedules')}</option><option value="daily">{t('每日定时', 'Daily')}</option><option value="interval">{t('固定间隔', 'Interval')}</option><option value="paused">{t('已暂停', 'Paused')}</option>
+        <option value="all">{t('全部日程', 'All schedules')}</option><option value="daily">{t('每日定时', 'Daily')}</option><option value="interval">{t('固定间隔', 'Interval')}</option><option value="once">{t('仅一次', 'Once')}</option><option value="paused">{t('已暂停', 'Paused')}</option>
       </select>
     </div>
     <div className="bot-schedule-list" aria-busy={!state}>
       {state && !visible.length && <p className="bot-schedule-empty">{state.items.length ? t('没有符合条件的日程。', 'No matching schedules.') : t('还没有日程。', 'No schedules yet.')}</p>}
       {visible.map(item => {
-        const daily = item.recurrence.kind === 'daily';
-        const recurrence = item.recurrence.kind === 'daily' ? t(`每天 ${item.recurrence.time}`, `Daily at ${item.recurrence.time}`) : t(`每 ${item.recurrence.minutes} 分钟`, `Every ${item.recurrence.minutes} minutes`);
+        const rule = item.recurrence;
+        const triggered = rule.kind === 'once' && item.nextAt === 0;
+        const recurrence = rule.kind === 'daily' ? t(`每天 ${rule.time}`, `Daily at ${rule.time}`)
+          : rule.kind === 'once' ? t(`${rule.minutes} 分钟后执行一次`, `Once after ${rule.minutes} min`)
+            : t(`每 ${rule.minutes} 分钟`, `Every ${rule.minutes} minutes`);
         const open = expanded === item.id;
         return <article key={item.id} className="bot-schedule-item">
           <div className="bot-schedule-row-heading">
             <button className="bot-schedule-summary" type="button" aria-expanded={open} onClick={() => setExpanded(open ? undefined : item.id)}><strong>{item.title}</strong><span>{recurrence}</span></button>
-            <label className="bot-schedule-toggle"><input type="checkbox" role="switch" aria-label={item.title} checked={item.enabled} disabled={busy} onChange={event => void change({ operation: 'toggle', id: item.id, enabled: event.target.checked })} /><span>{item.enabled ? t('启用', 'Enabled') : t('暂停', 'Paused')}</span></label>
+            <label className="bot-schedule-toggle"><input type="checkbox" role="switch" aria-label={item.title} checked={item.enabled} disabled={busy} onChange={event => void change({ operation: 'toggle', id: item.id, enabled: event.target.checked })} /><span>{triggered ? t('已触发', 'Triggered') : item.enabled ? t('启用', 'Enabled') : t('暂停', 'Paused')}</span></label>
           </div>
           <dl className="bot-schedule-meta">
-            <div><dt>{t('下次触发', 'Next run')}</dt><dd>{!item.enabled ? t('此项已暂停', 'Schedule paused') : !state?.enabled ? t('总开关已关闭', 'Schedules are off') : stamp(item.nextAt)}</dd></div>
+            <div><dt>{t('下次触发', 'Next run')}</dt><dd>{triggered ? '—' : !item.enabled ? t('此项已暂停', 'Schedule paused') : !state?.enabled ? t('总开关已关闭', 'Schedules are off') : stamp(item.nextAt)}</dd></div>
             {item.lastRun && <div><dt>{t('上次触发', 'Last trigger')}</dt><dd>{stamp(item.lastRun.at)} · {{ queued: t('等待执行', 'Queued'), running: t('执行中', 'Running'), done: t('完成', 'Completed'), failed: t('失败', 'Failed'), cancelled: t('已取消', 'Cancelled'), skipped: t('已跳过 · 小屋世界离线', 'Skipped · Cabin World offline'), unknown: t('状态未知', 'Status unknown') }[item.lastRun.status]}</dd></div>}
           </dl>
-          {open ? <div className="bot-schedule-detail"><h5>{t('触发规则', 'Trigger rule')}</h5><p>{daily ? t('按电脑本地时间每天触发。', 'Runs daily at the local time shown above.') : t('每次触发后重新计算间隔。', 'The next interval starts when this run is queued.')}</p><h5>{t('任务提示词', 'Task prompt')}</h5><p className="bot-schedule-prompt">{item.prompt}</p>{scheduleUsesCabin(item) && <p>{t('小屋世界离线时跳过本次日程。', 'This run is skipped if Cabin World is offline.')}</p>}</div>
+          {open ? <div className="bot-schedule-detail"><h5>{t('触发规则', 'Trigger rule')}</h5><p>{rule.kind === 'daily' ? t('按电脑本地时间每天触发。', 'Runs daily at the local time shown above.') : rule.kind === 'once' ? t('触发一次后自动停用。', 'Turns off after one trigger.') : t('每次触发后重新计算间隔。', 'The next interval starts when this run is queued.')}</p><h5>{t('任务提示词', 'Task prompt')}</h5><p className="bot-schedule-prompt">{item.prompt}</p>{scheduleUsesCabin(item) && <p>{t('小屋世界离线时跳过本次日程。', 'This run is skipped if Cabin World is offline.')}</p>}</div>
             : <p className="bot-schedule-preview">{item.prompt.slice(0, 180)}{item.prompt.length > 180 ? '…' : ''}</p>}
           <footer><button type="button" onClick={() => { setEditId(item.id); setExpanded(item.id); setDraft({ title: item.title, prompt: item.prompt, recurrence: item.recurrence, enabled: item.enabled, cabinWorld: item.cabinWorld }); }}>{t('编辑', 'Edit')}</button>
             {removing === item.id ? <><button type="button" onClick={() => setRemoving(undefined)}>{t('取消', 'Cancel')}</button><button type="button" disabled={busy} onClick={() => void change({ operation: 'delete', id: item.id }).then(ok => { if (ok) { setRemoving(undefined); if (editId === item.id) setDraft(undefined); } })}>{t('确认删除', 'Confirm removal')}</button></> : <button type="button" onClick={() => setRemoving(item.id)}>{t('删除', 'Remove')}</button>}</footer>

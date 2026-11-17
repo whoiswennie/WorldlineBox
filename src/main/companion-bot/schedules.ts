@@ -20,7 +20,7 @@ export function hasActiveSchedules(file: string): boolean {
 interface BotScheduleReader { prepare(sql: string): { get(): unknown }; close(): void }
 
 export function nextScheduleTime(recurrence: ScheduleDraft['recurrence'], after: number): number {
-  if (recurrence.kind === 'interval') return after + recurrence.minutes * 60000;
+  if (recurrence.kind !== 'daily') return after + recurrence.minutes * 60000;
   const [hours, minutes] = recurrence.time.split(':').map(Number);
   const next = new Date(after);
   next.setHours(hours!, minutes!, 0, 0);
@@ -33,6 +33,15 @@ export function nextScheduleTime(recurrence: ScheduleDraft['recurrence'], after:
 
 type Entry = Omit<CompanionSchedule, 'lastRun'> & { last?: { at: number; topicId: string; eventId: string } | { at: number; skipped: 'cabin-offline' } };
 type Settings = { enabled: boolean; items: Entry[]; presetsAdded?: boolean };
+
+function advanceSchedule(entry: Entry, now: number): void {
+  if (entry.recurrence.kind === 'once') {
+    entry.enabled = false;
+    entry.nextAt = 0;
+  } else {
+    entry.nextAt = nextScheduleTime(entry.recurrence, now);
+  }
+}
 
 export class BotSchedules {
   constructor(private readonly store: BotStore, private readonly topics: BotTopics) {}
@@ -63,7 +72,9 @@ export class BotSchedules {
       if ('id' in command && command.id && index < 0) throw Error('这位伙伴没有这项日程。');
       if (command.operation === 'settings' && settings.enabled !== command.enabled) {
         settings.enabled = command.enabled;
-        if (settings.enabled) for (const item of settings.items) item.nextAt = nextScheduleTime(item.recurrence, now);
+        if (settings.enabled) for (const item of settings.items) {
+          if (item.enabled) item.nextAt = nextScheduleTime(item.recurrence, now);
+        }
       }
       if (command.operation === 'save') {
         const draft = scheduleDraft.parse(command.draft), current = settings.items[index];
@@ -117,7 +128,7 @@ export class BotSchedules {
         if (cabinWorld && cabinOnline === undefined) return { kind: 'check-cabin' };
         if (cabinWorld && !cabinOnline) {
           item.last = { at: now, skipped: 'cabin-offline' };
-          item.nextAt = nextScheduleTime(item.recurrence, now);
+          advanceSchedule(item, now);
           this.store.setMetadata(due.key, JSON.stringify(settings));
           return { kind: 'skipped' };
         }
@@ -129,7 +140,7 @@ export class BotSchedules {
           payload: { scheduleId: item.id, scheduleTitle: item.title, cabinWorld } });
         this.topics.bind(result.events, topic);
         item.last = { at: now, eventId: result.events[0]!.id, topicId: topic.id };
-        item.nextAt = nextScheduleTime(item.recurrence, now);
+        advanceSchedule(item, now);
         this.store.setMetadata(due.key, JSON.stringify(settings));
         return { kind: 'queued', room: room.id };
       }

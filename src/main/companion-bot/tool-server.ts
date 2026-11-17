@@ -45,7 +45,12 @@ export class BotToolServer {
           if(input.nativeSessionId&&nativeSessionId&&input.nativeSessionId!==nativeSessionId||input.nativeCallId&&nativeCallId&&input.nativeCallId!==nativeCallId)throw Error('Native callback identity mismatch.');
           input.nativeSessionId??=toolCall.shape.nativeSessionId.parse(nativeSessionId);
           input.nativeCallId??=toolCall.shape.nativeCallId.parse(nativeCallId);
-          input.args=args;
+          // Some native model adapters wrap host-tool arguments in one object.
+          // Unwrap only these known contracts, after separating transport IDs.
+          const wrapped = args.arguments;
+          input.args = ['companion_recognize_audio', 'call_stage', 'call_present'].includes(input.name)
+            && Object.keys(args).length === 1 && wrapped && typeof wrapped === 'object' && !Array.isArray(wrapped)
+            ? z.record(z.string(), z.unknown()).parse(wrapped) : args;
           if (scoped ? input.laneId !== scoped.laneId || input.eventId !== scoped.eventId : input.laneId.startsWith('worker-')) {
             response.writeHead(403).end(JSON.stringify({ ok: false, error: '执行器能力不属于本任务。' })); return;
           }

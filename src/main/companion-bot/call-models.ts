@@ -39,16 +39,8 @@ async function discoverFiles(directory: string, depth = 0): Promise<string[]> {
   return files;
 }
 
-export async function readBotCallModel(root: string | undefined, companionId: string, preferStaged = true): Promise<BotCallModel | undefined> {
+export async function readBotCallModel(root: string | undefined, companionId: string): Promise<BotCallModel | undefined> {
   if (!root) return;
-  if (preferStaged) {
-    const staged = await readRegisteredModel(root, companionId, 'models-local.json');
-    if (staged) return staged;
-  }
-  return readRegisteredModel(root, companionId, 'models.json');
-}
-
-async function readRegisteredModel(root: string, companionId: string, registryFile: string): Promise<BotCallModel | undefined> {
   try {
     const base = await realpath(root);
     const read = async (file: string) => {
@@ -57,7 +49,7 @@ async function readRegisteredModel(root: string, companionId: string, registryFi
       if (!relative || relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative)) throw Error('Model asset is outside the call directory.');
       return JSON.parse(await readFile(absolute, 'utf8')) as unknown;
     };
-    const registry = botCallModelRegistry.parse(await read(registryFile));
+    const registry = botCallModelRegistry.parse(await read('models.json'));
     if (!Object.hasOwn(registry, companionId)) return;
     const entry = registry[companionId]!;
     const folder = path.posix.dirname(entry.model), inModel = (file: string) => path.posix.join(folder, file);
@@ -169,10 +161,11 @@ export function botCallCapabilities(model: BotCallModel | undefined, companionId
       gestures: [],
     };
   }
-  const authored = companionId === 'builtin-dafeiyu';
+  const authored = companionId === 'builtin-dafeiyu' && !model.localImport;
   return {
     mode: 'live2d',
     model: model.model,
+    ...(model.localImport ? { localImport: true } : {}),
     catalog: model.catalog,
     expressions: model.assets.expressions.map(({ name, file, params, aliases, customization }) => ({ name, file, parameters: params,
       ...(aliases ? { aliases } : {}), ...(customization ? { customization } : {}),

@@ -17,12 +17,12 @@ export function botReplyDisplayParts(parts:readonly BotReplyPart[]):BotReplyPart
   return result;
 }
 
-/** The chat shows only the last committed body and media, while the native
- * source parts remain intact for receipts, memory and recovery. Captions are
- * tool metadata rather than an additional assistant answer. */
+/** Text chat shows the final committed answer. Each published call segment
+ * also belongs to the transcript, in the order the user heard it. */
 export function botReplyPresentation(parts:readonly BotReplyPart[],fallback:readonly BotMediaRef[]=[]):{content:string;attachments:BotMediaRef[]}{
   const ordered=[...parts].sort((a,b)=>a.sequence-b.sequence);
-  const content=ordered.findLast(part=>part.kind==='text'&&!!part.text?.trim())?.text??'';
+  const spoken=ordered.filter(part=>part.presentation&&part.text?.trim());
+  const content=spoken.length?spoken.map(part=>part.text).join('\n\n'):ordered.findLast(part=>part.kind==='text'&&!!part.text?.trim())?.text??'';
   const attachments:BotMediaRef[]=[],seen=new Set<string>();
   for(const part of ordered)for(const media of part.attachments??[]){
     if(media.kind==='sticker'||!seen.has(media.id))attachments.push(media);

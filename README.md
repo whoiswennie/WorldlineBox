@@ -8,7 +8,7 @@
 
 Windows x64 · Electron / React / TypeScript / Three.js · 本地数据存储 · MIT
 
-[English](README.en.md) · [Windows 0.1.1 下载](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.1) · [Android 0.1.1 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.1) · [使用手册](docs/user-guide/README.md)
+[English](README.en.md) · [Windows 0.1.2 下载](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.2) · [Android 0.1.1 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.1) · [使用手册](docs/user-guide/README.md)
 
 </div>
 
@@ -211,6 +211,6 @@ Electron、React、TypeScript、Vite、Three.js 和 SQLite。资产库由 Librar
 - **VCP** 的日记、语义索引和长上下文能力为独立记忆模块提供基础。模块保留了上游来源与许可。 [VCPToolBox 原仓库](https://github.com/lioensky/VCPToolBox) · [VCPChat 原仓库](https://github.com/lioensky/VCPChat)
 - **DeepSeek Harness** 提供原生 Agent 循环、会话与执行环境。 [DeepSeek Harness 原仓库](https://github.com/deepseek-ai/deepseek-harness)
 - **Cabin World by VADS** 提供「小屋世界」。应用附带上游 V1.0.0 的运行文件，WorldlineBox 提供启动器和 DSH 桥接。 [Cabin World 原仓库](https://github.com/BabyBus2022/cabin-world) · [上游许可](https://github.com/BabyBus2022/cabin-world/blob/main/LICENSE)
-- **Live2D**：Windows 和 Android 安装包自带 CC0 授权的 Arch-chan。进入大肥鱼的桌宠会面即可加载。也可按作者授权，在 Windows 的「大肥鱼 → 角色卡 → 形象」导入 DeepSeek-chan 原版 ZIP。 [素材与署名](THIRD_PARTY_NOTICES.md#伙伴通话素材)
+- **Live2D**：Windows 安装包经作者授权内置大肥鱼和月见八千代。Android 随包提供大肥鱼。 [素材与署名](THIRD_PARTY_NOTICES.md#伙伴通话素材)
 
 本项目自有代码使用 [MIT 许可](LICENSE)。各上游代码、模型、素材和工具保留自己的授权条件。 [第三方声明](THIRD_PARTY_NOTICES.md)

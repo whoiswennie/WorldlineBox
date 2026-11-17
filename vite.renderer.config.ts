@@ -168,12 +168,9 @@ export default defineConfig({
         if (!options.dir) return;
         const output = path.resolve(options.dir, "companion-call");
         const privateRingtones = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === "1";
-        if (privateRingtones || process.env.WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL === "1") {
-          await access(path.join(output, "deepseek", "call.model3.json"));
-        } else {
-          await rm(path.join(output, "deepseek"), { recursive: true, force: true });
-          await rm(path.join(output, "models-local.json"), { force: true });
-        }
+        await access(path.join(output, "dafeiyu", "call.model3.json"));
+        await rm(path.join(output, "deepseek"), { recursive: true, force: true });
+        await rm(path.join(output, "models-local.json"), { force: true });
         if (!privateRingtones) {
           await rm(path.join(output, "ringtones", "phoebe.wav"), { force: true });
           return;

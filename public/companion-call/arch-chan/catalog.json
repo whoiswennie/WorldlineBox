@@ -1,6 +1,0 @@
-{
-  "expressions": [{ "name": "Mouse", "file": "mouse.exp3.json", "params": ["MouseToggle"] }],
-  "motions": [],
-  "credits": "Arch-chan by RavioliMavioli (CC0 1.0)",
-  "license": "MODEL-LICENSE.txt"
-}

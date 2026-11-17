@@ -244,7 +244,7 @@ test('groups and observed peer private conversations remain distinct in the regu
       return { ok: created.ok, conversationId: created.conversationId, memberIds: stored.snapshot!.conversations.find(room => room.id === created.conversationId)!.memberIds,
         companions: companions.map(person => ({ id: person.id, name: person.name })) };
     });
-    expect(largeGroup.ok).toBe(true); expect(largeGroup.companions).toHaveLength(15); expect(largeGroup.conversationId).toBeTruthy();
+    expect(largeGroup.ok).toBe(true); expect(largeGroup.companions).toHaveLength(16); expect(largeGroup.conversationId).toBeTruthy();
     const expectedTiles = largeGroup.memberIds.filter(id => id !== 'user').slice(0, 9);
     const largeGroupGeometry: unknown[] = [];
     let groupInfoVerified = false;
@@ -254,7 +254,7 @@ test('groups and observed peer private conversations remain distinct in the regu
       await page.reload(); await page.locator('[data-application-module="companions"]').click();
       await sidebar.locator('.bot-conversation').filter({ hasText: '全部内置伙伴' }).click();
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
-      await expect(page.locator('.bot-group-members-trigger')).toContainText('15 位成员');
+      await expect(page.locator('.bot-group-members-trigger')).toContainText('16 位成员');
       const collage = page.locator('.bot-chat-identity .bot-group-collage');
       await expect(collage.locator('.bot-group-portrait[data-companion-id]')).toHaveCount(9);
       await expect(collage.locator('.bot-presence-dot,.bot-group-portrait-overflow')).toHaveCount(0);

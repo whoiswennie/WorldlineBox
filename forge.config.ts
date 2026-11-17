@@ -62,6 +62,7 @@ const config: ForgeConfig = {
       runNodeGate('scripts/generate-automation-declarations.mjs', []);
       runNodeGate('scripts/stage-bot-memory.mjs', []);
       runNodeGate('scripts/verify-bot-stickers.mjs', []);
+      runNodeGate('scripts/prepare-source-lfs.mjs', []);
       runNodeGate('scripts/stage-bundled-embedding.mjs', ['--acquire']);
       runNodeGate('scripts/stage-local-speech.mjs', []);
       // Recover ignored media executables from the pinned WorldlineBox-Build

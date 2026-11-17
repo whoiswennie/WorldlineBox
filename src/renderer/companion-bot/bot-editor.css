@@ -22,6 +22,8 @@
 .bot-editor-profile,.bot-editor-meeting { display:block;overflow:auto; }
 .bot-editor-meeting>.bot-settings-scroll { overflow:visible; }
 .bot-editor-meeting>.bot-settings-scroll+.bot-settings-scroll { padding-top:0; }
+.bot-editor-meeting>.bot-call-model-settings { padding-bottom:0; }
+.bot-call-model-actions { display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-top:14px;font-size:12px; }
 .bot-editor-profile>.bot-editor-basics { overflow:visible; }
 .bot-editor-personas { margin:24px 30px 0;border:1px solid var(--ui-border-subtle);border-radius:12px;overflow:hidden; }
 .bot-editor-personas>summary,.bot-editor-advanced>summary { padding:12px 16px;cursor:pointer;font-weight:600; }

@@ -1,7 +1,6 @@
 param(
     [ValidateSet('Setup', 'Dev', 'Installer')][string]$Action = 'Setup',
-    [string]$Proxy = $env:WORLDLINEBOX_PROXY,
-    [switch]$IncludeLocalModel
+    [string]$Proxy = $env:WORLDLINEBOX_PROXY
 )
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
@@ -310,7 +309,6 @@ try {
         Run-Npm @('start')
     }
     if ($Action -eq 'Installer') {
-        if ($IncludeLocalModel) { $env:WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL = '1' }
         if (-not (Test-Path -LiteralPath (Join-Path $innoRoot 'ISCC.exe'))) { throw 'Installer compiler is missing. Run 01-Setup-Environment.bat first.' }
         $env:WORLDLINEBOX_INNO_TOOLS = $innoRoot
         $electronVersion = (Get-Content -LiteralPath (Join-Path $projectRoot 'node_modules\electron\package.json') -Raw | ConvertFrom-Json).version
@@ -322,7 +320,7 @@ try {
         Run-Npm @('run', 'typecheck')
         Run-Npm @('run', 'package')
         Run-Npm @('run', 'make:inno')
-        $installer = if ($env:WORLDLINEBOX_INCLUDE_LOCAL_CALL_MODEL -eq '1') { 'WorldlineBoxSetup-private.exe' } else { 'WorldlineBoxSetup.exe' }
+        $installer = 'WorldlineBoxSetup.exe'
         Write-Host "Installer: $(Join-Path $projectRoot "out\make\inno\$installer")" -ForegroundColor Green
     }
     exit 0

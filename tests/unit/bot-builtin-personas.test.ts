@@ -39,7 +39,8 @@ describe('built-in companion persona templates', () => {
   });
 
   it('gives every character a distinct conversational default without turning persona into execution policy', () => {
-    expect(BUILTIN_BOT_COMPANIONS).toHaveLength(15);
+    expect(BUILTIN_BOT_COMPANIONS).toHaveLength(16);
+    expect(BUILTIN_BOT_COMPANIONS.find(item => item.id === 'yachiyo-runami')).toMatchObject({ name: '月见八千代' });
     expect(new Set(BUILTIN_BOT_COMPANIONS.map(item => item.persona)).size).toBe(BUILTIN_BOT_COMPANIONS.length);
     for (const companion of BUILTIN_BOT_COMPANIONS) {
       expect(companion.persona).toContain('语气参考');

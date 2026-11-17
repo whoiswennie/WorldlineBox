@@ -1,5 +1,7 @@
 import * as PIXI from "pixi.js";
 import { buildMotionParameters, loadCDIParameterMeta, readCurrentParameters } from "./motionParameters";
+import { optimizeCubismScreenDraw } from "./screenDraw";
+const frameInterval = 1000 / 60;
 /**
  * Renders a Live2D Cubism 4 model into a host element using PIXI v7 and
  * `pixi-live2d-display`. The Cubism Core runtime is supplied by the integrator
@@ -15,28 +17,51 @@ export class Live2DRenderer {
     secondaryOffsets = {};
     restorePhysics;
     renderedParams = {};
+    renderedValues;
     lastNativeAnimToken = -1;
     suppressedParamIds = new Set();
     viewScale = 1;
     viewOffset = { x: 0, y: 0 };
     minimumResolution = 1;
+    deviceResolution;
+    resolution;
+    pacedTime = 0;
+    pacedFrames = 0;
+    slowFrames = 0;
+    stableTime = 0;
+    frameWindow;
+    frameHandle = 0;
+    frameCallback;
     fullBody = false;
+    automaticFraming = false;
     figureBounds;
     beforeModelUpdate = () => {
         this.applyParametersNow();
         this.applySecondaryOffsets();
         // Cubism restores saved values after updating geometry, so capture here.
-        this.renderedParams = readCurrentParameters(this.model?.internalModel?.coreModel);
+        const core = this.model?.internalModel?.coreModel;
+        const values = core?._model?.parameters?.values;
+        if (!values) {
+            this.renderedParams = readCurrentParameters(core);
+            return;
+        }
+        this.renderedValues ??= new Float32Array(values.length);
+        this.renderedValues.set(values);
     };
     resizeObserver;
     constructor(container, deps = {}) {
         this.container = container;
         this.deps = deps;
+        this.deviceResolution = this.readDeviceResolution();
+        this.resolution = this.preferredResolution;
         window.PIXI = PIXI;
         this.app = new PIXI.Application({
+            autoStart: false,
             autoDensity: true,
-            resolution: this.displayResolution(),
-            antialias: true,
+            resolution: this.resolution,
+            // Art edges already come from alpha-filtered textures. For this canvas,
+            // multisampling adds a second screen-sized workload to every frame.
+            antialias: false,
             backgroundAlpha: 0
         });
         container.appendChild(this.app.view);
@@ -44,19 +69,35 @@ export class Live2DRenderer {
         this.resizeObserver.observe(container);
         this.syncViewport();
     }
-    displayResolution() {
-        return Math.min(3, Math.max(this.minimumResolution, this.container.ownerDocument.defaultView?.devicePixelRatio || 1));
+    readDeviceResolution() {
+        return Math.min(3, this.container.ownerDocument.defaultView?.devicePixelRatio || 1);
+    }
+    get preferredResolution() {
+        return Math.min(3, Math.max(this.minimumResolution, this.deviceResolution));
+    }
+    get resolutionFloor() {
+        // Drop supersampling first on the pet. Below its physical DPI, the
+        // compositor enlarges the canvas and softens details in the artwork.
+        return this.minimumResolution > 1 ? Math.max(1, this.deviceResolution) : Math.max(.8, this.preferredResolution * .5);
     }
     /** Resample after a monitor DPI change or a move into another window. */
     syncViewport(minimumResolution = this.minimumResolution) {
-        this.minimumResolution = minimumResolution;
+        const deviceResolution = this.readDeviceResolution();
+        if (this.minimumResolution !== minimumResolution || this.deviceResolution !== deviceResolution) {
+            this.minimumResolution = minimumResolution;
+            this.deviceResolution = deviceResolution;
+            this.resolution = this.preferredResolution;
+            this.pacedTime = this.pacedFrames = this.slowFrames = this.stableTime = 0;
+        }
         const { clientWidth: width, clientHeight: height } = this.container;
-        const resolution = this.displayResolution(), renderer = this.app.renderer;
-        if (!width || !height || renderer.resolution === resolution && this.app.screen.width === width && this.app.screen.height === height)
+        const resolution = this.resolution, renderer = this.app.renderer;
+        const resized = this.app.screen.width !== width || this.app.screen.height !== height;
+        if (!width || !height || renderer.resolution === resolution && !resized)
             return;
         renderer.resolution = resolution;
         renderer.resize(width, height);
-        this.fitModel();
+        if (resized)
+            this.fitModel();
     }
     async load(modelUrl, options) {
         if (!this.deps.cubismLoader) {
@@ -94,6 +135,23 @@ export class Live2DRenderer {
             cubism.initialize(this.model.internalModel.coreModel, Math.ceil(masks / 32));
         }
         cubism?.setClippingMaskBufferSize?.(1024);
+        const internal = this.model.internalModel;
+        const pixiRenderer = this.app.renderer;
+        if (internal && pixiRenderer && "gl" in pixiRenderer)
+            optimizeCubismScreenDraw(internal, pixiRenderer);
+        const core = internal?.coreModel, ids = core?._model?.parameters?.ids, indexOf = core?.getParameterIndex;
+        if (ids && core && indexOf) {
+            // Native curves and application inputs resolve the same IDs on every frame.
+            const indexes = new Map(ids.map((id, index) => [id, index]));
+            core.getParameterIndex = function (id) {
+                const known = indexes.get(id);
+                if (known !== undefined)
+                    return known;
+                const index = indexOf.call(this, id);
+                indexes.set(id, index);
+                return index;
+            };
+        }
         this.disableInternalEyeBlink();
         const physics = this.model.internalModel?.physics;
         if (physics) {
@@ -108,6 +166,7 @@ export class Live2DRenderer {
         }
         this.model.internalModel?.on?.("beforeModelUpdate", this.beforeModelUpdate);
         this.model.anchor?.set(0.5, 0.52);
+        this.automaticFraming = options?.automaticFraming === true;
         this.figureBounds = this.measureFigure();
         this.app.stage.addChild(this.model);
         this.fitModel();
@@ -122,7 +181,106 @@ export class Live2DRenderer {
     }
     /** Last pose used to update model geometry, including native motion and physics. */
     getParameters() {
+        const ids = this.model?.internalModel?.coreModel?._model?.parameters?.ids, values = this.renderedValues;
+        if (ids && values) {
+            const result = {};
+            for (let index = 0; index < ids.length; index++) {
+                const value = values[index];
+                if (value !== undefined && Number.isFinite(value))
+                    result[ids[index]] = value;
+            }
+            return result;
+        }
         return { ...this.renderedParams };
+    }
+    /** Drive the avatar before Pixi advances its model and renders the frame. */
+    onFrame(update) {
+        const ticker = this.app.ticker;
+        ticker.stop();
+        ticker.maxFPS = 0;
+        const tick = () => {
+            this.adjustResolution(ticker.elapsedMS);
+            update(ticker.elapsedMS);
+        };
+        ticker.add(tick, undefined, PIXI.UPDATE_PRIORITY.HIGH);
+        this.frameCallback = update;
+        this.syncFrameClock();
+        return () => {
+            ticker.remove(tick);
+            if (this.frameCallback === update) {
+                this.frameCallback = undefined;
+                this.stopFrameClock();
+            }
+        };
+    }
+    /** Follow the visible pet window rather than the parent window's compositor. */
+    syncFrameClock() {
+        const view = this.container.ownerDocument.defaultView;
+        if (!this.frameCallback || view === this.frameWindow)
+            return;
+        this.stopFrameClock();
+        if (!view || view.closed)
+            return;
+        this.frameWindow = view;
+        const ticker = this.app.ticker;
+        let nextAt;
+        const tick = (now) => {
+            if (!this.frameCallback || this.frameWindow !== view)
+                return;
+            this.frameHandle = view.requestAnimationFrame(tick);
+            if (nextAt !== undefined && now + .65 < nextAt)
+                return;
+            if (nextAt === undefined || now - nextAt > 250) {
+                ticker.lastTime = now - frameInterval;
+                nextAt = now + frameInterval;
+            }
+            else {
+                // Preserve phase across 90/144Hz displays and occasional late frames.
+                // Dropping overdue frames avoids a burst of catch-up rendering.
+                nextAt += frameInterval * (1 + Math.max(0, Math.floor((now + .65 - nextAt) / frameInterval)));
+            }
+            ticker.update(now);
+        };
+        this.frameHandle = view.requestAnimationFrame(tick);
+    }
+    stopFrameClock() {
+        if (this.frameWindow && !this.frameWindow.closed)
+            this.frameWindow.cancelAnimationFrame(this.frameHandle);
+        this.frameHandle = 0;
+        this.frameWindow = undefined;
+    }
+    adjustResolution(elapsed) {
+        // A suspended window or a single busy frame is not a GPU workload sample.
+        if (elapsed <= 0)
+            return;
+        if (elapsed >= 250) {
+            this.pacedTime = this.pacedFrames = this.slowFrames = this.stableTime = 0;
+            return;
+        }
+        this.pacedTime += elapsed;
+        this.pacedFrames++;
+        if (elapsed > 27)
+            this.slowFrames++;
+        if (this.pacedTime < 1_000)
+            return;
+        const previous = this.resolution, preferred = this.preferredResolution, step = preferred * .2;
+        if (this.slowFrames >= Math.max(3, this.pacedFrames * .10) || this.pacedTime / this.pacedFrames > 22) {
+            this.resolution = Math.max(this.resolutionFloor, previous - step);
+            this.stableTime = 0;
+        }
+        else if (previous < preferred && this.pacedTime / this.pacedFrames <= 20 && this.slowFrames <= this.pacedFrames * .1) {
+            this.stableTime += this.pacedTime;
+            if (this.stableTime >= 4_000) {
+                this.resolution = Math.min(preferred, previous + step);
+                this.stableTime = 0;
+            }
+        }
+        else {
+            this.stableTime = 0;
+        }
+        if (this.resolution !== previous)
+            this.syncViewport();
+        this.pacedTime = this.pacedFrames = this.slowFrames = 0;
     }
     get suppressedParameterIds() {
         return this.suppressedParamIds;
@@ -234,6 +392,7 @@ export class Live2DRenderer {
         };
     }
     destroy() {
+        this.stopFrameClock();
         this.resizeObserver.disconnect();
         this.removeModel();
         this.app.destroy(true, {
@@ -285,6 +444,7 @@ export class Live2DRenderer {
         });
         this.model = null;
         this.renderedParams = {};
+        this.renderedValues = undefined;
         this.secondaryOffsets = {};
         // Reset native animation state so a fresh load re-applies the current directive.
         this.lastNativeAnimToken = -1;
@@ -302,12 +462,22 @@ export class Live2DRenderer {
         const height = this.container.clientHeight;
         const originalWidth = (this.model.internalModel?.originalWidth ?? this.model.width) || 1;
         const originalHeight = (this.model.internalModel?.originalHeight ?? this.model.height) || 1;
-        if (this.fullBody) {
-            const bounds = this.figureBounds ?? new PIXI.Rectangle(0, 0, originalWidth, originalHeight);
+        if (this.automaticFraming || this.fullBody) {
+            const bounds = this.figureBounds ?? { x: 0, y: 0, width: originalWidth, height: originalHeight };
+            if (this.automaticFraming) {
+                // Frame the upper portion for a video portrait. The full frame uses
+                // the entire neutral figure. Both leave room around the measured art.
+                const framedHeight = bounds.height * (this.fullBody ? 1 : .62);
+                const scale = Math.min(width * .9 / bounds.width, height * .88 / framedHeight) * this.viewScale;
+                this.model.scale.set(scale);
+                this.model.x = width / 2 - (bounds.x + bounds.width / 2 - this.model.pivot.x) * scale + this.viewOffset.x;
+                this.model.y = height / 2 - (bounds.y + framedHeight / 2 - this.model.pivot.y) * scale + this.viewOffset.y;
+                return;
+            }
             const scale = Math.max(0, Math.min((width - 12) / bounds.width, (height - 12) / bounds.height)) * this.viewScale;
             this.model.scale.set(scale);
             this.model.x = width / 2 - (bounds.x + bounds.width / 2 - this.model.pivot.x) * scale + this.viewOffset.x;
-            this.model.y = height - 6 - (bounds.bottom - this.model.pivot.y) * scale + this.viewOffset.y;
+            this.model.y = height - 6 - (bounds.y + bounds.height - this.model.pivot.y) * scale + this.viewOffset.y;
             return;
         }
         const scale = Math.min(width / originalWidth, height / originalHeight) * 1.02 * this.viewScale;
@@ -340,16 +510,21 @@ export class Live2DRenderer {
     }
     applyParametersNow() {
         const coreModel = this.model?.internalModel?.coreModel;
-        if (!coreModel?.setParameterValueById)
+        if (!coreModel)
             return;
+        const count = coreModel.getParameterCount?.();
         for (const [id, value] of Object.entries(this.latestParams)) {
             if (this.suppressedParamIds.has(id))
                 continue;
-            if (coreModel.getParameterIndex && coreModel.getParameterIndex(id) < 0) {
+            const index = coreModel.getParameterIndex?.(id);
+            if (index !== undefined && (index < 0 || (count !== undefined && index >= count))) {
                 this.deps.onMissingParameter?.(id);
                 continue;
             }
-            coreModel.setParameterValueById(id, value, 1);
+            if (index !== undefined && coreModel.setParameterValueByIndex)
+                coreModel.setParameterValueByIndex(index, value, 1);
+            else
+                coreModel.setParameterValueById?.(id, value, 1);
         }
     }
     applySecondaryOffsets() {

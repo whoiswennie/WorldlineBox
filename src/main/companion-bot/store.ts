@@ -543,6 +543,11 @@ export class BotStore {
       return this.insertConversation(c.name, 'direct', ['user', companionId], directKey);
     }).immediate();
   }
+
+  legacyCallConversationId(companionId: string): string | undefined {
+    const row = this.db.prepare('SELECT id FROM bot_conversations WHERE direct_key=?').get('meeting:' + companionId) as { id: string } | undefined;
+    return row?.id;
+  }
   createGroup(input: { title: string; memberIds: string[]; kind?: BotConversationKind; includeUser?: boolean; participationMode?: 'automatic' | 'all' | 'mentions'; reuseMembers?: boolean }): BotConversation {
     const kind = input.kind ?? 'group';
     if (kind === 'peer') throw new Error('伙伴私聊必须由固定双方入口创建。');
@@ -930,10 +935,11 @@ export class BotStore {
     const originKey = hash([sourceInstanceId, sourceMessageId, input.conversationId]);
     return this.db.transaction(() => {
       const conversation = this.getConversation(input.conversationId); if (!conversation||conversation.dissolvedAt) throw new Error('会话不存在或已经解散。');
-      const serviceSource = source === 'world' || source === 'schedule';
+      const serviceSource = source === 'world' || source === 'schedule' || source === 'presence';
       if (!serviceSource && !conversation.memberIds.includes(input.senderId)) throw new Error('消息发送者不属于该会话。');
       if (source === 'world' && conversation.kind !== 'world') throw new Error('世界事件必须进入世界会话。');
       if (source === 'schedule' && (input.senderId !== 'schedule' || conversation.kind !== 'direct' || !conversation.memberIds.includes('user'))) throw new Error('日程只能投递到伙伴与用户的私聊。');
+      if (source === 'presence' && (input.senderId !== 'presence' || conversation.kind !== 'direct' || !conversation.memberIds.includes('user') || kind !== 'attention')) throw Error('陪伴观察须来自当前私聊的宿主。');
       const sender = this.getCompanion(input.senderId);
       if (source === 'user' && input.senderId !== 'user' || source === 'companion' && !sender) throw new Error('事件来源与真实发送者不匹配。');
       const senderType: BotSenderType = sender ? 'companion' : input.senderId === 'user' ? 'user' : source === 'world' ? 'world' : 'service';
@@ -963,14 +969,14 @@ export class BotStore {
         .run(messageId, originKey, conversation.id, input.senderId, senderName, senderType, content, 'sent', kind, correlationId, stamp, attachmentsJson);
       const sourceIds = [...new Set(input.sourceIds ?? [])];
       this.bindMessageAttachments(this.getMessage(messageId)!, source === 'user' || source === 'gateway', input.attachmentGrants, sourceIds);
-      this.recordHistoryProjection(messageId);
+      if (source !== 'presence') this.recordHistoryProjection(messageId);
       this.db.prepare('INSERT INTO bot_origins VALUES(?,?,?)').run(originKey, fingerprint, messageId);
       const events: BotEvent[] = [];
       for (const companionId of recipients) {
         const eventId = `event-${hash([originKey, companionId, kind])}`, laneId = `lane-${hash([conversation.id, companionId])}`, replyMessageId = `reply-${eventId}`;
         this.db.prepare('INSERT OR IGNORE INTO bot_lanes(id,conversation_id,companion_id,acl_revision) VALUES(?,?,?,?)').run(laneId, conversation.id, companionId, conversation.revision);
         this.db.prepare('INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-          .run(replyMessageId, eventId, conversation.id, companionId, this.getCompanion(companionId)!.name, 'companion', '', 'queued', attention ? 'attention' : 'message', correlationId, stamp);
+          .run(replyMessageId, eventId, conversation.id, companionId, this.getCompanion(companionId)!.name, 'companion', '', 'queued', attention || source === 'presence' ? 'attention' : 'message', correlationId, stamp);
         this.db.prepare(`INSERT INTO bot_inbox(id,lane_id,conversation_id,companion_id,source,source_instance_id,source_message_id,sender_id,sender_type,sender_name,scope_id,domain_id,acl_revision,kind,content,payload_json,correlation_id,causation_id,source_record_id,reply_message_id,status,occurred_at,received_at)
           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(eventId, laneId, conversation.id, companionId, source, sourceInstanceId, sourceMessageId,
             input.senderId, senderType, senderName, conversation.audienceScopeId, conversation.securityDomainId, conversation.revision, kind, evidence, eventPayloadJson, correlationId,
@@ -1249,10 +1255,10 @@ export class BotStore {
       return true;
     }).immediate();
   }
-  interruptMeetingReply(event: BotEvent, throughSegmentId?: string): void {
+  interruptMeetingReply(event: BotEvent, throughSegmentId?: string, preservePublished = false): void {
     this.db.transaction(() => {
       const cues = this.replyParts(event.replyMessageId).filter(part => part.presentation);
-      const through = throughSegmentId ? cues.findIndex(part => part.id === throughSegmentId) : -1;
+      const through = preservePublished ? cues.length - 1 : throughSegmentId ? cues.findIndex(part => part.id === throughSegmentId) : -1;
       if (throughSegmentId && through < 0) throw Error('会面片段与当前回应不匹配。');
       const kept = cues.slice(0, through + 1);
       const discard = this.db.prepare('DELETE FROM bot_reply_parts WHERE message_id=? AND id=?');

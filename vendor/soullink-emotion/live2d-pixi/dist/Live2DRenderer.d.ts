@@ -15,21 +15,35 @@ export declare class Live2DRenderer {
     private secondaryOffsets;
     private restorePhysics?;
     private renderedParams;
+    private renderedValues?;
     private lastNativeAnimToken;
     private suppressedParamIds;
     private viewScale;
     private viewOffset;
     private minimumResolution;
+    private deviceResolution;
+    private resolution;
+    private pacedTime;
+    private pacedFrames;
+    private slowFrames;
+    private stableTime;
+    private frameWindow?;
+    private frameHandle;
+    private frameCallback?;
     private fullBody;
+    private automaticFraming;
     private figureBounds?;
     private beforeModelUpdate;
     private resizeObserver;
     constructor(container: HTMLElement, deps?: Live2DRendererDeps);
-    private displayResolution;
+    private readDeviceResolution;
+    private get preferredResolution();
+    private get resolutionFloor();
     /** Resample after a monitor DPI change or a move into another window. */
     syncViewport(minimumResolution?: number): void;
     load(modelUrl: string, options?: {
         automaticIdle?: boolean;
+        automaticFraming?: boolean;
         animations?: {
             Expressions: object[];
             Motions: object;
@@ -40,6 +54,12 @@ export declare class Live2DRenderer {
     setSecondaryOffsets(offsets: Live2DParamState): void;
     /** Last pose used to update model geometry, including native motion and physics. */
     getParameters(): Live2DParamState;
+    /** Drive the avatar before Pixi advances its model and renders the frame. */
+    onFrame(update: (elapsedMs: number) => void): () => void;
+    /** Follow the visible pet window rather than the parent window's compositor. */
+    syncFrameClock(): void;
+    private stopFrameClock;
+    private adjustResolution;
     get suppressedParameterIds(): ReadonlySet<string>;
     prepareNativeAnimations(expressions: readonly string[], motions: ReadonlyArray<{
         group: string;

@@ -5,7 +5,7 @@
 
 **A home and coordinating brain for virtual characters, worlds, assets, and execution tools.**
 
-[简体中文](README.md) · [Windows 0.1.1](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.1) · [Android 0.1.1](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.1)
+[简体中文](README.md) · [Windows 0.1.2](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.2) · [Android 0.1.1](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.1)
 </div>
 
 WorldlineBox is a local-first desktop app combining companions, persistent world state, asset management and DSH execution environments. The companion module is being rebuilt around a Super Agent: users stay in their chat while the coordinating brain recalls memories, delegates work and receives durable results.
@@ -102,4 +102,4 @@ MIT; see [LICENSE](LICENSE). Thanks to [Serpent](https://github.com/dolag233/Ser
 
 The memory-system design draws on [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context ideas. The current standalone module in `resources/vcp-memory` retains upstream provenance and licenses; the former vendor runtime and companion memory host are retired.
 
-Thanks also to [VCPChat](https://github.com/lioensky/VCPChat) for conversation and context components, [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for the native execution environment, and [Cabin World by VADS](https://github.com/BabyBus2022/cabin-world) for the virtual living space. Windows and Android ship with the CC0 Arch-chan Live2D model for 大肥鱼. On Windows, you can also open 大肥鱼’s character card, select Appearance, and import the DeepSeek-chan ZIP under its creator’s terms. [Call assets and credits](THIRD_PARTY_NOTICES.md#伙伴通话素材)
+Thanks also to [VCPChat](https://github.com/lioensky/VCPChat) for conversation and context components, [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for the native execution environment, and [Cabin World by VADS](https://github.com/BabyBus2022/cabin-world) for the virtual living space. Windows includes authorized Live2D models for DeepSeek-chan (大肥鱼) and Yachiyo Tsukimi (月见八千代). Android includes DeepSeek-chan. [Call assets and credits](THIRD_PARTY_NOTICES.md#伙伴通话素材)

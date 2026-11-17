@@ -4,6 +4,7 @@ const id = z.string().min(1).max(160);
 export const scheduleRecurrence = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('daily'), time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/) }),
   z.strictObject({ kind: z.literal('interval'), minutes: z.number().int().min(1).max(10080) }),
+  z.strictObject({ kind: z.literal('once'), minutes: z.number().int().min(1).max(10080) }),
 ]);
 export const scheduleDraft = z.strictObject({ title: z.string().trim().min(1).max(80), prompt: z.string().trim().min(1).max(8000), recurrence: scheduleRecurrence, enabled: z.boolean(), cabinWorld: z.boolean().optional() });
 export const scheduleCommand = z.discriminatedUnion('operation', [
