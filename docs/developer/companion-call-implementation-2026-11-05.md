@@ -53,7 +53,7 @@ Pixi 的严格 CSP 适配采用其官方提供的 [@pixi/unsafe-eval](https://ap
 
 ## 本地资源与复现
 
-SoulLink engine、live2d-pixi 的本地源码快照保留 Apache-2.0 许可，`npm prepare` 编译本地包。默认模型为经作者授权随包分发的大肥鱼。构建包含模型运行文件、4096 纹理和随附的使用须知。公开构建使用仓库提供的合成铃声。Live2D Core 自带原许可头及链接。
+SoulLink engine、live2d-pixi 的本地源码快照保留 Apache-2.0 许可，`npm prepare` 编译本地包。默认模型为经作者授权随包分发的大肥鱼。构建包含模型运行文件、4096 纹理和随附的使用须知。公开 Windows 构建包含大肥鱼的《Let Me Go》和其他伙伴使用的菲比铃声。合成铃声用于音频加载失败时的提示。Live2D Core 自带原许可头及链接。
 
 ```powershell
 node scripts/stage-companion-call.mjs --bundled-model "DeepSeek免费公皮/DeepSeek"

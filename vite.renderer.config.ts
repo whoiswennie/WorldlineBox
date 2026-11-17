@@ -171,10 +171,7 @@ export default defineConfig({
         await access(path.join(output, "dafeiyu", "call.model3.json"));
         await rm(path.join(output, "deepseek"), { recursive: true, force: true });
         await rm(path.join(output, "models-local.json"), { force: true });
-        if (!privateRingtones) {
-          await rm(path.join(output, "ringtones", "phoebe.wav"), { force: true });
-          return;
-        }
+        if (!privateRingtones) return;
         await mkdir(path.join(output, "ringtones"), { recursive: true });
         await Promise.all([...privateCallRingtones].map(([destination, original]) =>
           copyFile(path.join(originalCallRingtones, original), path.join(output, destination))));

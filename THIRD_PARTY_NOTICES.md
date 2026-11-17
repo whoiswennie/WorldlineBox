@@ -126,7 +126,7 @@ Windows 和 Android 安装包经作者授权随包提供 DeepSeek-chan（大肥�
 
 月见八千代的角色设定参考《超时空辉夜姬！》官方资料和 Worldline 旧版伙伴设定。Windows 安装包内置雪熊企划制作的同人 Live2D 模型及头像，使用随世界线项目分发的授权版。 [随包分发许可](public/companion-call/yachiyo/MODEL-LICENSE.txt) · [官方角色资料](https://www.news.cho-kaguyahime.com/95/) · [雪熊企划发布页面](https://booth.pm/ja/items/8034348)
 
-项目合成的 `ringtone.wav` 和 `ringtones/dafeiyu.wav` 分别作为通用铃声和大肥鱼铃声随包提供。
+Windows 会面铃声使用项目已有的两首音轨。大肥鱼使用《Let Me Go》，其他伙伴使用菲比铃声。项目合成的 `ringtone.wav` 在专用音轨无法播放时使用。
 
 `live2dcubismcore.min.js` 由 Live2D Inc. 提供，保留原始版权声明。 [Cubism Core](https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js) · [Live2D 专有软件许可](https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html)
 

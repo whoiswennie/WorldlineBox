@@ -185,8 +185,11 @@ const asarPath = path.join(resourcesPath, 'app.asar');
 const asarFiles = asar.listPackage(asarPath);
 const callAssetPath = relative => path.join('.vite', 'renderer', 'main_window', 'companion-call', relative);
 const privateCallAssets = process.env.WORLDLINEBOX_INCLUDE_PRIVATE_CALL_ASSETS === '1';
-const bundledCallRingtones = [['ringtone.wav', undefined], ['ringtones/dafeiyu.wav', 'dafeiyu.wav']];
-if (privateCallAssets) bundledCallRingtones.push(['ringtones/phoebe.wav', 'ringtone.wav']);
+const bundledCallRingtones = [
+  ['ringtone.wav', undefined],
+  ['ringtones/dafeiyu.wav', 'dafeiyu.wav'],
+  ['ringtones/phoebe.wav', 'ringtone.wav'],
+];
 for (const [relative, original] of bundledCallRingtones) {
   const wav = asar.extractFile(asarPath, callAssetPath(relative));
   if (wav.length < 44 || wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') {
@@ -234,9 +237,6 @@ const callModelFiles = asarFiles.map(file => file.replaceAll('\\', '/')).filter(
 ));
 if (callModelFiles.length !== 4 || callModelFiles.some(file => !expectedCallModels.some(([, model]) => file.includes('/companion-call/' + path.posix.dirname(model) + '/')))) {
   throw new Error('The package must contain both built-in companion Live2D models.');
-}
-if (!privateCallAssets && asarFiles.some(file => file.replaceAll('\\', '/').endsWith('/companion-call/ringtones/phoebe.wav'))) {
-  throw new Error('The package contains a private companion ringtone.');
 }
 // Vendor-prefix optimization must not erase Chromium's actual fallback.
 // This checks emitted CSS rather than trusting the source declaration order.

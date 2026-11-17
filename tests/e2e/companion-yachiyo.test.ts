@@ -83,6 +83,11 @@ test('loads both built-in Live2D models in a clean video call without importing 
       await page.locator('.bot-contact').filter({ has: page.getByText(fixture.name, { exact: true }) }).click();
       const header = page.locator('.bot-chat-header');
       await expect(header.locator('h2')).toHaveText(fixture.name);
+      if (fixture.name === '月见八千代') {
+        const portrait = header.locator('img[src$="/companion-call/yachiyo/portrait.png"]');
+        await expect(portrait).toBeVisible();
+        await expect.poll(() => portrait.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+      }
       await header.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
       const meeting = page.getByRole('dialog', { name: `与${fixture.name}会面`, exact: true });
       await meeting.getByRole('button', { name: '接通', exact: true }).click();

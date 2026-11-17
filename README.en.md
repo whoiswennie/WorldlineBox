@@ -5,7 +5,7 @@
 
 **A home and coordinating brain for virtual characters, worlds, assets, and execution tools.**
 
-[简体中文](README.md) · [Windows 0.1.2](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.2) · [Android 0.1.1](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.1)
+[简体中文](README.md) · [Windows 0.1.2](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.2) · [Android 0.1.2](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.2)
 </div>
 
 WorldlineBox is a local-first desktop app combining companions, persistent world state, asset management and DSH execution environments. The companion module is being rebuilt around a Super Agent: users stay in their chat while the coordinating brain recalls memories, delegates work and receives durable results.
