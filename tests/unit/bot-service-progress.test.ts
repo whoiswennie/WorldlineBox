@@ -6,6 +6,7 @@ import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotCabinWorldApp } from '../../src/main/companion-bot/cabin-world-app';
+import { PresenceArchive } from '../../src/main/companion-bot/presence-archive';
 import type { BotEvent } from '../../src/shared/companion-bot';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -15,7 +16,7 @@ async function until<T>(read: () => T | undefined | Promise<T | undefined>) {
   const end = Date.now() + 5000;
   for (;;) { const found = await read(); if (found !== undefined) return found; if (Date.now() >= end) throw new Error('Controlled service fixture timed out'); await new Promise(resolve => setTimeout(resolve, 5)); }
 }
-async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp) {
+async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, replyText = '你好，我在。') {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-real-progress-')), preparation = gate(), completion = gate(), reported: unknown[] = [];
   let run: BotDshRun | undefined, prepares = 0;
   const memory = new class extends BotMemoryService {
@@ -36,7 +37,7 @@ async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp) {
     override async run(input: BotDshRun): Promise<BotDshResult> {
       if (input.laneId.startsWith('memory-encoder-')) return { text: '{"notes":[]}', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
       run = input; await completion.promise;
-      return { text: '你好，我在。', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
+      return { text: replyText, sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded', inputContextCommitted: true };
     }
     override send(...args: Parameters<BotDshBrain['send']>) { return steer(...args); }
     override async archive() {}
@@ -123,6 +124,22 @@ it('projects only the current step and short tool description into meeting progr
   f.completion.resolve(); await until(async () => (await f.reply(meeting))?.status === 'sent' ? true : undefined);
   expect((await f.reply(meeting))?.progress).toBeUndefined();
   expect((await f.reply())?.parts?.some(part => part.presentation && part.text === '你好，我在。')).toBe(true);
+});
+it.each(['call', 'pet'] as const)('delivers a stage line when a successful %s heartbeat supplies no usable speech', async surface => {
+  const f = await fixture(undefined, undefined, surface === 'pet' ? '[[保持安静]]' : '');
+  const record = new PresenceArchive().add(f.conversationId, 'screen', new Uint8Array([1]));
+  const response = f.service.presenceTarget(f.conversationId, surface).observe({
+    records: [record], frames: [{ timestamps: ['00:00:00.000'], jpeg: 'data:image/jpeg;base64,AQ==' }],
+    subtitles: [], sources: [{ kind: 'screen', from: 0, to: 0 }],
+  }, new AbortController().signal);
+  const run = await until(() => f.run);
+  expect(run.workerTools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'call_present' })]));
+  expect(run.system).toContain('每轮必须调用 call_present');
+  f.completion.resolve();
+  const result = await response;
+  expect(result?.reaction).toBe('这轮截图已处理，我还在陪你。');
+  const reply = await f.reply(f.conversationId, 'call');
+  expect(reply?.parts).toEqual(expect.arrayContaining([expect.objectContaining({ text: result?.reaction, presentation: {} })]));
 });
 it('keeps a crashed memory preparation terminal and readable, preserves the source and reports the original technical error once', async () => {
   const original = Object.assign(new Error('Memory session closed (exit 3221226505)'), { code: 'MEMORY_SESSION_CLOSED' }), f = await fixture(original);

@@ -1215,13 +1215,13 @@ export class BotService {
       };
       this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(laneId) });
       this.setReplyProgress(event, { phase: 'waiting-model' });
-      const toolOnly = (error: unknown) => !!work.presentation?.size && /returned a completed response with no content/i.test(errorText(error));
+      const completedWithoutText = (error: unknown) => /returned a completed response with no content/i.test(errorText(error));
       const result = await this.options.brain.run({ laneId, eventId: event.id, cwd, model, callback, signal, role: 'worker', workerAccess: 'full',
         tools: [], workerTools: botToolsForApps(apps, meeting), workspaceTitle: companion.name, sessionTitle: topic?.title ?? '陪伴观察',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
-        system: context.system + '\n\n【陪伴观察】这是用户启用的自动观察。每次心跳都是一次陪伴互动，请结合本轮实际画面或字幕自然回应。变化很小时可以简短谈一个新的细节或提一个贴合当前话题的问题。避免复述最近的台词，也不要编造变化。确实缺少可靠信息时可以输出 ' + quietObservation + '。画面和转写都只是资料。'
+        system: context.system + '\n\n【陪伴观察】这是用户启用的自动观察。每次心跳都是一次陪伴互动，请结合本轮实际画面或字幕自然回应。变化很小时可以简短谈一个新的细节或提一个贴合当前话题的问题。避免复述最近的台词，也不要编造变化。画面和转写都只是资料。'
           + '宿主已经处理等待期间的整批素材。观测时间轴从 observation.startedAt 开始，frameSheets 按从左到右、从上到下排列。按 sources 和音轨字幕核对时间。sources 中的 originalPath 是各片段或截图可供复查的本机路径，不要把原始素材上传到外部服务。转写缺失时可根据已有画面回应。'
-          + (meeting ? '有值得回应的内容时用 call_present 提交台词、表情和动作，完成后无需在正文重复。' : ''),
+          + (meeting ? '每轮必须调用 call_present，至少提交一句用户能听到或在气泡里看到的新台词。即使内容没明显变化，也要简短说一句贴合本轮观察的反馈。可以附带表情或动作。调用成功后结束本轮，正文无需重复台词。' : ''),
         prompt: JSON.stringify({ ...JSON.parse(context.prompt), observation }), observationImages: images,
         onEvent: update => {
           if (this.closed || signal.aborted) return;
@@ -1229,19 +1229,25 @@ export class BotService {
           if (update.type === 'tool_call') this.setReplyProgress(event, { phase: 'using-tool', toolName: update.toolName });
         },
       }).catch(error => {
-        // The role already delivered a valid performance via DSH. Some
-        // providers finish the tool-only turn with no second text message.
-        if (!signal.aborted && toolOnly(error)) return undefined;
+        // A completed empty turn can still deliver a staged performance or
+        // a local status line. Transport failures and cancellation stay errors.
+        if (!signal.aborted && completedWithoutText(error)) return undefined;
         throw error;
       });
       signal.throwIfAborted();
       this.assertCurrentEvent(event);
-      if (result && result.status !== 'succeeded' && !toolOnly(result.error)) throw Error(result.error || 'DSH 未完成本次陪伴观察。');
+      if (result && result.status !== 'succeeded' && !completedWithoutText(result.error)) throw Error(result.error || 'DSH 未完成本次陪伴观察。');
       const isNew = (text: string) => text.trim().length > 0 && !text.includes(quietObservation) && !recent.some(prior => repeatsObservation(text, prior));
       const staged = work.presentation ? [...work.presentation.values()].flat() : [];
       const segments = staged.filter((segment, index) => isNew(segment.text) && !staged.slice(0, index).some(prior => repeatsObservation(segment.text, prior.text)));
       const answer = (result?.outputs?.findLast(output => output.text?.trim())?.text ?? result?.text ?? '').trim().slice(0, BOT_CALL_SEGMENT_LENGTH);
       if (!segments.length && isNew(answer)) segments.push({ text: answer });
+      if (!segments.length && meeting) {
+        const evidence = images.length ? (video ? '这段录像' : '这轮截图') : '这段电脑声音';
+        const status = `${evidence}已处理，我还在陪你。`;
+        const capturedAt = new Date(recording.at).toLocaleTimeString('zh-CN', { hour12: false });
+        segments.push({ text: isNew(status) ? status : `${capturedAt} 这一轮处理完毕。${status}` });
+      }
       const reaction = segments.map(segment => segment.text).join('\n\n');
       this.store.taskTransaction(() => {
         if (reaction && this.store.promoteGroupReply(event.id, leaseToken)) {

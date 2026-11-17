@@ -44,13 +44,39 @@ test('loads both built-in Live2D models in a clean video call without importing 
   });
   try {
     const page = await openCompanionWorkspace(app, profile, '');
-    const loaded = new Set<string>();
-    page.on('response', response => {
-      if (response.ok() && response.url().startsWith('worldlinebox://call-model/')) loaded.add(decodeURIComponent(new URL(response.url()).pathname));
+    const bundledResources = new Set<string>();
+    await page.exposeFunction('recordBundledModelResource', (url: string) => {
+      const file = decodeURIComponent(new URL(url).pathname).split('/companion-call/')[1];
+      if (file) bundledResources.add(file);
+    });
+    await page.evaluate(() => {
+      const record = (url: string) => {
+        const track = Reflect.get(window, 'recordBundledModelResource') as (url: string) => Promise<void>;
+        void track(new URL(url, document.baseURI).href);
+      };
+      const fetchResource = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const result = await fetchResource(...args);
+        if (result.ok) record(result.url);
+        return result;
+      };
+      const send = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.send = function (...args) {
+        this.addEventListener('load', () => record(this.responseURL), { once: true });
+        return send.apply(this, args);
+      };
+      const src = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src')!;
+      Object.defineProperty(HTMLImageElement.prototype, 'src', {
+        ...src,
+        set(this: HTMLImageElement, value: string) {
+          this.addEventListener('load', () => record(this.currentSrc), { once: true });
+          src.set!.call(this, value);
+        },
+      });
     });
     const fixtures = [
-      { name: '大肥鱼', moc: '/dafeiyu/大肥鱼.moc3' },
-      { name: '月见八千代', moc: '/yachiyo/八千代辉夜姬.moc3' },
+      { name: '大肥鱼', moc: 'dafeiyu/大肥鱼.moc3' },
+      { name: '月见八千代', moc: 'yachiyo/八千代辉夜姬.moc3' },
     ];
     for (const fixture of fixtures) {
       await page.getByRole('tab', { name: /^联系人/u }).click();
@@ -63,12 +89,12 @@ test('loads both built-in Live2D models in a clean video call without importing 
       await expect(meeting.locator('.bot-call-live2d[data-pet-figure] canvas')).toBeVisible({ timeout: 60_000 });
       await expect(meeting.locator('.bot-call-loading')).toHaveCount(0);
       await expect(meeting.locator('.bot-call-model-error')).toHaveCount(0);
-      expect(loaded).toContain(fixture.moc);
+      await expect.poll(() => [...bundledResources]).toContain(fixture.moc);
       await meeting.getByRole('button', { name: '结束并关闭会面', exact: true }).click();
       await expect(meeting).toBeHidden();
     }
     for (const file of ['八千代辉夜姬.8192/texture_00.png', '八千代辉夜姬.8192/texture_01.png']) {
-      expect(loaded).toContain('/yachiyo/' + file);
+      await expect.poll(() => [...bundledResources]).toContain('yachiyo/' + file);
     }
   } finally {
     await app.close();
