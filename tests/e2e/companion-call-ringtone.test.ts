@@ -13,10 +13,14 @@ test('plays the packaged ringtone from a fresh profile and stops it when ringing
   }) });
   try {
     const page = await app.firstWindow();
+    await app.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows()) window.webContents.setBackgroundThrottling(false);
+    });
     await page.locator('[data-application-module="companions"]').click();
     await page.getByRole('button', { name: '关闭 DSH 配置', exact: true }).click();
     await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeDisabled();
-    await enableCallVisualFixture(app, page);
+    await page.locator('.bot-sidebar-tabs').getByRole('tab', { name: /联系人/u }).click();
+    await page.locator('.bot-contact').filter({ has: page.getByText('大肥鱼', { exact: true }) }).click();
     await page.evaluate(() => {
       const AudioElement = window.Audio;
       window.Audio = class extends AudioElement {
@@ -26,7 +30,10 @@ test('plays the packaged ringtone from a fresh profile and stops it when ringing
         }
       };
     });
-    await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+    await enableCallVisualFixture(app, page);
+    const dial = page.locator('.bot-chat-header').getByRole('button', { name: '拨打伙伴电话', exact: true });
+    await expect(dial).toBeEnabled();
+    await dial.click();
     const meeting = page.getByRole('dialog', { name: '与大肥鱼会面', exact: true });
     const audio = () => page.evaluate(() => {
       const sound = Reflect.get(window, '__ringtone') as HTMLAudioElement | undefined;
