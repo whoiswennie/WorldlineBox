@@ -78,12 +78,16 @@ it('shows a mixed sticker and its single file card directly', async () => {
   await render({ ...message, attachments: [sticker, textFile] }); expect(host.querySelector('.is-sticker img')?.getAttribute('src')).toBe(sticker.url);
   expect(host.querySelector('.bot-message-file-toggle')).toBeNull(); expect(host.querySelectorAll('.is-sticker')).toHaveLength(1); expect(host.querySelector('.bot-attachment-card strong')?.textContent).toBe(textFile.name);
 });
-it('uses only a safe thumbnail for a single photo and keeps photo collections and originals on demand', async () => {
+it('loads original detail for photos and expanded gallery tiles while keeping closed collections unloaded', async () => {
   await render({ ...message, content: '', attachments: [image] }); expect(host.querySelector('.bot-message-file-toggle')).toBeNull();
-  expect(host.querySelector('img')?.getAttribute('src')).toBe(image.previewUrl); expect(host.querySelector('img')?.getAttribute('src')).not.toBe(image.url);
+  expect(host.querySelector('.bot-attachment-cover img')?.getAttribute('src')).toBe(image.previewUrl);
+  expect(host.querySelector('.bot-attachment-inline-picture img')?.getAttribute('src')).toBe(image.url);
+  await click('原始大小'); expect(host.querySelector('.bot-attachment-picture-scroll')?.getAttribute('data-zoomed')).toBe('true');
+  await click('适应宽度'); expect(host.querySelector('[role=dialog]')).toBeNull();
   await render({ ...message, id: 'photo-batch', content: '', attachments: [image, { ...image, id: 'image-b' }, { ...image, id: 'image-c' }] });
   expect(host.querySelector('.bot-message-file-toggle')?.getAttribute('aria-label')).toBe('展开 3 个附件'); expect(host.querySelector('img,.bot-attachment-bundle')).toBeNull();
   await click('展开 3 个附件'); expect(host.querySelectorAll('.bot-attachment-tile img')).toHaveLength(3);
+  for (const tile of host.querySelectorAll('.bot-attachment-tile img')) expect(tile.getAttribute('src')).toBe(image.url);
   await render({ ...message, id: 'large', content: '', attachments: [{ ...image, size: 200 * 1024 * 1024 + 1, storage: 'external', analysisBlocked: true }] });
   expect(host.querySelector('.bot-message-file-toggle')).toBeNull(); expect(host.querySelector('img')).toBeNull(); expect(request).not.toHaveBeenCalled();
 });

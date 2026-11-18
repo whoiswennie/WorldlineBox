@@ -6,6 +6,8 @@
 // re-register with LaunchServices so dev shows "WorldlineBox" everywhere.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { copyFile, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +16,24 @@ const electronRoot = path.join(repoRoot, 'node_modules', 'electron', 'dist');
 const appBundle = path.join(electronRoot, 'Electron.app');
 const plistPath = path.join(appBundle, 'Contents', 'Info.plist');
 
+if (process.platform === 'win32') {
+  // Chromium derives the toast shortcut name and its small icon from the
+  // executable's PE resources, independently of Electron's app.setName().
+  const exe = path.join(electronRoot, 'electron.exe'), icon = path.join(repoRoot, 'assets', 'icons', 'app.ico');
+  const marker = path.join(electronRoot, '.worldlinebox-toast-brand.json');
+  const signature = async () => JSON.stringify({ name: '世界线盒子', exe: (await stat(exe)).mtimeMs, icon: (await stat(icon)).mtimeMs });
+  if (await readFile(marker, 'utf8').catch(() => '') !== await signature()) {
+    const { resedit } = await import('@electron/packager/dist/resedit.js');
+    const temp = path.join(electronRoot, 'worldlinebox-' + randomUUID() + '.exe');
+    try {
+      await copyFile(exe, temp);
+      await resedit(temp, { productName: '世界线盒子', iconPath: icon, win32Metadata: { FileDescription: '世界线盒子' } });
+      await rename(temp, exe);
+      await writeFile(marker, await signature());
+    } finally { await rm(temp, { force: true }); }
+  }
+  process.exit(0);
+}
 if (process.platform !== 'darwin') process.exit(0);
 if (!existsSync(plistPath)) {
   console.warn('[patch-dev-electron-name] Electron.app not found; skipping.');

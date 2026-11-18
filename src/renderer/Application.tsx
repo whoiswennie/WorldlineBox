@@ -44,6 +44,9 @@ function FeatureLoading() {
 export function App() {
   const t = useT();
   const [activeModuleId, setActiveModuleId] = useState('dsh');
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const [notificationTarget, setNotificationTarget] = useState<{ room: string }>();
+  const clearTarget = useCallback(() => setNotificationTarget(undefined), []);
   const [desktopPet, setDesktopPet] = useState(false);
   const reportDesktopPet = useCallback((active: boolean, returning?: boolean) => {
     setDesktopPet(active);
@@ -60,13 +63,26 @@ export function App() {
     void api?.captureTools?.request({ type: 'open', task, ...(source ? { source } : {}) }).then(result => setToolError(result.ok ? '' : result.error)).catch(() => setToolError('无法打开屏幕工具，请重试。'));
   }, []);
   const assetManagerRef = useRef<AssetManagerHandle>(null);
-  const pendingSettings = useRef(false);
+  const pendingSettings = useRef<'general' | 'ai'>(undefined);
   const pendingExtensionSave = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [settingsController, setSettingsController] = useState<'idle' | 'opening' | 'open'>('idle');
   const [shellState, setShellState] = useState<ApplicationShellState>({ settingsOpen: false, settingsDisabled: false });
+  useEffect(() => {
+    const bot = api?.companionBot;
+    let received = false;
+    const unsubscribe = bot?.onInbox?.(event => {
+      received = true; setUnread(event.counts);
+      if (event.openRoom) {
+        assetManagerRef.current?.closeSettings?.();
+        setActiveModuleId('companions'); setNotificationTarget({ room: event.openRoom });
+      }
+    });
+    void bot?.inbox?.().then(counts => { if (!received) setUnread(counts); }).catch(() => undefined);
+    return () => { received = true; unsubscribe?.(); };
+  }, []);
   const attachAssetManager = useCallback((handle: AssetManagerHandle | null) => {
     assetManagerRef.current = handle;
-    if (handle && pendingSettings.current) { pendingSettings.current = false; handle.openSettings(); }
+    if (handle && pendingSettings.current) { handle.openSettings(pendingSettings.current); pendingSettings.current = undefined; }
     if (handle && pendingExtensionSave.current) {
       handle.revealExtensionSave(pendingExtensionSave.current);
       pendingExtensionSave.current = null;
@@ -87,10 +103,10 @@ export function App() {
     setShellState(state);
     setSettingsController(current => state.settingsOpen ? 'open' : current === 'open' ? 'idle' : current);
   }, []);
-  const openSettings = useCallback(() => {
-    pendingSettings.current = true;
+  const openSettings = useCallback((category: 'general' | 'ai' = 'general') => {
+    pendingSettings.current = category;
     setSettingsController(current => current === 'idle' ? 'opening' : current);
-    if (assetManagerRef.current) { pendingSettings.current = false; assetManagerRef.current.openSettings(); }
+    if (assetManagerRef.current) { pendingSettings.current = undefined; assetManagerRef.current.openSettings(category); }
   }, []);
   const openCompanionUrl = useCallback((url: string) => {
     let address: URL;
@@ -106,12 +122,12 @@ export function App() {
     <div className="application-root"><ThemeBackground /><HoverTipHost /><EditTextContextMenuHost />
       {usesWindowsStyleShell(navigator.userAgent) ? <><WindowsWindowControls shell={api?.shell} /><WindowEdgeResizeHandles shell={api?.shell} /></> : null}
       {toolError ? <div className="application-tool-error" role="alert">{toolError}<button type="button" onClick={() => setToolError('')} aria-label={t('common.close')}>×</button></div> : null}
-      <ApplicationShell activeModuleId={activeModuleId} onSelectModule={setActiveModuleId} onOpenSettings={openSettings}
+      <ApplicationShell activeModuleId={activeModuleId} onSelectModule={setActiveModuleId} onOpenSettings={() => openSettings()}
         tools={api?.captureTools ? <CaptureToolsToolbar onOpen={openTool} onError={setToolError} nativeMenu={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen ? api.captureTools : undefined} /> : null}
         settingsOpen={shellState.settingsOpen} settingsDisabled={activeModuleId === 'assets' && shellState.settingsDisabled}
         modules={[
           { id: 'dsh', preload: launcherFeature.preload, label: t('appNavigation.launcher'), icon: 'box', content: <Suspense fallback={<FeatureLoading />}><Launcher api={api?.dshLauncher} /></Suspense> },
-          { id: 'companions', keepEffectsActive: desktopPet, preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions api={api?.companionBot} mediaApi={api?.companionBotMedia} launcherApi={api?.dshLauncher} browserApi={api?.browser} browserContext={browserContext} onOpenBrowserContext={openAttachedBrowser} onOpenLauncher={() => setActiveModuleId('dsh')} onOpenSettings={openSettings} onOpenUrl={openCompanionUrl} onDesktopPetChange={reportDesktopPet} isActive={activeModuleId === 'companions'} /></Suspense> },
+          { id: 'companions', badge: Object.values(unread).reduce((sum, count) => sum + count, 0), keepEffectsActive: desktopPet, preload: companionsFeature.preload, label: t('appNavigation.companions'), icon: 'users', content: <Suspense fallback={<FeatureLoading />}><Companions unread={unread} notificationTarget={notificationTarget} clearTarget={clearTarget} covered={shellState.settingsOpen || settingsController !== 'idle'} api={api?.companionBot} mediaApi={api?.companionBotMedia} launcherApi={api?.dshLauncher} browserApi={api?.browser} browserContext={browserContext} onOpenBrowserContext={openAttachedBrowser} onOpenLauncher={() => setActiveModuleId('dsh')} onOpenSettings={() => openSettings('ai')} revealAppLog={api?.shell?.revealAppLog} onOpenUrl={openCompanionUrl} onDesktopPetChange={reportDesktopPet} isActive={activeModuleId === 'companions'} /></Suspense> },
           { id: 'assets', preload: assetsFeature.preload, label: t('appNavigation.assets'), icon: 'grid', keepEffectsActive: settingsController !== 'idle', content: <Suspense fallback={<FeatureLoading />}><Assets settingsRef={attachAssetManager} onShellStateChange={reportShellState} isModuleActive={activeModuleId === 'assets'} /></Suspense> },
           { id: 'browser', preload: browserFeature.preload, label: t('appNavigation.browser'), icon: 'globe', content: <Suspense fallback={<FeatureLoading />}><Browser api={api?.browser} active={activeModuleId === 'browser' && settingsController === 'idle' && !shellState.settingsOpen} onScreenshot={() => openTool('screenshot')} onOpenAssets={() => setActiveModuleId('assets')} onOpenNetwork={() => setActiveModuleId('network')} /></Suspense> },
           { id: 'network', preload: networkFeature.preload, label: t('appNavigation.network'), icon: 'network', content: <Suspense fallback={<FeatureLoading />}><Network api={api?.network} /></Suspense> },

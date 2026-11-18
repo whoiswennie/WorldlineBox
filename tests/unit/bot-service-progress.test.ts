@@ -16,7 +16,7 @@ async function until<T>(read: () => T | undefined | Promise<T | undefined>) {
   const end = Date.now() + 5000;
   for (;;) { const found = await read(); if (found !== undefined) return found; if (Date.now() >= end) throw new Error('Controlled service fixture timed out'); await new Promise(resolve => setTimeout(resolve, 5)); }
 }
-async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, replyText = '你好，我在。') {
+async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, replyText = '你好，我在。', assertMessageReady?: () => void) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-real-progress-')), preparation = gate(), completion = gate(), reported: unknown[] = [];
   let run: BotDshRun | undefined, prepares = 0;
   const memory = new class extends BotMemoryService {
@@ -44,7 +44,7 @@ async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, re
   }({ getHost: host });
   const events: BotEvent[] = [];
   const service = new BotService({ root, brain, memory, model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
-    cabinWorldApp, onEvent: event => { events.push(event); }, report: error => { reported.push(error); } });
+    cabinWorldApp, assertMessageReady, onEvent: event => { events.push(event); }, report: error => { reported.push(error); } });
   const initial = (await service.handle({ type: 'state' })).snapshot!, conversationId = initial.conversations[0]!.id;
   cleanups.push(async () => { preparation.resolve(); completion.resolve(); await service.shutdown(); await rm(root, { recursive: true, force: true }); });
   const send = (content = '你好', room = conversationId) => service.handle({ type: 'message.send', conversationId: room, content, requestId: 'controlled' });
@@ -53,6 +53,46 @@ async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, re
   const emit = (type: string, text?: string, toolName?: string) => run!.onEvent?.({ type, text, toolName, nativeStep: 4, sequence: ++sequence, receivedAt: new Date().toISOString() });
   return { service, preparation, completion, reported, host, send, reply, emit, conversationId, steer, events, get run() { return run; }, get prepares() { return prepares; } };
 }
+
+it('rejects new desktop, call, mobile and world messages before queueing and allows an explicit resend after startup', async () => {
+  let ready = false;
+  const f = await fixture(undefined, undefined, undefined, () => { if (!ready) throw Error('DSH 正在启动，本次消息未发送'); });
+  const base = { type: 'message.send' as const, conversationId: f.conversationId, content: 'hello', requestId: 'mobile-attempt' };
+  const phone = { id: 'mobile:phone', kind: 'mobile' as const, label: 'Android' };
+  for (const attempt of [
+    () => f.service.handle({ ...base, requestId: 'desktop' }),
+    () => f.service.handle({ ...base, surface: 'call', requestId: 'call' }),
+    () => f.service.handle(base, phone),
+    () => f.service.handle({ ...base, type: 'world.event' }),
+  ]) await expect(attempt()).rejects.toThrow('本次消息未发送');
+  expect((await f.service.handle({ type: 'state', conversationId: f.conversationId })).snapshot!.messages).toHaveLength(0);
+  ready = true;
+  expect(f.service.store.ingressExists(f.conversationId, base.requestId)).toBe(false);
+  const receipt = await f.service.handle(base, phone);
+  ready = false;
+  expect((await f.service.handle(base, phone)).messageId).toBe(receipt.messageId);
+});
+
+it('rechecks DSH before enqueue when the host was stopped during asynchronous message preparation', async () => {
+  const check = vi.fn().mockImplementationOnce(() => {}).mockImplementation(() => { throw Error('DSH 已关闭'); });
+  const f = await fixture(undefined, undefined, undefined, check);
+  await expect(f.send()).rejects.toThrow('DSH 已关闭');
+  expect(f.service.store.ingressExists(f.conversationId, 'controlled')).toBe(false);
+});
+
+it('can immediately stop a prepared reply before its native turn was sent', async () => {
+  const f = await fixture();
+  f.preparation.resolve();
+  const receipt = await f.send();
+  const run = await until(() => f.run);
+  expect(f.service.store.getMetadata('native-input:' + run.eventId)).toBeTruthy();
+  await f.service.handle({ type: 'reply.cancel', messageId: receipt.replyMessageIds![0]! });
+  expect(run.signal?.aborted).toBe(true);
+  expect(f.service.store.getEvent(run.eventId)?.status).toBe('cancelled');
+  expect(f.service.store.getMetadata('native-stop:' + run.eventId)).toBeFalsy();
+  expect((await f.reply())?.execution?.interruption?.state).toBe('ready');
+  expect(f.host).not.toHaveBeenCalled();
+});
 
 it('automatically observes each started or steered task, keeping the same evidence on delivery retry', async () => {
   let place = '小屋', reads = 0;
@@ -125,21 +165,46 @@ it('projects only the current step and short tool description into meeting progr
   expect((await f.reply(meeting))?.progress).toBeUndefined();
   expect((await f.reply())?.parts?.some(part => part.presentation && part.text === '你好，我在。')).toBe(true);
 });
-it.each(['call', 'pet'] as const)('delivers a stage line when a successful %s heartbeat supplies no usable speech', async surface => {
+it.each(['call', 'pet'] as const)('keeps a successful quiet %s observation offstage', async surface => {
   const f = await fixture(undefined, undefined, surface === 'pet' ? '[[保持安静]]' : '');
   const record = new PresenceArchive().add(f.conversationId, 'screen', new Uint8Array([1]));
   const response = f.service.presenceTarget(f.conversationId, surface).observe({
-    records: [record], frames: [{ timestamps: ['00:00:00.000'], jpeg: 'data:image/jpeg;base64,AQ==' }],
+    records: [record], frames: [{ kind: 'keyframe', timestamps: ['00:00:00.000'], jpeg: 'AQ==' }],
     subtitles: [], sources: [{ kind: 'screen', from: 0, to: 0 }],
   }, new AbortController().signal);
   const run = await until(() => f.run);
   expect(run.workerTools).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'call_present' })]));
-  expect(run.system).toContain('每轮必须调用 call_present');
+  expect(JSON.parse(run.prompt).observation.keyframes[0].timestamp).toBe('00:00:00.000');
   f.completion.resolve();
   const result = await response;
-  expect(result?.reaction).toBe('这轮截图已处理，我还在陪你。');
+  expect(result?.reaction).toBe('');
   const reply = await f.reply(f.conversationId, 'call');
-  expect(reply?.parts).toEqual(expect.arrayContaining([expect.objectContaining({ text: result?.reaction, presentation: {} })]));
+  expect(reply?.parts?.length ?? 0).toBe(0);
+});
+it('preempts an admitted observation when a user message arrives even without a renderer status poll', async () => {
+  const f = await fixture(), target = f.service.presenceTarget(f.conversationId, 'call');
+  const record = new PresenceArchive().add(f.conversationId, 'screen', new Uint8Array([1]));
+  const observed = target.observe({ records: [record], frames: [{ kind: 'keyframe', timestamps: ['00:00:00.000'], jpeg: 'AQ==' }],
+    sources: [{ kind: 'screen', from: 0, to: 0 }], subtitles: [] }, new AbortController().signal);
+  const background = await until(() => f.run);
+  expect(target.busy()).toBe(false);
+  const message = await f.send();
+  expect(message.ok).toBe(true);
+  expect(await observed).toBeUndefined();
+  expect(background.signal?.aborted).toBe(true);
+  expect(target.busy()).toBe(true);
+});
+it('carries a quiet observation into the next heartbeat of the same topic', async () => {
+  const note = '文档标题已更新。', f = await fixture(undefined, undefined, '[[保持安静]]' + note);
+  const target = f.service.presenceTarget(f.conversationId, 'pet');
+  const record = new PresenceArchive().add(f.conversationId, 'screen', new Uint8Array([1]));
+  const sample = { records: [record], frames: [{ kind: 'keyframe' as const, timestamps: ['00:00:00.000'], jpeg: 'AQ==' }],
+    subtitles: [], sources: [{ kind: 'screen' as const, from: 0, to: 0 }] };
+  f.completion.resolve();
+  const first = await target.observe(sample, new AbortController().signal);
+  expect(first).toMatchObject({ reaction: '', note });
+  await target.observe(sample, new AbortController().signal);
+  expect(JSON.parse(f.run!.prompt).observation.previousObservations).toEqual([note]);
 });
 it('keeps a crashed memory preparation terminal and readable, preserves the source and reports the original technical error once', async () => {
   const original = Object.assign(new Error('Memory session closed (exit 3221226505)'), { code: 'MEMORY_SESSION_CLOSED' }), f = await fixture(original);

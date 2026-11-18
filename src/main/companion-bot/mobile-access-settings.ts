@@ -5,18 +5,19 @@ import { z } from 'zod';
 import QRCode from 'qrcode';
 import { MOBILE_ACCESS_PORT, mobileDeviceName, mobileToken, type MobileEndpointMode, type MobileSettingsRequest, type MobileSettingsResult } from '../../shared/mobile-access';
 
-const deviceSchema = z.object({ id: z.string().uuid(), name: mobileDeviceName, createdAt: z.string(), hash: mobileToken, paused: z.boolean() });
+const deviceSchema = z.object({ id: z.string().uuid(), name: mobileDeviceName, createdAt: z.string(), hash: mobileToken, paused: z.boolean(), lastSeen: z.string().optional(), pushAfter: z.number().int().nonnegative().optional() });
 const storageSchema = z.object({ enabled: z.boolean(), devices: z.array(deviceSchema).max(32) });
 type StoredState = z.infer<typeof storageSchema>;
-type Listener = { host: string; sshPort: number; fingerprint: string; transport?: 'wss'; endpointMode?: MobileEndpointMode; alive?(): boolean; close(): void; disconnect(id: string): void; connected(id: string): boolean };
+type Listener = { host: string; sshPort: number; fingerprint: string; transport?: 'wss'; lan?: { hosts: string[]; port: number }; remoteStatus?: 'connecting' | 'unavailable' | 'ready'; endpointMode?: MobileEndpointMode; alive?(): boolean; close(): void; disconnect(id: string): void; connected(id: string): boolean; supportsPush?(id: string): boolean; pushChanged?(id: string): void; publicationHead?(): Promise<number> };
 const sha = (value: string | Buffer) => createHash('sha256').update(value);
 const retryInterval = 5_000;
 
 export class MobileAccessSettings {
   private state: StoredState = { enabled: false, devices: [] };
-  private pending?: { hash: Buffer; expires: number; redeemedToken?: string };
+  private pending?: { code?: string; payload?: string; image?: string; hash: Buffer; expires: number; redeemedToken?: string };
   private listener?: Listener;
   private error?: string;
+  private readonly lastCheckpoint = new Map<string, number>();
   private readonly lastSeen = new Map<string, string>();
   private queue: Promise<unknown> = Promise.resolve();
   private monitor?: ReturnType<typeof setTimeout>;
@@ -39,6 +40,7 @@ export class MobileAccessSettings {
     return this.serialize(async () => {
       try {
         this.state = storageSchema.parse(JSON.parse(await readFile(this.file, 'utf8')));
+        for (const device of this.state.devices) if (device.lastSeen) this.lastSeen.set(device.id, device.lastSeen);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
           this.error = '无法读取已配对设备配置。';
@@ -71,7 +73,7 @@ export class MobileAccessSettings {
   }
 
   private scheduleMonitor(delay = retryInterval) {
-    if (this.monitor || this.closed || !this.state.enabled || !this.fixedEndpoint) return;
+    if (this.monitor || this.closed || !this.state.enabled || (this.listener && !this.listener.alive)) return;
     this.monitor = setTimeout(() => {
       this.monitor = undefined;
       void this.serialize(async () => {
@@ -99,12 +101,40 @@ export class MobileAccessSettings {
     }
   }
 
+  remoteHost() {
+    return this.listener?.transport === 'wss' ? this.listener.host : undefined;
+  }
+
+  private async currentPairing() {
+    const pending = this.pending;
+    const listener = this.listener;
+    if (pending && pending.expires <= Date.now()) { this.pending = undefined; return undefined; }
+    if (!pending?.code || !listener) return undefined;
+    const { host, sshPort, fingerprint, transport, lan } = listener;
+    if (lan && !lan.hosts.length && !transport) return undefined;
+    const payload = JSON.stringify({ protocol: 2, host, sshPort, fingerprint, apiPort: MOBILE_ACCESS_PORT, code: pending.code, transport, lan });
+    if (!pending.image || pending.payload !== payload) {
+      pending.image = await this.renderQr(payload);
+      pending.payload = payload;
+    }
+    return { image: pending.image, expiresAt: new Date(pending.expires).toISOString() };
+  }
+
   private snapshot() {
     return { enabled: this.state.enabled, running: !!this.listener && (this.listener.alive?.() ?? true),
+      lanReady: !!this.listener?.lan?.hosts.length, remoteStatus: this.listener?.remoteStatus,
       endpointMode: this.listener?.endpointMode ?? (this.fixedEndpoint ? 'fixed' as const : undefined), error: this.error,
-      devices: this.state.devices.map(({ id, name, createdAt, paused }) => ({ id, name, createdAt, paused,
-        connected: this.listener?.connected(id) ?? false, lastSeen: this.lastSeen.get(id) })) };
+      devices: this.state.devices.map(({ id, name, createdAt, paused, pushAfter }) => ({ id, name, createdAt, paused,
+        pushEnabled: pushAfter !== undefined, supportsPush: this.listener?.supportsPush?.(id) ?? false,
+        connected: this.online(id), lastSeen: this.lastSeen.get(id) })) };
   }
+
+  private online(id: string) {
+    const last = this.lastSeen.get(id);
+    return !!this.listener?.connected(id) && !!last && Date.now() - Date.parse(last) < 55_000;
+  }
+
+  pushAfter(id: string) { return this.state.devices.find(device => device.id === id)?.pushAfter; }
 
   request(input: MobileSettingsRequest): Promise<MobileSettingsResult> {
     return this.serialize(async () => {
@@ -126,25 +156,31 @@ export class MobileAccessSettings {
           catch (error) { listener.close(); this.listener = undefined; throw error; }
           this.scheduleMonitor();
         }
-        if (this.state.devices.length >= 32) throw new Error('已达到设备数量上限。');
         const code = randomBytes(32).toString('hex');
         const expires = Date.now() + 5 * 60_000;
-        this.pending = { hash: sha(code).digest(), expires };
-        const { host, sshPort, fingerprint, transport } = listener;
-        const text = JSON.stringify({ protocol: 2, host, sshPort, fingerprint, apiPort: MOBILE_ACCESS_PORT, code, transport });
-        const image = await this.renderQr(text);
-        return { ok: true, state: this.snapshot(), pairing: { image, expiresAt: new Date(expires).toISOString() } };
+        this.pending = { code, hash: sha(code).digest(), expires };
       }
-      if (input.type.startsWith('device.') && 'id' in input) {
+      if (input.type === 'device.push') {
+        const device = this.state.devices.find(item => item.id === input.id);
+        if (!device) throw new Error('设备不存在。');
+        if (input.enabled && device.pushAfter === undefined) {
+          if (device.paused || !this.online(device.id) || !this.listener?.supportsPush?.(device.id) || !this.listener.publicationHead) throw new Error('请先在手机上打开支持信息推送的 App，并连接这台电脑。');
+          const pushAfter = await this.listener.publicationHead();
+          await this.save({ ...this.state, devices: this.state.devices.map(item => item.id === device.id ? { ...item, pushAfter } : item) });
+        } else if (!input.enabled) {
+          await this.save({ ...this.state, devices: this.state.devices.map(item => item.id === device.id ? { ...item, pushAfter: undefined } : item) });
+        }
+        this.listener?.pushChanged?.(device.id);
+      } else if (input.type.startsWith('device.') && 'id' in input) {
         const device = this.state.devices.find(item => item.id === input.id);
         if (!device) throw new Error('设备不存在。');
         const devices = input.type === 'device.remove' ? this.state.devices.filter(item => item.id !== input.id)
           : this.state.devices.map(item => item.id === input.id ? { ...item, paused: input.type === 'device.pause' } : item);
         await this.save({ ...this.state, devices });
         if (input.type !== 'device.resume') this.listener?.disconnect(input.id);
-        if (input.type === 'device.remove') this.lastSeen.delete(input.id);
+        if (input.type === 'device.remove') { this.lastSeen.delete(input.id); this.lastCheckpoint.delete(input.id); }
       }
-      return { ok: true, state: this.snapshot() };
+      return { ok: true, state: this.snapshot(), pairing: await this.currentPairing() };
     });
   }
 
@@ -156,7 +192,7 @@ export class MobileAccessSettings {
       if (this.pending.redeemedToken) return this.pending.redeemedToken === hash && this.state.devices.some(item => item.hash === hash && !item.paused);
       if (this.state.devices.length >= 32 || this.state.devices.some(item => item.hash === hash)) return false;
       await this.save({ ...this.state, devices: [...this.state.devices, { id: randomUUID(), name, createdAt: new Date().toISOString(), hash, paused: false }] });
-      if (this.pending) this.pending.redeemedToken = hash;
+      if (this.pending) this.pending = { hash: this.pending.hash, expires: this.pending.expires, redeemedToken: hash };
       return true;
     });
   }
@@ -171,7 +207,15 @@ export class MobileAccessSettings {
     const digest = sha(header.slice(7)).digest();
     const device = this.state.devices.find(item => timingSafeEqual(Buffer.from(item.hash, 'hex'), digest));
     if (!device || device.paused) return;
-    this.lastSeen.set(device.id, new Date().toISOString());
+    const now = Date.now(), lastSeen = new Date(now).toISOString();
+    this.lastSeen.set(device.id, lastSeen);
+    if (now - (this.lastCheckpoint.get(device.id) ?? 0) > 5 * 60_000) {
+      this.lastCheckpoint.set(device.id, now);
+      void this.serialize(async () => {
+        if (this.closed || !this.state.devices.some(item => item.id === device.id)) return;
+        await this.save({ ...this.state, devices: this.state.devices.map(item => item.id === device.id ? { ...item, lastSeen } : item) });
+      }).catch(() => this.lastCheckpoint.delete(device.id));
+    }
     return device.id;
   }
 

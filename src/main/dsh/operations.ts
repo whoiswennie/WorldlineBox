@@ -112,6 +112,7 @@ export class OperationStore {
     this.onChanged();
     return finished.length;
   }
+  async waitFor(id: string): Promise<void> { await this.pending.get(id)?.task; }
   async settle(): Promise<void> { await Promise.all([...this.pending.values()].map(value => value.task)); }
   async shutdown(): Promise<void> {
     for (const { controller } of this.pending.values()) controller.abort(new Error('Application closing.'));

@@ -32,7 +32,7 @@ it('summarizes real counts and bytes and shows only six safe tiles plus the actu
   expect(host.querySelectorAll('.bot-attachment-tile')).toHaveLength(6); expect(host.querySelector('.bot-attachment-bundle-more strong')?.textContent).toBe('+6');
   expect(host.querySelector('.bot-attachment-bundle-types')?.textContent).toContain('图片 5'); expect(host.querySelector('.bot-attachment-bundle-types')?.textContent).toContain('音频 2');
   expect(document.querySelector('video,audio,[role=dialog]')).toBeNull(); expect(f.request).not.toHaveBeenCalled();
-  for (const image of host.querySelectorAll('img')) expect(image.getAttribute('src')).toContain('/thumb-');
+  expect([...host.querySelectorAll('img')].map(image => image.getAttribute('src'))).toEqual(refs.slice(0, 5).map(ref => ref.url));
   expect(host.textContent).not.toMatch(/\d{2}:\d{2}|%|波形|预计/);
 });
 it('plays one or two media attachments inline and keeps their viewer and file actions available', async () => {

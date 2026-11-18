@@ -8,12 +8,14 @@ import { Client } from 'ssh2';
 import { DeepSeekSpeech } from '../../src/main/companion-bot/deepseek-speech';
 import { BotDshBrain, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
+import { DesktopInbox } from '../../src/main/companion-bot/desktop-inbox';
 import { startMobileGateway } from '../../src/main/companion-bot/mobile-gateway';
 import { MobileAccessSettings } from '../../src/main/companion-bot/mobile-access-settings';
 import { startMobileSsh } from '../../src/main/companion-bot/mobile-ssh';
 import { MOBILE_ACCESS_PORT } from '../../src/shared/mobile-access';
 import { BotService } from '../../src/main/companion-bot/service';
 import { NativeServiceMemory, waitNative } from '../fixtures/bot-native-service';
+import { DshMessageNotReadyError } from '../../src/main/dsh/host-errors';
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -57,7 +59,10 @@ it('routes a mobile attachment and one durable message into the same desktop top
     await output(pcm.subarray(0, 3));
     await output(pcm.subarray(3));
   });
-  const service = new BotService({ root, media, brain: new Brain(), memory: new NativeServiceMemory(root),
+  let activeDesktopRoom: string | undefined;
+  let ready = false;
+  const service = new BotService({ root, media, brain: new Brain(), memory: new NativeServiceMemory(root), desktopMeetingActive: id => id === activeDesktopRoom,
+    assertMessageReady: () => { if (!ready) throw new DshMessageNotReadyError('startup', 'DSH 正在启动'); },
     model: () => ({ apiFormat: 'openai_chat', baseUrl: 'http://127.0.0.1:9', model: 'fixture', apiKey: 'fixture' }),
     onEvent: event => gateway?.notify(event) });
   const access = new MobileAccessSettings(root, async manager => {
@@ -79,6 +84,13 @@ it('routes a mobile attachment and one durable message into the same desktop top
     const directory = await (await call({ type: 'state' })).json();
     expect(directory.snapshot.companions[0]).not.toHaveProperty('persona');
     const room = directory.snapshot.conversations[0].id as string;
+    const blocked = await call({ type: 'message.send', conversationId: room, content: '启动中', requestId: 'cold-phone' });
+    expect(blocked.status).toBe(409);
+    expect((await blocked.json()).error).toContain('DSH 正在启动，本次消息未发送');
+    ready = true;
+    const baseline = (await (await call({ type: 'state', inboxAfter: -1 })).json()).snapshot.inbox;
+    expect(baseline.messages).toEqual([]);
+    const notify = vi.fn(), desktopInbox = new DesktopInbox(service.store, () => {}, notify);
     expect(await (await call({ type: 'user.identity', name: '林舟', bio: '偏好先看简短结论' })).json())
       .toMatchObject({ ok: true, userName: '林舟', userBio: '偏好先看简短结论' });
     expect(await (await call({ type: 'user.identity' })).json()).toMatchObject({ userName: '林舟', userBio: '偏好先看简短结论' });
@@ -115,6 +127,20 @@ it('routes a mobile attachment and one durable message into the same desktop top
     const state = await (await call({ type: 'state', conversationId: room })).json();
     const result = state.snapshot.messages.find((message: { id: string }) => message.id === accepted.replyMessageIds[0]);
     expect(result.topic.id).toBe(topic.id);
+    const inbox = (await (await call({ type: 'state', inboxAfter: baseline.cursor })).json()).snapshot.inbox;
+    expect(inbox.messages).toMatchObject([{ room, preview: '已汇总', sender: result.senderName }]);
+    const catchUp = (await (await call({ type: 'state', conversationId: room, after: result.sequence, callAfter: baseline.cursor })).json()).snapshot;
+    expect(catchUp.callDelivery.messageIds).toContain(result.id);
+    expect(catchUp.messages).toContainEqual(expect.objectContaining({ id: result.id, content: result.content }));
+    const resumed = (await (await call({ type: 'state', conversationId: room, after: result.sequence, callAfter: catchUp.callDelivery.cursor })).json()).snapshot;
+    expect(resumed.callDelivery.messageIds).toEqual([]);
+    expect((await (await call({ type: 'state', inboxAfter: inbox.cursor })).json()).snapshot.inbox.messages).toEqual([]);
+    desktopInbox.sync(); desktopInbox.sync();
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(desktopInbox.snapshot()[room]).toBe(1);
+    const reopenedInbox = new DesktopInbox(service.store, () => {}, notify);
+    expect(reopenedInbox.snapshot()[room]).toBe(1); reopenedInbox.read(room);
+    expect(reopenedInbox.snapshot()[room]).toBeUndefined();
     const audioUrl = `${base}/speech?conversationId=${room}&messageId=${result.id}`;
     for (const encoding of ['gzip', 'identity']) {
       const audio = await fetch(audioUrl, { headers: { ...headers, 'accept-encoding': encoding } });
@@ -180,6 +206,18 @@ it('routes a mobile attachment and one durable message into the same desktop top
     expect(callResult).toMatchObject({ ok: true, callStage: { mode: 'portrait' } });
     const meetingTopic = await (await call({ type: 'topic.new', conversationId: callResult.conversationId, requestId: 'mobile-call' })).json();
     expect(meetingTopic).toMatchObject({ ok: true, topic: { id: expect.any(String) } });
+    activeDesktopRoom = room;
+    for (const requestId of ['first-plain-turn', 'second-plain-turn']) {
+      // This client sends a normal chat message while the desktop meeting is connected.
+      // The model above returns committed text without issuing a single tool call.
+      const sent = await (await call({ type: 'message.send', conversationId: room, requestId, content: '请汇报。' })).json();
+      expect(sent.ok).toBe(true);
+      const id = sent.replyMessageIds[0];
+      await waitNative(() => service.store.getMessage(id)?.status === 'sent');
+      const reply = service.store.getMessage(id)!;
+      expect(calls.at(-1)?.workerTools?.some(tool => tool.name === 'call_present')).toBe(true);
+      expect(reply.parts?.filter(part => part.presentation)).toEqual([expect.objectContaining({ text: '已汇总' })]);
+    }
   } finally {
     access.close();
     await service.shutdown();
@@ -328,6 +366,8 @@ it('restores a failed fixed endpoint with the saved device, and stops retrying w
 
     connectors.at(-1)!.alive = false;
     await vi.advanceTimersByTimeAsync(5_000);
+    // Drain the serialized monitor behind any pending last-seen disk write.
+    await settings.request({ type: 'state' });
     expect(start).toHaveBeenCalledTimes(4);
     expect(settings.authenticate(`Bearer ${token}`)).toBe(deviceId);
     await settings.request({ type: 'service', enabled: false });
@@ -338,5 +378,35 @@ it('restores a failed fixed endpoint with the saved device, and stops retrying w
     settings.close();
     vi.useRealTimers();
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 60 });
+  }
+});
+
+it('updates the same open LAN invitation when the public route changes without disturbing saved devices', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-mobile-routes-'));
+  const lan = { hosts: ['192.168.1.7'], port: 47832 };
+  let remote: string | undefined;
+  const access = new MobileAccessSettings(root, async () => ({
+    get host() { return remote ?? lan.hosts[0]!; },
+    get sshPort() { return remote ? 443 : lan.port; },
+    get transport() { return remote ? 'wss' as const : undefined; },
+    fingerprint: 'SHA256:' + 'A'.repeat(43), lan,
+    close() {}, connected: () => false, disconnect() {},
+  }), async value => value);
+  try {
+    const initial = JSON.parse((await access.request({ type: 'pair' })).pairing!.image);
+    remote = 'current.example.com';
+    const ready = JSON.parse((await access.request({ type: 'state' })).pairing!.image);
+    expect(ready).toMatchObject({ lan, code: initial.code, fingerprint: initial.fingerprint, host: remote, transport: 'wss' });
+    const token = '8'.repeat(64);
+    expect(await access.redeem(initial.code, token, 'Phone')).toBe(true);
+    const id = access.authenticate('Bearer ' + token);
+    remote = undefined;
+    expect((await access.request({ type: 'state' })).pairing).toBeUndefined();
+    expect(access.remoteHost()).toBeUndefined();
+    expect(access.authenticate('Bearer ' + token)).toBe(id);
+    expect((await access.request({ type: 'state' })).state?.devices).toHaveLength(1);
+  } finally {
+    access.close();
+    await rm(root, { recursive: true, force: true });
   }
 });

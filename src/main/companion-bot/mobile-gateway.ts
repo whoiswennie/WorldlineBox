@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { DshMessageNotReadyError } from '../dsh/host-errors';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile, appendFile, realpath, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile, appendFile, readdir, rename, truncate, statfs, realpath, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import path from 'node:path';
@@ -9,15 +10,15 @@ import { pipeline } from 'node:stream/promises';
 import { constants as zlib, createGzip } from 'node:zlib';
 import { z } from 'zod';
 import { botRequestSchema, type BotEvent, type BotMessage, type BotRequest } from '../../shared/companion-bot';
-import { BOT_MEDIA_PREVIEW_MAX_BYTES } from '../../shared/companion-bot-media';
 import { callCaptionPlaybackPages, callCaptionHoldMs } from '../../shared/companion-call-captions';
 import { botCallProgressIcon, botReplyProgressLabel } from '../../shared/companion-bot-progress';
-import { MOBILE_ACCESS_PORT, mobileDeviceName, mobileToken } from '../../shared/mobile-access';
+import { MOBILE_UPLOAD_MAX_BYTES, MOBILE_UPLOAD_CHUNK_BYTES, MOBILE_ACCESS_PORT, mobileDeviceName, mobileToken } from '../../shared/mobile-access';
 import type { MobileAccessSettings } from './mobile-access-settings';
 import type { BotMediaService } from './media-service';
 import type { BotService } from './service';
 import type { BotConversation } from './types';
 import { speechText, type DeepSeekSpeech } from './deepseek-speech';
+import { callReplyText } from '../../shared/companion-bot-reply';
 
 const configSchema = z.strictObject({
   port: z.number().int().min(1024).max(65535).default(47831),
@@ -88,18 +89,19 @@ function projectProgress(status: BotMessage['status'], progress: NonNullable<Bot
   return { ...progress, label: botReplyProgressLabel(status, progress, 'zh-CN'), icon: botCallProgressIcon(progress.phase) };
 }
 
-const projectedPages = (text: string) => callCaptionPlaybackPages(text).map(({ text }, speechPage) => ({ text, speechPage, holdMs: callCaptionHoldMs(text) }));
+const projectedPages = (text: string, partId?: string) => callCaptionPlaybackPages(text, partId).map(({ text }, speechPage) => ({ text, speechPage, holdMs: callCaptionHoldMs(text) }));
 
 function projectMessage(message: BotMessage, meeting = false) {
   const { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing, progress, execution, topic, quote, error } = message;
   const cues = message.parts?.filter(part => part.presentation);
+  const caption = meeting && senderId !== 'user' && !cues?.length ? callReplyText(message) : '';
   return { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing,
     progress: progress && projectProgress(status, progress), topic, quote,
     ...(error ? { error: '伙伴回复失败，请在电脑端查看详情后重试。' } : {}),
     ...(cues?.length ? { cues: cues.map(({ id, text, presentation }) => ({
       id, text, ...presentation,
-      pages: projectedPages(text ?? ''),
-    })) } : meeting && senderId !== 'user' && status === 'sent' && content.trim() ? { captionPages: projectedPages(content) } : {}),
+      pages: projectedPages(text ?? '', id),
+    })) } : caption ? { captionPages: projectedPages(caption) } : {}),
     ...(execution ? { execution: { status: execution.status, phase: execution.phase, question: execution.question,
       continuation: execution.continuation, interruption: execution.interruption,
       steps: execution.steps.slice(-50).map(({ id, type, summary, toolName, status, at }) => ({ id, type, summary, toolName, status, at })) } } : {}) };
@@ -117,10 +119,39 @@ export async function startMobileGateway(options: Options) {
     token = digest(`Bearer ${config.token}`);
   }
   const subscribers = new Map<ServerResponse, string | undefined>();
+  const inboxStreams = new Set<ServerResponse>();
   const responses = new Map<ServerResponse, string>();
   const staging = path.join(options.root, 'mobile-upload-staging');
   let transfers = 0;
   const uploads = new Map<string, { directory: string; file: string; room: string; name: string; total: number; offset: number; touched: number; busy: boolean; attachment?: unknown }>();
+
+  const uploadLifetime = 24 * 60 * 60_000;
+  type Upload = NonNullable<ReturnType<typeof uploads.get>>;
+  const checkpoint = async (key: string, item: Upload) => {
+    const target = path.join(item.directory, 'resume.json');
+    await writeFile(target + '.tmp', JSON.stringify({ key, room: item.room, name: item.name, total: item.total, attachment: item.attachment }));
+    await rename(target + '.tmp', target);
+  };
+  // A dropped SSH connection or desktop restart can resume at the bytes already on disk.
+  await mkdir(staging, { recursive: true });
+  for (const entry of await readdir(staging, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^resumable-[a-zA-Z0-9]+$/u.test(entry.name)) continue;
+    const directory = path.join(staging, entry.name);
+    try {
+      const journal = path.join(directory, 'resume.json');
+      const saved = JSON.parse(await readFile(journal, 'utf8'));
+      if (typeof saved.key !== 'string' || !id.safeParse(saved.room).success || !Number.isSafeInteger(saved.total) ||
+          saved.total < 0 || saved.total > MOBILE_UPLOAD_MAX_BYTES) continue;
+      const file = path.join(directory, 'data', fileName(saved.name));
+      const info = await stat(saved.attachment ? journal : file);
+      if (Date.now() - info.mtimeMs > uploadLifetime) { await rm(directory, { recursive: true, force: true }); continue; }
+      if (!saved.attachment && info.size > saved.total) continue;
+      uploads.set(saved.key, { directory, file, room: saved.room, name: saved.name, total: saved.total,
+        offset: saved.attachment ? saved.total : info.size, touched: info.mtimeMs, busy: false, attachment: saved.attachment });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') options.report(error);
+    }
+  }
 
   const route = async (req: IncomingMessage, res: ServerResponse) => {
     if (req.headers.origin || !/^127\.0\.0\.1(?::\d+)?$/u.test(req.headers.host ?? '')) throw new RequestError(401, '移动访问凭据无效。');
@@ -141,7 +172,7 @@ export async function startMobileGateway(options: Options) {
       responses.set(res, device);
       res.once('close', () => responses.delete(res));
     }
-    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, maxUploadBytes: BOT_MEDIA_PREVIEW_MAX_BYTES, pagedSpeech: !!options.speech });
+    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, inbox: true, downloadOriginal: true, remoteHost: options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
     if (device && options.access && url.pathname === '/mobile/v1/profile') {
       if (method === 'PUT') {
         const profile = z.strictObject({ name: mobileDeviceName }).safeParse(await readJson(req));
@@ -219,8 +250,9 @@ export async function startMobileGateway(options: Options) {
     if (method === 'POST' && url.pathname === '/mobile/v1/requests') {
       const raw = await readJson(req);
       const state = z.strictObject({ type: z.literal('state'), conversationId: id.optional(), after: z.number().int().min(0).optional(),
-        tracked: z.array(id).max(20).default([]), history: z.literal(true).optional(), before: z.number().int().positive().optional() }).safeParse(raw);
-      const parsed = botRequestSchema.safeParse(state.success ? { type: 'state', conversationId: state.data.conversationId, before: state.data.before } : raw);
+        callAfter: z.number().int().nonnegative().optional(), inboxAfter: z.number().int().min(-1).optional(), tracked: z.array(id).max(20).default([]), history: z.literal(true).optional(), before: z.number().int().positive().optional() }).safeParse(raw);
+      const parsed = botRequestSchema.safeParse(state.success ? { type: 'state', conversationId: state.data.conversationId, before: state.data.before,
+        ...(state.data.callAfter !== undefined && { surface: 'call', callAfter: state.data.callAfter }) } : raw);
       requireDevice();
       if (!parsed.success) throw new RequestError(400, '伙伴请求格式不正确。');
       const input = parsed.data;
@@ -240,6 +272,7 @@ export async function startMobileGateway(options: Options) {
       const result = await bot.handle(scoped, origin).catch((error: unknown) => {
         options.report(error);
         const code = (error as { code?: string })?.code;
+        if (error instanceof DshMessageNotReadyError) throw new RequestError(409, error.message);
         if (code === 'BOT_EXECUTION_INSTANCE_REQUIRED' || code === 'BOT_COMPANION_INSTANCE_REQUIRED') {
           throw new RequestError(409, '电脑上的伙伴执行环境需要配置。');
         }
@@ -259,20 +292,24 @@ export async function startMobileGateway(options: Options) {
       const after = state.success ? state.data.after : undefined;
       const tracked = new Set(state.success ? state.data.tracked : []);
       const history = state.success && state.data.history;
-      const latest = messages.at(-1)?.sequence ?? 0;
+      const latest = messages.reduce((last, message) => Math.max(last, message.sequence), 0);
       const selected = after === undefined ? messages.slice(-6) : messages.filter(message => message.sequence > after).slice(-24);
       const updates = messages.filter(message => tracked.has(message.id) || message.status === 'running' || message.status === 'queued').slice(-24);
-      const projected = history ? messages : [...new Map([...selected, ...updates].map(message => [message.id, message])).values()].sort((a,b) => a.sequence - b.sequence);
+      const published = new Set(snapshot.callDelivery?.messageIds);
+      const projected = history ? messages : [...new Map([...selected, ...updates, ...messages.filter(message => published.has(message.id))].map(message => [message.id, message])).values()].sort((a,b) => a.sequence - b.sequence);
       const projectedRoom = result.conversationId ?? ('conversationId' in input ? input.conversationId : undefined);
       const meeting = input.type === 'call.open' || input.type === 'state' && input.surface === 'call'
         || !!projectedRoom && bot.store.getConversation(projectedRoom)?.kind === 'direct';
+      const rooms = snapshot.conversations.filter(room => canChat(bot.store.getConversation(room.id)));
+      const inboxAfter = state.success ? state.data.inboxAfter : undefined;
       return json(res, 200, { ok: true, conversationId: result.conversationId, callStage: result.callStage,
         callModel: result.callModel && !result.callModel.modelUrl ? { model: result.callModel.model, manifest: result.callModel.manifest, vts: result.callModel.vtsParameters } : undefined,
         message: sent ? projectMessage(sent) : undefined, snapshot: {
         companions: snapshot.companions.map(({ id, name, enabled }) => ({ id, name, enabled, presence: snapshot.presence?.[id]?.status })),
-        conversations: snapshot.conversations.filter(room => canChat(bot.store.getConversation(room.id))).map(({ id, title, kind, memberIds, pinned }) => ({ id, title, kind, memberIds, pinned, activity: snapshot.conversationActivity?.[id] })),
+        conversations: rooms.map(({ id, title, kind, memberIds, pinned }) => ({ id, title, kind, memberIds, pinned, activity: snapshot.conversationActivity?.[id] })),
+        ...(inboxAfter !== undefined ? { inbox: { ...bot.store.companionInbox(rooms.map(room => room.id), inboxAfter === -1 ? undefined : inboxAfter), pushAfter: device ? options.access?.pushAfter(device) : undefined } } : {}),
         messages: projected.map(message => projectMessage(message, meeting && message.conversationId === projectedRoom)), cursor: latest, ...(history ? { hasMore: snapshot.hasMore } : {}),
-        ready: snapshot.runtime.ready,
+        callDelivery: snapshot.callDelivery, ready: snapshot.runtime.ready,
         ...(chatRuntime ? { chatRuntime: { topic: chatRuntime.topic, queued: chatRuntime.queued, running: chatRuntime.running, hiddenMessageIds: chatRuntime.hiddenMessageIds,
           contexts: Object.fromEntries(Object.entries(chatRuntime.contexts ?? {}).map(([companionId, context]) =>
             [companionId, { pressure: context.pressure, phase: context.activity?.phase }])) } } : {}),
@@ -287,7 +324,8 @@ export async function startMobileGateway(options: Options) {
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store' });
       res.write('data: {"type":"ready"}\n\n');
       subscribers.set(res, roomId.data);
-      res.once('close', () => subscribers.delete(res));
+      if (url.searchParams.get('inbox') === '1') inboxStreams.add(res);
+      res.once('close', () => { subscribers.delete(res); inboxStreams.delete(res); });
       return;
     }
     if (!roomId.success) throw new RequestError(400, '缺少有效的会话。');
@@ -316,13 +354,23 @@ export async function startMobileGateway(options: Options) {
       const key = (device ?? 'local') + ':' + parsed.data;
       let item = uploads.get(key);
       if (item && item.room !== roomId.data) throw new RequestError(403, '上传会话不匹配。');
-      if (method === 'GET') return json(res, 200, { ok: true, offset: item?.offset ?? 0, attachment: item?.attachment });
+      if (method === 'GET') {
+        if (item) item.touched = Date.now();
+        return json(res, 200, { ok: true, offset: item?.offset ?? 0, attachment: item?.attachment });
+      }
+      if (method === 'DELETE') {
+        if (item?.busy) throw new RequestError(409, '当前分段仍在写入。');
+        uploads.delete(key);
+        if (item) await rm(item.directory, { recursive: true, force: true });
+        return json(res, 200, { ok: true });
+      }
       if (method !== 'PUT') throw new RequestError(405, '上传请求无效。');
       const name = fileName(url.searchParams.get('name'));
       const total = Number(url.searchParams.get('total')), offset = Number(url.searchParams.get('offset'));
       const length = Number(req.headers['content-length']);
+      if (total > MOBILE_UPLOAD_MAX_BYTES) throw new RequestError(413, '单个文件最多 4 GiB。');
       if (![total, offset, length].every(value => Number.isSafeInteger(value) && value >= 0) ||
-          total > BOT_MEDIA_PREVIEW_MAX_BYTES || length > 256 * 1024 || offset + length > total) throw new RequestError(400, '文件分段参数无效。');
+          length > MOBILE_UPLOAD_CHUNK_BYTES || offset + length > total || length === 0 && offset !== total) throw new RequestError(400, '文件分段参数无效。');
       if (!item) {
         if (offset !== 0) throw new RequestError(409, '上传已过期，请重试。');
         if ([...uploads.values()].filter(upload => !upload.attachment).length >= 24) throw new RequestError(429, '电脑正在接收其他文件。');
@@ -330,10 +378,13 @@ export async function startMobileGateway(options: Options) {
         item = { directory: '', file: '', room: roomId.data, name, total, offset: 0, touched: Date.now(), busy: true };
         uploads.set(key, item);
         try {
-          await mkdir(staging, { recursive: true });
+          const disk = await statfs(staging);
+          if (disk.bsize * disk.bavail < total * 2) throw new RequestError(507, '电脑存储空间不足，请腾出空间后重试。');
           item.directory = await mkdtemp(path.join(staging, 'resumable-'));
-          item.file = path.join(item.directory, name);
+          await mkdir(path.join(item.directory, 'data'));
+          item.file = path.join(item.directory, 'data', name);
           await writeFile(item.file, '', { flag: 'wx' });
+          await checkpoint(key, item);
         } catch (error) {
           uploads.delete(key);
           if (item.directory) await rm(item.directory, { recursive: true, force: true }).catch(options.report);
@@ -354,14 +405,16 @@ export async function startMobileGateway(options: Options) {
         }
         if (received !== length) throw new RequestError(400, '文件分段未完整接收。');
         requireRoom(roomId.data);
-        if (length) await appendFile(item.file, Buffer.concat(chunks));
+        if (length) try { await appendFile(item.file, Buffer.concat(chunks)); }
+        catch (error) { await truncate(item.file, item.offset); throw error; }
         item.offset += received;
         if (item.offset === total) {
           const media = await options.media();
-          const [attachment] = await media.importFiles({ conversationId: roomId.data, paths: [item.file] });
+          const [attachment] = await media.importFiles({ conversationId: roomId.data, paths: [item.file], mobileUpload: true });
           if (!attachment) throw new RequestError(400, '电脑无法接收此附件。');
+          await checkpoint(key, { ...item, attachment });
           item.attachment = attachment;
-          await rm(item.directory, { recursive: true, force: true }).catch(options.report);
+          await rm(item.file, { force: true }).catch(options.report);
         }
         return json(res, 200, { ok: true, offset: item.offset, attachment: item.attachment });
       } finally {
@@ -387,7 +440,7 @@ export async function startMobileGateway(options: Options) {
       const name = fileName(url.searchParams.get('name'));
       const length = Number(req.headers['content-length']);
       if (!Number.isSafeInteger(length) || length < 0) throw new RequestError(411, '上传需要有效的文件大小。');
-      if (length > BOT_MEDIA_PREVIEW_MAX_BYTES) throw new RequestError(413, '文件超过 200 MiB。');
+      if (length > MOBILE_UPLOAD_MAX_BYTES) throw new RequestError(413, '单个文件最多 4 GiB。');
       if (transfers >= 4) throw new RequestError(429, '同时上传的文件过多。');
       transfers++;
       let directory: string | undefined;
@@ -398,7 +451,7 @@ export async function startMobileGateway(options: Options) {
         await pipeline(req, limit(length), createWriteStream(target, { flags: 'wx' }));
         requireRoom(roomId.data);
         const media = await options.media();
-        const [attachment] = await media.importFiles({ conversationId: roomId.data, paths: [target] });
+        const [attachment] = await media.importFiles({ conversationId: roomId.data, paths: [target], mobileUpload: true });
         requireRoom(roomId.data);
         return json(res, 201, { ok: true, attachment });
       } finally {
@@ -419,7 +472,7 @@ export async function startMobileGateway(options: Options) {
       const headers = new Headers();
       if (req.headers.range) headers.set('range', req.headers.range);
       const media = await options.media();
-      const response = await media.response(new Request(attachment.url, { method, headers, signal: signal.signal }));
+      const response = await media.response(new Request(attachment.url, { method, headers, signal: signal.signal }), true);
       requireRoom(roomId.data);
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), res);
@@ -434,6 +487,7 @@ export async function startMobileGateway(options: Options) {
     void route(req, res).catch((error: unknown) => {
       if (res.destroyed || res.headersSent) { res.destroy(); return; }
       if (error instanceof RequestError) json(res, error.status, { ok: false, error: error.message });
+      else if ((error as NodeJS.ErrnoException).code === 'ENOSPC') json(res, 507, { ok: false, error: '电脑存储空间不足，请腾出空间后重试。' });
       else { options.report(error); json(res, 500, { ok: false, error: '电脑暂时无法完成这次请求。' }); }
     });
   });
@@ -446,7 +500,7 @@ export async function startMobileGateway(options: Options) {
   const heartbeat = setInterval(() => {
     for (const res of subscribers.keys()) send(res, ': heartbeat\n\n');
     for (const [key, item] of uploads) {
-      if (item.busy || Date.now() - item.touched < 30 * 60_000) continue;
+      if (item.busy || Date.now() - item.touched < uploadLifetime) continue;
       uploads.delete(key);
       if (item.directory) void rm(item.directory, { recursive: true, force: true }).catch(options.report);
     }
@@ -454,6 +508,8 @@ export async function startMobileGateway(options: Options) {
   heartbeat.unref();
   return {
     port: (server.address() as { port: number }).port,
+    supportsPush(id: string) { return [...inboxStreams].some(res => responses.get(res) === id); },
+    pushChanged(id: string) { for (const res of inboxStreams) if (responses.get(res) === id) send(res, 'data: {"type":"changed"}\n\n'); },
     connected(id: string) { return [...responses].some(([res, device]) => device === id && subscribers.has(res)); },
     disconnect(id: string) { for (const [res, device] of responses) if (device === id) res.destroy(); },
     notify(event: BotEvent) {
@@ -464,7 +520,7 @@ export async function startMobileGateway(options: Options) {
       if (event.type !== 'changed' && event.type !== 'text' && event.type !== 'progress') return;
       const payload = `data: ${JSON.stringify(event.type === 'progress' ? { ...event, progress: projectProgress('running', event.progress) } : event)}\n\n`;
       for (const [res, roomId] of subscribers) {
-        if (roomId && event.conversationId && event.conversationId !== roomId) continue;
+        if (roomId && event.conversationId && event.conversationId !== roomId && !(event.type === 'changed' && inboxStreams.has(res))) continue;
         if (event.type === 'changed') { send(res, 'data: {"type":"changed"}\n\n'); continue; }
         if (!roomId) continue;
         void options.bot().then(bot => {

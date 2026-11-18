@@ -905,7 +905,8 @@ function ToolButton({
 }
 
 export interface AssetManagerHandle {
-  openSettings: () => void;
+  closeSettings?(): void;
+  openSettings: (category?: AppSettingsCategoryId) => void;
   revealExtensionSave: (event: ExtensionSaveCompletedEvent) => void;
 }
 
@@ -1890,9 +1891,10 @@ export function AssetManager({
     useState<AppSettingsCategoryId>("general");
 
   useImperativeHandle(settingsRef, () => ({
+    closeSettings: () => setAppSettingsOpen(false),
     revealExtensionSave: setDeferredExtensionSave,
-    openSettings: () => {
-      setAppSettingsCategory("general");
+    openSettings: (category = "general") => {
+      setAppSettingsCategory(category);
       setAppSettingsOpen(true);
     },
   }), []);

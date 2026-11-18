@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, lstat, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { StringDecoder } from 'node:string_decoder';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { z } from 'zod';
@@ -13,7 +13,7 @@ import { inspectManagedProcess, instanceEnvironment, launchCli, parseReadyUrl, r
 import type { DshCliSelection } from './cli-terminal';
 import { NativeHostClient } from './native-host-client';
 import { CompanionInstanceLeases, nativeIdleConfirmed, type CompanionInstanceLeaseKind } from './companion-instance-leases';
-import { DshHostUnavailableError, isDshHostUnavailableError } from './host-errors';
+import { DshHostUnavailableError, DshMessageNotReadyError, isDshHostUnavailableError } from './host-errors';
 import { compareDshVersions, dshVersionPattern } from '../../shared/dsh-version-order';
 
 export interface RuntimeServiceLike {
@@ -141,6 +141,16 @@ export class InstanceService {
    * fields are retained for history and recovery, never used as a routing ACL. */
   companion(companionId: string): DshInstance | undefined { void companionId; return this.executionInstance(); }
   executionInstance(): DshInstance | undefined { const value = this.instances.find(instance => instance.isDefault); return value && { ...value }; }
+  runningMessageHost(id = this.executionInstance()?.id): NativeHostClient {
+    const instance = this.instances.find(item => item.id === id);
+    if (!id || !instance) throw new DshMessageNotReadyError('configuration', '尚未配置共享 DSH');
+    const host = this.hosts.get(id);
+    if (this.closing || host?.stopping || this.stops.has(id) || this.idleStops.has(id) || instance.status === 'stopping')
+      throw new DshMessageNotReadyError('closing', 'DSH 正在关闭', id);
+    if (this.starts.has(id) || instance.status === 'starting') throw new DshMessageNotReadyError('startup', 'DSH 正在启动', id);
+    if (instance.status === 'running' && host?.client) return host.client;
+    throw new DshMessageNotReadyError('stopped', instance.status === 'failed' ? 'DSH 启动失败' : 'DSH 尚未启动', id);
+  }
   companionStopEpoch(id: string): number { return this.manualStops.get(id) ?? 0; }
   /** Compatibility IPC: create one shared profile from the selected runtime,
    * regardless of which character opened the first-run setup. */
@@ -553,7 +563,10 @@ export class InstanceService {
     return this.instances.some(value => value.isBundled && value.runtimeId === runtimeId);
   }
   async ensureBundledInstance(runtimeId: string, op: OperationContext): Promise<void> {
-    if (!this.hasBundledRuntime(runtimeId)) await this.createInstance(bundledInstanceName, runtimeId, op, undefined, true);
+    if (this.hasBundledRuntime(runtimeId)) return;
+    const existing = this.instances.find(instance => instance.isBundled);
+    if (existing) await this.upgradeRuntime(existing.id, runtimeId, op);
+    else await this.createInstance(bundledInstanceName, runtimeId, op, undefined, true);
   }
   private async createInstance(name: string, runtimeId: string, op?: OperationContext,
     companion?: Pick<DshInstance, 'companionId' | 'companionName' | 'parentInstanceId' | 'keepAlive'>,
@@ -589,8 +602,11 @@ export class InstanceService {
   }
   /** Switch code only; all stable environment paths and browser identity are retained. */
   async upgradeCompanion(id: string, runtimeId: string, op: OperationContext): Promise<void> {
+    assertInstanceUpgradeable(this.require(id));
+    await this.upgradeRuntime(id, runtimeId, op);
+  }
+  private async upgradeRuntime(id: string, runtimeId: string, op: OperationContext): Promise<void> {
     const instance = this.available(id);
-    assertInstanceUpgradeable(instance);
     const next = this.options.runtimes.get(runtimeId);
     if (next.adapter !== 'node-cli-web-v1') throw new Error('伙伴需要原生 Node Web 运行环境。');
     if (runtimeId === instance.runtimeId) return;
@@ -808,7 +824,26 @@ export class InstanceService {
       if (request.type === 'instance.purge-archive' && this.archived.some(value => value.id === request.instanceId && value.isBundled)) {
         throw new Error('内置兜底实例不可删除。');
       }
-      if (request.type === 'instance.logs') return { ok: true, text: sanitizeOutput((await readFile(path.join(this.getRoot(request.instanceId), 'logs', 'host.log'), 'utf8').catch(() => '')).slice(-128000)) };
+      if (request.type === 'instance.logs') {
+        const directory = path.join(this.getRoot(this.require(request.instanceId).id), 'logs');
+        try {
+          await assertOwnedDirectory(this.options.rootPath, directory);
+          const file = path.join(directory, 'host.log');
+          if (!(await lstat(file)).isFile()) throw Error('实例日志不是普通文件。');
+          const handle = await open(file, 'r');
+          try {
+            const { size } = await handle.stat();
+            const start = Math.max(0, size - 128_000);
+            const buffer = Buffer.alloc(size - start);
+            const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+            const tail = buffer.toString('utf8', 0, bytesRead);
+            return { ok: true, text: sanitizeOutput(start ? tail.replace(/^[^\n]*(?:\n|$)/, '') : tail) };
+          } finally { await handle.close(); }
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, text: '' };
+          throw cause;
+        }
+      }
       if (request.type === 'snapshot.delete') { const snapshot = this.snapshotRecords.find(value => value.id === request.snapshotId); if (!snapshot) throw new Error('Snapshot not found.');
         await removeManaged(this.options.rootPath, path.join(this.options.rootPath, 'snapshots', snapshot.id)); this.snapshotRecords = this.snapshotRecords.filter(value => value.id !== snapshot.id); await this.changed(); return { ok: true }; }
       const id = 'instanceId' in request ? request.instanceId : undefined;

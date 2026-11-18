@@ -1,6 +1,6 @@
 import { BOT_DESKTOP_VIDEO_CHUNK_BYTES } from '../../shared/companion-bot-media';
 
-export function recordDesktopVideo(stream: MediaStream, seconds: number, append: (sequence: number, bytes: Uint8Array<ArrayBuffer>) => Promise<void>) {
+export function recordDesktopVideo(stream: MediaStream, seconds: number, append: (sequence: number, bytes: Uint8Array<ArrayBuffer>) => Promise<void>, onRecording?: (active: boolean) => void) {
   const mimeType = ['video/webm;codecs=vp8,opus', 'video/webm'].find(type => MediaRecorder.isTypeSupported(type));
   if (!mimeType) throw Error('当前环境无法录制带声音的视频。');
   const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1_500_000, audioBitsPerSecond: 96_000 });
@@ -10,6 +10,7 @@ export function recordDesktopVideo(stream: MediaStream, seconds: number, append:
   const finished = new Promise<boolean>((done, failed) => { resolve = done; reject = failed; });
   void finished.catch(() => undefined);
   const stop = () => { if (recorder.state !== 'inactive') recorder.stop(); };
+  recorder.onstart = () => { if (recorder.state === 'recording') onRecording?.(true); };
   const release = () => { clearTimeout(timer); stream.getTracks().forEach(track => track.stop()); };
   const fail = (error: unknown) => {
     if (settled) return;
@@ -29,6 +30,7 @@ export function recordDesktopVideo(stream: MediaStream, seconds: number, append:
   };
   recorder.onerror = () => fail(Error('录屏中断。'));
   recorder.onstop = () => {
+    onRecording?.(false);
     release();
     void writing.then(() => {
       if (!settled) { settled = true; resolve(!cancelled && sequence > 0); }

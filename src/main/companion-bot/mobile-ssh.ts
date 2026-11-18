@@ -5,6 +5,7 @@ import path from 'node:path';
 import { Server, utils, type Connection } from 'ssh2';
 import { MOBILE_ACCESS_PORT, MOBILE_SSH_PORT } from '../../shared/mobile-access';
 import type { MobileAccessSettings } from './mobile-access-settings';
+import { isLocalPeer } from './mobile-routes';
 
 async function hostKey(root: string): Promise<string> {
   const file = path.join(root, 'mobile-ssh-host.key');
@@ -16,7 +17,7 @@ async function hostKey(root: string): Promise<string> {
   return key;
 }
 
-export async function startMobileSsh(root: string, access: MobileAccessSettings, options?: { port?: number; targetPort?: number }) {
+export async function startMobileSsh(root: string, access: MobileAccessSettings, options?: { port?: number; targetPort?: number; lan?: boolean }) {
   const host = '127.0.0.1';
   const port = options?.port ?? MOBILE_SSH_PORT;
   const targetPort = options?.targetPort ?? MOBILE_ACCESS_PORT;
@@ -25,9 +26,9 @@ export async function startMobileSsh(root: string, access: MobileAccessSettings,
   if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('无法读取移动服务的主机密钥。');
   const fingerprint = 'SHA256:' + createHash('sha256').update(parsed.getPublicSSH()).digest('base64').replace(/=+$/u, '');
   const clients = new Map<Connection, { device?: string; channels: number; authorized?: () => boolean }>();
-  const server = new Server({ hostKeys: [privateKey], algorithms: { serverHostKey: ['ssh-ed25519'] } }, client => {
+  const server = new Server({ hostKeys: [privateKey], algorithms: { serverHostKey: ['ssh-ed25519'] } }, (client, peer) => {
     client.on('error', () => undefined);
-    if (clients.size >= 20) { client.end(); return; }
+    if (clients.size >= 20 || (options?.lan && !isLocalPeer(peer.ip))) { client.end(); return; }
     const entry: { device?: string; channels: number; authorized?: () => boolean } = { channels: 0 };
     clients.set(client, entry);
     const handshake = setTimeout(() => client.end(), 20_000);
@@ -67,10 +68,15 @@ export async function startMobileSsh(root: string, access: MobileAccessSettings,
       });
     });
   });
-  await new Promise<void>((resolve, reject) => {
+  const listen = (requestedPort: number) => new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(port, host, () => { server.off('error', reject); resolve(); });
+    server.listen(requestedPort, options?.lan ? '0.0.0.0' : host, () => { server.off('error', reject); resolve(); });
   });
+  try { await listen(port); }
+  catch (error) {
+    if (!options?.lan || (error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+    await listen(0);
+  }
   server.on('error', () => undefined);
   return { host, fingerprint, sshPort: (server.address() as { port: number }).port,
     close() { for (const client of clients.keys()) client.end(); server.close(); },

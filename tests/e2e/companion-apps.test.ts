@@ -9,14 +9,14 @@ import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { WorldlineBoxMcpSettingsApi } from '../../src/shared/mcp';
 import type { WorldlineBoxBrowserApi } from '../../src/shared/browser';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
-import { seedNativeRuntime } from './fixtures/dsh-native-runtime';
+import { seedNativeRuntime, selectNativeRuntime } from './fixtures/dsh-native-runtime';
 
 // eslint-disable-next-line no-empty-pattern -- Launches an isolated real Electron application.
 test('composer Apps connects browser, assets and Cabin World independently', async ({}, testInfo) => {
   test.setTimeout(240000);
   const manager = path.join(process.env.APPDATA!, 'WorldlineBox', 'dsh');
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as DshRuntime[];
-  const runtime = runtimes.find(item => item.version === '0.2.2-rc.3') ?? runtimes.find(item => item.version === '0.2.2-rc.1'); test.skip(!runtime, 'Requires a sealed installed DSH runtime.');
+  const runtime = selectNativeRuntime(runtimes, ['0.2.2-rc.3', '0.2.2-rc.1']); test.skip(!runtime, 'Requires a sealed installed DSH runtime.');
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-apps-ui-')); await seedNativeRuntime(manager, runtime!, profile);
   const port = await new Promise<number>((resolve, reject) => { const probe = createServer(); probe.on('error', reject); probe.listen(0, '127.0.0.1', () => { const port = (probe.address() as { port: number }).port; probe.close(() => resolve(port)); }); });
   await writeFile(path.join(profile, 'mcp-settings.json'), JSON.stringify({ version: 1, preferences: { enabled: false, autoStart: false, port } }));

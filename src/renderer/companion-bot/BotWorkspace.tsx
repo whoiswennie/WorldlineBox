@@ -16,7 +16,7 @@ import { BotCompanionEditor, type BotCompanionEditorDraft, type BotCompanionSett
 import { BotGroupMembers } from './BotGroupMembers';
 import { useBotConversationUpdates } from './BotConversationActivity';
 import './bot-peer-observation.css';
-import { BotComposer } from './BotComposer';
+import { BotComposer, BotSpeechMuteButton } from './BotComposer';
 import { BotTopicBar } from './BotTopicBar';
 import { BotIcon } from './BotIcon';
 import { BotApps, BotTopicAppCard } from './BotApps';
@@ -31,6 +31,7 @@ import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companio
 import { BotChatContext } from './BotChatContext';
 import { BotExecutorNotice } from './BotExecutorNotice';
 import { BotDshBindingDialog } from './BotDshBindingDialog';
+import { BotDiagnostics, BotErrorNotice } from './BotErrorNotice';
 import { hasSharedDshBinding, useBotDshBindings } from './useBotDshBindings';
 import { isBotFilePaste } from './clipboard-paste';
 import { useBotSpeech } from './useBotSpeech';
@@ -77,7 +78,7 @@ const copy = {
 };
 
 /** A conversation UI backed by one durable event runtime, with no legacy topic/job controllers. */
-export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserContext, onOpenBrowserContext, onOpenLauncher, onOpenUrl = ignoreLink, onDesktopPetChange, isActive = true }: { api?: WorldlineBoxBotApi; mediaApi?: WorldlineBoxBotMediaApi; launcherApi?: WorldlineBoxDshLauncherApi; browserApi?: WorldlineBoxBrowserApi; browserContext?: BrowserPageContext; onOpenBrowserContext?(id: string): void; onOpenLauncher?():void; onOpenSettings(): void; onOpenUrl?(url: string): void; onDesktopPetChange?(active: boolean, returning?: boolean): void; isActive?: boolean }) {
+export function BotWorkspace({ unread, notificationTarget, clearTarget, covered, api, mediaApi, launcherApi, browserApi, browserContext, onOpenBrowserContext, onOpenLauncher, onOpenSettings, revealAppLog, onOpenUrl = ignoreLink, onDesktopPetChange, isActive = true }: { unread?: Record<string, number>; notificationTarget?: { room: string }; clearTarget?(): void; covered?: boolean; api?: WorldlineBoxBotApi; mediaApi?: WorldlineBoxBotMediaApi; launcherApi?: WorldlineBoxDshLauncherApi; browserApi?: WorldlineBoxBrowserApi; browserContext?: BrowserPageContext; onOpenBrowserContext?(id: string): void; onOpenLauncher?():void; onOpenSettings(): void; revealAppLog?(): Promise<{ ok: boolean }>; onOpenUrl?(url: string): void; onDesktopPetChange?(active: boolean, returning?: boolean): void; isActive?: boolean }) {
   const { locale } = useLocale(), t = copy[locale];
   const bindings = useBotDshBindings(launcherApi);
   const [dismissedBinding, setDismissedBinding] = useState('');
@@ -87,6 +88,8 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
   const [copied, setCopied] = useState('');
   const quote = quotes[selected];
   const stopSpeech = speech.stop;
+  const [speechMuted, setSpeechMuted] = useState(false);
+  const changeSpeechMute = (muted: boolean) => { if (muted) stopSpeech(); setSpeechMuted(muted); };
   useEffect(() => stopSpeech, [selected, stopSpeech]);
   const [sourceChoice, setSourceChoice] = useState({ room: '', id: '' });
   const [identity, setIdentity] = useState<{ name: string; bio: string }>();
@@ -96,14 +99,35 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
   const [editorSection, setEditorSection] = useState<BotCompanionSettingsSection>('templates');
   const dialogEpoch = useRef(0);
   const [panel, setPanel] = useState<'memory' | 'history' | null>(null);
-  const [callTarget, setCallTarget] = useState<{ conversationId: string; companionId: string; editorEpoch?: number }>();
+  type CallTarget = { conversationId: string; companionId: string; editorEpoch?: number; sessionId: string };
+  const [callTarget, setCallTarget] = useState<CallTarget>();
+  const callSlot = useRef<CallTarget>(undefined);
+  const releaseCall = useCallback(() => {
+    const held = callSlot.current;
+    if (!held) return;
+    callSlot.current = undefined;
+    void api?.request({ type: 'call.release', conversationId: held.conversationId, sessionId: held.sessionId }).catch(() => undefined);
+  }, [api]);
+  useEffect(() => releaseCall, [releaseCall]);
+  const dial = async (target: Omit<CallTarget, 'sessionId'>) => {
+    if (!api || callSlot.current) return;
+    const held = { ...target, sessionId: crypto.randomUUID() };
+    callSlot.current = held;
+    try {
+      const result = await api.request({ type: 'call.reserve', conversationId: held.conversationId, sessionId: held.sessionId });
+      if (callSlot.current !== held) return;
+      if (!result.ok) throw Error(result.error || t.error);
+      setCallTarget(held);
+    } catch (reason) { if (callSlot.current === held) { releaseCall(); setError(reason instanceof Error ? reason.message : t.error); } }
+  };
   const [desktopPet, setDesktopPet] = useState(false);
+  const [chatTyping, setChatTyping] = useState(false), [chatVoice, setChatVoice] = useState(false);
   const updatePetMode = useCallback((active: boolean, returning?: boolean) => {
     setDesktopPet(active);
     onDesktopPetChange?.(active, returning);
   }, [onDesktopPetChange]);
   const [callDrafts, setCallDrafts] = useState<Record<string, string>>({});
-  const closeCall = useCallback(() => { setCallTarget(undefined); updatePetMode(false); }, [updatePetMode]);
+  const closeCall = useCallback(() => { releaseCall(); setCallTarget(undefined); updatePetMode(false); }, [updatePetMode, releaseCall]);
   const openCallUrl = useCallback((url: string) => { if (!desktopPet) closeCall(); onOpenUrl(url); }, [closeCall, desktopPet, onOpenUrl]);
   const [showWorld, setShowWorld] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
@@ -272,6 +296,21 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
   const observing = conversation?.kind === 'peer';
   const conversationUpdates = useBotConversationUpdates({ activity: snapshot?.conversationActivity, conversations: snapshot?.conversations,
     readConversationId: isActive && conversation && !dialog && !showMembers && panel !== 'history' && panel !== 'memory' && !browsingHistory && !scrolledAway && !loadingLatest ? selected : undefined });
+  useEffect(() => {
+    if (!isActive || !notificationTarget || !snapshot) return;
+    clearTarget?.();
+    if (!snapshot.conversations.some(room => room.id === notificationTarget.room)) return;
+    closeDialog(); closeCall(); setPanel(null); setShowMembers(false); setSidebarView('chats'); setPeerOnly(false); setContactQuery('');
+    selectConversation(notificationTarget.room); void refresh(notificationTarget.room);
+  }, [isActive, notificationTarget, snapshot, clearTarget, selectConversation, refresh, closeCall]);
+  useEffect(() => {
+    const readRoom = callTarget && (isActive || desktopPet) ? callTarget.conversationId :
+      isActive && !dialog && !showMembers && !panel && !browsingHistory && !scrolledAway && !loadingLatest ? selected : undefined;
+    if (covered || !readRoom || !unread?.[readRoom]) return;
+    const read = () => { if (document.hasFocus() && !document.hidden) void api?.inbox?.(readRoom).catch(() => undefined); };
+    read(); window.addEventListener('focus', read); document.addEventListener('visibilitychange', read);
+    return () => { window.removeEventListener('focus', read); document.removeEventListener('visibilitychange', read); };
+  }, [covered, callTarget, desktopPet, isActive, selected, unread, api, dialog, showMembers, panel, browsingHistory, scrolledAway, loadingLatest]);
   const participants = conversation?.memberIds.flatMap(id => snapshot?.companions.find(item => item.id === id) ?? []) ?? [];
   const companion = participants[0];
   const bindingKey = `shared-dsh:${bindings.state?.instances.find(instance => instance.isDefault)?.id ?? 'unconfigured'}`;
@@ -502,18 +541,19 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
   const attachedBrowser = removedAppChoices[selectedAppKey + ':browser'] ? undefined : browserDrafts[selected] ?? snapshot?.chatRuntime?.browserContext;
   const composer = bindingRequired ? <div className="bot-binding-blocked" role="status"><div><strong>{locale === 'zh-CN' ? bindings.loading ? '正在检查共享 DSH…' : '配置共享 DSH 后开始聊天' : bindings.loading ? 'Checking shared DSH…' : 'Set up shared DSH to chat'}</strong><p>{bindings.error || (locale === 'zh-CN' ? '所有伙伴共用账号、API、插件和技能，只需配置一次。已有聊天记录仍可查看。' : 'All companions share one account, API configuration, plugins and skills. Existing history remains available.')}</p></div><button type="button" disabled={bindings.loading} onClick={() => { showBinding(); if (!bindings.state) void bindings.refresh(); }}>{locale === 'zh-CN' ? bindings.state ? '配置 DSH' : '重新检查' : bindings.state ? 'Set up DSH' : 'Check again'}</button></div> : conversation?.kind === 'direct' && companion?.enabled === false ? <div className="bot-companion-disabled" role="status"><div><strong>{locale === 'zh-CN' ? `${companion.name}已关闭` : `${companion.name} is disabled`}</strong><p>{locale === 'zh-CN' ? '启用伙伴后可以继续聊天。已有聊天记录已保留。' : 'Enable this companion to continue chatting. Your chat history is preserved.'}</p></div><button type="button" disabled={busy} onClick={() => void request({ type: 'companion.runtime', companionId: companion.id, operation: 'start' }).then(result => { if (result.ok) void refresh(); })}>{locale === 'zh-CN' ? '启用伙伴' : 'Enable companion'}</button></div> : <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy || attachingBrowser} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={setPanel} send={send}
     mediaApi={mediaApi} conversationId={selected} attachments={draftFiles[selected] ?? []} addingFiles={imports[selected]} addFiles={() => addFiles()} removeFile={id => setDraftFiles(current => ({ ...current, [selected]: (current[selected] ?? []).filter(file => file.id !== id) }))} sendSticker={async media => { await send('message', media); }} sendVoice={async media => { if (!await send('message', media)) throw Error(locale === 'zh-CN' ? '语音未发送，请重试。录音已保留。' : 'Voice message was not sent. Your recording is retained.'); }}
+    onTypingActivity={desktopPet ? setChatTyping : undefined} onVoiceInputActivity={desktopPet ? setChatVoice : undefined}
     desktopCapture={isActive && (!activeCall || desktopPet) && (conversation?.kind === 'direct' || conversation?.kind === 'group')
       ? { surface: 'chat', attach: files => attachDraftFiles(selected, files) } : undefined}
     topicControls={<><BotTopicBar key={selected} conversationId={selected} runtime={snapshot?.chatRuntime} members={participants} locale={locale} request={request} refresh={()=>refresh(selected)}/>{assetAttached && <BotTopicAppCard appId="asset-manager" locale={locale} connected={!assetDrafts[selected]} onRemove={() => { markAppRemoved(selectedAppKey + ':asset-manager', true); setAssetDrafts(current => ({ ...current, [selected]: false })); const topicId = snapshot?.chatRuntime?.topic?.id; if (topicId && snapshot?.chatRuntime?.apps?.includes('asset-manager')) void request({ type: 'app.detach', conversationId: selected, topicId, appId: 'asset-manager' }).then(() => refresh(selected)); }} />}{cabinAttached && <BotTopicAppCard appId="cabin-world" locale={locale} onRemove={() => { void removeCabin(); }} />}{attachedBrowser && <BotBrowserContextCard context={attachedBrowser!} locale={locale} onOpen={onOpenBrowserContext ? () => onOpenBrowserContext(attachedBrowser!.tabId) : undefined} onRemove={() => { markAppRemoved(selectedAppKey + ':browser', true); setBrowserDrafts(current => { const next = { ...current }; delete next[selected]; return next; }); const topicId = snapshot?.chatRuntime?.topic?.id; if (topicId && snapshot?.chatRuntime?.apps?.includes('browser')) void request({ type: 'app.detach', conversationId: selected, topicId, appId: 'browser' }).then(() => refresh(selected)); }} />}</>}
-    extraTools={<BotApps key={selected} locale={locale} disabled={busy || attachingBrowser} browserAvailable={!!browserApi} browserApi={browserApi} browserContext={attachedBrowser} onBrowserActivityChange={browserAttachmentActivity} assetAttached={assetAttached} cabinAttached={cabinAttached} onCabin={connectCabin} onBrowser={async context => {
+    extraTools={<><BotSpeechMuteButton zh={locale === 'zh-CN'} muted={speechMuted} onChange={changeSpeechMute} /><BotApps key={selected} locale={locale} disabled={busy || attachingBrowser} browserAvailable={!!browserApi} browserApi={browserApi} browserContext={attachedBrowser} onBrowserActivityChange={browserAttachmentActivity} assetAttached={assetAttached} cabinAttached={cabinAttached} onCabin={connectCabin} onBrowser={async context => {
       markAppRemoved(selectedAppKey + ':browser', false); setBrowserDrafts(current => ({ ...current, [selected]: context }));
     }} onAssets={async () => {
       const result = await request({ type: 'app.connect', conversationId: selected, appId: 'asset-manager' });
       if (!result.ok) throw Error(result.error ?? '连接失败'); markAppRemoved(selectedAppKey + ':asset-manager', false); setAssetDrafts(current => ({ ...current, [selected]: true }));
-    }} />} />;
+    }} /></>} />;
   const callModal = !!activeCall && !desktopPet;
   const editorSuspended = callModal || callTarget?.editorEpoch === editorEpoch;
-  return <div className={`bot-workspace bot-atmosphere${conversation ? ` has-context${showContext ? '' : ' context-collapsed'}` : ''}${(dialog && !editorSuspended) || panel === 'memory' || callModal ? ' is-modal-open' : ''}`}>
+  return <BotDiagnostics.Provider value={{ api: launcherApi, state: bindings.state, openModelSettings: onOpenSettings, revealAppLog }}><div className={`bot-workspace bot-atmosphere${conversation ? ` has-context${showContext ? '' : ' context-collapsed'}` : ''}${(dialog && !editorSuspended) || panel === 'memory' || callModal ? ' is-modal-open' : ''}`}>
     <div className="bot-window-chrome"><span>WorldlineBox <span>/</span> {t.space}</span></div>
     <aside className="bot-sidebar">
       <header><h1>{t.title}</h1><button onClick={() => startDialog('companion')} title={t.add} aria-label={t.add}><BotIcon name="plus" /></button></header>
@@ -521,7 +561,7 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
       <div className="bot-sidebar-shortcuts"><button onClick={() => startDialog('group')}><BotIcon name="users" />{t.group}</button><button aria-pressed={sidebarView === 'chats' && peerOnly} onClick={() => { setSidebarView('chats'); setPeerOnly(current => sidebarView === 'chats' ? !current : true); setContactQuery(''); }}><BotIcon name="profile" />{locale === 'zh-CN' ? '伙伴私聊' : 'Companion chats'}{conversationUpdates.hasPeerUpdates && <span className="bot-peer-unread-dot" aria-label={locale === 'zh-CN' ? '伙伴私聊有新消息' : 'New companion messages'} />}</button></div>
       <div className="bot-sidebar-tabs" role="tablist" aria-label={t.title}><button role="tab" aria-selected={sidebarView === 'chats'} onClick={() => { setSidebarView('chats'); setPeerOnly(false); }}>{t.chats}</button><button role="tab" aria-selected={sidebarView === 'contacts'} onClick={() => setSidebarView('contacts')}>{t.contacts}<span>{snapshot?.companions.length ?? 0}</span></button></div>
       <div className="bot-scroll">{sidebarView !== 'contacts' ? visibleConversations.map(item => <div className={`bot-conversation-row${item.pinned ? ' is-pinned' : ''}`} key={item.id}><button className={`bot-contact bot-conversation ${selected === item.id ? 'selected' : ''}`} aria-current={selected === item.id ? 'page' : undefined} onClick={() => selectConversation(item.id)}>
-        {item.kind === 'group' || item.kind === 'peer' ? <BotPeerAvatar companions={item.memberIds.flatMap(id => snapshot?.companions.find(person => person.id === id) ?? [])} presence={snapshot?.presence} locale={locale} /> : <BotAvatar companion={item.kind === 'direct' ? snapshot?.companions.find(person => item.memberIds.includes(person.id)) : undefined} presence={item.kind === 'direct' ? snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? ''] : undefined} locale={locale} name={item.title} symbol={item.kind === 'world' ? '◎' : undefined} />}<span className="bot-conversation-copy"><span className="bot-conversation-title"><strong>{item.title}</strong>{conversationUpdates.unread(item.id) && <i className="bot-conversation-unread" aria-label={locale === 'zh-CN' ? '有新消息' : 'New messages'} />}</span>{item.kind === 'direct' && (snapshot?.companions.find(person => item.memberIds.includes(person.id))?.enabled === false || snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? '']) && <small className="bot-contact-status"><BotPresenceText presence={snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? '']} locale={locale} enabled={snapshot?.companions.find(person => item.memberIds.includes(person.id))?.enabled} /></small>}{item.kind !== 'direct' && <small>{item.kind === 'peer' ? locale === 'zh-CN' ? '伙伴私聊 · 旁观' : 'Companion chat · Observing' : locale === 'zh-CN' ? `${item.memberIds.length} 位成员${item.kind === 'world' ? ' · 世界记录' : ''}` : `${item.memberIds.length} members${item.kind === 'world' ? ' · World record' : ''}`}</small>}{snapshot?.conversationActivity?.[item.id] && <small className="bot-conversation-preview">{snapshot?.conversationActivity?.[item.id]?.senderName}：{snapshot?.conversationActivity?.[item.id]?.preview}</small>}</span>
+        {item.kind === 'group' || item.kind === 'peer' ? <BotPeerAvatar companions={item.memberIds.flatMap(id => snapshot?.companions.find(person => person.id === id) ?? [])} presence={snapshot?.presence} locale={locale} /> : <BotAvatar companion={item.kind === 'direct' ? snapshot?.companions.find(person => item.memberIds.includes(person.id)) : undefined} presence={item.kind === 'direct' ? snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? ''] : undefined} locale={locale} name={item.title} symbol={item.kind === 'world' ? '◎' : undefined} />}<span className="bot-conversation-copy"><span className="bot-conversation-title"><strong>{item.title}</strong>{!!unread?.[item.id] && <b className="bot-room-unread-count">{(unread[item.id] ?? 0) > 99 ? '99+' : unread[item.id]}</b>}{(item.kind === 'peer' || !unread) && conversationUpdates.unread(item.id) && <i className="bot-conversation-unread" aria-label={locale === 'zh-CN' ? '有新消息' : 'New messages'} />}</span>{item.kind === 'direct' && (snapshot?.companions.find(person => item.memberIds.includes(person.id))?.enabled === false || snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? '']) && <small className="bot-contact-status"><BotPresenceText presence={snapshot?.presence?.[item.memberIds.find(id => id !== 'user') ?? '']} locale={locale} enabled={snapshot?.companions.find(person => item.memberIds.includes(person.id))?.enabled} /></small>}{item.kind !== 'direct' && <small>{item.kind === 'peer' ? locale === 'zh-CN' ? '伙伴私聊 · 旁观' : 'Companion chat · Observing' : locale === 'zh-CN' ? `${item.memberIds.length} 位成员${item.kind === 'world' ? ' · 世界记录' : ''}` : `${item.memberIds.length} members${item.kind === 'world' ? ' · World record' : ''}`}</small>}{snapshot?.conversationActivity?.[item.id] && <small className="bot-conversation-preview">{snapshot?.conversationActivity?.[item.id]?.senderName}：{snapshot?.conversationActivity?.[item.id]?.preview}</small>}</span>
       </button><button type="button" className="bot-conversation-pin" aria-label={`${locale === 'zh-CN' ? item.pinned ? '取消置顶聊天' : '置顶聊天' : item.pinned ? 'Unpin chat' : 'Pin chat'} · ${item.title}`} title={locale === 'zh-CN' ? item.pinned ? '已置顶 · 点击取消置顶' : '置顶聊天' : item.pinned ? 'Pinned · Click to unpin' : 'Pin chat'} aria-pressed={!!item.pinned} disabled={pinning[item.id]} onClick={() => void pinConversation(item.id, !item.pinned)}><BotIcon name={item.pinned ? 'pin-filled' : 'pin'} /></button></div>) : visibleCompanions.map(item => <button className="bot-contact" key={item.id} onClick={() => void open(item.id)}><BotAvatar companion={item} presence={snapshot?.presence?.[item.id]} locale={locale} /><span><strong>{item.name}</strong>{(item.enabled === false || snapshot?.presence?.[item.id]) && <small className="bot-contact-status"><BotPresenceText presence={snapshot?.presence?.[item.id]} locale={locale} enabled={item.enabled} /></small>}<small>{builtinBotCompanion(item.id)?.summary ?? item.persona.slice(0, 42)}</small></span></button>)}
       {!sidebarCount && snapshot && !(sidebarView === 'chats' && peerOnly && !contactQuery) && <p className="bot-sidebar-no-results">{locale === 'zh-CN' ? '没有匹配的聊天或伙伴' : 'No matching chats or companions'}</p>}</div>
       {sidebarPages > 1 && <nav className="bot-sidebar-pagination" aria-label={locale === 'zh-CN' ? '聊天列表分页' : 'Chat list pages'}><span>{locale === 'zh-CN' ? `${sidebarCount} 项` : `${sidebarCount} items`}</span><button type="button" disabled={!sidebarPage} aria-label={locale === 'zh-CN' ? '上一页聊天' : 'Previous chats'} onClick={() => setSidebarPaging({ key: sidebarKey, page: sidebarPage - 1 })}>‹</button><small>{sidebarPage + 1} / {sidebarPages}</small><button type="button" disabled={sidebarPage + 1 >= sidebarPages} aria-label={locale === 'zh-CN' ? '下一页聊天' : 'Next chats'} onClick={() => setSidebarPaging({ key: sidebarKey, page: sidebarPage + 1 })}>›</button></nav>}
@@ -567,10 +607,10 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
           }).catch(failure => setError(String(failure))).finally(() => setBusy(false));
         }}>{locale === 'zh-CN' ? '停止讨论' : 'Stop discussion'}</button>}
         {conversation?.kind === 'world' && <button aria-pressed={showWorld} onClick={() => setShowWorld(!showWorld)}>{t.scene}</button>}
-        {companion && conversation?.kind === 'direct' && conversation.memberIds.includes('user') && <button className="bot-call-entry" disabled={companion.enabled === false || bindingRequired || !!callTarget} aria-label={locale === 'zh-CN' ? '拨打伙伴电话' : 'Call companion'} title={locale === 'zh-CN' ? '发起视频会面' : 'Start a video meeting'} onClick={() => setCallTarget({ conversationId: selected, companionId: companion.id })}><BotIcon name="phone" /><span>{locale === 'zh-CN' ? '拨号' : 'Call'}</span></button>}
+        {companion && conversation?.kind === 'direct' && conversation.memberIds.includes('user') && <button className="bot-call-entry" disabled={companion.enabled === false || bindingRequired || !!callTarget} aria-label={locale === 'zh-CN' ? '拨打伙伴电话' : 'Call companion'} title={locale === 'zh-CN' ? '发起视频会面' : 'Start a video meeting'} onClick={() => void dial({ conversationId: selected, companionId: companion.id })}><BotIcon name="phone" /><span>{locale === 'zh-CN' ? '拨号' : 'Call'}</span></button>}
         {companion && conversation?.kind === 'direct' && <button onClick={() => startDialog('companion', companion)}><BotIcon name="profile" />{t.edit}</button>}
       </nav></header>
-      {error && <div className="bot-error" role="alert">{error}<button aria-label={t.close} onClick={() => setError('')}>×</button></div>}
+      {error && <div className="bot-error" role="alert"><BotErrorNotice message={error} zh={locale === 'zh-CN'} /><button aria-label={t.close} onClick={() => setError('')}>×</button></div>}
       {!bindingRequired && showWorld && conversation?.kind === 'world' && api && companion && <BotWorldScene key={`${selected}:${companion.id}`} api={api} conversationId={selected} companionId={companion.id} isActive={isActive} />}
       <div className="bot-chat-body">
         <section className={`bot-thread-column${draggingFiles ? ' is-file-drag' : ''}`} aria-label={conversation?.title ?? t.title}
@@ -592,10 +632,10 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
               <BotMessageBody message={message} streamedText={streams[message.id]} statusText={status(message)} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} onOpenBrowserContext={onOpenBrowserContext} onAnswer={(questionId, text) => request({ type: 'execution.answer', messageId: message.id, questionId, text })} onContinue={observing ? undefined : requestId => request({type:'execution.continue',messageId:message.id,requestId})} />
               {message.senderId !== 'user' && message.status === 'sent' && message.content.trim() && <div className="bot-message-actions">
                 <button type="button" title={locale === 'zh-CN' ? '复制' : 'Copy'} aria-label={locale === 'zh-CN' ? '复制' : 'Copy'} onClick={() => void navigator.clipboard.writeText(message.content).then(() => setCopied(message.id), () => setError(locale === 'zh-CN' ? '复制失败' : 'Copy failed'))}><BotIcon name={copied === message.id ? 'check' : 'copy'} /></button>
-                <button type="button" title={locale === 'zh-CN' ? '朗读' : 'Read aloud'} aria-label={locale === 'zh-CN' ? '朗读' : 'Read aloud'} aria-pressed={speech.active === message.id} disabled={!api?.speech} onClick={() => speech.play(selected, message.id)}><BotIcon name={speech.active === message.id ? 'stop' : 'volume'} /></button>
+                <button type="button" title={locale === 'zh-CN' ? '朗读' : 'Read aloud'} aria-label={locale === 'zh-CN' ? '朗读' : 'Read aloud'} aria-pressed={speech.active === message.id} disabled={!api?.speech || speechMuted} onClick={() => speech.play(selected, message.id)}><BotIcon name={speech.active === message.id ? 'stop' : 'volume'} /></button>
                 {!observing && conversation.memberIds.includes('user') && <button type="button" title={locale === 'zh-CN' ? '引用' : 'Quote'} aria-label={locale === 'zh-CN' ? '引用' : 'Quote'} onClick={() => { setQuotes(current => ({ ...current, [selected]: message })); scroll.current?.closest('.bot-workspace')?.querySelector<HTMLTextAreaElement>('.bot-composer textarea')?.focus(); }}><BotIcon name="quote" /></button>}
               </div>}
-              {message.error && <small className="bot-message-error">{message.error}</small>}
+              {message.error && <BotErrorNotice message={message.error} zh={locale === 'zh-CN'} />}
               {message.senderId !== 'user' && ['queued', 'running'].includes(message.status) && (observing ? <p role="status" className="bot-peer-observer-progress"><BotIcon name="clock" />{botReplyProgressLabel(message.status, message.progress, locale)}</p> : <BotReplyProgressIndicator message={message} locale={locale} onStop={() => void request({ type: 'reply.cancel', messageId: message.id }).then(() => refresh())} />)}
               </div>
             </article></Fragment>)}
@@ -628,10 +668,12 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
     {panel === 'history' && api && <BotHistoryDialog key={`history:${selected}`} api={api} conversationId={selected} locale={locale} companions={snapshot?.companions} suspended={callModal}
       title={conversation?.title ?? t.title} onClose={() => setPanel(null)} onLocate={message => { setPanel(null); void locateMessage(message); }} />}
     {showMembers && conversation?.kind === 'group' && <BotGroupMembers conversation={conversation} companions={snapshot?.companions ?? []} presence={snapshot?.presence} locale={locale} request={request} onChanged={() => refresh()} onClose={() => setShowMembers(false)} onDissolved={() => { setShowMembers(false); selectConversation(''); void refresh(''); }} />}
-    {dialog && <BotCompanionEditor key={editorEpoch} kind={dialog} companion={snapshot?.companions.find(person => person.id === editing?.id) ?? editing} companions={snapshot?.companions ?? []} locale={locale} api={api} launcherApi={launcherApi} onOpenLauncher={onOpenLauncher} initialSection={editorSection} suspended={editorSuspended} onRuntimeChanged={() => { closeCall(); void refresh(); }} onMeet={!callTarget && !bindingRequired && editing && editing.enabled !== false && conversation?.kind === 'direct' && companion?.id === editing.id ? () => setCallTarget({ conversationId: selected, companionId: editing.id, editorEpoch }) : undefined} onPersonaChanged={() => { if (dialogEpoch.current === editorEpoch) void refresh(); }}
+    {dialog && <BotCompanionEditor key={editorEpoch} kind={dialog} companion={snapshot?.companions.find(person => person.id === editing?.id) ?? editing} companions={snapshot?.companions ?? []} locale={locale} api={api} launcherApi={launcherApi} onOpenLauncher={onOpenLauncher} initialSection={editorSection} suspended={editorSuspended} onRuntimeChanged={() => { closeCall(); void refresh(); }} onMeet={!callTarget && !bindingRequired && editing && editing.enabled !== false && conversation?.kind === 'direct' && companion?.id === editing.id ? () => void dial({ conversationId: selected, companionId: editing.id, editorEpoch }) : undefined} onPersonaChanged={() => { if (dialogEpoch.current === editorEpoch) void refresh(); }}
       onSave={draft => saveDialog(draft, editorEpoch)} onCancel={closeDialog} />}
     {activeCall && <BotCallWindow key={`call:${activeCall.target.conversationId}`}
+      sessionId={activeCall.target.sessionId} speechMuted={speechMuted} onSpeechMute={changeSpeechMute}
       conversationId={activeCall.target.conversationId} companion={activeCall.companion} api={activeCall.api} mediaApi={mediaApi} locale={locale} onHangup={closeCall} onOpenUrl={openCallUrl} onDesktopPetChange={updatePetMode}
+      chatInteracting={isActive && desktopPet && !!conversation?.memberIds.includes(activeCall.companion.id) && (chatTyping || chatVoice || busy || !!speech.active)}
       draft={callDrafts[activeCall.companion.id] ?? ''} setDraft={text => setCallDrafts(current => ({ ...current, [activeCall.companion.id]: text }))} />}
     {bindingOpen && launcherApi && bindings.state && <BotDshBindingDialog key="shared-dsh" api={launcherApi} state={bindings.state} companions={participants} locale={locale} onState={bindings.accept} onClose={() => setDismissedBinding(bindingKey)} onOpenLauncher={onOpenLauncher} />}
     {browserPicker && <BotBrowserContextPicker context={browserPicker} companions={snapshot?.companions ?? []} locale={locale} onClose={() => setDismissedBrowserContext(browserPicker.referenceId)} onSelect={async companionId => {
@@ -639,5 +681,5 @@ export function BotWorkspace({ api, mediaApi, launcherApi, browserApi, browserCo
       for (const key of removedApps.current) if (key.startsWith(result.conversationId! + ':') && key.endsWith(':browser')) markAppRemoved(key, false);
       setBrowserDrafts(current => ({ ...current, [result.conversationId!]: browserPicker })); setDismissedBrowserContext(browserPicker.referenceId); setPanel(null); setDialog(null); if (!desktopPet) closeCall(); setPeerOnly(false); setSidebarView('chats'); selectConversation(result.conversationId); await refresh(result.conversationId);
     }} />}
-  </div>;
+  </div></BotDiagnostics.Provider>;
 }

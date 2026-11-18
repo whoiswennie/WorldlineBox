@@ -61,6 +61,15 @@ it('searches title, raw type, instance, error and translated status across all p
   await click('清除筛选'); expect(container!.querySelector('[data-operation-filter="all"]')?.getAttribute('aria-pressed')).toBe('true'); expect(rows()).toHaveLength(20);
 });
 
+it('identifies a bundled runtime retry as a local update', async () => {
+  const failed = operation(1, { kind: 'runtime.bundle', label: 'DSH 0.2.2-rc.4', status: 'failed', retryRequest: { type: 'runtime.bundle' } });
+  await render(state([failed]));
+  expect(rows()[0]!.textContent).toContain('应用内置 DSH 0.2.2-rc.4');
+  expect(rows()[0]!.textContent).not.toContain('下载');
+  await click('重试内置更新');
+  expect(run).toHaveBeenCalledWith({ type: 'operation.retry', operationId: failed.id });
+});
+
 it('corrects removed last pages and resets the page when filters change', async () => {
   const initial = Array.from({ length: 43 }, (_, index) => operation(index)); await render(state(initial));
   await click('下一页'); await click('下一页'); expect(rows()).toHaveLength(3);

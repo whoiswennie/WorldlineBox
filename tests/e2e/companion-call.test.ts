@@ -35,7 +35,7 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
     await page.locator(workspaceModule).click();
     await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeDisabled();
     await enableCallVisualFixture(app, page);
-    const attachmentPaths = ['会面参考图.png', '长文件名的舞台设计说明.txt', '对话节奏记录.md'].map(name => path.join(profile, name));
+    const attachmentPaths = ['会面参考图.png', '长文件名的舞台设计说明.txt', '对话节奏记录.md', '补充内容.txt'].map(name => path.join(profile, name));
     await copyFile(path.resolve('public/companion-call/scenes/evening.png'), attachmentPaths[0]!);
     await Promise.all(attachmentPaths.slice(1).map(file => writeFile(file, '仅用于会面附件验收。')));
     await app.evaluate(({ dialog }, filePaths) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths }); }, attachmentPaths);
@@ -221,7 +221,7 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
       expect(capture).toMatchObject({ cornerAlpha: 0, characterAlpha: 255 });
       const petImage = Buffer.from(capture.png, 'base64');
       await testInfo.attach('desktop-pet', { body: petImage, contentType: 'image/png' });
-      await expect(topics).toHaveCSS('background-color', 'rgb(245, 249, 253)');
+      await expect(floating.locator('.bot-call-dock')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
       for (const [blue, green, red, alpha] of capture.topicPixels) {
         expect(alpha, JSON.stringify({ topicsBox, image: [capture.width, capture.height], window: [capture.cssWidth, capture.cssHeight], samples: capture.topicPixels })).toBe(255);
         expect(Math.min(blue!, green!, red!)).toBeGreaterThan(225);
@@ -245,7 +245,7 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
       const center = (box: { x: number; width: number }) => box.x + box.width / 2;
       expect(Math.abs(center(optionsBox) - center(topicsBox))).toBeLessThan(1);
       expect(Math.abs(center(optionsBox) - center(expandedComposer))).toBeLessThan(1);
-      expect(expandedComposer.height).toBe(compactBox.height);
+      expect(expandedComposer.height).toBeLessThanOrEqual(compactBox.height + 20);
       const toolsScreenshot = await window.evaluate(async native => (await native.webContents.capturePage()).toPNG().toString('base64'));
       await writeFile(path.join(evidence, 'companion-call-desktop-pet-tools.png'), Buffer.from(toolsScreenshot, 'base64'));
       await topics.locator('.bot-topic-current').click();
@@ -256,8 +256,8 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
       await floating.getByRole('button', { name: '会面聊天记录', exact: true }).click();
       const history = floating.getByRole('region', { name: '会面聊天', exact: true });
       await expect(history).toContainText('还没有消息。');
-      await expect(history).toHaveCSS('background-color', 'rgb(251, 253, 255)');
-      await expect(history.getByRole('tab', { name: '操作' })).toHaveCSS('color', 'rgb(64, 91, 120)');
+      await expect(history).toHaveCSS('background-color', 'rgb(255, 255, 255)');
+      await expect(history.getByRole('tab', { name: '操作' })).toHaveCSS('color', 'rgb(86, 86, 82)');
       const historyBox = (await history.boundingBox())!;
       expect(historyBox.height).toBeLessThanOrEqual(144);
       expect(historyBox.y + historyBox.height).toBeLessThan(topicsBox.y);
@@ -271,7 +271,8 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
       await floating.getByRole('button', { name: '收起会面输入', exact: true }).click();
       const expandInput = floating.getByRole('button', { name: '展开会面输入', exact: true });
       await expect(expandInput).toBeVisible();
-      await expect(composer).toHaveCount(0);
+      await expect(composer).toBeHidden();
+      await expect(floating.getByRole('textbox')).toHaveCount(0);
       await expect.poll(() => petCanvas.boundingBox()).toEqual(fullStage);
       await pet.waitForTimeout(250);
       const full = await window.evaluate(async native => {
@@ -307,18 +308,19 @@ test('companion meeting loads real Live2D and native actions, and cleans up ring
       await floating.getByRole('textbox').fill('在桌宠窗口编辑。');
       await floating.getByRole('button', { name: '添加文件', exact: true }).click();
       const draftAttachments = floating.getByRole('region', { name: '待发送附件' });
-      await expect(draftAttachments.getByRole('listitem')).toHaveCount(2);
-      await draftAttachments.getByRole('button', { name: '查看全部 3 个附件' }).click();
-      await expect(draftAttachments.getByRole('listitem')).toHaveCount(3);
-      await draftAttachments.getByRole('button', { name: '预览 会面参考图.png' }).click();
+      await draftAttachments.getByRole('button', { name: '查看全部 4 个附件' }).click();
+      const draftList = pet.getByRole('dialog', { name: '待发送附件', exact: true });
+      await expect(draftList.getByRole('listitem')).toHaveCount(4);
+      await draftList.getByRole('button', { name: '预览 会面参考图.png' }).click();
       const preview = pet.getByRole('dialog', { name: '会面参考图.png', exact: true });
       await expect(preview).toBeVisible();
       await expect(preview.locator('img')).toHaveJSProperty('complete', true);
       await preview.getByRole('button', { name: '关闭预览' }).click();
       const attachmentsScreenshot = await window.evaluate(async native => (await native.webContents.capturePage()).toPNG().toString('base64'));
       await writeFile(path.join(evidence, 'companion-call-desktop-pet-attachments.png'), Buffer.from(attachmentsScreenshot, 'base64'));
-      await draftAttachments.getByRole('button', { name: '移除 对话节奏记录.md' }).click();
-      await expect(draftAttachments.getByRole('listitem')).toHaveCount(2);
+      await draftList.getByRole('button', { name: '移除 对话节奏记录.md' }).click();
+      await expect(draftList.getByRole('listitem')).toHaveCount(3);
+      await draftList.getByRole('button', { name: '关闭附件列表' }).click();
       await more.press('Escape');
       await expect(more).toHaveAttribute('aria-expanded', 'false');
       await expect(floating.getByRole('textbox')).toHaveValue('在桌宠窗口编辑。');

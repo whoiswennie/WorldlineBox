@@ -1,7 +1,13 @@
 import { ipcRenderer } from 'electron';
-import { BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, type BotEvent, type BotRequest, type BotResponse, type BotSpeechEvent, type BotSpeechRequest, type WorldlineBoxBotApi } from '../../shared/companion-bot';
+import { BOT_INBOX_CHANNEL, type BotInboxEvent, BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, type BotEvent, type BotRequest, type BotResponse, type BotSpeechEvent, type BotSpeechRequest, type WorldlineBoxBotApi } from '../../shared/companion-bot';
 
 export const companionBot: WorldlineBoxBotApi = Object.freeze({
+  inbox: (room?: string) => ipcRenderer.invoke(BOT_INBOX_CHANNEL, room),
+  onInbox(listener: (event: BotInboxEvent) => void) {
+    const handler = (_event: Electron.IpcRendererEvent, input: BotInboxEvent) => listener(input);
+    ipcRenderer.on(BOT_INBOX_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(BOT_INBOX_CHANNEL, handler);
+  },
   async request(input: BotRequest) {
     const parsed = botRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };

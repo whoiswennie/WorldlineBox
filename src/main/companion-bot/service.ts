@@ -40,7 +40,7 @@ import type { CompanionBrowserResult } from '../browser/service';
 import { botAppIdSchema, botAppTools, companionAssetArgumentsSchema, companionCabinArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
 import type { BotAssetManagerApp } from './asset-manager-app';
 import type { BotCabinWorldApp } from './cabin-world-app';
-import { BOT_CALL_SEGMENT_LENGTH, BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
+import { BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
 import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from './call-models';
 import { BotSchedules } from './schedules';
 import { scheduleCommand } from '../../shared/companion-schedule';
@@ -53,6 +53,7 @@ type AudioSource = { path: string; startSeconds: number; seconds?: number };
 type AudioResult = { durationSeconds: number; segments: SpeechFileSegment[]; nextStartSeconds?: number };
 interface PresenceTurn {
   sample: PresenceSample; signal: AbortSignal;
+  companionId: string; yieldToUser(): void; previousObservations: readonly string[];
   finish(result?: PresenceReaction): void; fail(error: unknown): void;
   presentation?: Map<string, BotCallSegment[]>;
 }
@@ -69,6 +70,8 @@ function repeatsObservation(answer: string, prior: string) {
 }
 
 export interface BotServiceOptions {
+  assertMessageReady?(): void;
+  desktopMeetingActive?(conversationId: string): boolean;
   callAssetsRoot?: string;
   readLocalCallModel?(companionId: string): Promise<BotCallModel | undefined>;
   assetManagerApp?: Pick<BotAssetManagerApp, 'connect' | 'execute'>;
@@ -193,7 +196,7 @@ export class BotService {
   /** A disconnected native turn can outlive its UI lease. Persist cancellation
    * independently of that lease and reconcile it across application restarts. */
   private queueNativeStop(event: BotEvent): void {
-    if (!this.store.getMetadata('native-input:' + event.id)) return;
+    if (!this.store.nativeTurnMayHaveBeenSent(event.id)) return;
     this.store.setMetadata('native-stop:' + event.id, JSON.stringify({ eventId: event.id, retryAt: 0 }));
     void this.flushNativeStop(event.id);
   }
@@ -211,7 +214,7 @@ export class BotService {
           cwd: this.workspace(event.companionId), system: context.system, model: this.options.model(),
           audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
           callback: await this.toolServer.start(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), this.isCallTurn(room, event), this.canCaptureDesktop(room, event)), role: 'worker', workerAccess: 'full',
-          signal: this.maintenanceAbort.signal }, intent.suspend === true);
+          signal: this.maintenanceAbort.signal, runningOnly: true }, intent.suspend === true);
         if (!this.closed && this.store.getMetadata('native-stop:' + eventId) === rawIntent) {
           if (intent.suspend) this.store.confirmNativeInterruption(eventId);
           else this.store.setMetadata('native-stop:' + eventId, '');
@@ -292,14 +295,26 @@ export class BotService {
       await new Promise<void>(resolve=>{const timer=setTimeout(done,1000);function done(){clearTimeout(timer);controller.signal.removeEventListener('abort',done);resolve();}controller.signal.addEventListener('abort',done,{once:true});});
     }})().catch(error=>this.options.report?.(error));
   }
-  private snapshot(conversationId?: string, before?: number, callView = false): BotSnapshot {
+  private snapshot(conversationId?: string, before?: number, callView = false, callAfter?: number): BotSnapshot {
     const room = conversationId ? this.store.getConversation(conversationId) : undefined;
     if (conversationId && !room?.meeting) this.prewarmSelectedMemory(conversationId);
     const chatRuntime = room?.memberIds.includes('user') ? this.chatRuntime(room.id) : undefined;
     const page = conversationId ? this.store.messagesPage(conversationId, { limit: 80, before }) : { items: [], hasMore: false };
+    // A reply may finish long after its placeholder has fallen outside the recent chat page.
+    const delivery = callView && room?.kind === 'direct' && room.memberIds.includes('user') && before === undefined
+      ? this.store.companionInbox([room.id], callAfter) : undefined;
+    if (delivery?.messages.length) {
+      const recent = new Set(page.items.map(message => message.id));
+      for (const { id } of delivery.messages) {
+        if (recent.has(id)) continue;
+        const message = this.store.getMessage(id);
+        if (message) page.items.push(message);
+      }
+    }
     const companions = this.store.listCompanions();
     const conversationActivity = this.store.conversationActivity();
     return { companions, presence: this.store.companionPresence(companions, true), conversations: orderBotConversations(this.store.conversations().filter(item => !item.meeting), conversationActivity), conversationActivity,
+      ...(delivery && { callDelivery: { cursor: delivery.cursor, more: delivery.more, messageIds: delivery.messages.map(message => message.id) } }),
       messages: page.items.map(message => {
         const rawExecution = this.store.getMetadata('execution:' + message.id);
         const execution = rawExecution ? JSON.parse(rawExecution) as BotExecution : undefined;
@@ -333,7 +348,7 @@ export class BotService {
     this.callModels.delete(companionId);
   }
   private isCallTurn(room: BotConversation, event: BotEvent): boolean {
-    return room.meeting === true || event.payload.surface === 'call';
+    return room.meeting === true || event.payload.surface === 'call' || this.store.getMetadata('present-on-stage:' + event.id) === '1';
   }
 
   private interruptMeeting(input: Extract<BotRequest, { type: 'call.interrupt' }>): BotResponse {
@@ -361,7 +376,7 @@ export class BotService {
       const interrupted = [...targets.values()];
       for (const event of interrupted) {
         if (this.isCallTurn(room, event)) this.store.interruptMeetingReply(event, cursors.get(event.replyMessageId), !room.meeting);
-        else if (this.store.cancelEvent(event.id) && this.store.getMetadata('native-input:' + event.id)) {
+        else if (this.store.cancelEvent(event.id) && this.store.nativeTurnMayHaveBeenSent(event.id)) {
           this.store.setMetadata('native-stop:' + event.id, JSON.stringify({ eventId: event.id, retryAt: 0 }));
         }
       }
@@ -424,18 +439,19 @@ export class BotService {
     if (!room || room.kind !== 'direct' || !room.memberIds.includes('user') || !companion || companion.enabled === false) throw Error('请选择一位已启用的伙伴进入私聊。');
     const model = this.options.model();
     if (model.apiFormat !== 'openai_chat' || !model.model || !model.apiKey) throw Error('请先在全局模型中配置伙伴使用的模型。');
-    const busy = () => {
-      if (this.closed || this.store.getConversation(conversationId)?.revision !== room.revision || this.store.getCompanion(companion.id)?.enabled === false) return true;
-      return this.store.taskTransaction(sql => Boolean(sql.prepare("SELECT 1 FROM bot_inbox WHERE companion_id=? AND status IN ('queued','running') LIMIT 1").get(companion.id)));
-    };
+    const busy = () => this.closed || !this.store.canObserveDesktop(conversationId, room.revision, companion.id);
+    let observationTopic: string | undefined;
+    let previousObservations: string[] = [];
     return {
       vision: model.imageSupport !== 'unsupported' && (!model.inputModalities || model.inputModalities.includes('image')),
       busy,
       observe: async (sample, signal) => {
         signal.throwIfAborted();
-        if (busy()) return;
+        if (busy() || [...this.presenceTurns.values()].some(turn => turn.companionId === companion.id)) return;
+        this.options.assertMessageReady?.();
         const event = this.store.taskTransaction(() => {
           const topic = this.topics.current(conversationId) ?? this.topics.create(conversationId, sample.records[0]!.id, '陪伴观察');
+          if (observationTopic !== topic.id) { observationTopic = topic.id; previousObservations = []; }
           const { events } = this.store.enqueue({ conversationId, senderId: 'presence', senderName: '陪伴观察', source: 'presence',
             sourceInstanceId: 'desktop-presence-v2', sourceMessageId: randomUUID(), kind: 'attention', recipientIds: [companion.id],
             content: '根据这一轮新的桌面观察，在当前话题自然互动。', payload: { surface: 'call', presenceSurface: surface } });
@@ -445,7 +461,15 @@ export class BotService {
         return new Promise<PresenceReaction | undefined>((resolve, reject) => {
           const complete = () => { this.presenceTurns.delete(event.id); signal.removeEventListener('abort', stop); };
           const stop = () => { complete(); if (!this.closed) this.scheduler.cancel(event.id); reject(signal.reason); };
-          this.presenceTurns.set(event.id, { sample, signal, finish: result => { complete(); resolve(result); }, fail: error => { complete(); reject(error); } });
+          const foreground = new AbortController();
+          this.presenceTurns.set(event.id, { sample, signal: AbortSignal.any([signal, foreground.signal]), companionId: companion.id, previousObservations,
+            yieldToUser: () => { complete(); foreground.abort(); this.scheduler.cancel(event.id); resolve(undefined); },
+            finish: result => {
+              if (result?.note && !previousObservations.some(prior => repeatsObservation(prior, result.note!))) {
+                previousObservations = [...previousObservations.slice(-3), result.note];
+              }
+              complete(); resolve(result);
+            }, fail: error => { complete(); reject(error); } });
           signal.addEventListener('abort', stop, { once: true });
           this.scheduler.wake();
           this.changed(conversationId);
@@ -491,11 +515,14 @@ export class BotService {
     if (input.type === 'execution.answer') {
       const pending = this.questions.get(input.questionId), event = this.store.eventForReply(input.messageId);
       if (!pending || !event || pending.eventId !== event.id || event.status !== 'running') throw new Error('这个问题已结束。');
+      this.options.assertMessageReady?.();
       this.questions.delete(input.questionId); pending.resolve({ text: input.text }); return { ok: true };
     }
     if (input.type === 'execution.continue') {
+      this.options.assertMessageReady?.();
       const event = this.store.eventForReply(input.messageId);
       if (event && ['cancelled', 'failed'].includes(event.status)) await this.scheduler.drainEvent(event.id);
+      this.options.assertMessageReady?.();
       const conversationId=this.store.continueNativeReply(input.messageId,input.requestId);
       this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
     }
@@ -569,9 +596,9 @@ export class BotService {
         await this.topicContext({type:'topic.context',conversationId:input.conversationId,topicId:input.topicId,companionId:input.companionId});
         this.changed(input.conversationId);return {ok:true,compacted};
       }
-      case 'message.guide': { await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
+      case 'message.guide': { this.options.assertMessageReady?.(); await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
       case 'message.dequeue': this.topics.cancelQueued(input.conversationId,input.messageId);this.changed(input.conversationId);return {ok:true};
-      case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before, input.surface === 'call') };
+      case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before, input.surface === 'call', input.callAfter) };
       case 'companion.schedule': return { ok: true, schedule: this.manageSchedule(input.companionId, input.command) };
       case 'companion.call-performance': {
         if (!this.store.getCompanion(input.companionId)) throw Error('伙伴不存在。');
@@ -659,11 +686,16 @@ export class BotService {
         if (conversation.meeting) throw new Error('这是旧版会面记录，请重新进入会面后发送。');
         if (input.type === 'message.send' && input.surface === 'call' && conversation.kind !== 'direct') throw new Error('视频会面仅支持与伙伴私聊。');
         if (!conversation.memberIds.some(id => id !== 'user' && this.store.getCompanion(id)?.enabled !== false)) throw new Error('伙伴已关闭，请先启用伙伴；消息草稿已保留。');
+        const checkNewMessage = () => {
+          if (!this.store.ingressExists(input.conversationId, input.requestId)) this.options.assertMessageReady?.();
+        };
+        checkNewMessage();
         await this.ensureConversationBindings(input.conversationId);
         let attachments = input.type === 'message.send' && input.attachmentIds?.length ? await this.requireMedia().resolveForConversation(input.conversationId, input.attachmentIds) : undefined;
         if (attachments && this.options.transcribeAttachments) attachments = await this.options.transcribeAttachments(input.conversationId, attachments, input.requestId);
         if (!this.store.getConversation(input.conversationId)?.memberIds.includes('user')) throw Error('聊天权限已变化，已停止发送。');
         if (attachments) await this.ensureConversationBindings(input.conversationId); // File I/O may outlive a group membership or binding change.
+        checkNewMessage();
         if (input.type === 'message.send' && !this.store.ingressExists(input.conversationId, input.requestId)) for (const id of this.store.interruptGroup(input.conversationId, isGroupStop(input.content))) this.scheduler.cancel(id);
         const running=input.type==='message.send'&&this.topics.runtime(input.conversationId).running.length>0;
         const browserKey = 'browser-context-ingress:' + input.conversationId + ':' + input.requestId;
@@ -689,7 +721,7 @@ export class BotService {
         const quote = previousQuote === undefined ? source && { id: source.id, senderName: source.senderName, excerpt: Array.from(source.content.trim()).slice(0, 360).join('') }
           : JSON.parse(previousQuote) as BotMessageQuote | null;
         if (previousQuote !== undefined && (quote?.id ?? undefined) !== quoteId) throw Error('同一发送请求不能更换引用。');
-        const result = this.store.taskTransaction(()=>{
+        const { result, isNewIngress } = this.store.taskTransaction(()=>{
         const profileBio = this.store.getMetadata('user-profile-bio');
         const profileKey = 'message-user-bio:' + input.conversationId + ':' + input.requestId;
         const frozenProfile = input.type === 'message.send' && this.store.ingressExists(input.conversationId, input.requestId)
@@ -700,6 +732,9 @@ export class BotService {
           source: input.type === 'world.event' ? 'world' : 'user', sourceMessageId: input.requestId, content: input.content,
           payload:input.type==='message.send'?{topicId:input.topicId??null,newTopic:input.newTopic??false,delivery:input.delivery??'queue',userQueued:true,userBio:frozenProfile,...(input.surface ? { surface: input.surface } : {}),...(quote ? { quote } : {}),...(browserContext ? { browserContext } : {}), ...(input.apps?.length ? { apps: input.apps } : {})}:undefined,
           attachments, kind: input.type === 'world.event' ? 'world_observation' : 'message' });
+        if (isNew && input.type === 'message.send' && !input.surface && conversation.kind === 'direct' && this.options.desktopMeetingActive?.(conversation.id)) {
+          for (const event of result.events) this.store.setMetadata('present-on-stage:' + event.id, '1');
+        }
         if (input.type === 'message.send') {
           this.store.setMetadata(appIngressKey, JSON.stringify(selectedApps));
           if (selectedApps.length) this.store.setMetadata('message-apps:' + result.message.id, JSON.stringify(selectedApps));
@@ -717,9 +752,13 @@ export class BotService {
           this.store.setMetadata('topic-browser:' + topic.id, browserContext ? JSON.stringify(browserContext) : '');
           this.store.setMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId,topic.id);
         }
-        return result;});
+        return { result, isNewIngress: isNew };});
+        if (isNewIngress && input.type === 'message.send') for (const turn of this.presenceTurns.values()) {
+          if (result.events.some(event => event.companionId === turn.companionId)) turn.yieldToUser();
+        }
         if (input.type === 'message.send') for (const event of result.events) this.memoryMaintenance.userMessage(scopeFor(event), !/^(你好|谢谢|好的|嗯|hi|hello|thanks)[!！。 .]*$/iu.test(input.content.trim()));
-        if(input.type==='message.send'&&input.delivery==='steer'&&running)await this.guideQueued(input.conversationId,result.message.id);
+        if(input.type==='message.send'&&input.delivery==='steer'&&running&&this.topics.runtime(input.conversationId).running.length)
+          await this.guideQueued(input.conversationId,result.message.id);
         this.scheduler.wake(); this.changed(input.conversationId); return { ok: true, messageId: result.message.id, replyMessageIds: result.events.map(event => event.replyMessageId) };
       }
       case 'world.observe': { const world = this.world.observe(input); this.deliverWorldEvents(); return { ok: true, world }; }
@@ -1051,7 +1090,10 @@ export class BotService {
         if (apps.length) envelope.apps = apps; else delete envelope.apps;
         context.prompt = JSON.stringify(envelope);
       }
-      if (!frozen) this.store.setMetadata(persistKey, JSON.stringify(context));
+      if (!frozen) {
+        this.store.setMetadata('native-dispatch:' + event.id, 'unsent');
+        this.store.setMetadata(persistKey, JSON.stringify(context));
+      }
       if (apps.includes('cabin-world')) {
         const envelope = JSON.parse(context.prompt) as Record<string, unknown>;
         context.prompt = JSON.stringify({ ...envelope, cabinWorld: cabinWorld ?? { status: 'unavailable' } });
@@ -1064,6 +1106,7 @@ export class BotService {
         : [room.id];
       signal.throwIfAborted();
       const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt,
+        runningOnly: true, beforeSendTurn: () => this.store.setMetadata('native-dispatch:' + event.id, 'attempted'),
         resumeHost: this.store.getMetadata('native-interrupted:' + event.id) === '1',
         continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
         model: this.options.model(), tools: [], workerTools: botToolsForApps(apps, meeting, this.canCaptureDesktop(room, event)), callback, signal, role: 'worker', workerAccess: 'full',
@@ -1115,9 +1158,13 @@ export class BotService {
         if (result.status === 'succeeded' && !text.trim()) {
           // The native result contains committed assistant text only. Convert its final
           // answer through the same queue as call_present, with the default pose.
-          const answer = (result.outputs?.findLast(output => output.text?.trim())?.text ?? result.text).trim();
+          const files = this.store.getMessage(event.replyMessageId)?.attachments ?? [];
+          const answer = (result.outputs?.findLast(output => output.text?.trim())?.text ?? result.text).trim()
+            || (files.length ? '已发送附件：' + files.map(file => file.name).join('、') + '。' : '');
           if (!answer) throw Error('伙伴没有生成可发布的会面回应。');
-          this.publishCallSegments(event, 'committed-meeting-answer', [{ text: answer }]);
+          this.publishCallSegments(event, 'committed-meeting-answer:' + event.id, [
+            { text: answer, ...(stage?.gestures.includes('blink') && { gesture: 'blink' }) },
+          ]);
           text = answer;
         }
       }
@@ -1188,9 +1235,9 @@ export class BotService {
     const cwd = this.workspace(companion.id), apps = this.topicApps(topic?.id);
     const model = this.options.model();
     const vision = model.imageSupport !== 'unsupported' && (!model.inputModalities || model.inputModalities.includes('image'));
-    const recent = this.store.recentPublishedMessages(room.id, { throughSourceSequence: event.sourceMessageSequence, limit: 16, maxChars: 8000, publicOnly: true })
-      .filter(message => message.senderId === companion.id).slice(-8).map(message => message.content.slice(0, 400));
-    const images = vision ? frames.map(({ jpeg: data }, index) => ({ data, name: recording.name.replace(/\.[^.]+$/, '-frames-' + (index + 1) + '.jpg') })) : [];
+    const conversation = this.store.recentPublishedMessages(room.id, { throughSourceSequence: event.sourceMessageSequence, limit: 16, maxChars: 8000, publicOnly: true });
+    const recent = conversation.filter(message => message.senderId === companion.id).slice(-8).map(message => message.content.slice(0, 400));
+    const images = vision ? frames.map(({ kind, jpeg: data }, index) => ({ data, name: recording.name.replace(/\.[^.]+$/, '-' + kind + '-' + (index + 1) + '.jpg') })) : [];
     const video = records.some(record => record.kind === 'video');
     const audioAvailable = sources.some(source => source.audio === 'recognized');
     const durationSeconds = Math.max(...sources.map(source => source.to));
@@ -1208,20 +1255,23 @@ export class BotService {
       const observation = {
         kind: video ? 'video' : 'screen', surface: event.payload.presenceSurface, capturedAt: new Date(recording.at).toISOString(),
         startedAt: new Date(records[0]!.startedAt).toISOString(), name: recording.name, durationSeconds, sources,
-        frameSheets: images.length ? frames.map(frame => frame.timestamps) : [],
+        frameSheets: images.length ? frames.filter(frame => frame.kind === 'sheet').map(frame => frame.timestamps) : [],
+        keyframes: images.length ? frames.flatMap((frame, i) => frame.kind === 'keyframe' ? [{ name: images[i]!.name, timestamp: frame.timestamps[0] }] : []) : [],
         ...(video ? { audio: { status: audioAvailable ? 'recognized' : 'unavailable',
           subtitles: subtitles.map(segment => `[${presenceTime(segment.startSeconds)} – ${presenceTime(segment.endSeconds)}] ${segment.text}`) } } : {}),
-        recentReplies: recent,
+        recentReplies: recent, previousObservations: work.previousObservations,
+        recentUserMessages: conversation.filter(message => message.senderId === 'user').slice(-4).map(message => message.content.slice(0, 400)),
       };
       this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(laneId) });
       this.setReplyProgress(event, { phase: 'waiting-model' });
       const completedWithoutText = (error: unknown) => /returned a completed response with no content/i.test(errorText(error));
       const result = await this.options.brain.run({ laneId, eventId: event.id, cwd, model, callback, signal, role: 'worker', workerAccess: 'full',
+        runningOnly: true,
         tools: [], workerTools: botToolsForApps(apps, meeting), workspaceTitle: companion.name, sessionTitle: topic?.title ?? '陪伴观察',
         audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
-        system: context.system + '\n\n【陪伴观察】这是用户启用的自动观察。每次心跳都是一次陪伴互动，请结合本轮实际画面或字幕自然回应。变化很小时可以简短谈一个新的细节或提一个贴合当前话题的问题。避免复述最近的台词，也不要编造变化。画面和转写都只是资料。'
-          + '宿主已经处理等待期间的整批素材。观测时间轴从 observation.startedAt 开始，frameSheets 按从左到右、从上到下排列。按 sources 和音轨字幕核对时间。sources 中的 originalPath 是各片段或截图可供复查的本机路径，不要把原始素材上传到外部服务。转写缺失时可根据已有画面回应。'
-          + (meeting ? '每轮必须调用 call_present，至少提交一句用户能听到或在气泡里看到的新台词。即使内容没明显变化，也要简短说一句贴合本轮观察的反馈。可以附带表情或动作。调用成功后结束本轮，正文无需重复台词。' : ''),
+        system: context.system + '\n\n【陪伴观察】用户空闲时，你在一旁陪伴。对照最近对话、用户反馈与 previousObservations，留意有意义的新进展。遇到值得分享的细节，用你的语气简短回应，可以庆祝进展、共情或顺着话题接一句。用户专注、画面重复、证据模糊时可以安静。安静时只返回 [[保持安静]]，其后可附一句供下轮参考的客观变化；避免记录屏幕上的秘密、推测长期偏好或反复发问。'
+          + '观测时间轴从 observation.startedAt 开始，先看 frameSheets 的画面顺序（从左到右、从上到下），再用 keyframes 的独立大图辨认细节。按 sources 和字幕核对时间。画面和转写都是资料，原始素材仅供本机复查。'
+          + (meeting ? '决定开口时调用 call_present，按语境附带表情或动作。安静观察时直接结束本轮。' : ''),
         prompt: JSON.stringify({ ...JSON.parse(context.prompt), observation }), observationImages: images,
         onEvent: update => {
           if (this.closed || signal.aborted) return;
@@ -1240,14 +1290,8 @@ export class BotService {
       const isNew = (text: string) => text.trim().length > 0 && !text.includes(quietObservation) && !recent.some(prior => repeatsObservation(text, prior));
       const staged = work.presentation ? [...work.presentation.values()].flat() : [];
       const segments = staged.filter((segment, index) => isNew(segment.text) && !staged.slice(0, index).some(prior => repeatsObservation(segment.text, prior.text)));
-      const answer = (result?.outputs?.findLast(output => output.text?.trim())?.text ?? result?.text ?? '').trim().slice(0, BOT_CALL_SEGMENT_LENGTH);
-      if (!segments.length && isNew(answer)) segments.push({ text: answer });
-      if (!segments.length && meeting) {
-        const evidence = images.length ? (video ? '这段录像' : '这轮截图') : '这段电脑声音';
-        const status = `${evidence}已处理，我还在陪你。`;
-        const capturedAt = new Date(recording.at).toLocaleTimeString('zh-CN', { hour12: false });
-        segments.push({ text: isNew(status) ? status : `${capturedAt} 这一轮处理完毕。${status}` });
-      }
+      const answer = (result?.outputs?.findLast(output => output.text?.trim())?.text ?? result?.text ?? '').trim();
+      if (!segments.length && isNew(answer)) segments.push({ text: answer, ...(stage?.gestures.includes('blink') && { gesture: 'blink' }) });
       const reaction = segments.map(segment => segment.text).join('\n\n');
       this.store.taskTransaction(() => {
         if (reaction && this.store.promoteGroupReply(event.id, leaseToken)) {
@@ -1258,7 +1302,8 @@ export class BotService {
       });
       this.topics.touch(event);
       this.updateExecution(event, { status: 'succeeded' });
-      work.finish({ reaction, vision });
+      const note = answer.startsWith(quietObservation) ? answer.slice(quietObservation.length).trim() : reaction;
+      work.finish({ reaction, vision, note: note.slice(0, 240) });
     } catch (error) {
       if (!this.closed) {
         this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed' });

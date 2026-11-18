@@ -43,6 +43,7 @@ function runNodeGate(script: string, args: string[], extraEnv?: NodeJS.ProcessEn
 
 const config: ForgeConfig = {
   hooks: {
+    preStart: async () => { if (process.platform === 'win32') runNodeGate('scripts/patch-dev-electron-name.mjs', []); },
     // These hooks are part of Forge itself, so invoking `electron-forge`
     // directly cannot bypass either the promoted-source gate or verification
     // of the bytes that Packager actually copied.
@@ -105,6 +106,7 @@ const config: ForgeConfig = {
     },
   },
   packagerConfig: {
+    win32metadata: { ProductName: '世界线盒子', FileDescription: '世界线盒子' },
     // npm installs the vendored companion SDK as directory junctions on Windows.
     // Copy their contents so ordinary builds do not require symlink privileges
     // and the packaged application never points back into the source checkout.

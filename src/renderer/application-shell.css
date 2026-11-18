@@ -169,3 +169,6 @@
 .application-capture-menu button { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 0; border-radius: 7px; color: var(--ui-content-primary); background: transparent; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
 .application-capture-menu button:hover { background: var(--ui-surface-hover); }
 .application-capture-menu button:focus-visible, .application-capture-more:focus-visible { outline: 2px solid var(--ui-border-focus); outline-offset: 1px; }
+.application-navigation-item:has(.application-unread-count) { position: relative; }
+.application-unread-count, .bot-room-unread-count { background: #bc3754; color: white; border-radius: 20px; padding: 1px 5px; font: 600 10px/14px system-ui, sans-serif; }
+.application-unread-count { position: absolute; top: 2px; right: 2px; }

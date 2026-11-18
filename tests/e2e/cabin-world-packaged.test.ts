@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
+import bundledRelease from '../../resources/dsh-runtime-release.json';
 import { electronLaunchEnv, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 import type { DshLauncherRequest, WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 
@@ -36,7 +37,7 @@ test('provisions packaged DSH and runs Cabin World 1.1 without external download
       { timeout: 360000 }).toBe('succeeded');
     const provisioned = await state();
     expect(provisioned.network?.settings.proxyUrl).toBe('http://127.0.0.1:1');
-    expect(provisioned.runtimes).toEqual([expect.objectContaining({ version: '0.2.2-rc.3' })]);
+    expect(provisioned.runtimes).toEqual([expect.objectContaining({ version: bundledRelease.version })]);
     expect(provisioned.instances).toEqual([expect.objectContaining({ isBundled: true, isDefault: true, runtimeId: provisioned.runtimes[0]!.id })]);
     const instance = provisioned.instances[0]!;
     const open = await request({ type: 'instance.open', instanceId: instance.id });

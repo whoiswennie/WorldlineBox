@@ -3,12 +3,17 @@ import { SPEECH_MAX_WAV_BYTES, SPEECH_RECORDING_SECONDS, type LocalSpeechTranscr
 
 export const BOT_MEDIA_CHANNEL = 'companion-bot-media:request';
 export const BOT_MEDIA_CLIPBOARD_CHANNEL = 'companion-bot-media:clipboard-files';
+export const BOT_PRESENCE_ACTIVITY_CHANNEL = 'companion-bot-media:presence-activity';
 /** Classify a declared MP4 container without reading or probing its bytes. */
 export function normalizeBotMediaMime(name: string, mimeType: string): string {
   if (mimeType === 'application/mp4') return /\.m4a$/i.test(name) ? 'audio/mp4' : /\.(mp4|m4v)$/i.test(name) ? 'video/mp4' : mimeType;
   return mimeType;
 }
 export const BOT_MEDIA_PREVIEW_MAX_BYTES=200*1024*1024;
+export const BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS = { bytes: 8 * 1024 * 1024, pixels: 20_000_000 } as const;
+export function botImageNeedsConversion(mimeType: string) {
+  return /^image\/(?:tiff?|hei[cf](?:-sequence)?)$/i.test(mimeType);
+}
 export const BOT_MEDIA_PREVIEW_LIMITS={image:BOT_MEDIA_PREVIEW_MAX_BYTES,video:BOT_MEDIA_PREVIEW_MAX_BYTES,audio:BOT_MEDIA_PREVIEW_MAX_BYTES,text:BOT_MEDIA_PREVIEW_MAX_BYTES} as const;
 export const BOT_MEDIA_TEXT_PAGE_BYTES=64*1024;
 export const BOT_MEDIA_TEXT_PAGE_MAX_BYTES=256*1024;
@@ -49,19 +54,32 @@ export const BOT_DESKTOP_AGENT_EVENT = 'worldlinebox:companion-desktop-capture';
 export const botPresenceEnergy = z.enum(['low', 'balanced', 'active']);
 export type BotPresenceEnergy = z.infer<typeof botPresenceEnergy>;
 export type BotPresenceCapture = 'screen' | 'video';
+export type BotDesktopActivity = 'recording' | 'screenshot' | 'captured' | 'observing' | 'listening';
 export const BOT_PRESENCE_ARCHIVE_LIMIT = 50;
+export const BOT_PRESENCE_ROUND_PAGE = 24;
+export const BOT_PRESENCE_ROUND_LIMIT = 4096;
+export const BOT_PRESENCE_ROUND_DAYS = 3;
 export const BOT_PRESENCE_TASK_TIMEOUT_MS = 150_000;
 export const BOT_PRESENCE_CLIP_SECONDS = 16;
-export const BOT_PRESENCE_MAX_CLIP_BYTES = 2 * 1024 * 1024;
+export const BOT_PRESENCE_MAX_CLIP_BYTES = 10 * 1024 * 1024;
+export const BOT_PRESENCE_CAPTURE_EDGE = 2560;
 export interface BotPresenceStatus {
+  revision?: number;
   nextAt?: number; thinking: boolean; vision: boolean; error?: string;
   capture: BotPresenceCapture; cycle: number; flushCycle?: number; capturePaused?: boolean;
   waitingForPartner?: boolean;
+  phase?: 'sealing' | 'preparing' | 'observing';
+  screenshot?: 'capturing' | 'just-captured';
   last?: { at: number; outcome: 'responded' | 'observed' | 'failed' | 'interrupted' };
 }
 export interface BotPresenceRecording {
   id: string; name: string; at: number; startedAt: number; kind: BotPresenceCapture; size: number;
   status: 'pending' | 'processing' | 'archived';
+}
+export type BotHeartbeatState = 'sealing' | 'preparing' | 'observing' | 'completed' | 'empty' | 'interrupted' | 'failed';
+export interface BotHeartbeatRound {
+  id: number; at: number; waitMs: number; state: BotHeartbeatState; finishedAt?: number; error?: string;
+  inputs: Pick<BotPresenceRecording, 'id' | 'kind' | 'name' | 'startedAt' | 'at'>[];
 }
 export const botDesktopCaptureDuration = z.number().int().min(BOT_DESKTOP_MIN_SECONDS).max(BOT_DESKTOP_MAX_SECONDS);
 export const botDesktopCaptureToolArguments = z.strictObject({
@@ -69,6 +87,7 @@ export const botDesktopCaptureToolArguments = z.strictObject({
 });
 const captureRequest = { conversationId: id, requestId: z.uuid(), surface: z.enum(['chat', 'pet']) };
 export interface BotDesktopCaptureScope { conversationId: string; requestId: string; surface: 'chat' | 'pet' }
+export interface BotPresenceActivity extends BotDesktopCaptureScope { status: BotPresenceStatus }
 export type BotDesktopCaptureToolArguments = z.infer<typeof botDesktopCaptureToolArguments>;
 export type BotDesktopAgentCommand = BotDesktopCaptureScope & (BotDesktopCaptureToolArguments | { operation: 'cancel' });
 const desktopWave = z.string().min(60).max(Math.ceil(SPEECH_MAX_WAV_BYTES / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/u);
@@ -76,20 +95,24 @@ export const botMediaRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type:z.literal('desktop.screen'), ...captureRequest }),
   z.strictObject({ type:z.literal('desktop.audio.begin'), ...captureRequest, seconds:botDesktopCaptureDuration.default(BOT_DESKTOP_AUDIO_SECONDS) }),
   z.strictObject({ type:z.literal('desktop.audio.finish'), ...captureRequest, audio:desktopWave }),
+  z.strictObject({ type:z.literal('desktop.audio.activity'), ...captureRequest, active:z.boolean() }),
   z.strictObject({ type:z.literal('desktop.video.begin'), ...captureRequest, seconds:botDesktopCaptureDuration }),
   z.strictObject({ type:z.literal('desktop.video.chunk'), ...captureRequest, sequence:z.number().int().min(0).max(300), bytes:z.instanceof(Uint8Array).refine(bytes => bytes.length > 0 && bytes.length <= BOT_DESKTOP_VIDEO_CHUNK_BYTES) }),
   z.strictObject({ type:z.literal('desktop.video.finish'), ...captureRequest }),
+  z.strictObject({ type:z.literal('desktop.video.activity'), ...captureRequest, active:z.boolean() }),
   z.strictObject({ type:z.literal('desktop.surface.ready'), ...captureRequest }),
   z.strictObject({ type:z.literal('desktop.surface.closed'), ...captureRequest }),
-  z.strictObject({ type:z.literal('desktop.presence.start'), ...captureRequest, energy:botPresenceEnergy, meeting:z.boolean().optional() }),
-  z.strictObject({ type:z.literal('desktop.presence.status'), ...captureRequest }),
+  z.strictObject({ type:z.literal('desktop.presence.start'), ...captureRequest, sessionId:z.uuid(), energy:botPresenceEnergy, meeting:z.boolean().optional(), interacting:z.boolean().optional() }),
+  z.strictObject({ type:z.literal('desktop.presence.status'), ...captureRequest, recordingCycle:z.number().int().nonnegative().optional(), recording:z.boolean().optional(), interacting:z.boolean().optional() }),
+  z.strictObject({ type:z.literal('desktop.presence.recording'), ...captureRequest, cycle:z.number().int().nonnegative(), recording:z.boolean() }),
   z.strictObject({ type:z.literal('desktop.presence.energy'), ...captureRequest, energy:botPresenceEnergy }),
   z.strictObject({ type:z.literal('desktop.presence.flushed'), ...captureRequest, cycle:z.number().int().nonnegative() }),
   z.strictObject({ type:z.literal('desktop.presence.interrupt'), ...captureRequest }),
-  z.strictObject({ type:z.literal('desktop.presence.archive.list'), ...captureRequest, show: z.boolean().optional() }),
+  z.strictObject({ type:z.literal('desktop.presence.archive.list'), ...captureRequest, show: z.boolean().optional(), before: z.number().int().positive().optional() }),
   z.strictObject({ type:z.literal('desktop.presence.archive.read'), ...captureRequest, id: z.uuid() }),
   z.strictObject({ type:z.literal('desktop.presence.archive.clear'), ...captureRequest }),
   z.strictObject({ type:z.literal('desktop.presence.clip'), ...captureRequest,
+    cycle:z.number().int().nonnegative().optional(),
     startedAt:z.number().int().nonnegative(), endedAt:z.number().int().nonnegative(),
     bytes:z.instanceof(Uint8Array).refine(bytes => bytes.length > 32 && bytes.length <= BOT_PRESENCE_MAX_CLIP_BYTES) }),
   z.strictObject({ type:z.literal('desktop.transcribe'), ...captureRequest }),
@@ -108,9 +131,10 @@ export const botMediaRequestSchema = z.discriminatedUnion('type', [
 ]);
 export type BotMediaRequest=z.infer<typeof botMediaRequestSchema>;
 export interface BotMediaResponse { ok:boolean; error?:string; cancelled?:boolean; media?:BotMediaRef[]; packs?:BotStickerPack[]; pack?:BotStickerPack; savedPath?:string;textPage?:BotMediaTextPage; transcript?:string; durationSeconds?:number;
-  presence?: BotPresenceStatus; recordings?: BotPresenceRecording[]; recordingBytes?: Uint8Array }
+  presence?: BotPresenceStatus; recordings?: BotPresenceRecording[]; recordingBytes?: Uint8Array; rounds?: BotHeartbeatRound[]; olderRounds?: boolean }
 export interface WorldlineBoxBotMediaApi {
   readonly desktopCaptureSupported?: boolean;
+  onPresenceActivity?(listener: (event: BotPresenceActivity) => void): () => void;
   request(input:BotMediaRequest):Promise<BotMediaResponse>;
   /** Bounded native file-list probe; never returns paths or reads file contents. */
   hasClipboardFiles?(conversationId:string):boolean;

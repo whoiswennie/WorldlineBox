@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffectEvent, useLayoutEffect
 import { CALL_PET_MAX_HEIGHT, CALL_PET_MAX_WIDTH, CALL_PET_WINDOW, type CallPetApi, type CallPetRect } from '../../shared/companion-call-window';
 
 export const BotCallDocument = createContext<Document | undefined>(undefined);
+export const BotMeetingSession = createContext<string | undefined>(undefined);
+export const useBotMeetingSession = () => useContext(BotMeetingSession);
 export const useBotCallDocument = () => useContext(BotCallDocument) ?? document;
 
 function copyCallStyles(target: Document): void {
@@ -24,7 +26,7 @@ const petSurfaces = [
   '.bot-call-bubble', '.bot-call-pet-progress', '.bot-call-review', '.bot-call-topics', '.bot-call-composer-host', '.bot-call-input-entry',
   '.bot-call-pet-options', '.bot-call-chat:not([hidden])', '.bot-topic-picker',
   '.bot-desktop-capture-panel', '.bot-desktop-capture-status', '.bot-presence-status',
-  '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel',
+  '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel', '.bot-diagnostic-dialog[open]', '.bot-call-send-error',
 ].join(',');
 
 function trackPetLayout(pet: Window, host: HTMLElement, api: CallPetApi) {
@@ -105,7 +107,7 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
     const off = api?.onClosed(name => onNativeClose(name));
     return () => {
       off?.();
-      if (active.current) api?.command('close');
+      if (active.current) api?.command({ type: 'close', name: active.current.name });
       host.remove();
     };
   }, [api, host]);
@@ -162,7 +164,8 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
   const toggle = () => {
     if (!api?.supported) return false;
     if (active.current) {
-      returnToScene(); api.command('return'); return true;
+      const name = active.current.name;
+      returnToScene(); api.command({ type: 'return', name }); return true;
     }
     const name = `${CALL_PET_WINDOW}:${crypto.randomUUID()}`;
     const child = window.open('about:blank', name);
@@ -175,7 +178,7 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
       onModeChange?.(true);
       return true;
     } catch {
-      moveHome(); api.command('close'); return false;
+      moveHome(); api.command({ type: 'close', name }); return false;
     }
   };
   return { host, pet: !!pet && surface !== document, surface, supported: !!api?.supported, toggle };

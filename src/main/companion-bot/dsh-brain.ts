@@ -27,6 +27,9 @@ export interface BotDshRun {
   role?: 'brain' | 'worker'; instanceId?: string; signal?: AbortSignal;
   /** A user explicitly resumed this task after stopping its execution Host. */
   resumeHost?: boolean;
+  /** Chat cannot start a stopped host. Record the send boundary before issuing the native turn. */
+  runningOnly?: boolean;
+  beforeSendTurn?(): void;
   /** Trusted launcher display metadata. Each worker retains its own cwd. */
   workspaceTitle?: string;
   workspaceParent?: { path: string; title: string };
@@ -55,7 +58,7 @@ export class BotDshAbortAcknowledgedError extends Error {
 }
 export interface BotDshHost { client: NativeHostClient; instance?: { id: string }; runtime?: { id: string; version: string } }
 export interface BotDshBrainOptions {
-  getHost(instanceId?: string, signal?: AbortSignal, nativeLaneId?: string, options?: { explicit?: boolean }): Promise<BotDshHost>;
+  getHost(instanceId?: string, signal?: AbortSignal, nativeLaneId?: string, options?: { explicit?: boolean; runningOnly?: boolean }): Promise<BotDshHost>;
   acquireLease?(host: BotDshHost): () => void;
 }
 export interface BotDshHandoff {
@@ -93,7 +96,7 @@ interface PendingStop { promise: Promise<BotDshCancelAck>; input: CancelInput; s
 const cancellationInput = (input: Omit<BotDshRun, 'prompt' | 'onEvent'>): CancelInput => ({
   laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, model: input.model, audience: input.audience,
   tools: input.tools, callback: input.callback, role: input.role, instanceId: input.instanceId,
-  workerAccess: input.workerAccess, workerTools: input.workerTools, workspaceTitle: input.workspaceTitle,
+  workerAccess: input.workerAccess, workerTools: input.workerTools, workspaceTitle: input.workspaceTitle, runningOnly: input.runningOnly,
   workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle,
 });
 
@@ -104,7 +107,7 @@ export class BotDshBrain {
   private readonly pendingStops = new Map<string, PendingStop>();
   private readonly openingLanes = new Set<string>();
   constructor(private readonly options: BotDshBrainOptions) {}
-  private async getHost(instanceId: string | undefined, signal: AbortSignal | undefined, laneId: string, options?: { explicit?: boolean }): Promise<BotDshHost> {
+  private async getHost(instanceId: string | undefined, signal: AbortSignal | undefined, laneId: string, options?: { explicit?: boolean; runningOnly?: boolean }): Promise<BotDshHost> {
     try { return await this.options.getHost(instanceId, signal, laneId, options); }
     catch (error) {
       if (signal?.aborted || isDshHostUnavailableError(error) || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
@@ -152,7 +155,7 @@ export class BotDshBrain {
         // Inspect the previous event before any current-event admission. A
         // rejected promise alone must neither poison this lane forever nor
         // become permission to forget uncertain native work and resend it.
-        if (input.resumeHost) await this.getHost(stopping.input.instanceId, input.signal, stopping.input.laneId, { explicit: true });
+        if (input.resumeHost) await this.getHost(stopping.input.instanceId, input.signal, stopping.input.laneId, { explicit: true, runningOnly: input.runningOnly });
         await this.cancelDurable({ ...stopping.input, signal: input.signal }, stopping.suspend);
       }
       await this.active.get(sessionId)?.finished;
@@ -164,7 +167,8 @@ export class BotDshBrain {
       created: { sessionId: string; cursor: number }, attachmentStage: 'host' | 'attach' = 'host';
     let acquireUse!: () => () => void;
     try {
-      const host = await this.getHost(input.instanceId, input.signal, input.laneId, { explicit: input.resumeHost === true });
+      const host = await this.getHost(input.instanceId, input.signal, input.laneId, { explicit: input.resumeHost === true, runningOnly: input.runningOnly });
+      input.signal?.throwIfAborted();
       release = this.options.acquireLease?.(host); client = host.client;
       acquireUse = () => this.options.acquireLease?.(host) ?? (() => undefined);
       attachmentStage = 'attach';
@@ -203,6 +207,8 @@ export class BotDshBrain {
     input.signal?.addEventListener('abort', abort, { once: true });
     let terminal = false, deliveryStage: 'turn' | 'stream' = 'turn';
     try {
+      input.signal?.throwIfAborted();
+      input.beforeSendTurn?.();
       const admitted = await client.request<{ accepted: boolean; result?: BotDshResult }>(`/bot/lanes/${sessionId}/turn`, {
         eventId: input.eventId, prompt: input.prompt, continueAfterSeq: input.continueAfterSeq, continuationPrompt: input.continuationPrompt, taskContinuation: input.taskContinuation,
         observationImages: input.observationImages,
@@ -272,7 +278,7 @@ export class BotDshBrain {
   async cancelDurable(input: Omit<BotDshRun, 'prompt' | 'onEvent'>, suspend = false): Promise<BotDshCancelAck> {
     const sessionId = BotDshBrain.sessionId(input.laneId);
     let client: NativeHostClient, release: (() => void) | undefined;
-    try { const host = await this.getHost(input.instanceId, input.signal, input.laneId); release = this.options.acquireLease?.(host); client = host.client; }
+    try { const host = await this.getHost(input.instanceId, input.signal, input.laneId, input.runningOnly ? { runningOnly: true } : undefined); release = this.options.acquireLease?.(host); client = host.client; }
     catch (error) {
       if (input.signal?.aborted || isDshHostUnavailableError(error) || error && typeof error === 'object' && 'code' in error && error.code === 'BOT_HOST_MIGRATION_BLOCKED') throw error;
       // This operation has not inspected or admitted native work yet. Earlier

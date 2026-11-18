@@ -3,6 +3,7 @@
 .bot-workspace .bot-message-bubble>.bot-message-text,.bot-workspace.bot-atmosphere .bot-message-bubble>.bot-message-text{margin:0;padding:0;min-width:0;max-width:100%;border:0;border-radius:0;background:transparent;box-shadow:none;color:inherit}
 .bot-message-bubble.has-file-summary{min-width:min(285px,100%)}
 .bot-message-single-file { width:360px;max-width:100%;min-width:0; }
+.bot-message-single-file:has(.has-inline-preview:is([data-media-kind=image],[data-media-kind=video])) { width:600px; }
 .bot-message-text+.bot-message-single-file { padding-top:4px; }
 .bot-message-bubble.is-single-file-only { padding:0;border:0;background:transparent;box-shadow:none; }
 .bot-message-single-file .bot-attachment-card { width:100%; }

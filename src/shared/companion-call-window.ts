@@ -9,6 +9,7 @@ export function isCallPetWindowName(name: unknown): name is string {
 }
 export interface CallPetRect { x: number; y: number; width: number; height: number }
 export type CallPetCommand = 'return' | 'close' | 'drag-end'
+  | { type: 'return' | 'close'; name: string }
   | { type: 'drag-start' | 'drag-move'; x: number; y: number }
   | { type: 'layout'; width: number; height: number; rects: CallPetRect[] };
 export interface CallPetApi {

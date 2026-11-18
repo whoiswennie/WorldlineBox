@@ -5,7 +5,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import sharp from 'sharp';
 import mime from 'mime-types';
-import {botMediaPreviewPolicy,botMediaTextFormat,BOT_MEDIA_PREVIEW_LIMITS,normalizeBotMediaMime,type BotMediaRef,type BotStickerPack,type BotMediaTextPage} from '../../shared/companion-bot-media';
+import {botImageNeedsConversion,botMediaPreviewPolicy,botMediaTextFormat,BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS,BOT_MEDIA_PREVIEW_LIMITS,normalizeBotMediaMime,type BotMediaRef,type BotStickerPack,type BotMediaTextPage} from '../../shared/companion-bot-media';
+import { MOBILE_UPLOAD_MAX_BYTES } from '../../shared/mobile-access';
 import { readBotTextPage } from './media-text';
 import { validateSpeechWave, SPEECH_MAX_TRANSCRIPT, type LocalSpeechTranscript } from '../../shared/local-speech';
 
@@ -18,7 +19,6 @@ const hash = (value:string) => createHash('sha256').update(value).digest('hex');
 const safeId = (value:string) => typeof value==='string' && /^[A-Za-z0-9_-]{1,160}$/.test(value);
 const fileName = (value:string) => Array.from(path.basename(value),character=>character.charCodeAt(0)<32||character==='/'||character==='\\'?'_':character).join('').slice(0,240) || '附件';
 const samePath = (a:string,b:string) => process.platform==='win32' ? a.toLowerCase()===b.toLowerCase() : a===b;
-const AUTOMATIC_IMAGE_BYTES=8*1024*1024, AUTOMATIC_IMAGE_PIXELS=20_000_000;
 
 /** Reject links in every existing component, including junctions above a file. */
 export async function assertBotMediaPhysicalPath(value:string):Promise<void> {
@@ -87,7 +87,8 @@ export async function inspectBotSticker(value:string):Promise<{mimeType:string;a
 /** Independent immutable media store. No asset-library or VCP dependency. */
 export class BotMediaService {
   private closed=false;
-  async close():Promise<void>{this.closed=true;await Promise.allSettled([...this.queues.values()]);this.manifests.clear();}
+  async close():Promise<void>{this.closed=true;await Promise.allSettled([...this.queues.values(),this.displayQueue]);this.manifests.clear();}
+  private displayQueue: Promise<void> = Promise.resolve();
   private readonly root:string;
   private readonly builtinRoot:string;
   private readonly canUserAccessConversation?:BotMediaOptions['canUserAccessConversation'];
@@ -145,7 +146,9 @@ export class BotMediaService {
     delete ref.object;delete ref.externalSource;delete ref.previewObject;delete ref.previewSha256;delete ref.previewSize;delete ref.previewUrl;delete ref.previewEligibility;delete ref.previewLimitReason;
     const url=conversationId?`worldlinebox://bot-media/conversation/${this.scope(conversationId)}/${item.id}`:`worldlinebox://bot-media/builtin/${item.id}`;
     const mimeType=normalizeBotMediaMime(item.originalName||item.name,item.mimeType),current={name:item.originalName||item.name,mimeType,size:item.size};
-    const policy=botMediaPreviewPolicy(current);
+    const declaredPolicy=botMediaPreviewPolicy(current);
+    const policy=declaredPolicy.previewEligibility==='external-only' && item.storage==='managed' && item.previewEligibility==='file-only'
+      ? {previewEligibility:'file-only' as const} : declaredPolicy;
     return{...ref,mimeType,url,storage:item.storage||'managed',...policy,...(policy.previewEligibility==='external-only'?{analysisBlocked:true}:{}),...(item.previewObject&&policy.previewEligibility==='inline'?{previewUrl:url+'/preview'}:{})};
   }
   private packReference(pack:Pack,manifest:Manifest,conversationId?:string):BotStickerPack{
@@ -205,27 +208,27 @@ export class BotMediaService {
   private async attachmentImagePreview(home:string,object:string,size:number):Promise<Partial<StoredMedia>>{
     // Chat thumbnails must not decode a large source or an entire animation.
     // Larger originals remain available through an explicit viewer click.
-    if(size>AUTOMATIC_IMAGE_BYTES)return{};
+    if(size>BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS.bytes)return{};
     const info=await inspectBotSticker(path.join(home,object));
-    const dimensions={mimeType:info.mimeType,width:info.width,height:info.height};
-    if(!info.width||!info.height||info.width*info.height>AUTOMATIC_IMAGE_PIXELS)return dimensions;
-    return{...dimensions,...await this.preview(home,object,AUTOMATIC_IMAGE_PIXELS)};
+    const dimensions={mimeType:info.mimeType,width:info.width,height:info.height,animated:info.animated};
+    if(!info.width||!info.height||info.width*info.height>BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS.pixels)return dimensions;
+    return{...dimensions,...await this.preview(home,object,BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS.pixels).catch(()=>({}))};
   }
-  async importFiles({conversationId,paths}:{conversationId:string;paths:string[]}):Promise<BotMediaRef[]>{
+  async importFiles({conversationId,paths,mobileUpload=false}:{conversationId:string;paths:string[];mobileUpload?:boolean}):Promise<BotMediaRef[]>{
     if(!paths.length||paths.length>64)throw new Error('一次请选择 1 至 64 个附件。');
     return this.serial(conversationId,async(manifest,home)=>{
       const result:StoredMedia[]=[];
       for(const source of [...new Set(paths)]){
         const metadata=await this.externalSource(source),declaredMime=normalizeBotMediaMime(fileName(source),mime.lookup(source)||'application/octet-stream'),policy=botMediaPreviewPolicy({name:fileName(source),mimeType:declaredMime,size:metadata.size});
-        if(policy.previewEligibility==='external-only'){
+        if(policy.previewEligibility==='external-only' && !mobileUpload){
           const id='e_'+hash(JSON.stringify(metadata));let item=manifest.media.find(item=>item.id===id);
           if(!item){item={id,name:fileName(source),originalName:fileName(source),mimeType:declaredMime,size:metadata.size,url:'',kind:'file',storage:'external',externalSource:metadata,analysisBlocked:true,...policy};manifest.media.push(item);}result.push(item);continue;
         }
-        const maximumSize=declaredMime.startsWith('image/')?BOT_MEDIA_PREVIEW_LIMITS.image:declaredMime.startsWith('audio/')?BOT_MEDIA_PREVIEW_LIMITS.audio:BOT_MEDIA_PREVIEW_LIMITS.video;
+        const maximumSize=mobileUpload?MOBILE_UPLOAD_MAX_BYTES:declaredMime.startsWith('image/')?BOT_MEDIA_PREVIEW_LIMITS.image:declaredMime.startsWith('audio/')?BOT_MEDIA_PREVIEW_LIMITS.audio:BOT_MEDIA_PREVIEW_LIMITS.video;
         const object=await this.importObject(source,home,maximumSize),id='f_'+object.sha256+'_'+hash(fileName(source)).slice(0,8);
         let item=manifest.media.find(item=>item.id===id);if(!item){
           const preview=declaredMime.startsWith('image/')?await this.attachmentImagePreview(home,object.object,object.size).catch(()=>({})):{};
-          item={...object,mimeType:declaredMime,...preview,id,name:fileName(source),originalName:fileName(source),url:'',kind:'file'};manifest.media.push(item);}result.push(item);}
+          item={...object,...(mobileUpload && policy.previewEligibility==='external-only'?{storage:'managed' as const,previewEligibility:'file-only' as const}:{}),mimeType:declaredMime,...preview,id,name:fileName(source),originalName:fileName(source),url:'',kind:'file'};manifest.media.push(item);}result.push(item);}
       await atomicManifest(path.join(home,'manifest.json'),manifest);return result.map(item=>this.reference(item,conversationId));
     });
   }
@@ -240,7 +243,7 @@ export class BotMediaService {
       const items:StoredMedia[]=[];
       for(const id of new Set(attachmentIds)){
         signal?.throwIfAborted();const item=manifest.media.find(item=>item.id===id);if(!item)throw new Error('附件不属于源会话。');
-        if(item.storage==='external'||item.analysisBlocked||botMediaPreviewPolicy({name:item.originalName||item.name,mimeType:item.mimeType,size:item.size}).previewEligibility==='external-only')throw new Error('大媒体或外部附件不可自动跨会话转存，请由用户重新提供文件。');
+        if(item.storage==='external'||item.analysisBlocked||this.reference(item,sourceConversationId).previewEligibility==='external-only')throw new Error('大媒体或外部附件不可自动跨会话转存，请由用户重新提供文件。');
         await this.verifyObject(home,item,true,signal);
         if(item.previewObject)await this.verifyObject(home,{object:item.previewObject,sha256:item.previewSha256,size:item.previewSize} as StoredMedia,true,signal);
         items.push(structuredClone(item));
@@ -425,10 +428,29 @@ export class BotMediaService {
       await rename(temporary,destination);}
     finally{await rm(temporary,{force:true});}
   }
+  private displayImage(request: Request, home: string, item: StoredMedia): Promise<Response> {
+    if (!botImageNeedsConversion(item.mimeType) || item.storage === 'external' || item.size > 64 * 1024 * 1024)
+      return Promise.resolve(new Response(null, { status: 415 }));
+    // Decode one first page at a time. Queued/offscreen requests retain no image buffers.
+    const result = this.displayQueue.then(async () => {
+      request.signal.throwIfAborted();
+      if (this.closed) return new Response(null, { status: 503 });
+      const file = await this.verifyObject(home, item);
+      const headers = { 'content-type': 'image/png', 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' };
+      if (request.method === 'HEAD') return new Response(null, { headers });
+      const source = await readFile(file, { signal: request.signal });
+      const png = await sharp(source, { page: 0, pages: 1, limitInputPixels: 48_000_000 })
+        .rotate().resize({ width: 2560, height: 2560, fit: 'inside', withoutEnlargement: true }).png().toBuffer();
+      request.signal.throwIfAborted();
+      return new Response(new Uint8Array(png), { headers });
+    }).catch(() => new Response(null, { status: 415 }));
+    this.displayQueue = result.then(() => {});
+    return result;
+  }
   /** A URL resolves only through its exact persisted scope index, never a path. */
-  async response(request:Request):Promise<Response>{
+  async response(request:Request, downloadOriginal=false):Promise<Response>{
     const url=new URL(request.url);if(url.hostname!=='bot-media'||!['GET','HEAD'].includes(request.method))return new Response('Not found',{status:404});
-    const parts=url.pathname.split('/').filter(Boolean);const preview=parts.at(-1)==='preview';if(preview)parts.pop();let item:StoredMedia|undefined,home:string;
+    const parts=url.pathname.split('/').filter(Boolean);const preview=parts.at(-1)==='preview',display=parts.at(-1)==='display';if(preview||display)parts.pop();let item:StoredMedia|undefined,home:string;
     if(parts.length===2&&parts[0]==='builtin'&&safeId(parts[1]!)){item=(await this.builtins()).media.find(item=>item.id===parts[1]);home=this.builtinRoot;}
     else if(parts.length===3&&parts[0]==='conversation'&&/^[a-f0-9]{64}$/.test(parts[1]!)&&safeId(parts[2]!)){
       home=path.join(this.root,'conversations',parts[1]!);const manifestPath=path.join(home,'manifest.json');
@@ -439,7 +461,8 @@ export class BotMediaService {
       catch{return new Response('Not found',{status:404});}
     }else return new Response('Not found',{status:404});
     if(!item)return new Response('Not found',{status:404});
-    if(botMediaPreviewPolicy({name:item.originalName||item.name,mimeType:item.mimeType,size:item.size}).previewEligibility==='external-only')return new Response('External media requires an explicit system-open action',{status:403});
+    if(!downloadOriginal && botMediaPreviewPolicy({name:item.originalName||item.name,mimeType:item.mimeType,size:item.size}).previewEligibility==='external-only')return new Response('External media requires an explicit system-open action',{status:403});
+    if(display)return this.displayImage(request,home!,item);
     if(preview){if(!item.previewObject||!item.previewSha256||item.previewSize===undefined)return new Response('Not found',{status:404});item={...item,object:item.previewObject,sha256:item.previewSha256,size:item.previewSize,mimeType:'image/webp'};}
     try{
       const file=item.storage==='external'?await this.verifyExternal(item):await this.verifyObject(home!,item);const headers=new Headers({'content-type':normalizeBotMediaMime(item.originalName||item.name,item.mimeType),'content-length':String(item.size),'accept-ranges':'bytes',

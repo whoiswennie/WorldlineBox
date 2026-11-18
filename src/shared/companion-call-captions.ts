@@ -1,62 +1,52 @@
 export interface CallCaptionPage { text: string; start: number; end: number }
-export const CALL_CAPTION_MAX_UNITS = 36;
+const targetUnits = 36;
+export const callBeatKey = (messageId: string, partId?: string) => JSON.stringify([messageId, partId ?? null]);
 export const CALL_CAPTION_AUTO_HIDE_MS = 1800;
-export const callCaptionHoldMs = (text: string) => Math.min(8500, 900 + Array.from(text).length * 82);
+export const callCaptionHoldMs = (text: string) => Math.min(90_000, 900 + Array.from(text).length * 82);
 
-export function callCaptionPlaybackPages(text: string) {
-  return buildCallCaptionPages(text, CALL_CAPTION_MAX_UNITS, 3).filter(page => page.text.trim());
+export function callCaptionPlaybackPages(text: string, partId?: string): CallCaptionPage[] {
+  // An authored performance cue is already one utterance, even when it wraps on screen.
+  if (partId !== undefined) return text.trim() ? [{ text, start: 0, end: text.length }] : [];
+  return buildCallCaptionPages(text, targetUnits, 3).filter(page => page.text.trim());
 }
 
-const MIN_CAPTION_UNITS = 8;
-const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+const sentences = new Intl.Segmenter('zh', { granularity: 'sentence' });
+const graphemes = new Intl.Segmenter('zh', { granularity: 'grapheme' });
 const emoji = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u;
 const wide = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\u3000-\u303f\uff01-\uff60]/u;
 
-function units(grapheme: string): number {
-  return emoji.test(grapheme) ? 1.2 : wide.test(grapheme) ? 1 : .5;
-}
-
-function breakPreference(text: string, start: number, end: number, grapheme: string): number {
-  if (/[\r\n]/u.test(grapheme)) return 5;
-  const tailStart = Math.max(start, end - 16), tail = text.slice(tailStart, end).trimEnd();
-  const sentence = /([.!?。！？…])["'”’」』）》】]*$/u.exec(tail);
-  if (sentence) {
-    const punctuation = tailStart + sentence.index;
-    const decimal = sentence[1] === '.' && /[0-9]/u.test(text[punctuation - 1] ?? '') && /[0-9]/u.test(text[punctuation + 1] ?? '');
-    if (!decimal) return 4;
+function readingWidth(text: string) {
+  let width = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    width += emoji.test(segment) ? 1.2 : wide.test(segment) ? 1 : .5;
   }
-  if (/[，、,;；:：]["'”’」』）》】]*$/u.test(tail)) return 3;
-  return /\s$/u.test(grapheme) ? 2 : 0;
+  return width;
 }
 
-/** Split stable complete text; joining pages preserves every source character and space. */
+/** Group complete sentences from unstructured replies. Capacity is a reading target, never a cut point. */
 export function buildCallCaptionPages(text: string, maxUnits: number, maxLines = Infinity): CallCaptionPage[] {
-  if (!text) return [];
-  const capacity = Number.isFinite(maxUnits) ? Math.max(MIN_CAPTION_UNITS, maxUnits) : MIN_CAPTION_UNITS;
-  const graphemes = [...segmenter.segment(text)].map(({ segment, index }) => ({ text: segment, start: index, end: index + segment.length, units: units(segment) }));
+  const capacity = Number.isFinite(maxUnits) ? Math.max(8, maxUnits) : 8;
+  // Ignore soft line wraps for sentence detection. Paragraphs and list items retain their boundaries.
+  // Each replacement has the original UTF-16 length so offsets still address the untouched source.
+  const prose = text.replace(/https?:\/\/[^\s。！？，”」]+/giu, url => url.replace(/[.!?]/gu, '_')).replace(/(?:\r\n|[\r\n])+/gu, (breaks, offset: number) => {
+    if (!/^(?:\r\n|[\r\n])$/u.test(breaks) || /^[ \t]*(?:[-*•]|\d+[.)、])[ \t]+/u.test(text.slice(offset + breaks.length))) return breaks;
+    return ' '.repeat(breaks.length);
+  });
   const pages: CallCaptionPage[] = [];
-  let cursor = 0;
-  while (cursor < graphemes.length) {
-    let end = cursor, consumed = 0, lineBreaks = 0;
-    while (end < graphemes.length && lineBreaks < maxLines && consumed + graphemes[end]!.units <= capacity) {
-      const grapheme = graphemes[end++]!;
-      consumed += grapheme.units;
-      if (/[\r\n]/u.test(grapheme.text)) lineBreaks++;
+  let start = 0, width = 0, lineBreaks = 0;
+  for (const { segment, index } of sentences.segment(prose)) {
+    const sentence = text.slice(index, index + segment.length);
+    const units = readingWidth(sentence);
+    if (index > start && (width + units > capacity || lineBreaks >= maxLines)) {
+      pages.push({ text: text.slice(start, index), start, end: index });
+      start = index;
+      width = 0;
+      lineBreaks = 0;
     }
-    if (end === cursor) end++;
-    if (end < graphemes.length) {
-      let position = 0, preferred = end, preference = 0;
-      for (let index = cursor; index < end; index++) {
-        const grapheme = graphemes[index]!; position += grapheme.units;
-        if (position < capacity * .6) continue;
-        const rank = breakPreference(text, graphemes[cursor]!.start, grapheme.end, grapheme.text);
-        if (rank && rank >= preference) { preference = rank; preferred = index + 1; }
-      }
-      end = preferred;
-    }
-    const start = graphemes[cursor]!.start, finish = graphemes[end - 1]!.end;
-    pages.push({ text: text.slice(start, finish), start, end: finish }); cursor = end;
+    width += units;
+    lineBreaks += (sentence.match(/\r\n|[\r\n]/gu) ?? []).length;
   }
+  if (start < text.length) pages.push({ text: text.slice(start), start, end: text.length });
   return pages;
 }
 

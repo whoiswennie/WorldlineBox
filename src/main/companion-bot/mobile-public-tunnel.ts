@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { access, mkdir, rename, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -44,7 +44,7 @@ async function resolveExecutable(appPath: string, userData: string, signal: Abor
     catch { /* Try the next distribution location. */ }
   }
   await mkdir(directory, { recursive: true });
-  const temporary = cached + '.download';
+  const temporary = cached + '.' + randomUUID() + '.download';
   try {
     await new Promise<void>((resolve, reject) => {
       const child = spawn('curl.exe', ['--fail', '--location', '--silent', '--show-error', '--retry', '2', '--max-time', '90', '--output', temporary, release.exe.url], { windowsHide: true, signal, stdio: 'ignore' });
@@ -81,6 +81,7 @@ export async function startMobilePublicTunnel(appPath: string, userData: string,
     http.once('error', reject);
     http.listen(fixed ? MOBILE_TUNNEL_ORIGIN_PORT : 0, '127.0.0.1', () => { http.off('error', reject); resolve(); });
   });
+  if (signal.aborted) { websocket.close(); http.close(); signal.throwIfAborted(); }
   const address = http.address();
   if (!address || typeof address === 'string') { http.close(); throw new Error('无法启动本机远程连接入口。'); }
   const args = ['tunnel', '--no-autoupdate', '--protocol', 'http2',

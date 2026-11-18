@@ -4,7 +4,7 @@ import { appendFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises
 import { watch, type FSWatcher } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
 import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance, type DshCompanionCapabilityState } from '../../shared/dsh-launcher';
-import { atomicJson, copyTree, inventoryTree, readJson, redact, removeManaged } from './files';
+import { assertOwnedDirectory, atomicJson, copyTree, inventoryTree, readJson, redact, removeManaged } from './files';
 import { OperationStore } from './operations';
 import { RuntimeService } from './runtime-service';
 import { LauncherNetwork } from './launcher-network';
@@ -69,6 +69,7 @@ export class DshLauncher {
   private async botInstance(instanceId?: string): Promise<string> {
     try { await this.initialization; }
     catch (error) { throw new DshHostUnavailableError('startup', 'DSH 启动器初始化失败，请检查启动器运行信息。', instanceId, error); }
+    await this.waitForBundledInstance(instanceId);
     if (this.closed) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。', instanceId);
     if (instanceId) {
       let instance: DshInstance;
@@ -86,7 +87,8 @@ export class DshLauncher {
     }
     this.botInstanceId = selected.id; return selected.id;
   }
-  async botHost(instanceId?: string, signal?: AbortSignal, options: { explicit?: boolean } = {}) {
+  assertMessageReady(): void { this.instances.runningMessageHost(); }
+  async botHost(instanceId?: string, signal?: AbortSignal, options: { explicit?: boolean; runningOnly?: boolean } = {}) {
     signal?.throwIfAborted();
     const selection = this.botInstance(instanceId);
     const id = signal ? await new Promise<string>((resolve, reject) => {
@@ -96,7 +98,8 @@ export class DshLauncher {
     }) : await selection;
     signal?.throwIfAborted();
     const instance = this.instances.get(id), runtime = this.runtimes.get(instance.runtimeId);
-    const client = await this.instances.ensureHost(id, signal, { automatic: !options.explicit });
+    const client = options.runningOnly ? this.instances.runningMessageHost(id)
+      : await this.instances.ensureHost(id, signal, { automatic: !options.explicit });
     return { client, instance, runtime };
   }
   /** Resolve the trusted execution instance before a native admission, so the
@@ -130,7 +133,7 @@ export class DshLauncher {
     void companionId;
   }
   async restoreCompanionEnvironments(companions: readonly CompanionEnvironmentOwner[], signal?: AbortSignal, isEnabled?: (id: string) => boolean): Promise<void> {
-    await this.initialization; signal?.throwIfAborted();
+    await this.initialization; await this.waitForBundledInstance(); signal?.throwIfAborted();
     if (this.closed) throw new Error('DSH 启动器正在关闭。');
     await restoreCompanionKeepAlive(companions, this.instances.list(), async (_owner, instance) => {
       if (this.closed || this.instances.list().find(value => value.isDefault)?.id !== instance.id) return;
@@ -177,6 +180,7 @@ export class DshLauncher {
   private selectionEpoch = 0;
   private readonly rootPath: string;
   private readonly bundledRuntime?: { directory: string; archiver: string };
+  private bundledOperation?: Promise<string>;
   private readonly initialization: Promise<void>;
   private closed = false;
   private previousThrottling: boolean | undefined;
@@ -274,6 +278,7 @@ export class DshLauncher {
       const records = this.instances.list();
       const current = records.find(value => value.id === this.cliTerminal.state().selectedInstanceId) ?? records.find(value => value.isDefault);
       if (!current) throw new Error('Create and select a DSH instance before opening its CLI terminal.');
+      await this.waitForBundledInstance(current.id);
       return this.instances.prepareCli(current.id);
     } });
     this.initialization = this.init();
@@ -332,11 +337,24 @@ export class DshLauncher {
     // Development startup can use a release already installed in the shared profile or an offline build cache.
     if (!app.isPackaged && !installed.length
       && !await stat(path.join(bundled.directory, bundledDshArchive)).then(info => info.isFile(), () => false)) return;
-    return this.operations.runningId('runtime.bundle') ?? this.operations.run(
+    const running = this.operations.runningId('runtime.bundle');
+    if (running) return running;
+    this.bundledOperation = this.operations.run(
       'runtime.bundle', `DSH ${bundledDshRelease.version}`, undefined, async op => {
-        const runtime = await this.runtimes.installBundled(bundled.directory, bundled.archiver, op);
+        const runtime = installed[0] ?? await this.runtimes.installBundled(bundled.directory, bundled.archiver, op);
         await this.instances.ensureBundledInstance(runtime.id, op);
       }, { type: 'runtime.bundle' });
+    return this.bundledOperation;
+  }
+  private async waitForBundledInstance(instanceId?: string): Promise<void> {
+    const operation = this.bundledOperation;
+    if (!operation || !this.operations.runningId('runtime.bundle')) return;
+    const target = this.instances.list().find(item => instanceId ? item.id === instanceId : item.isDefault);
+    if (target?.isBundled || (!instanceId && !target?.defaultSelectedByUser)) {
+      // Wait through snapshot, validation and any rollback before starting the shared Host.
+      await this.operations.waitFor(await operation);
+      if (this.closed) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。', instanceId);
+    }
   }
   private watchCompanionCapabilities(changed: () => void): void {
     for (const instance of this.instances.list()) {
@@ -392,7 +410,7 @@ export class DshLauncher {
     // Only the default profile is warmed automatically; explicit execution and
     // durable native-context bindings select other instances separately.
     const provisioningFallback = this.operations.runningId('runtime.bundle');
-    const defaultInstance = instance && (!provisioningFallback || instance.isBundled || instance.defaultSelectedByUser) ? instance : undefined;
+    const defaultInstance = instance && (!provisioningFallback || (!instance.isBundled && instance.defaultSelectedByUser)) ? instance : undefined;
     const defaultRuntime = this.runtimes.list().find(value => value.id === defaultInstance?.runtimeId);
     const prewarmIdentity = JSON.stringify([defaultInstance?.id, defaultInstance?.runtimeId, defaultRuntime?.contentSha256]);
     if (prewarmIdentity !== this.defaultPrewarmIdentity || mutation) {
@@ -523,6 +541,9 @@ export class DshLauncher {
     if (request.type === 'versions.refresh') return this.refreshVersions(request.ifStale);
     if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
     if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
+    if ('instanceId' in request && request.instanceId && request.type !== 'instance.stop' && request.type !== 'instance.logs') {
+      await this.waitForBundledInstance(request.instanceId);
+    }
     switch (request.type) {
       case 'companion.environment.create': case 'companion.environment.bind': {
         this.validateCompanion?.(request.companionId);
@@ -651,8 +672,10 @@ export class DshLauncher {
           this.runtimes.delete(request.runtimeId, runtimeReferences(this.state(), request.runtimeId).length > 0, op)) };
       }
       case 'instance.folder': {
-        const root = this.instances.getRoot(request.instanceId);
-        const directory = request.scope === 'workspace' ? this.instances.get(request.instanceId).workspacePath : request.scope === 'root' ? root : path.join(root, request.scope);
+        const instance = this.instances.get(request.instanceId);
+        const root = this.instances.getRoot(instance.id);
+        const directory = request.scope === 'workspace' ? instance.workspacePath : request.scope === 'root' ? root : path.join(root, request.scope);
+        if (request.scope === 'logs') await assertOwnedDirectory(this.rootPath, directory);
         const error = await shell.openPath(directory); if (error) throw new Error(error);
         return { ok: true };
       }

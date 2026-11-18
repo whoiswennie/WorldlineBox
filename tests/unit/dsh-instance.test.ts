@@ -9,6 +9,16 @@ import { runtimeReferences } from '../../src/shared/dsh-runtime-references';
 import { TEST_NODE_EXECUTABLE, TEST_NODE_VERSION } from '../helpers/node-executable';
 
 const cleanup: Array<() => Promise<void>> = [];
+it('reads only the recent instance log and reports empty logs before the host starts', async () => {
+  const f = await fixture(), instance = await f.service.create('Logs', 'runtime-a');
+  const request = { type: 'instance.logs', instanceId: instance.id } as const;
+  expect(await f.service.handle(request)).toEqual({ ok: true, text: '' });
+  const directory = path.join(f.service.getRoot(instance.id), 'logs');
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'host.log'), 'old line\n' + 'x'.repeat(150_000) + '\napi_key=unit-test-secret\nrecent line');
+  expect(await f.service.handle(request)).toEqual({ ok: true, text: 'api_key=[redacted]\nrecent line' });
+  expect((await f.service.handle({ ...request, instanceId: 'unregistered' })).ok).toBe(false);
+});
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 async function fixture(holdTokenExchange = false) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-native-instances-'));
@@ -156,6 +166,7 @@ it('deduplicates concurrent starts and opens the same native Host for the user',
 });
 it('does not publish an early bridge client before the shared Web token exchange completes', async () => {
   const f = await fixture(true), instance = await f.service.create('Gated host', 'runtime-a');
+  expect(() => f.service.runningMessageHost(instance.id)).toThrow('本次消息未发送');
   const first = f.service.ensureHost(instance.id);
   await vi.waitFor(async () => expect(await readFile(f.readyGate + '.waiting', 'utf8')).toBe('1'));
   let secondReady = false;
@@ -163,9 +174,11 @@ it('does not publish an early bridge client before the shared Web token exchange
   await new Promise(resolve => setTimeout(resolve, 50));
   expect(secondReady).toBe(false);
   expect(f.service.get(instance.id).status).toBe('starting');
+  expect(() => f.service.runningMessageHost(instance.id)).toThrow('DSH 正在启动');
   await writeFile(f.readyGate, 'release');
   const clients = await Promise.all([first, second]);
   expect(clients[0].pid).toBe(clients[1].pid);
+  expect(f.service.runningMessageHost(instance.id)).toBe(clients[0]);
   expect(f.verify).not.toHaveBeenCalled();
   expect(f.startup.mock.calls.map(([value]) => value.phase)).toEqual(['preparing-profile', 'starting-host', 'ready']);
 });
@@ -350,6 +363,25 @@ it('keeps one protected fallback alongside existing instances and preserves the 
   await f.operations.settle();
   expect(reopened.archivedInstances().map(value => value.id)).toEqual([sameRuntime.id]);
   expect(reopened.executionInstance()).toMatchObject({ id: bundled.id, runtimeId: 'runtime-a' });
+});
+
+it('upgrades the existing bundled profile in place and preserves a separately selected executor', async () => {
+  const f = await fixture();
+  await f.service.ensureBundledInstance('runtime-a', upgradeOperation());
+  const bundled = f.service.executionInstance()!;
+  const personal = await f.service.create('Personal', 'runtime-a');
+  await f.service.selectExecutionInstance(personal.id);
+  const saved = path.join(bundled.workspacePath, 'saved.txt');
+  await writeFile(saved, 'existing workspace');
+
+  await f.service.ensureBundledInstance('runtime-b', upgradeOperation());
+  await f.service.ensureBundledInstance('runtime-b', upgradeOperation());
+  expect(f.service.list().filter(instance => instance.isBundled)).toEqual([
+    expect.objectContaining({ id: bundled.id, runtimeId: 'runtime-b', browserPartition: bundled.browserPartition }),
+  ]);
+  expect(f.service.executionInstance()).toMatchObject({ id: personal.id, runtimeId: 'runtime-a' });
+  expect(f.service.snapshots()).toEqual([expect.objectContaining({ instanceId: bundled.id, runtimeId: 'runtime-a' })]);
+  expect(await readFile(saved, 'utf8')).toBe('existing workspace');
 });
 
 it('migrates a legacy implicit choice to the installed fallback without changing its instance data', async () => {

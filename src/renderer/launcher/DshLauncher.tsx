@@ -18,7 +18,7 @@ import { LauncherDialog, type LauncherDialogState } from './LauncherDialog';
 import { initialOperationNotifications, operationNotificationsReducer } from './operation-notifications';
 import { LauncherNotification } from './LauncherNotification';
 import { OfficialVersionPicker } from './OfficialVersionPicker';
-import { LauncherOperationsPage } from './LauncherOperationsPage';
+import { LauncherOperationsPage, operationTitle } from './LauncherOperationsPage';
 import { PackSharing, PackUrlImport } from './PackSharing';
 import { runtimeReferences } from '../../shared/dsh-runtime-references';
 import './launcher.css';
@@ -245,7 +245,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
         </main>
       </div>
       {error ? <LauncherNotification error key={`error:${error}`} message={error} onDismiss={() => setError(null)} />
-        : latestFailure ? <LauncherNotification error key={latestFailure.id} message={latestFailure.error ?? operationPhase(t, latestFailure.phase)} onDismiss={() => dispatchNotification({ type: 'dismiss', operationId: latestFailure.id })} onViewOperation={() => { dispatchNotification({ type: 'dismiss', operationId: latestFailure.id }); setApplication('dsh'); setPage('operations'); }} operationId={latestFailure.id} title={`${latestFailure.label} · ${t(`launcher.operationStatus.${latestFailure.status}`)}`} />
+        : latestFailure ? <LauncherNotification error key={latestFailure.id} message={latestFailure.error ?? operationPhase(t, latestFailure.phase)} onDismiss={() => dispatchNotification({ type: 'dismiss', operationId: latestFailure.id })} onViewOperation={() => { dispatchNotification({ type: 'dismiss', operationId: latestFailure.id }); setApplication('dsh'); setPage('operations'); }} operationId={latestFailure.id} title={`${operationTitle(t, latestFailure)} · ${t(`launcher.operationStatus.${latestFailure.status}`)}`} />
           : notice ? <LauncherNotification key={`notice:${notice}`} message={notice} onDismiss={() => setNotice(null)} /> : application === 'dsh' && page === 'instances' && preparingCli === selected?.id ? <LauncherNotification pending key={`cli:${preparingCli}`} message={`${selected?.name} · DSH ${state?.runtimes.find(runtime => runtime.id === selected?.runtimeId)?.version ?? ''}`} title={t('launcher.preparingCli')} onDismiss={() => undefined} /> : null}
       {dialog && state ? <LauncherDialog busy={requesting} dialog={dialog} key={dialog.kind} onClose={() => setDialog(null)} onBackup={instance => setDialog({ kind: 'export', instance })} onSubmit={run} runtimes={state.runtimes} /> : null}
     </section>

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { builtinModules, createRequire } from 'node:module';
@@ -18,6 +18,9 @@ if (typeof playwrightBin !== 'string') {
 }
 
 const projectRoot = path.resolve(process.cwd());
+if (process.platform === 'win32' && !process.env.WORLDLINEBOX_E2E_PACKAGED_EXECUTABLE) {
+  execFileSync(process.execPath, [path.join(projectRoot, 'scripts/patch-dev-electron-name.mjs')], { stdio: 'inherit', windowsHide: true });
+}
 const isolatedBuild = process.env.WORLDLINEBOX_E2E_ISOLATED_BUILD === '1';
 const applicationRoot = isolatedBuild ? path.join(projectRoot, '.tools', 'e2e-app') : projectRoot;
 const buildRoot = path.join(applicationRoot, '.vite');

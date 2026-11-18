@@ -1,4 +1,4 @@
-import type {BotReplyPart} from './companion-bot';
+import type {BotMessage, BotReplyPart} from './companion-bot';
 import type {BotMediaRef} from './companion-bot-media';
 const comparable=(text:string)=>text.normalize('NFKC').replace(/\s+/gu,' ').trim();
 /** Keep native order and all committed user-facing text. Only exact repeated
@@ -30,4 +30,13 @@ export function botReplyPresentation(parts:readonly BotReplyPart[],fallback:read
   }
   for(const media of fallback)if(!seen.has(media.id)){attachments.push(media);seen.add(media.id);}
   return{content,attachments};
+}
+
+/** The same public, committed wording drives a plain reply's captions and voice. */
+export function callReplyText(message: BotMessage): string {
+  if (message.status !== 'sent') return '';
+  const visible = botReplyPresentation(message.parts ?? [], message.attachments);
+  if (visible.content.trim()) return visible.content;
+  if (message.content.trim()) return message.content;
+  return visible.attachments.length ? '已发送附件：' + visible.attachments.map(file => file.name).join('、') + '。' : '';
 }

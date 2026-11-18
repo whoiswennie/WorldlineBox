@@ -116,7 +116,7 @@ export const APP_SETTINGS_CATEGORIES: readonly AppSettingsCategory[] = [
     labelKey: "settings.categoryMcp",
   },
   { id: "music", icon: "music", labelKey: "settings.categoryMusic" },
-  { id: "mobile-access", icon: "globe", labelKey: "settings.categoryMobileAccess" },
+  { id: "mobile-access", icon: "scan-qr-code", labelKey: "settings.categoryMobileAccess" },
   { id: "capture-tools", icon: "camera", labelKey: "settings.categoryCaptureTools" },
   {
     id: "plugins",

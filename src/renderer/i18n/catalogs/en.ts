@@ -1591,7 +1591,7 @@ export const en = {
     categorySemanticSearch: "Semantic search",
     experimental: "Experimental",
     categoryMcp: "MCP",
-    categoryMobileAccess: "Remote access",
+    categoryMobileAccess: "Phone connection",
     categoryPlugins: "Plugins",
     categoryPluginSettings: "Plugin settings",
     categorySync: "Sync",

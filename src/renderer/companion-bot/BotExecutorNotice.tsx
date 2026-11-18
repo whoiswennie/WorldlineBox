@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DshLauncherState, WorldlineBoxDshLauncherApi } from '../../shared/dsh-launcher';
 import { useDismissibleDetails } from '../use-dismissible-details';
 import { BotIcon } from './BotIcon';
+import { BotErrorNotice } from './BotErrorNotice';
 import { sharedDshInstance } from './useBotDshBindings';
 
 export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { api?: WorldlineBoxDshLauncherApi; zh:boolean; companionIds?: readonly string[]; onOpenLauncher?():void }) {
@@ -35,10 +36,10 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
   const text=error?(zh?'DSH 暂时不可用':'DSH is unavailable')
     :unsupported?(zh?'此系统暂不支持 DSH':'DSH is unavailable on this system')
     :!state?(zh?'正在连接 DSH…':'Checking DSH…')
+    :failed?(zh?'DSH 启动失败':'DSH could not start')
     :starting?(zh?'DSH 正在启动…':'DSH is starting…')
     :preparing?(zh?'DSH 正在准备…':'DSH is preparing…')
     :stopping?(zh?'DSH 正在关闭…':'DSH is stopping…')
-    :failed?(zh?'DSH 启动失败':'DSH could not start')
     :instance?(zh?'DSH 未启动':'DSH is stopped')
     :(zh?'尚未配置 DSH':'DSH is not configured');
   const diagnostic=error||(failed?instance?.lastError:undefined);
@@ -64,8 +65,8 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
       <summary className="bot-executor-trigger" title={text}>{label}<BotIcon name="chevron-down" /></summary>
       <div className="bot-executor-panel">
         <p className="bot-executor-panel-title">{text}</p>
-        {diagnostic&&<p className="bot-executor-diagnostic">{diagnostic}</p>}
-        {canStart&&!diagnostic&&!failed&&<p className="bot-executor-description">{zh?'伙伴共用此 DSH，聊天时会按需启动。':'Companions share this DSH, which starts on demand.'}</p>}
+        {diagnostic&&<BotErrorNotice message={diagnostic} zh={zh} />}
+        {canStart&&!diagnostic&&!failed&&<p className="bot-executor-description">{zh?'请先启动共享 DSH，就绪后即可发送消息。':'Start the shared DSH before sending a message.'}</p>}
         {(canStart||error||onOpenLauncher)&&<div className="bot-executor-actions">
           {canStart&&<button className="bot-executor-primary" type="button" onClick={()=>void start()}>{zh?'启动':'Start'}</button>}
           {error&&<button type="button" disabled={busy} onClick={()=>setRefresh(value=>value+1)}>{zh?'重试':'Retry'}</button>}

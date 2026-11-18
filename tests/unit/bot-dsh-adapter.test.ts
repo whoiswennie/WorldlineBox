@@ -8,6 +8,27 @@ const input: BotDshRun = { laneId: 'lane', eventId: 'event', cwd: 'C:/bot-test',
   tools: [], callback: { url: 'http://127.0.0.1/bot/tool', token: 'a'.repeat(64) } };
 const succeeded = (eventId: string, sessionId: string) => ({ text: 'done', eventId, sessionId, status: 'succeeded' });
 
+it('never sends a turn when Stop wins while the native lane is attaching', async () => {
+  let attached!: () => void, release!: () => void;
+  const waiting = new Promise<void>(resolve => { attached = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const endpoints: string[] = [];
+  const client = { request: async (endpoint: string, body: { sessionId: string }) => {
+    endpoints.push(endpoint); attached(); await gate;
+    return { sessionId: body.sessionId, cursor: 0 };
+  } } as NativeHostClient;
+  const controller = new AbortController();
+  const brain = new BotDshBrain({ getHost: async (_id, _signal, _lane, options) => {
+    expect(options?.runningOnly).toBe(true); return { client };
+  } });
+  let dispatched = false;
+  const result = brain.run({ ...input, runningOnly: true, signal: controller.signal, beforeSendTurn: () => { dispatched = true; } });
+  await waiting; controller.abort(Error('Stopped before send')); release();
+  await expect(result).rejects.toThrow('Stopped before send');
+  expect(endpoints).toEqual(['/bot/lanes']);
+  expect(dispatched).toBe(false);
+});
+
 it('holds a private Host lease through native work and releases it on success, attachment failure and inspection failure', async () => {
   let leases = 0, mode: 'success' | 'failure' = 'success';
   const client = { request: async (endpoint: string, body: Record<string, string>) => {

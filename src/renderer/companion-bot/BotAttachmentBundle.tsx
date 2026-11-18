@@ -1,5 +1,5 @@
 import { useBotCallDocument } from './call-pet';
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { AttachmentKindIcon, BotAttachment, type BotAttachmentProps } from './BotAttachment';
@@ -21,12 +21,14 @@ export function BotAttachmentBundle({ media, ...common }: Props) {
       <button className="bot-attachment-bundle-more" type="button" onClick={() => setExpanded(true)} aria-label={zh ? '查看全部附件' : 'View all attachments'}><strong>{remaining ? `+${remaining}` : summary.count}</strong><span>{zh ? '查看全部' : 'View all'}</span></button>
     </div>
     <footer><div className="bot-attachment-bundle-types">{categories.filter(kind => summary.counts[kind]).map(kind => <span key={kind}><AttachmentKindIcon kind={kind === 'document' ? 'text' : kind} />{botAttachmentCategoryLabel(kind, zh)} {summary.counts[kind]}</span>)}</div><button type="button" onClick={() => setExpanded(true)}>{zh ? '全部文件' : 'All files'}<span aria-hidden="true">→</span></button></footer>
-    {expanded && <AttachmentExplorer key={common.conversationId} media={media} {...common} onClose={() => setExpanded(false)} />}
+    {expanded && <AttachmentExplorer key={common.conversationId} media={media} locale={common.locale} renderItem={item => <BotAttachment media={item} {...common} variant="list" />} onClose={() => setExpanded(false)} />}
   </section>;
 }
-function AttachmentExplorer({ media, onClose, ...common }: Props & { onClose(): void }) {
+export function AttachmentExplorer({ media, locale, title, renderItem, onClose }: {
+  media: readonly BotMediaRef[]; locale: 'zh-CN' | 'en'; title?: string; renderItem(item: BotMediaRef): ReactNode; onClose(): void;
+}) {
   const surface = useBotCallDocument();
-  const zh = common.locale === 'zh-CN', id = useId(), box = useRef<HTMLElement>(null), close = useRef<HTMLButtonElement>(null);
+  const zh = locale === 'zh-CN', id = useId(), box = useRef<HTMLElement>(null), close = useRef<HTMLButtonElement>(null);
   const [query, setQuery] = useState(''), [type, setType] = useState<BotAttachmentCategory | 'all'>('all'), [paging, setPaging] = useState({ key: '', page: 0 });
   const summary = botAttachmentSummary(media), normalized = query.normalize('NFKC').toLocaleLowerCase().trim(), pageKey = `${type}:${normalized}`;
   const matching = media.filter(item => { const details = botAttachmentDetails(item); return (type === 'all' || details.category === type) && `${item.name}\n${details.name}`.normalize('NFKC').toLocaleLowerCase().includes(normalized); });
@@ -41,10 +43,10 @@ function AttachmentExplorer({ media, onClose, ...common }: Props & { onClose(): 
     else if (!event.shiftKey && surface.activeElement === last) { event.preventDefault(); first?.focus(); }
   };
   return createPortal(<div className="bot-attachment-explorer-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}><section className="bot-attachment-explorer" ref={box} role="dialog" aria-modal="true" aria-labelledby={id} onKeyDown={keyboard}>
-    <header><span className="bot-attachment-bundle-folder"><AttachmentKindIcon kind="bundle" /></span><div><h2 id={id}>{zh ? '全部附件' : 'All attachments'}</h2><small>{zh ? `共 ${summary.count} 个附件` : `${summary.count} attachments`} · {formatBotFileSize(summary.bytes)}</small></div><button type="button" ref={close} aria-label={zh ? '关闭附件列表' : 'Close attachment list'} onClick={onClose}>×</button></header>
+    <header><span className="bot-attachment-bundle-folder"><AttachmentKindIcon kind="bundle" /></span><div><h2 id={id}>{title ?? (zh ? '全部附件' : 'All attachments')}</h2><small>{zh ? `共 ${summary.count} 个附件` : `${summary.count} attachments`} · {formatBotFileSize(summary.bytes)}</small></div><button type="button" ref={close} aria-label={zh ? '关闭附件列表' : 'Close attachment list'} onClick={onClose}>×</button></header>
     <div className="bot-attachment-explorer-search"><BotIcon name="search" /><input type="search" value={query} onChange={event => setQuery(event.target.value)} aria-label={zh ? '搜索附件文件名' : 'Search attachment filenames'} placeholder={zh ? '搜索完整文件名…' : 'Search filenames…'} /></div>
     <nav aria-label={zh ? '附件类型' : 'Attachment type'}><button type="button" aria-pressed={type === 'all'} onClick={() => setType('all')}>{zh ? '全部' : 'All'} <span>{summary.count}</span></button>{categories.filter(kind => summary.counts[kind]).map(kind => <button type="button" key={kind} aria-pressed={type === kind} onClick={() => setType(kind)}>{botAttachmentCategoryLabel(kind, zh)} <span>{summary.counts[kind]}</span></button>)}</nav>
-    <div className="bot-attachment-explorer-list" role="list" aria-label={zh ? '附件文件' : 'Attachment files'}>{visible.map(item => <div role="listitem" key={item.id}><BotAttachment media={item} {...common} variant="list" /></div>)}{!visible.length && <div className="bot-attachment-explorer-empty"><BotIcon name="search" /><strong>{zh ? '没有匹配的附件' : 'No matching attachments'}</strong><span>{zh ? '换个文件名或类型再看看。' : 'Try another filename or file type.'}</span></div>}</div>
+    <div className="bot-attachment-explorer-list" role="list" aria-label={zh ? '附件文件' : 'Attachment files'}>{visible.map(item => <div role="listitem" key={item.id}>{renderItem(item)}</div>)}{!visible.length && <div className="bot-attachment-explorer-empty"><BotIcon name="search" /><strong>{zh ? '没有匹配的附件' : 'No matching attachments'}</strong><span>{zh ? '换个文件名或类型再看看。' : 'Try another filename or file type.'}</span></div>}</div>
     <footer><span>{zh ? `${matching.length} 个附件 · 第 ${page + 1} / ${pages} 页` : `${matching.length} attachments · Page ${page + 1} of ${pages}`}</span><div><button type="button" disabled={!page} onClick={() => setPaging({ key: pageKey, page: page - 1 })}>{zh ? '上一页' : 'Previous'}</button><button type="button" disabled={page + 1 >= pages} onClick={() => setPaging({ key: pageKey, page: page + 1 })}>{zh ? '下一页' : 'Next'}</button></div></footer>
   </section></div>, surface.body);
 }

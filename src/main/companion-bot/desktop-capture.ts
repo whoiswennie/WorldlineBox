@@ -3,7 +3,7 @@ import { mkdtemp, open, readFile, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { app, desktopCapturer, dialog, screen, type BrowserWindow, type Display } from 'electron';
 import sharp from 'sharp';
-import { BOT_DESKTOP_AGENT_EVENT, BOT_DESKTOP_AUDIO_SECONDS, type BotDesktopAgentCommand, type BotDesktopCaptureScope, type BotDesktopCaptureToolArguments, type BotMediaRequest, type BotMediaResponse, type BotPresenceEnergy } from '../../shared/companion-bot-media';
+import { BOT_DESKTOP_AGENT_EVENT, BOT_DESKTOP_AUDIO_SECONDS, BOT_PRESENCE_ACTIVITY_CHANNEL, BOT_PRESENCE_CAPTURE_EDGE, type BotDesktopAgentCommand, type BotDesktopCaptureScope, type BotDesktopCaptureToolArguments, type BotMediaRequest, type BotMediaResponse, type BotPresenceActivity, type BotPresenceEnergy } from '../../shared/companion-bot-media';
 import { validateSpeechWave } from '../../shared/local-speech';
 import type { LocalSpeechService } from '../local-speech-service';
 import { callPetFor } from './call-pet-window';
@@ -13,10 +13,11 @@ import { DesktopPresence, type PresenceSample, type PresenceTarget } from './des
 import { composePresenceFrames, recognizePresenceAudio, samplePresenceFrames } from './presence-video';
 import { PresenceArchive, type PresenceRecording } from './presence-archive';
 import { abortable } from './abortable';
+import type { BotDesktopActivity, BotPresenceStatus } from '../../shared/companion-bot-media';
 
 type CaptureRequest = Extract<BotMediaRequest, { requestId: string }>;
 type CaptureScope = BotDesktopCaptureScope;
-type Recording = { scope: CaptureScope; target: BrowserWindow; granted: boolean; expires: number; seconds: number; kind: 'listen' | 'watch';
+type Recording = { scope: CaptureScope; target: BrowserWindow; granted: boolean; active?: boolean; expires: number; seconds: number; kind: 'listen' | 'watch';
   timer?: ReturnType<typeof setTimeout>; video?: Promise<Awaited<ReturnType<typeof startDesktopVideo>>>; finishing?: boolean; bytes: number };
 export type BotDesktopAgentResult = Pick<BotMediaResponse, 'ok' | 'error' | 'cancelled' | 'durationSeconds' | 'transcript'> & { image?: Uint8Array };
 type AgentJob = { command: CaptureScope & BotDesktopCaptureToolArguments; complete(result: BotDesktopAgentResult): void;
@@ -40,49 +41,39 @@ function timestamp(seconds: number) {
   return [Math.floor(time / 3600), Math.floor(time / 60) % 60, time % 60].map(value => String(value).padStart(2, '0')).join(':');
 }
 
-export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg: () => string | undefined) {
+export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg: () => string | undefined, onActivity?: (activity?: BotDesktopActivity) => void) {
   const archive = new PresenceArchive(path.join(app.getPath('userData'), 'presence-recordings'));
-  const staged = new WeakMap<PresenceRecording, ReturnType<typeof prepareRecord>>();
-  let preparing = Promise.resolve<unknown>(undefined);
 
-  async function prepareRecord(record: PresenceRecording, signal: AbortSignal) {
+  async function prepareRecord(record: PresenceRecording, signal: AbortSignal, audioBudget: AbortSignal) {
     signal.throwIfAborted();
     const originalPath = await archive.original(record, signal);
     const duration = (record.at - record.startedAt) / 1000;
     if (record.kind === 'screen') {
-      const jpeg = await sharp(record.bytes).resize(352, 198, { fit: 'contain', background: '#141b29' }).jpeg({ quality: 80 }).toBuffer();
-      return { originalPath, duration, frames: [{ seconds: 0, jpeg }], audio: undefined };
+      const jpeg = await sharp(record.bytes).resize(480, 270, { fit: 'contain', background: '#141b29' }).jpeg({ quality: 85 }).toBuffer();
+      return { originalPath, duration, frames: [{ seconds: 0, jpeg, detail: async () => Buffer.from(record.bytes.buffer, record.bytes.byteOffset, record.bytes.byteLength) }], audio: undefined };
     }
     const binary = ffmpeg();
     if (!binary) throw Error('陪伴模式的录像解码组件尚未准备好。');
-    const audioSignal = AbortSignal.any([signal, AbortSignal.timeout(35_000)]);
+    const audioSignal = AbortSignal.any([audioBudget, AbortSignal.timeout(35_000)]);
     const [frames, audio] = await Promise.all([
       samplePresenceFrames(binary, record.bytes, duration, 7, signal).catch(() => []),
-      abortable(recognizePresenceAudio(binary, record.bytes, speech(), 'presence-' + record.id, audioSignal), audioSignal).catch(() => undefined),
+      audioSignal.aborted ? undefined : abortable(recognizePresenceAudio(binary, record.bytes, speech(), 'presence-' + record.id, audioSignal), audioSignal).catch(() => undefined),
     ]);
     signal.throwIfAborted();
     return { originalPath, duration, frames, audio };
-  }
-
-  function stage(record: PresenceRecording, signal: AbortSignal) {
-    const existing = staged.get(record);
-    if (existing) return existing;
-    const job = preparing.then(() => prepareRecord(record, signal));
-    staged.set(record, job);
-    preparing = job.catch(() => { staged.delete(record); });
-    return job;
   }
 
   async function prepare(records: readonly PresenceRecording[], signal: AbortSignal): Promise<PresenceSample> {
     const origin = records[0]!.startedAt;
     const sources: PresenceSample['sources'] = [], subtitles: PresenceSample['subtitles'] = [];
     const frames = [];
+    const audioBudget = AbortSignal.any([signal, AbortSignal.timeout(55_000)]);
     let duration = 0;
     for (const record of records) {
-      const item = await abortable(stage(record, signal), signal);
+      const item = await abortable(prepareRecord(record, signal, audioBudget), signal);
       const from = (record.startedAt - origin) / 1000, to = from + item.duration;
       duration = Math.max(duration, to);
-      sources.push({ kind: record.kind, from, to, originalPath: item.originalPath,
+      sources.push({ kind: record.kind, from, to, originalPath: item.originalPath, visual: item.frames.length ? 'available' : 'unavailable',
         audio: record.kind === 'video' ? item.audio ? 'recognized' : 'unavailable' : undefined });
       frames.push(...item.frames.map(frame => ({ ...frame, seconds: from + frame.seconds })));
       if (item.audio) subtitles.push(...item.audio.segments.map(segment => ({ ...segment, startSeconds: from + segment.startSeconds, endSeconds: from + segment.endSeconds })));
@@ -94,7 +85,7 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
   }
   let recording: Recording | undefined;
   let presence: { scope: CaptureScope; target: BrowserWindow; energy: BotPresenceEnergy; granted: boolean; expires: number; session: DesktopPresence;
-    deadline: ReturnType<typeof setTimeout>; closed(): void } | undefined;
+    recording?: boolean; deadline: ReturnType<typeof setTimeout>; unbind(): void } | undefined;
   let file: { scope: CaptureScope; cancelled: boolean; started: boolean } | undefined;
   let processing: CaptureScope | undefined;
   let agent: AgentJob | undefined;
@@ -103,6 +94,20 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
   const targetFor = (owner: BrowserWindow, scope: CaptureScope) => scope.surface === 'pet' ? callPetFor(owner) : owner;
   const isActive = (owner: BrowserWindow, target: BrowserWindow, scope: CaptureScope) =>
     !owner.isDestroyed() && !target.isDestroyed() && targetFor(owner, scope) === target;
+  let manualScreen: (CaptureScope & { activity: 'screenshot' | 'captured' }) | undefined;
+  let receiptTimer: ReturnType<typeof setTimeout> | undefined;
+  let lastActivity: BotDesktopActivity | undefined;
+  function publishActivity(status = presence?.session.status()) {
+    let activity: BotDesktopActivity | undefined = manualScreen?.activity;
+    if (recording?.active) activity = recording.kind === 'watch' ? 'recording' : 'listening';
+    if (!activity && status) {
+      if (status.screenshot === 'capturing') activity = 'screenshot';
+      else if (presence?.recording) activity = 'recording';
+      else if (status.phase === 'observing') activity = 'observing';
+      else if (status.screenshot === 'just-captured') activity = 'captured';
+    }
+    if (lastActivity !== activity) { lastActivity = activity; onActivity?.(activity); }
+  }
 
   function bind(owner: BrowserWindow) {
     const session = owner.webContents.session;
@@ -120,21 +125,24 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
       void displaySource(display, { width: 0, height: 0 }).then(source => {
         if (recording !== grant && presence !== grant || grant.target.isDestroyed() || Date.now() >= grant.expires) { callback({}); return; }
         callback({ video: source, audio: 'loopback' });
+        publishActivity();
       }, () => callback({}));
     });
   }
 
   function release(grant: Recording) {
     if (recording === grant) recording = undefined;
+    publishActivity();
     clearTimeout(grant.timer);
     if (!grant.finishing) void grant.video?.then(video => video.dispose()).catch(() => undefined);
   }
 
   function cancel(scope: CaptureScope) {
+    if (manualScreen?.activity === 'screenshot' && sameCapture(manualScreen, scope)) manualScreen = undefined;
     if (presence && sameCapture(presence.scope, scope)) {
       const current = presence; presence = undefined;
       clearTimeout(current.deadline);
-      current.target.removeListener('closed', current.closed);
+      current.unbind();
       current.session.close();
     }
     if (recording && sameCapture(recording.scope, scope)) release(recording);
@@ -144,6 +152,7 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
       file.cancelled = true;
       if (file.started) speech().cancel(scope.requestId);
     }
+    publishActivity();
   }
 
   function dispatch(target: BrowserWindow, command: BotDesktopAgentCommand) {
@@ -152,7 +161,8 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
 
   return {
     cancel,
-    stopPresence() { if (presence) cancel(presence.scope); archive.close(); },
+    endMeeting(room: string) { if (presence?.scope.conversationId === room) cancel(presence.scope); },
+    stopPresence() { clearTimeout(receiptTimer); manualScreen = undefined; if (presence) cancel(presence.scope); archive.close(); publishActivity(); },
     async runForAgent(owner: BrowserWindow, conversationId: string, preferPet: boolean, input: BotDesktopCaptureToolArguments, signal: AbortSignal) {
       const surfaces = preferPet ? ['pet', 'chat'] as const : ['chat', 'pet'] as const;
       const allowed = surfaces.find(surface => {
@@ -177,24 +187,29 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
       signal.addEventListener('abort', abort, { once: true });
       target.once('closed', close);
       void dispatch(target, command).catch(job.reject);
-      try { return await result; }
+      let completed = false;
+      try {
+        const response = await result;
+        completed = response.ok && !response.cancelled;
+        return response;
+      }
       finally {
         if (agent === job) agent = undefined;
         clearTimeout(job.handshake); clearTimeout(timeout);
         signal.removeEventListener('abort', abort); target.removeListener('closed', close);
         cancel(command);
-        if (!target.isDestroyed()) void dispatch(target, { ...command, operation: 'cancel' }).catch(() => undefined);
+        if (!completed && !target.isDestroyed()) void dispatch(target, { ...command, operation: 'cancel' }).catch(() => undefined);
       }
     },
     async capture(owner: BrowserWindow, request: Exclude<CaptureRequest, { type: 'desktop.cancel' }>, media: BotMediaService, presenceTarget: () => PresenceTarget): Promise<BotMediaResponse> {
       if (request.type === 'desktop.presence.archive.list') {
         if (request.show) { if (owner.isMinimized()) owner.restore(); owner.show(); owner.focus(); }
-        return { ok: true, recordings: archive.list(request.conversationId) };
+        return { ok: true, ...archive.timeline(request.conversationId, request.before) };
       }
       if (request.type === 'desktop.presence.archive.read') return { ok: true, recordingBytes: archive.read(request.conversationId, request.id) };
       if (request.type === 'desktop.presence.archive.clear') {
         await archive.clear(request.conversationId);
-        return { ok: true, recordings: archive.list(request.conversationId) };
+        return { ok: true, ...archive.timeline(request.conversationId) };
       }
       const target = targetFor(owner, request);
       if (request.type === 'desktop.surface.ready' || request.type === 'desktop.surface.closed') {
@@ -221,41 +236,71 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
       }
       const complete = (result: BotDesktopAgentResult) => {
         tool?.complete(result);
-        return { ok: true };
+        return { ok: true, cancelled: result.cancelled };
       };
       const active = () => isActive(owner, target, request);
-      const display = screen.getDisplayMatching(target.getBounds());
       const { conversationId, requestId } = request;
       try { switch (request.type) {
         case 'desktop.presence.start': {
           if (presence || recording && !recording.granted) throw Error('已有陪伴模式或录制正在连接，请先结束它。');
           if (request.energy !== 'low' && !ffmpeg()) throw Error('陪伴模式的录像解码组件尚未准备好。');
+          const display = screen.getDisplayMatching(target.getBounds());
+          let screenshot: ReturnType<typeof displaySource> | undefined;
           const session = new DesktopPresence(request.energy, presenceTarget(), {
+            beginRound: (at, waitMs) => archive.beginRound(conversationId, at, waitMs),
+            updateRound: (id, state, records, error) => archive.updateRound(id, state, records, error),
+            notify: (status: BotPresenceStatus) => {
+              if (!presence || !sameCapture(presence.scope, request) || owner.isDestroyed() || owner.webContents.isDestroyed()) return;
+              publishActivity(status);
+              owner.webContents.send(BOT_PRESENCE_ACTIVITY_CHANNEL, { conversationId, requestId, surface: request.surface, status } satisfies BotPresenceActivity);
+            },
             screen: async signal => {
               const width = display.size.width * display.scaleFactor, height = display.size.height * display.scaleFactor;
-              const scale = Math.min(1, 960 / width, 540 / height);
-              const source = await displaySource(display, { width: Math.round(width * scale), height: Math.round(height * scale) });
+              const scale = Math.min(1, BOT_PRESENCE_CAPTURE_EDGE / Math.max(width, height));
+              screenshot ??= displaySource(display, { width: Math.round(width * scale), height: Math.round(height * scale) })
+                .finally(() => { screenshot = undefined; });
+              const source = await abortable(screenshot, AbortSignal.any([signal, AbortSignal.timeout(8000)]));
               signal.throwIfAborted();
               if (source.thumbnail.isEmpty()) throw Error('陪伴模式没有取得屏幕画面。');
-              return source.thumbnail.toJPEG(76);
+              return source.thumbnail.toJPEG(92);
             },
             prepare,
-            stage: (record, signal) => { void stage(record, signal).catch(() => undefined); },
             canCapture: () => archive.canCapture(),
             add: (kind, bytes, startedAt, at) => archive.add(conversationId, kind, bytes, startedAt, at),
             claim: () => archive.claim(conversationId),
-            finish: (records, success) => archive.finish(records, success),
+            discardPending: () => archive.discardPending(conversationId),
+            finish: (records, success, obsolete) => archive.finish(records, success, obsolete),
           });
           const closed = () => cancel(request);
-          const deadline = setTimeout(() => { if (presence && sameCapture(presence.scope, request) && !presence.granted) cancel(request); }, 12_000);
-          presence = { scope: request, target, session, energy: request.energy, granted: request.energy === 'low', expires: Date.now() + 12_000, deadline, closed };
+          const deadline = setTimeout(closed, 30_000);
+          const contents = target.webContents;
+          const navigating = (event: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
+            if (event.isMainFrame && !event.isSameDocument) closed();
+          };
+          presence = { scope: request, target, session, energy: request.energy, granted: request.energy === 'low', expires: Date.now() + 12_000, deadline, unbind() {
+            target.off('closed', closed);
+            if (!contents.isDestroyed()) { contents.off('render-process-gone', closed); contents.off('did-start-navigation', navigating); }
+          } };
           target.once('closed', closed);
+          target.webContents.once('render-process-gone', closed);
+          contents.on('did-start-navigation', navigating);
           bind(owner);
+          session.syncActivity(!!request.interacting);
           return { ok: true, presence: session.status() };
         }
-        case 'desktop.presence.clip': case 'desktop.presence.status': case 'desktop.presence.energy': case 'desktop.presence.flushed': case 'desktop.presence.interrupt': {
+        case 'desktop.presence.recording': case 'desktop.presence.clip': case 'desktop.presence.status': case 'desktop.presence.energy': case 'desktop.presence.flushed': case 'desktop.presence.interrupt': {
           const current = presence;
           if (!current || current.target !== target || !sameCapture(current.scope, request)) return { ok: true, cancelled: true };
+          current.deadline.refresh();
+          if (request.type === 'desktop.presence.recording' && request.cycle === current.session.status().cycle) {
+            current.recording = current.granted && request.recording;
+            if (current.recording) current.session.recordingStarted(request.cycle);
+          }
+          if (request.type === 'desktop.presence.status') {
+            current.recording = current.granted && !!request.recording && request.recordingCycle === current.session.status().cycle;
+            current.session.syncActivity(!!request.interacting);
+            if (request.recordingCycle !== undefined) current.session.recordingStarted(request.recordingCycle);
+          }
           if (request.type === 'desktop.presence.energy' && request.energy !== current.energy) {
             if (request.energy !== 'low' && !ffmpeg()) throw Error('陪伴模式的录像解码组件尚未准备好。');
             if (request.energy === 'low') current.granted = true;
@@ -267,18 +312,39 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
           if (request.type === 'desktop.presence.interrupt') current.session.interrupt();
           if (request.type === 'desktop.presence.clip') {
             if (!current.granted) throw Error('屏幕和系统音轨还未连接。');
-            current.session.putClip(request.bytes, request.startedAt, request.endedAt);
+            current.session.putClip(request.bytes, request.startedAt, request.endedAt, request.cycle);
           }
-          return { ok: true, presence: current.session.status() };
+          const status = current.session.status();
+          publishActivity(status);
+          return { ok: true, presence: status };
         }
         case 'desktop.screen': {
+          const display = screen.getDisplayMatching(target.getBounds());
           const width = Math.round(display.size.width * display.scaleFactor);
           const height = Math.round(display.size.height * display.scaleFactor);
           const scale = Math.min(1, 2560 / Math.max(width, height));
-          const source = await displaySource(display, { width: Math.round(width * scale), height: Math.round(height * scale) });
-          if (!active() || tool && agent !== tool) return complete({ ok: true, cancelled: true });
-          if (source.thumbnail.isEmpty()) throw Error('未取得屏幕画面，请检查系统的屏幕共享权限。');
-          return complete({ ok: true, image: source.thumbnail.toPNG() });
+          clearTimeout(receiptTimer);
+          manualScreen = { ...request, activity: 'screenshot' };
+          publishActivity();
+          try {
+            const source = await displaySource(display, { width: Math.round(width * scale), height: Math.round(height * scale) });
+            if (!active() || tool && agent !== tool || !manualScreen || !sameCapture(manualScreen, request)) return complete({ ok: true, cancelled: true });
+            if (source.thumbnail.isEmpty()) throw Error('未取得屏幕画面，请检查系统的屏幕共享权限。');
+            const image = source.thumbnail.toPNG();
+            manualScreen.activity = 'captured';
+            receiptTimer = setTimeout(() => { manualScreen = undefined; publishActivity(); }, 3000);
+            receiptTimer.unref();
+            return complete({ ok: true, image });
+          } finally {
+            if (manualScreen?.activity === 'screenshot' && sameCapture(manualScreen, request)) manualScreen = undefined;
+            publishActivity();
+          }
+        }
+        case 'desktop.audio.activity': case 'desktop.video.activity': {
+          if (recording?.granted && recording.target === target && sameCapture(recording.scope, request)) {
+            recording.active = request.active; publishActivity();
+          }
+          return { ok: true };
         }
         case 'desktop.audio.begin': case 'desktop.video.begin': {
           if (recording || processing || presence && !presence.granted) throw Error('已有录制正在进行。');

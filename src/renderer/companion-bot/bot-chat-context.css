@@ -25,7 +25,7 @@
 .bot-workspace .bot-context-more-tasks { display:flex;justify-content:space-between;gap:5px;width:100%;font-size:10px;color:var(--bot-accent);padding:10px 0 0;border:0;background:transparent; }
 .bot-context-collapsed { display:none; }
 @media(min-width:1450px) {
- .bot-workspace.bot-atmosphere.context-collapsed { grid-template-columns:282px minmax(0,1fr) 38px; }
+ .bot-workspace.bot-atmosphere.context-collapsed { grid-template-columns:var(--bot-list-width) minmax(0,1fr) 38px; }
  .bot-atmosphere .bot-context-collapsed { display:flex;align-items:flex-start;padding:24px 6px 0 0;margin-right:6px; }
  .bot-context-collapsed button { display:grid;place-items:center;width:27px;height:34px;padding:0;border:1px solid var(--bot-edge);border-radius:9px;background:var(--bot-panel);color:var(--bot-muted); }
  .bot-context-collapsed button:hover { color:var(--bot-accent);border-color:var(--bot-accent); }

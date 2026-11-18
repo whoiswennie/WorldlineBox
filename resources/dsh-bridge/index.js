@@ -181,7 +181,7 @@ export async function createBotProvider(ctx) {
         getModels: () => [descriptor], stream: api.stream, streamSimple: api.streamSimple };
       const profile = { provider, displayName: 'WorldlineBox companion', piProvider,
         modelErrors: new Map(), configuredMaxTokens: new Map([[model.model, output]]),
-        streamIdleTimeoutMs: 120000, maxRequestImageBytes: 1024 * 1024, requestImagePixelBudget: 1048576, requestImageMaxBytes: 524288,
+        streamIdleTimeoutMs: 120000, maxRequestImageBytes: 4 * 1024 * 1024, requestImagePixelBudget: 2560 * 1600, requestImageMaxBytes: 1536 * 1024,
         retryPolicy: { mode: 'normal', maxRetries: 2, retryableCodes: ['TRANSPORT', 'NETWORK', 'TIMEOUT', 'RATE_LIMIT'], initialDelayMs: 500, maxDelayMs: 3000, jitterRatio: 0.1 } };
       secrets.set(profile, model.apiKey);
       profiles = new Map(profiles).set(provider, profile);
@@ -1207,7 +1207,7 @@ export async function apply(ctx) {
       const botMatch = /^\/bot\/lanes\/([A-Za-z0-9_-]+)\/(turn|cancel|input|archive|compact)$/.exec(url.pathname);
       if (request.method === 'POST' && botMatch) {
         if (botMatch[2] === 'turn') await botCancelChecks.get(botMatch[1]);
-        const record = sessions.get(botMatch[1]), input = await body(request);
+        const record = sessions.get(botMatch[1]), input = await body(request, botMatch[2] === 'turn' ? 7 * 1024 * 1024 : undefined);
         if (!record && botMatch[2] === 'archive') { json(response, { archived: true }); return; }
         if (!record?.bot) throw new Error('Unknown companion lane event.');
         const previous = record.botMutation ?? Promise.resolve();
@@ -1364,7 +1364,7 @@ export async function apply(ctx) {
         const images = input.observationImages ?? (input.observationImage ? [input.observationImage] : []);
         if (!Array.isArray(images) || images.length > 6
           || images.some(image => typeof image?.data !== 'string' || typeof image.name !== 'string' || image.name.length > 160)
-          || images.reduce((total, image) => total + image.data.length, 0) > 700000) throw Error('Invalid companion observation images.');
+          || images.reduce((total, image) => total + image.data.length, 0) > Math.ceil(4 * 1024 * 1024 / 3) * 4 + 16) throw Error('Invalid companion observation images.');
         if (images.length) {
           const { admitEncodedImages } = await import('@deepseek-ai/dsh-attachment');
           const attachments = await admitEncodedImages(ctx.get('attachments'), images.map(image => ({ mediaType: 'image/jpeg', data: image.data, name: image.name })));

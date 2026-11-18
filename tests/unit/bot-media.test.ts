@@ -55,6 +55,21 @@ it('creates bounded image thumbnails and keeps large encodings or canvases opaqu
   expect(canvas).toMatchObject({width:6000,height:5000});expect(canvas!.previewUrl).toBeUndefined();expect(encoded!.previewUrl).toBeUndefined();
   expect(new Uint8Array(await(await media.response(new Request(picture!.url))).arrayBuffer())).toEqual(new Uint8Array(bytes));
 });
+it('renders a TIFF at full detail for chat separately from its small icon and enforces conversation access',async()=>{
+  const {root,media}=await fixture(), file=path.join(root,'多页文稿.tiff');
+  const original=await sharp({create:{width:1440,height:900,channels:3,background:'#eeede9'}}).tiff().toBuffer();
+  await writeFile(file,original);
+  const [ref]=await media.importFiles({conversationId:'a',paths:[file]});
+  const response=await media.response(new Request(ref!.url+'/display'));
+  expect(response.headers.get('content-type')).toBe('image/png');
+  const data=await sharp(Buffer.from(await response.arrayBuffer())).metadata();
+  expect([data.width,data.height]).toEqual([1440,900]);
+  const icon=await media.response(new Request(ref!.previewUrl!));
+  expect((await sharp(Buffer.from(await icon.arrayBuffer())).metadata()).width).toBe(160);
+  expect(hash(new Uint8Array(await(await media.response(new Request(ref!.url))).arrayBuffer()))).toBe(ref!.sha256);
+  const revoked=new BotMediaService({root:path.join(root,'media'),builtinRoot:path.resolve('resources/bot-stickers'),canUserAccessConversation:()=>false});
+  expect((await revoked.response(new Request(ref!.url+'/display'))).status).toBe(403);
+});
 it('persists a native clipboard screenshot with an immutable original, bounded preview and exact conversation access',async()=>{
   const {root,media}=await fixture(),bytes=await sharp({create:{width:64,height:48,channels:4,background:'#ff8899'}}).png().toBuffer();
   const first=await media.importClipboardImage('a',bytes);expect(first).toMatchObject({name:'剪贴板图片.png',mimeType:'image/png',sha256:hash(bytes),width:64,height:48});expect(first.previewUrl).toBeTruthy();

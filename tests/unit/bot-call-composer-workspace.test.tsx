@@ -64,7 +64,8 @@ it('keeps private-chat drafts separate and retries a failed meeting attachment s
   await type('会面消息'); await click('添加文件');
   await click('发送 ↑'); const original = sends()[0]!;
   expect(original).toMatchObject({ conversationId: 'meeting', content: '会面消息', attachmentIds: [file.id] });
-  expect(document.querySelector('.bot-call-send-error')?.textContent).toBe('会面暂未受理');
+  expect(document.querySelector('.bot-call-send-error p')?.textContent).toBe('会面暂未受理');
+  expect(document.querySelector('.bot-call-send-error')?.textContent).toContain('错误详情');
   expect(input().value).toBe('会面消息');
   fail = false; await click('发送 ↑');
   expect(sends()).toHaveLength(2); expect(sends()[1]).toEqual(original);
@@ -93,12 +94,15 @@ it('shows a bounded attachment list, previews images and removes individual file
     const draft = document.querySelector<HTMLElement>('.bot-draft-attachments')!;
     expect(draft.querySelectorAll('li')).toHaveLength(2);
     await click('查看全部 3 个附件', draft);
-    expect(draft.querySelectorAll('li')).toHaveLength(3);
-    expect(draft.querySelector('ul')?.className).toBe('is-expanded');
-    await click('预览 参考图.webp', draft);
+    expect(draft.querySelectorAll('li')).toHaveLength(2);
+    const explorer = document.querySelector<HTMLElement>('.bot-attachment-explorer')!;
+    expect(explorer.querySelectorAll('[role=listitem]')).toHaveLength(3);
+    await click('预览 参考图.webp', explorer);
     expect(document.querySelector('.bot-attachment-viewer[aria-label="参考图.webp"]')).not.toBeNull();
     await click('关闭预览');
-    await click('移除 最后的会议资料.txt', draft);
+    await click('移除 最后的会议资料.txt', explorer);
+    expect(explorer.textContent).not.toContain('最后的会议资料.txt');
+    await click('关闭附件列表', explorer);
     expect(draft.querySelectorAll('li')).toHaveLength(2);
     expect(draft.textContent).not.toContain('最后的会议资料.txt');
   }

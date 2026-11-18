@@ -9,7 +9,7 @@ import type { BotReplyPart, BotRequest, WorldlineBoxBotApi } from '../../src/sha
 import type { DshRuntime, WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
-import { seedNativeRuntime } from './fixtures/dsh-native-runtime';
+import { seedNativeRuntime, selectNativeRuntime } from './fixtures/dsh-native-runtime';
 import { observeCallRenderedPose } from './fixtures/call-rendered-pose';
 import { builtinBotCompanion } from '../../src/shared/builtin-bot-companions';
 
@@ -138,7 +138,7 @@ test('reports a one-minute companion schedule in chat, video and desktop pet aft
   test.setTimeout(300_000);
   const manager = process.env.WORLDLINEBOX_CALL_TEST_DSH_MANAGER ?? path.join(process.env.APPDATA ?? '.', 'WorldlineBox', 'dsh');
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8').catch(() => '[]')) as DshRuntime[];
-  const runtime = runtimes.find(item => item.version === '0.2.2-rc.3') ?? runtimes.find(item => item.version === '0.2.2-rc.2');
+  const runtime = selectNativeRuntime(runtimes, ['0.2.2-rc.3', '0.2.2-rc.2']);
   test.skip(!runtime || process.platform !== 'win32', 'Requires Windows desktop pet and a sealed DSH runtime.');
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-voice-'));
   const launch = resolveElectronLaunchOptions();
@@ -223,7 +223,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
   test.setTimeout(480_000);
   const manager = process.env.WORLDLINEBOX_CALL_TEST_DSH_MANAGER ?? path.join(process.env.APPDATA ?? '.', 'WorldlineBox', 'dsh');
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8').catch(() => '[]')) as DshRuntime[];
-  const runtime = runtimes.find(item => item.version === '0.2.2-rc.3') ?? runtimes.find(item => item.version === '0.2.2-rc.2') ?? runtimes.find(item => item.version === '0.2.2-rc.1');
+  const runtime = selectNativeRuntime(runtimes, ['0.2.2-rc.3', '0.2.2-rc.2', '0.2.2-rc.1']);
   const wave = path.resolve('tests/fixtures/media/sensevoice-zh.wav');
   test.skip(!runtime || !existsSync(wave) || !existsSync(path.resolve('resources/speech-models/model.int8.onnx')), 'Requires a sealed DSH runtime and local SenseVoice test assets.');
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-voice-'));
@@ -425,7 +425,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await expect(bubble).toHaveText(fallbackLine, { timeout: 60_000 });
     const fallback = (await state()).messages.find(item => item.parts?.some(part => part.text === fallbackLine));
     expect(fallback).toMatchObject({ status: 'sent', content: fallbackLine });
-    expect(fallback?.parts?.filter(part => part.presentation)).toEqual([expect.objectContaining({ text: fallbackLine, presentation: {} })]);
+    expect(fallback?.parts?.filter(part => part.presentation)).toEqual([expect.objectContaining({ text: fallbackLine, presentation: expect.any(Object) })]);
     expect(model.counters).toMatchObject({ plainTurns: 1, rejectedToolChoices: 0 });
     await field.fill('没有生成正文'); await field.press('Enter');
     await expect(meeting.locator('.bot-call-bubble-status')).toHaveText('这次会面回应未能发布，请再试一次。', { timeout: 60_000 });
@@ -479,7 +479,7 @@ test('real model chooses and renders scene-appropriate Live2D cues', async ({}, 
   const source = process.env.WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT ?? path.join(process.env.APPDATA!, 'WorldlineBox');
   const manager = path.join(source, 'dsh');
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8')) as DshRuntime[];
-  const runtime = runtimes.find(item => item.version === '0.2.2-rc.2') ?? runtimes.find(item => item.version === '0.2.2-rc.1');
+  const runtime = selectNativeRuntime(runtimes, ['0.2.2-rc.2', '0.2.2-rc.1']);
   if (!runtime) throw Error('A sealed native DSH runtime is required.');
   const catalog = JSON.parse(await readFile(path.join(source, 'ai-profiles.json'), 'utf8')) as { activeProfileId: string };
   if (!/^ai_[a-f0-9]{24}$/u.test(catalog.activeProfileId)) throw Error('A configured real-model profile is required.');

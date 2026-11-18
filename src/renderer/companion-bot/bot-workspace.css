@@ -210,8 +210,8 @@ details[open]>.bot-executor-trigger>.bot-icon { transform:rotate(180deg); }
 .bot-executor-notice[data-state=pending] .bot-executor-status-icon::after { content:"";position:absolute;width:12px;height:12px;box-sizing:border-box;border:1.5px solid var(--ui-border-subtle);border-top-color:var(--ui-content-accent);border-radius:50%;animation:bot-executor-spin .9s linear infinite; }
 .bot-executor-panel { position:absolute;z-index:var(--ui-layer-popover);inset-block-start:calc(100% - 6px);inset-inline-end:18px;width:min(300px,calc(100% - 36px));padding:14px;border:1px solid var(--ui-border-subtle);border-radius:12px;background:var(--ui-surface-raised);box-shadow:var(--ui-shadow-menu);font-size:12px;line-height:1.5; }
 .bot-executor-panel-title { color:var(--ui-content-primary);font-weight:600; }
-.bot-executor-panel :is(.bot-executor-description,.bot-executor-diagnostic) { margin-top:6px;overflow-wrap:anywhere; }
-.bot-executor-diagnostic { max-height:min(160px,28vh);overflow:auto; }
+.bot-executor-panel :is(.bot-executor-description,.bot-error-notice) { margin-top:6px;overflow-wrap:anywhere; }
+.bot-executor-panel .bot-error-notice > p { max-height:min(160px,28vh);overflow:auto; }
 .bot-executor-actions { display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:10px; }
 .bot-workspace .bot-executor-actions button { min-height:28px;padding:4px 8px;border:0;border-radius:6px;font-size:11px; }
 .bot-workspace .bot-executor-actions .bot-executor-primary { background:var(--ui-action-accent-soft);color:var(--ui-content-accent); }

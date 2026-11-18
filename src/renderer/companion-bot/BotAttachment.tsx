@@ -1,6 +1,7 @@
 import { useBotCallDocument } from './call-pet';
 import { useCallback, useRef, useState } from 'react';
 import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
+import { BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS } from '../../shared/companion-bot-media';
 import { BotIcon } from './BotIcon';
 import { BotMediaPreview } from './BotMediaPreview';
 import { formatBotFileSize } from './media-presentation';
@@ -20,6 +21,9 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
   const zh = locale === 'zh-CN', [preview, setPreview] = useState(false), [saving, setSaving] = useState(false), [opening, setOpening] = useState(false), [error, setError] = useState(''), [thumbnailFailed, setThumbnailFailed] = useState(false);
   const { name, kind, canPreview, policy, extension, imageUrl } = botAttachmentDetails(media, !!api);
   const eligibility = policy.previewEligibility;
+  const [requestedImage, setRequestedImage] = useState('');
+  const [failedImage, setFailedImage] = useState('');
+  const [zoomedImage, setZoomedImage] = useState('');
   const surface = useBotCallDocument();
   const player = useRef<HTMLMediaElement | null>(null), [playbackFailed, setPlaybackFailed] = useState(false);
   const assignPlayer=useCallback((element:HTMLMediaElement|null)=>{if(player.current&&player.current!==element)player.current.pause();player.current=element;},[]);
@@ -30,9 +34,17 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
   const closePreview = useCallback(() => setPreview(false), []);
   const tile = variant === 'tile', sticker = variant === 'row' && media.kind === 'sticker' && kind === 'image' && eligibility === 'inline';
   const typeLabel = kind === 'image' ? zh ? '图片' : 'Image' : kind === 'video' ? zh ? '视频' : 'Video' : kind === 'audio' ? zh ? '音频' : 'Audio' : extension;
-  // Opening an original, AV stream or text page requires an explicit click.
   const thumbnail = canPreview && kind === 'image' && !thumbnailFailed ? media.previewUrl : undefined;
   const automaticStickerUrl = media.size <= 4 * 1024 * 1024 ? imageUrl : thumbnail;
+  // A legacy thumbnail also records that the importer successfully inspected the source.
+  const safeDimensions = media.width && media.height
+    ? media.width * media.height <= BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS.pixels : !!media.previewUrl;
+  const loadPicture = canPreview && kind === 'image' && (requestedImage === imageUrl ||
+    media.size <= BOT_MEDIA_AUTOMATIC_IMAGE_LIMITS.bytes && safeDimensions);
+  const showPicture = loadPicture && failedImage !== imageUrl;
+  const showDetailCover = tile && media.kind !== 'sticker' && showPicture;
+  const coverUrl = showDetailCover ? imageUrl : thumbnail;
+  const zoomed = zoomedImage === imageUrl;
   const perform = async (operation: 'attachment.save' | 'attachment.open') => {
     if (!api || saving || opening) return;
     if (operation === 'attachment.save') setSaving(true); else setOpening(true);
@@ -43,18 +55,25 @@ export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, v
   return <div className={`bot-attachment ${sticker ? 'is-sticker' : tile ? 'bot-attachment-tile' : 'bot-attachment-card'}${inline ? ' has-inline-preview' : ''}`} data-media-kind={kind}>
     {sticker ? <button className="bot-attachment-image" type="button" title={media.name} aria-label={zh ? `预览 ${media.name}` : `Preview ${media.name}`} onClick={() => setPreview(true)}>{automaticStickerUrl ? <img alt={media.name} src={automaticStickerUrl} loading="lazy" draggable={false} /> : <span className="bot-sticker-open-original"><AttachmentKindIcon kind="image" /><small>{zh ? '点击查看表情' : 'Open sticker'}</small></span>}</button>
       : <><button className="bot-attachment-main" type="button" title={name} disabled={saving || opening || !canPreview && !api} aria-label={zh ? `${canPreview ? '打开预览' : '系统打开'} ${name}` : `${canPreview ? 'Preview' : 'Open'} ${name}`} onClick={() => { setError(''); if (canPreview) openPreview(); else void perform('attachment.open'); }}>
-        <span className="bot-attachment-cover">{thumbnail ? <img alt="" src={thumbnail} loading="lazy" onError={() => setThumbnailFailed(true)} /> : <><AttachmentKindIcon kind={kind} /><small>{kind === 'audio' ? 'AUDIO' : kind === 'video' ? 'VIDEO' : extension}</small></>}</span>
+        <span className="bot-attachment-cover">{coverUrl ? <img alt="" src={coverUrl} loading="lazy" decoding="async" onError={() => showDetailCover ? setFailedImage(imageUrl) : setThumbnailFailed(true)} /> : <><AttachmentKindIcon kind={kind} /><small>{kind === 'audio' ? 'AUDIO' : kind === 'video' ? 'VIDEO' : extension}</small></>}</span>
         <span className="bot-attachment-meta"><strong title={name}>{name}</strong><span>{typeLabel} · {formatBotFileSize(media.size)}</span>{eligibility === 'external-only' && <em>{zh ? '超过 200 MiB · 系统打开' : 'Over 200 MiB · System app'}</em>}</span>
         {!tile && <span className="bot-attachment-open-hint">{canPreview ? zh ? '预览' : 'Preview' : zh ? '打开' : 'Open'}<BotIcon name="chevron-right" /></span>}
       </button>{!tile && <footer className="bot-attachment-actions">{api && <><button className="bot-file-save" type="button" disabled={saving || opening} title={zh ? '保存' : 'Save'} aria-label={`${zh ? '保存' : 'Save'} ${name}`} onClick={() => void perform('attachment.save')}><BotIcon name="download" /><span className="bot-attachment-action-label">{zh ? '保存' : 'Save'}</span></button><button className="bot-file-open" type="button" disabled={saving || opening} title={zh ? '系统打开' : 'System app'} aria-label={`${zh ? '系统打开' : 'System app'} ${name}`} onClick={() => void perform('attachment.open')}><BotIcon name="external" /><span className="bot-attachment-action-label">{zh ? '系统打开' : 'System app'}</span></button></>}</footer>}</>}
     {inline && <div className="bot-attachment-inline-preview">
-      {kind === 'image' && thumbnail && <button type="button" className="bot-attachment-inline-picture" aria-label={zh ? `放大查看 ${name}` : `Enlarge ${name}`} onClick={openPreview}><img src={thumbnail} alt={name} loading="lazy" onError={() => setThumbnailFailed(true)} /></button>}
+      {kind === 'image' && (showPicture ? <div className="bot-attachment-picture-scroll" data-zoomed={zoomed}>
+        <button type="button" className="bot-attachment-inline-picture" aria-label={zh ? `放大查看 ${name}` : `Enlarge ${name}`} onClick={openPreview}>
+          <img src={imageUrl} alt={name} width={media.width} height={media.height} loading="lazy" decoding="async" onError={() => setFailedImage(imageUrl)} />
+        </button>
+      </div> : failedImage === imageUrl
+        ? <small role="status">{zh ? '此图片无法显示，可用系统应用打开原文件。' : 'Use your system app to view this image.'}</small>
+        : <button className="bot-attachment-load-picture" type="button" onClick={() => setRequestedImage(imageUrl)}>{zh ? '在消息中显示图片' : 'Show image in message'}</button>)}
       {kind === 'video' && !playbackFailed && !preview && <video ref={assignPlayer} data-bot-attachment-player controls playsInline preload="none" src={media.url} aria-label={name} onPlay={event => play(event.currentTarget)} onError={() => setPlaybackFailed(true)} />}
       {kind === 'audio' && !playbackFailed && !preview && <audio ref={assignPlayer} data-bot-attachment-player controls preload="none" src={media.url} aria-label={name} onPlay={event => play(event.currentTarget)} onError={() => setPlaybackFailed(true)} />}
       {playbackFailed && <small role="status">{zh ? '此格式无法直接播放，可用系统应用打开。' : 'Use your system app to play this format.'}</small>}
       {kind === 'audio'
         ? <BotVoiceMessage key={media.id} media={media} conversationId={conversationId} locale={locale} transcriptOnly trailingAction={enlarge} />
-        : enlarge}
+        : <div className="bot-attachment-view-actions">{kind === 'image' && showPicture &&
+          <button className="bot-attachment-enlarge" type="button" aria-pressed={zoomed} onClick={() => setZoomedImage(zoomed ? '' : imageUrl)}>{zoomed ? zh ? '适应宽度' : 'Fit to view' : zh ? '原始大小' : 'Actual size'}</button>}{enlarge}</div>}
     </div>}
     {error && !preview && <small className="bot-attachment-action-error" role="alert">{error}</small>}
     {preview && kind !== 'file' && <BotMediaPreview media={media} api={api} conversationId={conversationId} locale={locale} kind={kind} imageUrl={imageUrl} onClose={closePreview} onOpenUrl={onOpenUrl} busy={saving || opening} actionError={error} onSave={api ? () => perform('attachment.save') : undefined} onSystemOpen={api ? () => perform('attachment.open') : undefined} />}

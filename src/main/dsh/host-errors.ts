@@ -12,3 +12,9 @@ export class DshHostUnavailableError extends Error {
 export function isDshHostUnavailableError(value: unknown): value is DshHostUnavailableError {
   return value instanceof DshHostUnavailableError;
 }
+
+export class DshMessageNotReadyError extends DshHostUnavailableError {
+  constructor(reason: DshHostUnavailableReason, state: string, instanceId?: string) {
+    super(reason, state + '，本次消息未发送。请在电脑启动器确认共享 DSH 已就绪后重新发送。', instanceId);
+  }
+}

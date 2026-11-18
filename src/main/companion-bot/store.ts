@@ -770,6 +770,12 @@ export class BotStore {
   hasPendingSource(sourceMessageId: string): boolean {
     return !!this.db.prepare("SELECT 1 FROM bot_inbox WHERE source_record_id=? AND status IN ('queued','running') LIMIT 1").get(sourceMessageId);
   }
+  canObserveDesktop(conversationId: string, revision: number, companionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM bot_conversations WHERE id=? AND revision=?
+      AND NOT EXISTS (SELECT 1 FROM bot_metadata WHERE key=? AND value='0')
+      AND NOT EXISTS (SELECT 1 FROM bot_inbox WHERE companion_id=? AND status IN ('queued','running') AND source<>'presence')`)
+      .get(conversationId, revision, 'companion-enabled:' + companionId, companionId);
+  }
   ingressExists(conversationId: string, sourceMessageId: string): boolean {
     return !!this.db.prepare('SELECT 1 FROM bot_origins WHERE origin_key=?').get(hash(['worldlinebox', sourceMessageId, conversationId]));
   }
@@ -1239,13 +1245,17 @@ export class BotStore {
       return !!result.changes;
     }).immediate();
   }
+  nativeTurnMayHaveBeenSent(eventId: string): boolean {
+    // Older durable turns lack the dispatch marker and still require native reconciliation.
+    return !!this.getMetadata('native-input:' + eventId) && this.getMetadata('native-dispatch:' + eventId) !== 'unsent';
+  }
   interruptNativeReply(eventId: string): boolean {
     return this.db.transaction(() => {
       const event = this.getEvent(eventId);
       if (!event || !this.cancelEvent(eventId,false,false)) return false;
       const key = 'execution:' + event.replyMessageId, raw = this.getMetadata(key);
       const execution = raw ? JSON.parse(raw) : { steps: [] };
-      const stopping = !!this.getMetadata('native-input:' + eventId);
+      const stopping = this.nativeTurnMayHaveBeenSent(eventId);
       this.setMetadata(key, JSON.stringify({ ...execution, status: 'cancelled', question: undefined, continuation: undefined,
         interruption: { state: stopping ? 'stopping' : 'ready' } }));
       // Persist in the same transaction as the publication fence. A crash can
@@ -1264,7 +1274,7 @@ export class BotStore {
       const discard = this.db.prepare('DELETE FROM bot_reply_parts WHERE message_id=? AND id=?');
       for (const part of cues.slice(through + 1)) discard.run(event.replyMessageId, part.id);
       const active = this.cancelEvent(event.id);
-      if (active && this.getMetadata('native-input:' + event.id)) {
+      if (active && this.nativeTurnMayHaveBeenSent(event.id)) {
         this.setMetadata('native-stop:' + event.id, JSON.stringify({ eventId: event.id, retryAt: 0 }));
       }
       this.setMetadata('meeting-interrupted:' + event.id, '1');
@@ -1415,6 +1425,25 @@ export class BotStore {
   }
   historyProjectionHead(conversationId: string): number {
     return Number(asRow(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS head FROM bot_history_projection WHERE conversation_id=?').get(conversationId)).head);
+  }
+  publicationHead(): number {
+    return Number(asRow(this.db.prepare('SELECT COALESCE(MAX(sequence),0) AS head FROM bot_history_projection').get()).head);
+  }
+  companionInbox(roomIds: string[], after?: number) {
+    const head = this.publicationHead();
+    if (after === undefined || after >= head || !roomIds.length) return { cursor: head, more: false, messages: [] };
+    // Placeholders can finish out of order. Use the publication sequence, and
+    // deliver the final visible reply once even when it has multiple parts.
+    const rows = this.db.prepare(`SELECT p.sequence,m.id,m.conversation_id,m.sender_name,substr(trim(m.content),1,160) AS preview
+      FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id
+      WHERE p.sequence>? AND p.conversation_id IN (SELECT value FROM json_each(?))
+        AND m.sender_type='companion' AND m.kind='message' AND m.status='sent'
+        AND (length(trim(m.content))>0 OR m.attachments_json<>'[]')
+        AND NOT EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id)
+      ORDER BY p.sequence LIMIT 81`).all(after, JSON.stringify(roomIds)).map(asRow);
+    const messages = rows.slice(0,80).map(row => ({ id: String(row.id), sequence: Number(row.sequence), room: String(row.conversation_id),
+      sender: String(row.sender_name), preview: String(row.preview) || '[附件]' }));
+    return { cursor: rows.length > 80 ? messages[79]!.sequence : head, more: rows.length > 80, messages };
   }
   /** UI placeholders receive their sequence before completion. Hot model
    * history follows actual publication, while the trigger bounds future input. */

@@ -44,6 +44,13 @@
 .bot-presence-status[data-mode=active] .bot-presence-dot { background:#36a472; }
 .bot-presence-status > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .bot-presence-status > span[role=alert] { color:var(--ui-status-danger-content); }
+.bot-presence-status { flex-wrap:wrap; }
+.bot-presence-activity { display:inline-flex; align-items:center; flex-wrap:wrap; gap:4px; }
+.bot-presence-activity small { display:inline-flex; align-items:center; gap:4px; font-size:11px; }
+.bot-presence-activity [data-activity=recording], .bot-presence-activity [data-activity=capturing] {
+  color:var(--ui-status-danger-content); font-weight:650;
+}
+.bot-presence-activity svg { flex:none; width:13px; height:13px; }
 .bot-presence-countdown {
   flex:none; min-width:4.8ch; padding:2px 5px; border-radius:999px; background:var(--ui-surface-hover);
   color:var(--ui-content-secondary); font-size:10px; font-variant-numeric:tabular-nums; text-align:center;
@@ -81,7 +88,7 @@
   background:var(--ui-surface-raised); color:var(--ui-content-primary); box-shadow:0 24px 80px #142c4e42;
 }
 .bot-presence-archive[open] { display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
-.bot-presence-archive::backdrop { background:#121b3259; }
+.bot-presence-archive::backdrop { background:rgb(27 27 25 / 42%); }
 .bot-presence-archive header, .bot-presence-archive footer { display:flex; align-items:center; gap:10px; padding:14px 20px; }
 .bot-presence-archive header { justify-content:space-between; border-bottom:1px solid var(--ui-border-control); }
 .bot-presence-archive footer { justify-content:flex-end; border-top:1px solid var(--ui-border-control); }
@@ -95,16 +102,22 @@
 .bot-presence-archive button:hover:not(:disabled) { background:var(--ui-surface-hover); }
 .bot-presence-archive button svg { flex:none; width:17px; height:17px; }
 .bot-presence-archive-body { display:grid; min-height:0; grid-template-columns:minmax(172px, 25%) minmax(0,1fr); }
-.bot-presence-archive-body ol { margin:0; padding:8px; list-style:none; overflow:auto; border-right:1px solid var(--ui-border-control); }
+.bot-heartbeat-history { display:flex; flex-direction:column; min-height:0; background:var(--ui-surface-pane); }
+.bot-presence-archive-body ol { flex:1; min-height:0; margin:0; padding:8px; list-style:none; overflow:auto; }
 .bot-presence-archive-body li button { width:100%; min-height:48px; justify-content:flex-start; border-color:transparent; text-align:left; }
 .bot-presence-archive-body li button[aria-current=true] { background:var(--ui-surface-hover); border-color:var(--ui-border-control); }
 .bot-presence-archive-body li time, .bot-presence-archive-body li small { display:block; }
 .bot-presence-archive-body li time { font-variant-numeric:tabular-nums; font-size:12px; }
-.bot-presence-archive-preview {
-  display:flex; min-width:0; min-height:0; padding:16px; flex-direction:column; align-items:center; justify-content:center; gap:8px; overflow:hidden;
-}
-.bot-presence-archive-preview video, .bot-presence-archive-preview img { display:block; min-height:0; max-width:100%; max-height:calc(100% - 24px); object-fit:contain; }
-.bot-presence-archive-preview small { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bot-heartbeat-paging { display:flex; justify-content:space-between; padding:6px 12px; }
+.bot-heartbeat-detail { min-width:0; overflow:auto; padding:18px; }
+.bot-heartbeat-summary { display:grid; gap:4px; margin-bottom:12px; }
+.bot-heartbeat-summary h3 { margin:0; font-size:16px; }
+.bot-heartbeat-media { display:grid; place-items:center; min-width:0; }
+.bot-heartbeat-media :is(video,img) { display:block; width:auto; max-width:100%; max-height:36vh; border-radius:8px; object-fit:contain; }
+.bot-heartbeat-inputs { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; font-size:12px; font-variant-numeric:tabular-nums; }
+.bot-heartbeat-inputs strong { flex-basis:100%; margin-bottom:3px; }
+.bot-heartbeat-inputs button[aria-pressed=true] { background:var(--ui-surface-hover); border-color:var(--ui-content-secondary); }
+.bot-heartbeat-inputs button:disabled { opacity:.7; }
 @media (max-width:540px) {
   .bot-presence-archive { width:calc(100% - 20px); }
   .bot-presence-archive-body { grid-template-columns:minmax(0,1fr); grid-template-rows:105px minmax(0,1fr); }

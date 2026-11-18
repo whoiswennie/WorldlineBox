@@ -1,9 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import path from 'node:path';
 import os from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { DshLauncher } from '../../src/main/dsh/launcher';
 import { NativeHostClient } from '../../src/main/dsh/native-host-client';
-import type { OperationContext } from '../../src/main/dsh/operations';
+import { OperationStore, type OperationContext } from '../../src/main/dsh/operations';
+import { bundledDshRelease } from '../../src/main/dsh/bundled-runtime';
 
 vi.mock('electron', () => ({
   app: { getPath: () => os.tmpdir(), getAppPath: () => process.cwd(), isPackaged: false },
@@ -169,6 +171,51 @@ it('initializes memory Node without waiting for the same shared Host preparation
   expect(f.ensureHost).toHaveBeenCalledWith('default', undefined, { automatic: true });
   f.release(new NativeHostClient(43210, 'a'.repeat(64), 123)); await waiting;
   expect(f.create).not.toHaveBeenCalled();
+});
+
+it('finishes the bundled upgrade before startup consumers can use the old profile', async () => {
+  const f = fixture();
+  const bundled = Object.assign(f.records[0]!, { isBundled: true, keepAlive: true });
+  const target = { ...bundledDshRelease, id: 'bundled-next', npmIntegrity: bundledDshRelease.integrity, adapter: 'node-cli-web-v1' };
+  const runtimes = Reflect.get(f.launcher, 'runtimes'), instances = Reflect.get(f.launcher, 'instances');
+  const installed = runtimes.list;
+  runtimes.list = () => [...installed(), target];
+  const install = vi.fn(), handle = vi.fn(async () => ({ ok: true }));
+  Object.assign(runtimes, { installBundled: install, installNode: install });
+  let finish!: () => void;
+  const gate = new Promise<void>(resolve => { finish = resolve; });
+  Object.assign(instances, { handle, ensureBundledInstance: async () => { await gate; bundled.runtimeId = target.id; } });
+  f.ensureHost.mockResolvedValue(new NativeHostClient(43210, 'a'.repeat(64), 123));
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'wlb-bundle-startup-'));
+  const operations = new OperationStore(directory, () => undefined);
+  try {
+    await operations.init();
+    Object.assign(f.launcher, { operations, bundledRuntime: { directory, archiver: '' } });
+    vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+    const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
+    const first = await route({ type: 'runtime.bundle' });
+    expect((await route({ type: 'runtime.bundle' })).operationId).toBe(first.operationId);
+    const wait = vi.spyOn(operations, 'waitFor');
+    const requests = [
+      f.launcher.botNodePath(), f.launcher.restoreCompanionEnvironments([{ id: 'fish', name: 'Fish' }]),
+      route({ type: 'instance.open', instanceId: bundled.id }), f.launcher.botHost(bundled.id),
+    ];
+    await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(requests.length));
+    expect(f.ensureHost).not.toHaveBeenCalled();
+    expect(handle).not.toHaveBeenCalled();
+    expect((await f.launcher.resolveBotInstance('selected')).id).toBe('selected');
+    expect((await route({ type: 'state' })).ok).toBe(true);
+
+    finish();
+    const results = await Promise.all(requests);
+    expect(results[3].instance.runtimeId).toBe(target.id);
+    expect(handle).toHaveBeenCalledWith({ type: 'instance.open', instanceId: bundled.id });
+    expect(operations.list()).toEqual([expect.objectContaining({ status: 'succeeded' })]);
+    expect(install).not.toHaveBeenCalled();
+  } finally {
+    finish(); await operations.shutdown();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 it('automatically starts the bound Host on demand without overriding a manual-stop fence', async () => {

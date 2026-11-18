@@ -74,7 +74,7 @@ it('unblocks every member of a large group with exactly one shared confirmation'
 it('preserves the selected version on a rejected setup and retries only by explicit confirmation', async () => {
   const f = await mount(state(), people, true);
   await choose('选择 DSH 版本', runtime.id); await click('创建并共享');
-  expect(host.querySelector('[role=alert]')?.textContent).toBe('执行实例正在切换，请稍后重试');
+  expect(host.querySelector('[role=alert] .bot-error-notice > p')?.textContent).toBe('执行实例正在切换，请稍后重试');
   expect(host.querySelector<HTMLSelectElement>('select')?.value).toBe(runtime.id); expect(f.request).toHaveBeenCalledOnce();
   await click('创建并共享'); expect(f.request).toHaveBeenCalledTimes(2); expect(host.querySelector('[role=dialog]')).toBeNull();
 });

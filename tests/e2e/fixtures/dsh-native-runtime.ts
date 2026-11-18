@@ -1,6 +1,14 @@
 import { copyFile, link, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import bundledRelease from '../../../resources/dsh-runtime-release.json';
 import type { DshRuntime } from '../../../src/shared/dsh-launcher';
+
+export function selectNativeRuntime(runtimes: DshRuntime[], fallbackVersions: string[]) {
+  for (const version of [bundledRelease.version, ...fallbackVersions]) {
+    const runtime = runtimes.find(item => item.version === version);
+    if (runtime) return runtime;
+  }
+}
 
 /** Read-only SDK fixture: link immutable sealed files, never user saves or credentials. */
 export async function seedNativeRuntime(manager: string, runtime: DshRuntime, profile: string): Promise<void> {

@@ -88,12 +88,26 @@ it('does not preload the inline player, replaces it with one viewer player on op
   await act(() => video.dispatchEvent(new Event('error'))); expect(document.querySelector('[role=dialog]')?.textContent).toContain('可以用系统应用打开原文件');
   expect(document.querySelector('video')).toBeNull(); await click('系统打开'); expect(f.request).toHaveBeenCalledWith({ type: 'attachment.open', conversationId: 'room-a', id: 'movie' });
 });
-it('leaves large and high-resolution originals unloaded until the user explicitly opens them',async()=>{
+it('can load a large image inside the message on demand without opening the viewer',async()=>{
   const picture={...media,name:'超大画布.png',mimeType:'image/png',size:7*1024*1024,width:30000,height:30000};
   await render(<BotAttachment media={picture} conversationId="room-a" locale="zh-CN" />);
   expect(document.querySelector('img')).toBeNull();
+  await act(()=>host!.querySelector<HTMLButtonElement>('.bot-attachment-load-picture')!.click());
+  expect(host!.querySelector('.bot-attachment-inline-picture img')?.getAttribute('src')).toBe(picture.url);
+  expect(document.querySelector('[role=dialog]')).toBeNull();
   await act(()=>host!.querySelector<HTMLButtonElement>('.bot-attachment-main')!.click());
   expect(document.querySelector('[role=dialog] img')?.getAttribute('src')).toBe(picture.url);
+});
+it('shows inspected images without icons and uses a detailed display source for TIFF', async () => {
+  const picture = { ...media, name: '文稿.bmp', mimeType: 'image/bmp', width: 1200, height: 1400 };
+  await render(<BotAttachment media={picture} conversationId="room-a" locale="zh-CN" />);
+  expect(host!.querySelector('.bot-attachment-inline-picture img')?.getAttribute('src')).toBe(picture.url);
+  const tiff = { ...picture, name: '文稿.tiff', mimeType: 'image/tiff', previewUrl: picture.url + '/preview' };
+  await render(<BotAttachment media={tiff} conversationId="room-a" locale="zh-CN" />);
+  const detail = host!.querySelector('.bot-attachment-inline-picture img')!;
+  expect(detail.getAttribute('src')).toBe(tiff.url + '/display');
+  await act(() => detail.dispatchEvent(new Event('error')));
+  expect(host!.querySelector('[role=status]')?.textContent).toContain('系统应用');
 });
 it('coordinates only attachment playback, pauses the inline source on enlargement and stops the viewer on close',async()=>{
   const sound={...media,id:'sound-a',name:'声音.wav',mimeType:'audio/wav',size:2048};
@@ -116,9 +130,12 @@ it('never creates an in-app dialog or assigns a media source for Office and over
     expect(document.querySelector('[role=dialog]')).toBeNull(); expect(f.request.mock.calls.at(-1)?.[0]).toEqual({ type: 'attachment.open', conversationId: 'room-a', id: item.id });
   }
 });
-it('opens the original image after a click rather than enlarging its tiny thumbnail or flattening an animation', async () => {
+it('keeps original detail inline if a thumbnail fails and opens the same source in the viewer', async () => {
   const picture = { ...media, name: '原图.png', mimeType: 'image/png', size: 2048, previewUrl: 'worldlinebox://bot-media/conversation/allowed/preview' }, f = boundary(async () => ({ ok: true }));
   await render(<BotAttachment media={picture} api={f.api} conversationId="room-a" locale="zh-CN" />);
-  expect(host!.querySelector('img')?.getAttribute('src')).toBe(picture.previewUrl); await act(() => host!.querySelector<HTMLButtonElement>('.bot-attachment-main')!.click());
+  const icon=host!.querySelector('.bot-attachment-cover img')!;
+  expect(icon.getAttribute('src')).toBe(picture.previewUrl); await act(()=>icon.dispatchEvent(new Event('error')));
+  expect(host!.querySelector('.bot-attachment-inline-picture img')?.getAttribute('src')).toBe(picture.url);
+  await act(() => host!.querySelector<HTMLButtonElement>('.bot-attachment-main')!.click());
   expect(document.querySelector('[role=dialog] img')?.getAttribute('src')).toBe(picture.url);
 });

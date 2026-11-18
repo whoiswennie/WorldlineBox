@@ -12,7 +12,8 @@ const statuses: readonly OperationStatus[] = ['all', 'running', 'succeeded', 'fa
 function formatStartedAt(value: string): string {
   const date = new Date(value); return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
-function operationTitle(t: TranslateFn, operation: DshOperation): string {
+export function operationTitle(t: TranslateFn, operation: DshOperation): string {
+  if (operation.kind === 'runtime.bundle') return t('launcher.bundledOperation', { version: operation.label });
   if (operation.label !== operation.kind && operation.kind !== 'versions.refresh') return operation.label;
   const key = `launcher.operationKinds.${operation.kind.replaceAll('.', '-')}`;
   const label = t(key);
@@ -80,7 +81,7 @@ export function LauncherOperationsPage({ state, disabled, run }: { readonly stat
       </div>
       {entries.map(operation => {
         const instance = operation.instanceId ? instances.get(operation.instanceId) : undefined;
-        const icon = operation.kind.startsWith('instance.') ? 'box' : operation.kind.startsWith('runtime.') ? 'download' : operation.kind.startsWith('pack.') || operation.kind.startsWith('snapshot.') ? 'archive' : 'refresh';
+        const icon = operation.kind === 'runtime.bundle' || operation.kind.startsWith('instance.') ? 'box' : operation.kind.startsWith('runtime.') ? 'download' : operation.kind.startsWith('pack.') || operation.kind.startsWith('snapshot.') ? 'archive' : 'refresh';
         return <article className="launcher-operation" data-dsh-operation={operation.id} key={operation.id}>
           <div className="launcher-operation-identity">
             <span className="launcher-operation-icon"><Icon name={icon} size={17} /></span>

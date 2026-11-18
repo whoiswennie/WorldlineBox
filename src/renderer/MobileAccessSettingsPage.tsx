@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { MobileSettingsRequest, MobileSettingsResult, MobileSettingsState, WorldlineBoxMobileAccessApi } from '../shared/mobile-access';
+import { Icon } from './Icons';
 import { useLocale } from './i18n';
 import './mobile-access-settings.css';
 
@@ -15,7 +16,7 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
     if (!api) return;
     let active = true;
     const refresh = () => { void api.request({ type: 'state' }).then(result => {
-      if (active && result.state) setState(result.state);
+      if (active && result.state) { setState(result.state); setPairing(result.pairing); }
     }).catch(() => { if (active) setError(zh ? '无法读取连接状态。' : 'Could not read connection status.'); }); };
     refresh();
     const timer = window.setInterval(refresh, 2500);
@@ -29,7 +30,7 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
       const result = await api.request(input);
       if (!result.ok) throw new Error(result.error);
       if (result.state) setState(result.state);
-      if (result.pairing) setPairing(result.pairing)
+      setPairing(result.pairing);
       if (input.type === 'pair.cancel' || input.type === 'service' && !input.enabled) setPairing(undefined);
       if (input.type === 'device.remove') setRemoveId(undefined);
     } catch (failure) {
@@ -40,31 +41,42 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
   return <div className="mobile-access-settings">
     <section className="mobile-access-card">
       <div className="mobile-access-row">
-        <div><h3>{zh ? '远程连接' : 'Remote access'}</h3><p>{state?.running ? zh ? '运行中' : 'Running' : zh ? '移动服务已停止' : 'Mobile service is stopped'}</p></div>
-        <button type="button" disabled={!api || !state || busy} onClick={() => void request({ type: 'service', enabled: !state?.running })}>
-          {state?.running ? zh ? '关闭服务' : 'Stop service' : zh ? '开启服务' : 'Start service'}
+        <div className="mobile-access-heading"><span className="mobile-access-symbol"><Icon name="link" size={22} /></span>
+          <div><h3>{zh ? '手机连接' : 'Phone connection'}</h3>
+          <p>{zh ? '同一局域网自动直连，外出时使用远程地址。' : 'Connect directly at home or use the remote address when away.'}</p></div></div>
+        <button type="button" disabled={!api || !state || busy} onClick={() => void request({ type: 'service', enabled: !state?.enabled })}>
+          {state?.enabled ? zh ? '关闭服务' : 'Stop service' : zh ? '开启服务' : 'Start service'}
         </button>
       </div>
-      <p>{zh ? '用世界线盒子手机 App 扫码连接。' : 'Scan with the WorldlineBox mobile app.'}</p>
-      {state?.endpointMode === 'temporary' && <p>{zh ? '当前使用测试入口，重启远程服务后需要重新扫码。' : 'This test endpoint requires pairing again after a service restart.'}</p>}
+      {state?.enabled && <div className="mobile-access-routes">
+        <span data-ready={!!state.lanReady}>{zh ? '局域网' : 'Local network'} · {state.lanReady ? zh ? '可连接' : 'Ready' : zh ? '等待网络' : 'Waiting for network'}</span>
+        <span data-ready={state.remoteStatus === 'ready'}>{zh ? '远程' : 'Remote'} · {state.remoteStatus === 'ready' ? zh ? '可连接' : 'Ready' : state.remoteStatus === 'connecting' ? zh ? '连接中' : 'Connecting' : zh ? '暂不可用' : 'Unavailable'}</span>
+      </div>}
       {(error || state?.error) && <p role="alert" className="mobile-access-error">{error || state?.error}</p>}
-    </section>
-    <section className="mobile-access-card">
-      <h3>{zh ? '配对手机' : 'Pair a phone'}</h3>
-      <div className="mobile-access-actions"><button disabled={!state || busy} type="button" onClick={() => void request({ type: 'pair' })}>
-        {zh ? '显示配对二维码' : 'Show pairing QR code'}
-      </button>{pairing && <button type="button" disabled={busy} onClick={() => void request({ type: 'pair.cancel' })}>{zh ? '取消配对' : 'Cancel pairing'}</button>}</div>
+      <div className="mobile-access-actions"><button className="mobile-access-scan" disabled={!state || busy} type="button" onClick={() => void request({ type: 'pair' })}>
+        <Icon name="scan-qr-code" />{pairing ? zh ? '刷新二维码' : 'Refresh QR code' : zh ? '显示配对二维码' : 'Show pairing QR code'}
+      </button>{pairing && <button type="button" disabled={busy} onClick={() => void request({ type: 'pair.cancel' })}>{zh ? '收起二维码' : 'Hide QR code'}</button>}</div>
       {pairing && <div className="mobile-access-pairing">
-        <img alt={zh ? '手机配对二维码' : 'Phone pairing QR code'} src={pairing.image} width={244} height={244} />
-        <p>{zh ? '打开手机 App 扫码。二维码五分钟内有效，可配对一台设备。' : 'Scan in the mobile app. This code pairs one device and expires after five minutes.'}</p>
+        <img alt={zh ? '手机配对二维码' : 'Phone pairing QR code'} src={pairing.image} width={288} height={288} />
+        <div><strong>{zh ? '用手机 App 扫码' : 'Scan in the mobile app'}</strong>
+          <p>{zh ? '二维码五分钟内有效。已配对的手机可以用它更新远程地址。' : 'Valid for five minutes. A paired phone can scan to update its remote address.'}</p>
+          {state?.remoteStatus !== 'ready' && <p>{zh ? '当前二维码仅支持局域网，远程入口就绪后会自动更新。' : 'LAN only for now. This code updates when the remote address is ready.'}</p>}</div>
       </div>}
     </section>
     <section className="mobile-access-card">
       <h3>{zh ? '已配对设备' : 'Paired devices'}</h3>
       {!state?.devices.length && <p>{zh ? '暂无设备' : 'No paired devices'}</p>}
-      {state?.devices.map(device => <div className="mobile-access-row mobile-access-device" key={device.id}>
-        <div><strong>{device.name}</strong><p>{device.paused ? zh ? '已断开' : 'Disconnected' : device.connected ? zh ? '会话已连接' : 'Session connected' : zh ? '当前无会话' : 'No active session'}</p></div>
+      {state?.devices.slice().sort((a, b) => Number(b.connected) - Number(a.connected) || b.createdAt.localeCompare(a.createdAt)).map(device => <div className="mobile-access-row mobile-access-device" key={device.id}>
+        <div className="mobile-device-identity"><strong>{device.name}</strong>
+          <span className="mobile-device-status" data-online={device.connected}>{device.paused ? zh ? '已暂停' : 'Paused' : device.connected ? zh ? '在线' : 'Online' : zh ? '离线' : 'Offline'}</span>
+          <p>{device.lastSeen && !device.connected ? zh ? '上次在线' : 'Last seen' : zh ? '配对于' : 'Paired'} {new Date(device.lastSeen && !device.connected ? device.lastSeen : device.createdAt).toLocaleString(zh ? 'zh-CN' : 'en')} · {device.id.slice(0, 6)}</p></div>
         <div className="mobile-access-actions">
+          <button type="button" role="switch" aria-checked={!!device.pushEnabled} className="mobile-push-toggle"
+            disabled={busy || !device.pushEnabled && (!device.connected || !device.supportsPush || device.paused)}
+            title={!device.connected ? zh ? '手机在线时可开启' : 'Connect the phone to enable' : !device.supportsPush ? zh ? '请更新手机端' : 'Update the mobile app' : undefined}
+            onClick={() => void request({ type: 'device.push', id: device.id, enabled: !device.pushEnabled })}>
+            <i aria-hidden="true" />{zh ? '信息推送' : 'Message alerts'}
+          </button>
           <button type="button" disabled={busy} onClick={() => void request({ type: device.paused ? 'device.resume' : 'device.pause', id: device.id })}>
             {device.paused ? zh ? '允许重连' : 'Allow reconnect' : zh ? '断开连接' : 'Disconnect'}
           </button>

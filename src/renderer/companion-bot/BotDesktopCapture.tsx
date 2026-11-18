@@ -12,13 +12,19 @@ type Operation = 'screen' | 'watch' | 'listen' | 'transcribe';
 type Phase = Operation | 'starting' | 'video-processing' | 'audio-to-text';
 type Job = { scope: BotDesktopCaptureScope; release?: () => void; display?: MediaStream };
 
-export function BotDesktopCapture({ api, conversationId, surface, locale, onAttachment, onBusy, statusTarget, controlsTarget, meeting = false, allowPresence = false, fileRequest = 0 }: {
+export function BotDesktopCapture({ api, conversationId, surface, companionName, locale, onAttachment, onBusy, statusTarget, controlsTarget, meeting = false, allowPresence = false, fileRequest = 0, interacting = false }: {
   api: WorldlineBoxBotMediaApi; conversationId: string; surface: 'chat' | 'pet'; locale: 'zh-CN' | 'en';
   onAttachment(media: BotMediaRef[]): void; onBusy(busy: boolean): void;
-  statusTarget: HTMLElement | null; controlsTarget?: HTMLElement | null; meeting?: boolean; allowPresence?: boolean; fileRequest?: number;
+  statusTarget: HTMLElement | null; controlsTarget?: HTMLElement | null; meeting?: boolean; allowPresence?: boolean; fileRequest?: number; interacting?: boolean; companionName?: string;
 }) {
   const zh = locale === 'zh-CN', doc = useBotCallDocument(), panelId = useId();
   const [open, setOpen] = useState(false), [phase, setPhase] = useState<Phase>(), [error, setError] = useState('');
+  const [lastScreen, setLastScreen] = useState<BotDesktopCaptureScope>();
+  useEffect(() => {
+    if (!lastScreen) return;
+    const timer = setTimeout(() => setLastScreen(undefined), 3000);
+    return () => clearTimeout(timer);
+  }, [lastScreen]);
   const [controls, setControls] = useState<HTMLDivElement | null>(null);
   const button = useRef<HTMLButtonElement>(null), panel = useRef<HTMLElement>(null), current = useRef<Job>(undefined);
   const cancel = useCallback(() => {
@@ -57,7 +63,7 @@ export function BotDesktopCapture({ api, conversationId, surface, locale, onAtta
     const recording = operation === 'watch' || operation === 'listen';
     current.current = job;
     if (!command) onBusy(true);
-    setError(''); setPhase(recording ? 'starting' : operation);
+    setError(''); setLastScreen(undefined); setPhase(recording ? 'starting' : operation);
     try {
       let input: BotMediaRequest;
       if (recording) {
@@ -80,9 +86,12 @@ export function BotDesktopCapture({ api, conversationId, surface, locale, onAtta
           const videoRecording = recordDesktopVideo(job.display, duration, async (sequence, bytes) => {
             const response = await api.request({ type: 'desktop.video.chunk', ...scope, sequence, bytes });
             if (!response.ok) throw Error(response.error);
+          }, active => {
+            if (current.current !== job) return;
+            setPhase(active ? 'watch' : 'video-processing');
+            void api.request({ type: 'desktop.video.activity', ...scope, active }).catch(() => undefined);
           });
           job.release = videoRecording.cancel;
-          setPhase('watch');
           if (!await videoRecording.finished || current.current !== job) return;
           setPhase('video-processing');
           input = { type: 'desktop.video.finish', ...scope };
@@ -93,7 +102,9 @@ export function BotDesktopCapture({ api, conversationId, surface, locale, onAtta
           const audioRecording = await recorder.start(() => undefined, { stream: new MediaStream(tracks), maxSeconds: duration });
           if (!audioRecording || current.current !== job) return;
           setPhase('listen');
+          void api.request({ type: 'desktop.audio.activity', ...scope, active: true }).catch(() => undefined);
           const sound = await audioRecording.finished;
+          void api.request({ type: 'desktop.audio.activity', ...scope, active: false }).catch(() => undefined);
           if (!sound || current.current !== job) return;
           job.display.getTracks().forEach(track => track.stop());
           setPhase('audio-to-text');
@@ -103,6 +114,7 @@ export function BotDesktopCapture({ api, conversationId, surface, locale, onAtta
       const result = await api.request(input);
       if (current.current !== job) return;
       if (!result.ok) throw Error(result.error);
+      if (operation === 'screen' && !result.cancelled) setLastScreen(scope);
       if (operation === 'transcribe' && result.media?.length) onAttachment(result.media);
     } catch (reason) {
       if (current.current === job) setError(reason instanceof Error && reason.message ? reason.message
@@ -151,15 +163,18 @@ export function BotDesktopCapture({ api, conversationId, surface, locale, onAtta
     };
   }, [api, cancel, conversationId, doc, onBusy, surface]);
 
+  const pet = surface === 'pet' ? companionName || (zh ? '伙伴' : 'Your companion') : undefined;
   const status = phase && ({
-    screen: zh ? '伙伴正在看屏幕' : 'Companion is looking at the screen',
+    screen: pet ? (zh ? '让我截一张，记住这一刻' : 'Let me capture this moment') : zh ? '伙伴正在截图' : 'Companion is taking a screenshot',
     starting: zh ? '正在准备采集' : 'Preparing capture',
-    watch: zh ? '伙伴正在观看屏幕' : 'Companion is watching the screen',
+    watch: pet ? (zh ? '我陪你看着，正在录下这段画面' : 'I’m watching with you and recording this part') : zh ? '伙伴正在录屏' : 'Companion is recording the screen',
     listen: zh ? '伙伴正在听电脑声音' : 'Companion is listening to system audio',
     'video-processing': zh ? '正在整理录像' : 'Processing the recording',
     'audio-to-text': zh ? '正在转写电脑声音' : 'Transcribing system audio',
     transcribe: zh ? '正在分段转写音轨' : 'Transcribing audio in segments',
   }[phase]);
+  const receipt = lastScreen?.conversationId === conversationId && lastScreen.surface === surface
+    ? pet ? (zh ? pet + '看到了刚才的画面' : pet + ' saw that moment') : (zh ? '刚刚已截图' : 'Screenshot taken') : undefined;
   const title = zh ? '陪伴设置' : 'Companion settings';
   const content = open && <section ref={panel} className="bot-desktop-capture-panel" id={panelId} aria-label={title}>
     <header><strong>{title}</strong>
@@ -172,14 +187,14 @@ export function BotDesktopCapture({ api, conversationId, surface, locale, onAtta
       <button ref={button} type="button" title={title} aria-label={title} aria-controls={panelId} aria-expanded={open}
         onClick={() => setOpen(!open)}><BotIcon name="screen" /></button>
       {controlsTarget && createPortal(content, controlsTarget)}
-      <BotCompanionPresence api={api} conversationId={conversationId} surface={surface} meeting={meeting} zh={zh}
+      <BotCompanionPresence api={api} conversationId={conversationId} surface={surface} petName={pet} meeting={meeting} zh={zh} interacting={interacting}
         controlsTarget={controls} statusTarget={statusTarget} onStarted={() => setOpen(false)} />
     </>}
-    {statusTarget && (status || error) && createPortal(<div className="bot-desktop-capture-status">
-      <BotIcon name={phase === 'screen' ? 'screen' : phase === 'watch' ? 'video' : phase === 'listen' ? 'volume' : 'file'} />
-      <span role={error ? 'alert' : 'status'} title={error || status}>{error || status}</span>
+    {statusTarget && (status || error || receipt) && createPortal(<div className="bot-desktop-capture-status">
+      <BotIcon name={phase === 'screen' || receipt ? 'screen' : phase === 'watch' ? 'video' : phase === 'listen' ? 'volume' : 'file'} />
+      <span role={error ? 'alert' : 'status'} title={error || status || receipt}>{error || status || receipt}</span>
       <button type="button" aria-label={status ? (zh ? '取消采集' : 'Cancel capture') : (zh ? '关闭提示' : 'Dismiss notice')}
-        onClick={() => { if (status) reset(); setError(''); }}><BotIcon name="close" /></button>
+        onClick={() => { if (status) reset(); setError(''); setLastScreen(undefined); }}><BotIcon name="close" /></button>
     </div>, statusTarget)}
   </div>;
 }

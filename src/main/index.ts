@@ -4,20 +4,22 @@ import { bindStartupHandoff } from "./startup-handoff";
 import { isCurrentDocumentReload } from "./renderer-navigation";
 import { DEFAULT_GLOBAL_LLM_CONFIG, resolveStoredLlmConfig } from "../shared/llm";
 import path from "node:path";
+import { DesktopInbox } from './companion-bot/desktop-inbox';
 import type { BotService } from './companion-bot/service';
 import { startMobileGateway } from './companion-bot/mobile-gateway';
 import { MobileAccessSettings } from './companion-bot/mobile-access-settings';
 import { DeepSeekSpeech, speechText } from './companion-bot/deepseek-speech';
 import { startMobileSsh } from './companion-bot/mobile-ssh';
+import { advertiseMobileSsh, localAddresses, maintainPublicTunnel } from './companion-bot/mobile-routes';
 import { hasFixedMobilePublicEndpoint, startMobilePublicTunnel } from './companion-bot/mobile-public-tunnel';
 import { MOBILE_ACCESS_CHANNEL, mobileSettingsRequest } from '../shared/mobile-access';
-import { bindCallPetWindow, callPetFor } from './companion-bot/call-pet-window';
+import { allowsDesktopMeeting, bindCallPetWindow, callPetFor, desktopMeetingActive, hasDesktopPet, markDesktopMeetingConnected, releaseDesktopMeeting, reserveDesktopMeeting } from './companion-bot/call-pet-window';
 import { createBotDesktopCapture } from './companion-bot/desktop-capture';
 import type { SpeechFileSegment } from './local-speech-audio';
 import { importLocalCallModel, pruneLocalCallModelImports, readLocalCallModel, resetLocalCallModel, serveLocalCallModel } from './companion-bot/local-call-model';
 import { CALL_MODEL_HOST } from '../shared/companion-call';
 import type { BotDataCleanupService } from './companion-bot/data-cleanup';
-import { BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, botSpeechRequest } from '../shared/companion-bot';
+import { BOT_INBOX_CHANNEL, BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, botSpeechRequest } from '../shared/companion-bot';
 import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaResponse } from '../shared/companion-bot-media';
 import type { BotMediaService } from './companion-bot/media-service';
 import { LOCAL_SPEECH_CHANNEL, localSpeechRequestSchema, type LocalSpeechResponse } from '../shared/local-speech';
@@ -58,6 +60,7 @@ import {
 import {
   app,
   BrowserWindow,
+  Notification,
   clipboard,
   dialog,
   ipcMain,
@@ -84,7 +87,7 @@ import {
   setApplicationMenuCommandEnabled,
   setApplicationMenuCommandLabel,
 } from "./application-menu";
-import { applyDevAppIcon, applyWindowsTaskbarIcon, appIconImage, withAppWindowIcon } from "./app-icon";
+import { registerWindowsSender, applyDevAppIcon, applyWindowsTaskbarIcon, appIconImage, withAppWindowIcon } from "./app-icon";
 import { mcpFullAccessConfirmationCopy } from "./mcp-full-access-confirmation-copy";
 import { ArtifactPathCache } from "./artifact-path-cache";
 import { SourcePathCache, type SourcePathResolution } from "./source-path-cache";
@@ -5172,7 +5175,7 @@ async function startApplication(): Promise<void> {
   // the shortcuts created by the installer (WiX/Squirrel both set one). Without
   // this, the taskbar shows the default Electron icon and pinning breaks.
   if (process.platform === "win32") {
-    app.setAppUserModelId("com.worldlinebox.app");
+    try { registerWindowsSender(); } catch (error) { console.warn('Windows 通知标识登记失败', error); }
   }
   app.setAppLogsPath(path.join(app.getPath("userData"), "logs"));
   appLogPath = chooseUniqueSessionLogPath(app.getPath("logs"), new Date());
@@ -5255,6 +5258,16 @@ async function startApplication(): Promise<void> {
   const { MusicService } = await import('./music/service');
   musicService = new MusicService(app.getPath('userData'), () => mainWindow ?? null, error => logger?.error('music.preferences', error));
   musicService.registerIpc();
+  let desktopInbox: DesktopInbox | undefined;
+  let inboxTimer: ReturnType<typeof setTimeout> | undefined;
+  const sendInbox = (counts: Record<string, number>, openRoom?: string) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_INBOX_CHANNEL, { counts, openRoom });
+  };
+  ipcMain.handle(BOT_INBOX_CHANNEL, (event, room: unknown) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.senderFrame !== mainWindow.webContents.mainFrame || event.sender !== mainWindow.webContents) return {};
+    if (typeof room === 'string' && mainWindow.isFocused() && mainWindow.isVisible()) desktopInbox?.read(room);
+    return desktopInbox?.snapshot() ?? {};
+  });
   let mobileGateway: Awaited<ReturnType<typeof startMobileGateway>>;
   const callModelProfile = app.getPath('userData');
   await pruneLocalCallModelImports(callModelProfile).catch(error => logger?.error('companion-call-model.prune', error));
@@ -5304,8 +5317,8 @@ async function startApplication(): Promise<void> {
           new Error('VCP memory process exited; pending operation diagnostics retained.'), diagnostic),
       });
       const { selectBotWorkerInstance } = await import('./companion-bot/worker-host-selection');
-      const { DshHostUnavailableError } = await import('./dsh/host-errors');
-      const getWorkerHost = async (id: string | undefined, signal: AbortSignal | undefined, nativeLaneId: string | undefined, options?: { explicit?: boolean }) => {
+      const { DshHostUnavailableError, DshMessageNotReadyError } = await import('./dsh/host-errors');
+      const getWorkerHost = async (id: string | undefined, signal: AbortSignal | undefined, nativeLaneId: string | undefined, options?: { explicit?: boolean; runningOnly?: boolean }) => {
         if (!launcher) throw new DshHostUnavailableError('configuration', 'DSH 启动器尚未就绪，请先配置并启动共享执行实例。');
         const isMemory = nativeLaneId?.startsWith('memory-') || nativeLaneId?.startsWith('maintenance-');
         const selected = isMemory ? await launcher.resolveBotInstance() : await selectBotWorkerInstance(launcher, botService?.store, nativeLaneId, id);
@@ -5322,7 +5335,11 @@ async function startApplication(): Promise<void> {
         ? launcher.acquireCompanionLease(host.instance.id, 'task') : () => undefined,
         getHost: getWorkerHost });
       const brain = worker;
-      botService = new BotService({ root, brain,
+      botService = new BotService({ root, brain, desktopMeetingActive,
+        assertMessageReady: () => {
+          if (!launcher) throw new DshMessageNotReadyError('startup', 'DSH 启动器尚未就绪');
+          launcher.assertMessageReady();
+        },
         readLocalCallModel: companionId => readLocalCallModel(callModelProfile, companionId),
         scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
         cabinWorldApp: launcher?.companionCabinApp,
@@ -5394,8 +5411,26 @@ async function startApplication(): Promise<void> {
           if (botDataCleanup?.busy) return;
           if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_EVENT_CHANNEL, event);
           mobileGateway?.notify(event);
+          if (event.type === 'changed' && !inboxTimer) inboxTimer = setTimeout(() => {
+            inboxTimer = undefined;
+            if (botService && !botDataCleanup?.busy && !applicationClosing) desktopInbox?.sync();
+          }, 100);
         },
         report: error => logger?.error('companion-bot.runtime', error),
+      });
+      desktopInbox = new DesktopInbox(botService.store, sendInbox, (room, sender, preview) => {
+        const win = mainWindow;
+        if (!win || win.isDestroyed() || hasDesktopPet(win) || !Notification.isSupported()) return;
+        if (win.isFocused() && win.isVisible() && !win.isMinimized()) return;
+        try {
+          const toast = new Notification({ title: '世界线盒子', body: sender + '：' + preview.replace(/\s+/gu, ' '), icon: appIconImage() });
+          toast.on('click', () => {
+            if (win.isDestroyed()) return;
+            if (win.isMinimized()) win.restore();
+            win.show(); win.focus(); sendInbox(desktopInbox?.snapshot() ?? {}, room);
+          });
+          toast.show();
+        } catch (error) { logger?.error('companion-bot.notification', error); }
       });
       return botService;
     })().catch(error => { creatingBotService = undefined; throw error; });
@@ -5441,20 +5476,30 @@ async function startApplication(): Promise<void> {
   const mobileOptions = { root: app.getPath('userData'), bot: ensureBotService, media: ensureBotMediaService, speech: deepSeekSpeech,
     callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), 'public', 'companion-call') : path.join(__dirname, '..', 'renderer', MAIN_WINDOW_VITE_NAME, 'companion-call'),
     report: (error: unknown) => logger?.error('companion-bot.mobile', error) };
-  const mobileShutdown = new AbortController();
   const usePublicMobileEndpoint = process.env.WORLDLINEBOX_E2E !== '1' || process.env.WORLDLINEBOX_MOBILE_PUBLIC_TEST === '1';
   const mobileSettings = new MobileAccessSettings(mobileOptions.root, async access => {
     const gateway = await startMobileGateway({ ...mobileOptions, access, ...(usePublicMobileEndpoint ? { port: 0 } : {}) });
     if (!gateway) throw new Error('Mobile listener failed to start.');
     let ssh: Awaited<ReturnType<typeof startMobileSsh>> | undefined;
+    let stopDiscovery: (() => void) | undefined;
     try {
-      const listener = ssh = await startMobileSsh(mobileOptions.root, access, { targetPort: gateway.port, ...(usePublicMobileEndpoint ? { port: 0 } : {}) });
-      const tunnel = usePublicMobileEndpoint ? await startMobilePublicTunnel(app.getAppPath(), mobileOptions.root, listener.sshPort, mobileShutdown.signal) : undefined;
+      const listener = ssh = await startMobileSsh(mobileOptions.root, access, { targetPort: gateway.port, lan: usePublicMobileEndpoint });
+      if (usePublicMobileEndpoint) stopDiscovery = advertiseMobileSsh(listener.fingerprint, listener.sshPort);
+      const remote = usePublicMobileEndpoint ? maintainPublicTunnel(signal =>
+        startMobilePublicTunnel(app.getAppPath(), mobileOptions.root, listener.sshPort, signal)) : undefined;
       mobileGateway = gateway;
-      return { ...listener, ...(tunnel ? { host: tunnel.host, sshPort: 443, transport: 'wss' as const, endpointMode: tunnel.endpointMode, alive: tunnel.alive } : {}), connected: gateway.connected,
+      return { ...listener,
+        get host() { return remote?.current?.host ?? (usePublicMobileEndpoint ? localAddresses()[0] : undefined) ?? listener.host; },
+        get sshPort() { return remote?.current ? 443 : listener.sshPort; },
+        get transport() { return remote?.current ? 'wss' as const : undefined; },
+        get endpointMode() { return remote?.current?.endpointMode; },
+        get remoteStatus() { return remote?.status; },
+        get lan() { return usePublicMobileEndpoint ? { hosts: localAddresses().slice(0, 8), port: listener.sshPort } : undefined; },
+        connected: gateway.connected, supportsPush: gateway.supportsPush, pushChanged: gateway.pushChanged,
+        publicationHead: async () => (await ensureBotService()).store.publicationHead(),
         disconnect(id: string) { gateway.disconnect(id); listener.disconnect(id); },
-        close() { tunnel?.close(); listener.close(); gateway.close(); if (mobileGateway === gateway) mobileGateway = undefined; } };
-    } catch (error) { ssh?.close(); gateway.close(); throw error; }
+        close() { remote?.close(); stopDiscovery?.(); listener.close(); gateway.close(); if (mobileGateway === gateway) mobileGateway = undefined; } };
+    } catch (error) { stopDiscovery?.(); ssh?.close(); gateway.close(); throw error; }
   }, undefined, usePublicMobileEndpoint && hasFixedMobilePublicEndpoint());
   const mobileSettingsReady = mobileSettings.initialize().catch(error => logger?.error('companion-bot.mobile.start', error));
   ipcMain.handle(MOBILE_ACCESS_CHANNEL, async (event, input: unknown) => {
@@ -5465,7 +5510,7 @@ async function startApplication(): Promise<void> {
     try { return await mobileSettings.request(parsed.data); }
     catch (error) { return { ok: false, error: error instanceof Error ? error.message : '移动连接操作失败。' }; }
   });
-  app.once('before-quit', () => { mobileShutdown.abort(); mobileSettings.close(); });
+  app.once('before-quit', () => { mobileSettings.close(); });
   const ensureLocalSpeech = () => localSpeechService ??= new LocalSpeechService({
     root: path.join(app.getPath('userData'), 'local-speech'),
     resources: app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'resources'),
@@ -5506,12 +5551,14 @@ async function startApplication(): Promise<void> {
       // runtime released its file handles merely because globals were cleared.
       const { service, creating, media, speech } = retiringBotRuntime ??= { service: botService, creating: creatingBotService, media: botMediaService, speech: localSpeechService };
       botService = undefined; creatingBotService = undefined; botMediaService = undefined;
+      desktopInbox = undefined; sendInbox({});
       localSpeechService = undefined;
       const results = await Promise.allSettled([
         creating ? creating.then(value => value.shutdown()) : service?.shutdown(),
         media?.then(value => value.close()), speech?.close(),
       ]);
       botService = undefined; creatingBotService = undefined; botMediaService = undefined;
+      desktopInbox = undefined;
       const failure = results.find(result => result.status === 'rejected');
       if (failure?.status === 'rejected') throw failure.reason;
     }, resume: job => {
@@ -5533,6 +5580,20 @@ async function startApplication(): Promise<void> {
     const parsed = botRequestSchema.safeParse(input);
     if (!parsed.success) return { ok: false, error: '伙伴请求格式不正确。' };
     try {
+      const owner = mainWindow, action = parsed.data;
+      if (action.type === 'call.reserve') return reserveDesktopMeeting(owner, action.conversationId, action.sessionId)
+        ? { ok: true } : { ok: false, error: '已有伙伴在通话或桌宠中，挂断后可以邀请下一位。' };
+      if (action.type === 'call.release') {
+        const room = releaseDesktopMeeting(owner, action.sessionId);
+        if (room) desktopCapture.endMeeting(room);
+        return { ok: true };
+      }
+      if (action.type === 'call.open') {
+        if (!allowsDesktopMeeting(owner, action.conversationId, action.sessionId)) return { ok: false, error: '当前会面已结束或已有其他伙伴在场。' };
+        const result = await (await ensureBotService()).handle(action);
+        if (result.ok) markDesktopMeetingConnected(owner, action.conversationId, action.sessionId);
+        return allowsDesktopMeeting(owner, action.conversationId, action.sessionId) ? result : { ok: false, error: '这次会面已结束。' };
+      }
       if (parsed.data.type === 'call.model.import' || parsed.data.type === 'call.model.reset') {
         const { companionId } = parsed.data;
         const service = await ensureBotService();
@@ -5568,7 +5629,7 @@ async function startApplication(): Promise<void> {
     if(!parsed.success||!botCanImportConversationMedia(botService?.store.getConversation(parsed.data.conversationId)))return;
     event.returnValue=readFilePathsFromClipboard(createFileClipboardDeps()).length>0;
   });
-  const desktopCapture = createBotDesktopCapture(ensureLocalSpeech, () => resolveHostMediaBinaries()?.ffmpegPath);
+  const desktopCapture = createBotDesktopCapture(ensureLocalSpeech, () => resolveHostMediaBinaries()?.ffmpegPath, activity => windowsTray?.updateCompanionActivity(activity));
   app.once('before-quit', () => desktopCapture.stopPresence());
   ipcMain.handle(BOT_MEDIA_CHANNEL,async(event,input:unknown):Promise<BotMediaResponse>=>{
     if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return{ok:false,error:'无权访问伙伴附件。'};
@@ -5585,6 +5646,7 @@ async function startApplication(): Promise<void> {
       if ('surface' in request) {
         if (!room || !['direct', 'group'].includes(room.kind) || !botCanImportConversationMedia(room)) throw Error('当前聊天无法添加桌面采集内容。');
         if (request.type === 'desktop.presence.start' && request.meeting !== true) throw Error('陪伴模式只能在视频会面或桌宠中启动。');
+        if (request.type === 'desktop.presence.start' && !allowsDesktopMeeting(owner, request.conversationId, request.sessionId)) throw Error('这次会面已结束或已有其他伙伴在场。');
         return await desktopCapture.capture(owner, request, media, () => service.presenceTarget(request.conversationId,
           request.surface === 'pet' ? 'pet' : 'call'));
       }

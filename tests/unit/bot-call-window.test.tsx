@@ -60,7 +60,8 @@ async function mount(initialDraft = '会面草稿', actor = companion, options: 
   const api = { request, ...options.speech, onEvent: (callback: (event: BotEvent) => void) => { listener = callback; return () => { listener = undefined; }; } };
   function Harness() {
     const [draft, setDraft] = useState(initialDraft);
-    return <BotCallWindow conversationId="direct" companion={actor} api={api} draft={draft} setDraft={setDraft} locale="zh-CN" onHangup={hangup} onOpenUrl={() => undefined} />;
+    const [speechMuted, setSpeechMuted] = useState(false);
+    return <BotCallWindow conversationId="direct" companion={actor} api={api} draft={draft} setDraft={setDraft} speechMuted={speechMuted} onSpeechMute={setSpeechMuted} locale="zh-CN" onHangup={hangup} onOpenUrl={() => undefined} />;
   }
   await act(() => root!.render(<Harness />));
   return { hangup, request, refresh: async (messages: BotMessage[]) => {
@@ -132,7 +133,7 @@ it('closes emoji then the standard composer before Escape hangs up, and leaves I
   await act(async () => document.querySelector('.bot-call-window')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
   expect(f.hangup).toHaveBeenCalledOnce();
 });
-it('displays only published segments while the native turn is still running, and pages long text losslessly', async () => {
+it('displays a complete published utterance while the native turn is still running', async () => {
   const actor = { ...companion, id: 'claude', name: 'Claude' };
   const f = await mount('', actor); await act(() => button('接通').click());
   const text = '我把这份很长的内容拆成几个小段，方便在舞台上阅读。'.repeat(8);
@@ -141,12 +142,10 @@ it('displays only published segments while the native turn is still running, and
   await f.refresh([reply]);
   expect(document.querySelector('.bot-call-bubble .bot-avatar')).toBeNull();
   const page = () => document.querySelector('.bot-call-bubble-text')?.textContent ?? '';
-  expect(page()).not.toBe(''); expect(page().length).toBeLessThan(text.length);
+  expect(page()).toBe(text);
   expect(document.querySelector('.bot-call-window')?.textContent).not.toContain(reply.content);
   const next = document.querySelector<HTMLButtonElement>('[aria-label="下一段"]')!;
-  let joined = page();
-  while (!next.disabled) { await act(() => next.click()); joined += page(); }
-  expect(joined).toBe(text);
+  expect(next.disabled).toBe(true);
   await act(() => button('完整对话').click());
   expect(document.querySelector('.bot-call-transcript')?.textContent).toContain(text);
   expect(document.querySelector('.bot-call-transcript')?.textContent).not.toContain(reply.content);
@@ -197,6 +196,21 @@ const stageReply = (id: string, sequence: number, parts: BotMessage['parts'], st
   createdAt: new Date().toISOString(), sequence, status, content: '', parts,
 });
 
+it('skips synthesis for incoming captions and replay when companion speech is muted', async () => {
+  const audio = vi.fn(), speech = vi.fn().mockResolvedValue({ ok: true });
+  vi.stubGlobal('AudioContext', audio);
+  const f = await mount('草稿', companion, { speech: { speech, onSpeech: () => () => undefined } });
+  await act(() => button('接通').click());
+  const mute = button('伙伴语音静音');
+  expect(mute.getAttribute('aria-pressed')).toBe('false');
+  await act(() => mute.click());
+  await f.refresh([stageReply('reply', 1, [{ id: 'cue', kind: 'text', sequence: 1, text: '一起看。', presentation: {} }])]);
+  expect(caption()).toBe('一起看。');
+  await act(() => button('从头播放').click());
+  expect(audio).not.toHaveBeenCalled();
+  expect(speech).not.toHaveBeenCalled();
+});
+
 it('holds each page through local audio completion and disconnects playback at voice onset', async () => {
   voice.available = true;
   const outputs: Array<{ onended?: () => void }> = [], disconnect = vi.fn();
@@ -213,8 +227,12 @@ it('holds each page through local audio completion and disconnects playback at v
   let emit: Parameters<NonNullable<WorldlineBoxBotApi['onSpeech']>>[0] | undefined;
   const f = await mount('', companion, { speech: { speech, onSpeech: listener => { emit = listener; return () => { emit = undefined; }; } } });
   await act(() => button('接通').click());
-  const first = '甲'.repeat(36), second = '乙'.repeat(12);
-  await f.refresh([stageReply('reply', 1, [{ id: 'cue', kind: 'text', sequence: 1, text: first + second, presentation: {} }], 'running')]);
+  const first = '不过这个真不是一般的烂事，看完别光刷弹幕，那种人当年能被放出来就是流程出问题了。';
+  const second = '这件事说完了。';
+  await f.refresh([stageReply('reply', 1, [
+    { id: 'cue', kind: 'text', sequence: 1, text: first, presentation: {} },
+    { id: 'next-cue', kind: 'text', sequence: 2, text: second, presentation: {} },
+  ], 'running')]);
   expect(caption()).toBe(first);
   const playing = speech.mock.calls[0]![0];
   expect(playing).toMatchObject({ type: 'play', partId: 'cue', pageIndex: 0 });
@@ -224,11 +242,12 @@ it('holds each page through local audio completion and disconnects playback at v
   });
   await act(() => vi.advanceTimersByTimeAsync(9000));
   expect(caption()).toBe(first);
+  expect(speech.mock.calls.filter(([request]) => request.type === 'play')).toHaveLength(1);
   await act(async () => { outputs[0]!.onended!(); await vi.advanceTimersByTimeAsync(20); });
   await act(() => vi.advanceTimersByTimeAsync(20));
   expect(caption()).toBe(second);
   const next = speech.mock.calls.at(-1)![0];
-  expect(next).toMatchObject({ type: 'play', partId: 'cue', pageIndex: 1 });
+  expect(next).toMatchObject({ type: 'play', partId: 'next-cue', pageIndex: 0 });
   disconnect.mockClear();
   await act(() => {
     voice.onset!();
@@ -237,6 +256,23 @@ it('holds each page through local audio completion and disconnects playback at v
   expect(speech).toHaveBeenLastCalledWith({ type: 'stop', id: next.id });
   expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
   expect(voice.interrupt).not.toHaveBeenCalled();
+});
+
+it('presents consecutive no-tool replies with the same local segment ID exactly once per message', async () => {
+  const f = await mount();
+  await act(() => button('接通').click());
+  const makeReply = (id: string, sequence: number, text: string) =>
+    stageReply(id, sequence, [{ id: 'committed-answer', kind: 'text', sequence: 1, text, presentation: {} }]);
+  const first = makeReply('first-reply', 1, '第一轮直接给出正文。');
+  const second = makeReply('second-reply', 2, '第二轮仍然没有调用工具。');
+  await f.refresh([first]);
+  expect(caption()).toBe('第一轮直接给出正文。');
+  await act(() => vi.advanceTimersByTimeAsync(5000));
+  await f.refresh([first, second]);
+  await act(() => vi.advanceTimersByTimeAsync(1));
+  expect(caption()).toBe('第二轮仍然没有调用工具。');
+  await f.refresh([first, second]);
+  expect(namedButton('下一段').disabled).toBe(true);
 });
 
 it('replays each recorded expression and motion when stepping and replaying from the beginning', async () => {

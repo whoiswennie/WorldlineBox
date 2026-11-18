@@ -1572,7 +1572,7 @@ export const zhCN = {
     categorySemanticSearch: "语义搜索",
     experimental: "实验性",
     categoryMcp: "MCP",
-    categoryMobileAccess: "远程连接",
+    categoryMobileAccess: "手机连接",
     categoryPlugins: "插件",
     categoryPluginSettings: "插件设置",
     categorySync: "同步",

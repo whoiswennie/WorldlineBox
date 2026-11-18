@@ -1,10 +1,15 @@
 import { ipcRenderer, webUtils } from 'electron';
-import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,botMediaRequestSchema,type BotMediaRequest,type WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
+import { BOT_MEDIA_CHANNEL,BOT_MEDIA_CLIPBOARD_CHANNEL,BOT_PRESENCE_ACTIVITY_CHANNEL,botMediaRequestSchema,type BotMediaRequest,type BotPresenceActivity,type WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import { resolveDroppedFilePaths } from '../dropped-files';
 
 const grantedDrops=new Set<string>();
 export const companionBotMedia:WorldlineBoxBotMediaApi=Object.freeze({
   desktopCaptureSupported: process.platform === 'win32',
+  onPresenceActivity(listener: (event: BotPresenceActivity) => void) {
+    const receive = (_event: Electron.IpcRendererEvent, activity: BotPresenceActivity) => listener(activity);
+    ipcRenderer.on(BOT_PRESENCE_ACTIVITY_CHANNEL, receive);
+    return () => { ipcRenderer.removeListener(BOT_PRESENCE_ACTIVITY_CHANNEL, receive); };
+  },
   hasClipboardFiles(conversationId:string){
     const parsed=botMediaRequestSchema.safeParse({type:'files.paste',conversationId});
     return parsed.success&&ipcRenderer.sendSync(BOT_MEDIA_CLIPBOARD_CHANNEL,parsed.data.conversationId)===true;

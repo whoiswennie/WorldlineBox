@@ -8,7 +8,7 @@
 
 Windows x64 · Electron / React / TypeScript / Three.js · 本地数据存储 · MIT
 
-[English](README.en.md) · [Windows 0.1.2 下载](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.2) · [Android 0.1.2 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.2) · [使用手册](docs/user-guide/README.md)
+[English](README.en.md) · [Windows 0.1.3 下载](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.3) · [Android 0.1.3 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.3) · [使用手册](docs/user-guide/README.md)
 
 </div>
 
@@ -26,10 +26,12 @@ WorldlineBox 是一个本地优先的桌面应用，结合**虚拟伙伴、持�
 ### 首次使用和扫码连接
 
 1. 在 Windows 10 / 11 x64 上安装 `WorldlineBoxSetup.exe`。在「启动器 → DeepSeek Harness」安装官方运行版本，创建或选择共享执行实例。在「设置 → 全局模型」配置兼容 OpenAI Chat Completions 的模型，先在「伙伴」发送一条消息验证。
-2. 在 Android 上安装 `WorldlineBoxMobile.apk`。电脑打开「设置 → 远程连接 → 显示配对二维码」，用手机 App 扫码。电脑保持联网且世界线盒子运行时，手机可从外网连接。电脑可暂停或删除设备授权。
+2. 在 Android 上安装 `WorldlineBoxMobile.apk`。电脑打开「设置 → 手机连接 → 显示配对二维码」，用手机 App 扫码。配对后优先局域网直连，电脑和手机重启或内网 IP 改变时会自动重连。电脑可暂停或删除设备授权。
 3. 在手机选择现有伙伴，发送消息或附件。回到桌面可按消息来源筛选。需要朗读或流式通话语音时，在桌面保存 DeepSeek 官方 API 凭据，合成音色为 Stella。
 
-默认的 Cloudflare 临时入口适合个人试用。重启隧道会更换地址，届时需要重新扫码。两端的详细教程与可选的固定入口配置见 [WorldlineBox Mobile 源码仓库](https://github.com/whoiswennie/WorldlineBoxMobile)。
+在「手机连接 → 已配对设备」可以查看手机在线状态、上次在线时间和设备编号。手机在线时开启该设备的「信息推送」，并在 Android 允许通知。点击系统通知可回到对应会话。Windows 的伙伴列表和导航会显示未读数。开启桌宠时，当前伙伴的回复会在桌宠中呈现。关闭桌宠后，主窗口处于后台时会弹出「世界线盒子」系统通知。
+
+默认的 Cloudflare 临时入口适合个人试用。外出时若隧道已换址，在手机「我的电脑 → 扫码更新地址」扫描同一台电脑的新码，保留原设备授权。两端的详细教程与可选的固定入口配置见 [WorldlineBox Mobile 源码仓库](https://github.com/whoiswennie/WorldlineBoxMobile)。
 
 ## 四个主要入口
 
@@ -120,7 +122,7 @@ CPython 包含完整标准库、`ensurepip` 与 `venv`，可以在实例中创�
 - WebDAV 资源库双向同步、浏览器扩展保存网页图片与视频、音乐播放和同步歌词。
 - WorldlineBox 插件、自动化脚本和本机 MCP 通道，扩展资产界面或供外部客户端使用。
 
-资产管理器以 [Serpent](https://github.com/dolag233/Serpent) 为基础，逐项同步至 0.3.2：AI 分析与 AI 搜索可保存和切换多套命名服务配置，大型资源库导入与图像序列识别提速，媒体处理按可用内存调整并发，并同步原生拖拽和 Windows MCP 凭据恢复修复。扩展按合集保存、批量传输取消、自定义快捷键、侧栏拖拽排序、断开映射盘探测和 Windows 更新清理沿用此前已验证的增量实现。可切换新旧界面、编辑和保存主题、调整背景与面板不透明度、从库内资产或文件选择文件夹封面，并设置卡片文字对齐。Windows/macOS 安装版提供登录启动设置。WorldlineBox 的名称、独立版本号、数据目录及启动器、伙伴、浏览器等模块保持原有约定；[0.3.0 升级记录](docs/developer/asset-manager-030-upgrade.md)、[0.3.1 逐项同步记录](docs/developer/serpent-031-upgrade/README.md)和 [0.3.2 升级记录](docs/developer/serpent-032-upgrade/README.md)列出来源、验证范围和限制。
+资产管理器以 [Serpent](https://github.com/dolag233/Serpent) 为基础，逐项同步至 0.3.2：AI 分析与 AI 搜索可保存和切换多套命名服务配置，大型资源库导入与图像序列识别提速，媒体处理按可用内存调整并发，并同步原生拖拽和 Windows MCP 凭据恢复修复。扩展按合集保存、批量传输取消、自定义快捷键、侧栏拖拽排序、断开映射盘探测和 Windows 更新清理沿用此前已验证的增量实现。可切换新旧界面、编辑和保存主题、调整背景与面板不透明度、从库内资产或文件选择文件夹封面，并设置卡片文字对齐。Windows/macOS 安装版提供登录启动设置。WorldlineBox 的名称、独立版本号、数据目录及启动器、伙伴、浏览器等模块保持原有约定；[0.1.3 升级记录](docs/developer/asset-manager-030-upgrade.md)、[0.3.1 逐项同步记录](docs/developer/serpent-031-upgrade/README.md)和 [0.3.2 升级记录](docs/developer/serpent-032-upgrade/README.md)列出来源、验证范围和限制。
 
 内置浏览器已自带资产采集能力，无需安装扩展。地址栏「保存到资产库」可选择资源库与文件夹、直接新建目录、导入本地文件，保存网页图片、音视频、选中文字及文件链接。网页保存生成包含可读文字与来源的 `.txt` 快照；最近采集记录独立分页，支持搜索、状态筛选和取消任务。支持范围见[内置浏览器使用说明](docs/user-guide/browser.md#保存到资产库)。外部 Chrome/Edge 仍可单独安装扩展。
 

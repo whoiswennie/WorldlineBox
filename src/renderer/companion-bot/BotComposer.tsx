@@ -14,7 +14,12 @@ const copy = {
   'zh-CN': { emoji: '表情', emojiTitle: '常用表情', memory: '记忆', history: '聊天记录', message: '发送消息…', send: '发送 ↑', keyboard: 'Enter 发送，Shift + Enter 换行', world: '发布世界事件' },
   en: { emoji: 'Emoji', emojiTitle: 'Common emoji', memory: 'Memory', history: 'Chat history', message: 'Write a message…', send: 'Send ↑', keyboard: 'Enter to send, Shift + Enter for a new line', world: 'Publish world event' },
 };
-export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, meeting = false, showInputTools = true, compact = false, desktopCapture }: {
+export function BotSpeechMuteButton({ zh, muted, onChange }: { zh: boolean; muted: boolean; onChange(value: boolean): void }) {
+  return <button type="button" aria-label={zh ? '伙伴语音静音' : 'Mute companion speech'} aria-pressed={muted}
+    title={zh ? '伙伴语音静音（跳过语音合成）' : 'Mute companion speech and skip synthesis'} onClick={() => onChange(!muted)}>
+    <BotIcon name={muted ? 'volume-off' : 'volume'} /></button>;
+}
+export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, onTypingActivity, meeting = false, showInputTools = true, compact = false, desktopCapture }: {
   locale: 'zh-CN' | 'en'; draft: string; setDraft(value: string): void; disabled: boolean; busy: boolean; group: boolean; world: boolean;
   panel: 'memory' | 'history' | null; setPanel(value: 'memory' | 'history' | null): void; send(kind?: 'message' | 'world'): Promise<unknown>;
   mediaApi?: WorldlineBoxBotMediaApi; conversationId: string; attachments?: readonly BotMediaRef[]; addingFiles?: boolean;
@@ -22,8 +27,8 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
   mentionMembers?: readonly BotCompanion[];
   sendVoice?(media: BotMediaRef): Promise<void>;
   extraTools?: ReactNode; status?: ReactNode; topicControls?: ReactNode;
-  onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; meeting?: boolean; showInputTools?: boolean; compact?: boolean;
-  desktopCapture?: { surface: 'chat' | 'pet'; attach(media: BotMediaRef[]): void; statusTarget?: HTMLElement | null; controlsTarget?: HTMLElement | null };
+  onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; onTypingActivity?(active: boolean): void; meeting?: boolean; showInputTools?: boolean; compact?: boolean;
+  desktopCapture?: { surface: 'chat' | 'pet'; companionName?: string; attach(media: BotMediaRef[]): void; statusTarget?: HTMLElement | null; controlsTarget?: HTMLElement | null; interacting?: boolean };
 }) {
   const surface = useBotCallDocument();
   const t = copy[locale], field = useRef<HTMLTextAreaElement>(null), popup = useRef<HTMLDivElement>(null);
@@ -34,6 +39,14 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
   const [captureControls, setCaptureControls] = useState<HTMLDivElement | null>(null);
   const canTranscribeFile = !!desktopCapture && !!mediaApi?.desktopCaptureSupported && !disabled && !busy && !addingFiles && attachments.length < 16;
   const draftNow = useRef(draft);
+  const typingTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const markTyping = (active: boolean) => {
+    if (!onTypingActivity) return;
+    clearTimeout(typingTimer.current);
+    onTypingActivity(active);
+    if (active) typingTimer.current = setTimeout(() => onTypingActivity(false), 5000);
+  };
+  useEffect(() => () => { clearTimeout(typingTimer.current); onTypingActivity?.(false); }, [onTypingActivity]);
   useLayoutEffect(() => { draftNow.current = draft; }, [draft]);
   const mentionId = 'bot-mentions-' + useId().replace(/[^A-Za-z0-9_-]/gu, ''), composing = useRef(false);
   const [selection, setSelection] = useState({ start: draft.length, end: draft.length }), [focused, setFocused] = useState(false);
@@ -86,7 +99,7 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
       {desktopCapture && mediaApi?.desktopCaptureSupported && <BotDesktopCapture key={conversationId + ':' + desktopCapture.surface} api={mediaApi} conversationId={conversationId} locale={locale} surface={desktopCapture.surface}
         statusTarget={desktopCapture.statusTarget ?? (desktopCapture.surface === 'chat' ? captureStatus : null)}
         controlsTarget={desktopCapture.controlsTarget ?? (desktopCapture.surface === 'chat' ? captureControls : null)}
-        meeting={meeting}
+        meeting={meeting} interacting={desktopCapture.interacting} companionName={desktopCapture.companionName}
         allowPresence={meeting}
         fileRequest={captureFileRequest} onBusy={setCaptureBusy} onAttachment={media => {
           desktopCapture.attach(media);
@@ -106,8 +119,8 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
       aria-controls={mentionOpen ? mentionId : undefined} aria-activedescendant={mentionOpen && mentions.length ? `${mentionId}-${selectedMention}` : undefined}
       onFocus={event => { setFocused(true); readSelection(event.currentTarget); }} onBlur={() => setFocused(false)}
       onSelect={event => readSelection(event.currentTarget)} onClick={event => readSelection(event.currentTarget)} onKeyUp={event => readSelection(event.currentTarget)}
-      onCompositionStart={() => { composing.current = true; setComposition(true); }} onCompositionEnd={event => { composing.current = false; setComposition(false); readSelection(event.currentTarget); }}
-      onChange={event => { setDraft(event.target.value); readSelection(event.currentTarget); setDismissed(''); }}
+      onCompositionStart={() => { composing.current = true; setComposition(true); markTyping(true); }} onCompositionEnd={event => { composing.current = false; setComposition(false); readSelection(event.currentTarget); }}
+      onChange={event => { setDraft(event.target.value); markTyping(!!event.target.value); readSelection(event.currentTarget); setDismissed(''); }}
       onKeyDown={event => {
         if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (mentionOpen && ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key) && !event.shiftKey) {

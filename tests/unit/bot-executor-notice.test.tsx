@@ -58,7 +58,7 @@ it('keeps a newer subscription state when the original state request resolves la
 it('shows read and start errors, permits retries and clears stale errors on a recovered subscription',async()=>{
   let reads=0;const f=await mount(async request=>request.type==='state'?++reads===1?{ok:false,error:'IPC 暂时断开'}:{ok:true,state:state()}:{ok:false,error:'端口占用'});
   expect(host.querySelector('summary')?.textContent).toBe('DSH 暂时不可用');
-  expect(host.querySelector('.bot-executor-diagnostic')?.textContent).toBe('IPC 暂时断开');
+  expect(host.querySelector('.bot-error-notice > p')?.textContent).toBe('IPC 暂时断开');
   await click('重试');expect(host.textContent).toContain('未启动');
   await click('启动');expect(host.textContent).toContain('端口占用');expect([...host.querySelectorAll('button')].some(value=>value.textContent==='启动')).toBe(true);
   await f.change(state('running'));expect(host.textContent).toBe('');

@@ -122,6 +122,7 @@ export interface BotDataCleanup {
 }
 export interface BotConversationActivity { messageId: string; sequence: number; senderName: string; preview: string; updatedAt: string }
 export interface BotSnapshot {
+  callDelivery?: { cursor: number; more: boolean; messageIds: string[] };
   companions: BotCompanion[]; conversations: BotConversation[]; messages: BotMessage[]; tasks: BotTask[];
   presence?: Record<string, BotCompanionPresence>;
   conversationActivity?: Record<string, BotConversationActivity>;
@@ -133,10 +134,13 @@ export interface BotSnapshot {
 export interface BotHistoryPage { items: BotMessage[]; hasMore: boolean; nextBefore?: number }
 export const botRequestSchema = z.discriminatedUnion('type', [
   ...botMemoryMaintenanceSchemas,
-  z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional(), surface: z.literal('call').optional() }),
-  z.strictObject({ type: z.literal('call.open'), conversationId: id }),
+  z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional(), surface: z.literal('call').optional(), callAfter: z.number().int().nonnegative().optional() }),
+  z.strictObject({ type: z.literal('call.reserve'), conversationId: id, sessionId: z.uuid() }),
+  z.strictObject({ type: z.literal('call.release'), conversationId: id, sessionId: z.uuid() }),
+  z.strictObject({ type: z.literal('call.open'), conversationId: id, sessionId: z.uuid().optional() }),
   z.strictObject({ type: z.literal('call.model.import'), companionId: id }),
   z.strictObject({ type: z.literal('call.model.reset'), companionId: id }),
+  // eslint-disable-next-line no-control-regex -- Exclude C0 control codes and DEL from visible names.
   z.strictObject({ type: z.literal('user.identity'), name: z.string().trim().min(1).max(80).regex(/^[^\x00-\x1f\x7f]+$/u).optional(), bio: z.string().trim().max(800).optional() }),
   z.strictObject({ type: z.literal('companion.call-performance'), companionId: id }),
   z.strictObject({ type: z.literal('call.interrupt'), conversationId: id, topicId: id.optional(), requestId: id,
@@ -208,7 +212,11 @@ export type BotEvent = { type: 'changed'; conversationId?: string }
   | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }
   | { type: 'error'; conversationId?: string; message: string };
+export const BOT_INBOX_CHANNEL = 'companion-bot:message-inbox';
+export interface BotInboxEvent { counts: Record<string, number>; openRoom?: string }
 export interface WorldlineBoxBotApi {
+  inbox?(readRoom?: string): Promise<Record<string, number>>;
+  onInbox?(listener: (event: BotInboxEvent) => void): () => void;
   request(input: BotRequest): Promise<BotResponse>;
   onEvent(listener: (event: BotEvent) => void): () => void;
   speech?(input: BotSpeechRequest): Promise<{ ok: boolean; error?: string }>;

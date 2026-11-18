@@ -5,7 +5,7 @@
 
 **A home and coordinating brain for virtual characters, worlds, assets, and execution tools.**
 
-[简体中文](README.md) · [Windows 0.1.2](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.2) · [Android 0.1.2](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.2)
+[简体中文](README.md) · [Windows 0.1.3](https://github.com/whoiswennie/WorldlineBox/releases/tag/0.1.3) · [Android 0.1.3](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.3)
 </div>
 
 WorldlineBox is a local-first desktop app combining companions, persistent world state, asset management and DSH execution environments. The companion module is being rebuilt around a Super Agent: users stay in their chat while the coordinating brain recalls memories, delegates work and receives durable results.
@@ -16,7 +16,9 @@ The desktop app runs companions, memory and DSH tasks, manages assets, and autho
 
 1. Install `WorldlineBoxSetup.exe` on Windows x64 and `WorldlineBoxMobile.apk` on Android.
 2. Install and select a shared DSH instance in the desktop launcher, configure the model under Settings, and verify a desktop chat.
-3. In desktop Settings, open Remote Connection and display the pairing QR code. Scan it in the Android app. Keep the desktop app online for remote access. The temporary tunnel changes its address on restart and then needs a fresh scan.
+3. In desktop Settings, open Phone connection and display the pairing QR code. Scan it in the Android app. On a shared LAN the phone rediscovers the computer after restarts or IP changes. Away from home, if the temporary tunnel address has changed, scan an updated code for the same computer to keep the existing pairing.
+
+Under **Phone connection → Paired devices**, turn on **Message alerts** for an online phone and allow Android notifications. Both devices show unread companion replies. While the desktop pet is open, it presents the current companion’s replies. Closing it restores Windows notifications when the main window is in the background. Clicking a notification opens its conversation.
 
 See the [mobile guide](https://github.com/whoiswennie/WorldlineBoxMobile#扫码连接) for pairing, transfers and optional permanent endpoint configuration.
 

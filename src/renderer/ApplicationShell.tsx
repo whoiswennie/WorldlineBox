@@ -11,6 +11,7 @@ import "./application-shell.css";
 export interface ApplicationModule {
   readonly id: string;
   readonly label: string;
+  readonly badge?: number;
   readonly icon: IconName;
   readonly content: ReactNode;
   /** Keep a module's dialog controller active while its view stays hidden. */
@@ -81,6 +82,7 @@ export function ApplicationShell({
               type="button"
             >
               <Icon name={module.icon} size={22} />
+              {!!module.badge && <span className="application-unread-count">{module.badge > 99 ? '99+' : module.badge}</span>}
               <span className="application-navigation-item-label">{module.label}</span>
             </button>
           ))}

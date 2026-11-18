@@ -1,0 +1,15 @@
+.bot-error-notice { min-width:0; max-width:100%; font-size:12px; line-height:1.55; color:var(--ui-status-danger-content); overflow-wrap:anywhere }
+.bot-error-notice > p { margin:0; white-space:pre-wrap }
+.bot-diagnostic-actions, .bot-diagnostic-dialog footer { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:7px }
+.bot-diagnostic-actions button, .bot-diagnostic-dialog button { padding:4px 9px; border:1px solid var(--ui-border-subtle); border-radius:7px; background:var(--ui-surface-raised,Canvas); color:var(--ui-content-primary,CanvasText); font:inherit; cursor:pointer }
+.bot-diagnostic-dialog { box-sizing:border-box; width:min(680px,calc(100% - 28px)); max-height:85vh; padding:16px; border:1px solid var(--ui-border-subtle); border-radius:14px; background:var(--ui-surface-raised,Canvas); color:var(--ui-content-primary,CanvasText); box-shadow:0 12px 44px #0002; text-align:left; font:normal 13px/1.5 system-ui,sans-serif }
+.bot-diagnostic-dialog::backdrop { background:#19191966 }
+.bot-diagnostic-dialog header { position:static; display:flex; align-items:center; justify-content:space-between; gap:10px }
+.bot-diagnostic-dialog h3 { margin:0; font-size:16px }
+.bot-diagnostic-dialog details { margin-block:8px; color:var(--ui-content-secondary,CanvasText) }
+.bot-diagnostic-dialog summary { cursor:pointer }
+.bot-diagnostic-dialog details p { max-height:14vh; margin:5px 0; overflow:auto; white-space:pre-wrap; user-select:text }
+body:has(.bot-call-overlay) .application-global-dialogs .app-settings-backdrop { z-index:calc(var(--ui-layer-modal-backdrop,700) + 25) }
+.bot-diagnostic-dialog pre { max-height:48vh; overflow:auto; padding:10px; border-radius:7px; background:var(--ui-surface-muted,#eee); color:var(--ui-content-primary,CanvasText); font:12px/1.55 monospace; white-space:pre-wrap; overflow-wrap:anywhere; user-select:text }
+.bot-diagnostic-dialog footer { justify-content:flex-end }
+.bot-diagnostic-dialog footer span { margin-inline-end:auto }

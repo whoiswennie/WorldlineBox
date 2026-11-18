@@ -15,6 +15,7 @@ Windows 安装器简体中文翻译来自 [kira-96/Inno-Setup-Chinese-Simplified
 | 组件 | 许可证 | 用途 |
 |---|---|---|
 | [Electron](https://www.electronjs.org/) | MIT | 桌面应用运行时 |
+| [@homebridge/ciao](https://github.com/homebridge/ciao) | MIT · Copyright (c) 2020 Andreas Bauer | 局域网手机连接的 mDNS / DNS-SD 服务发现 |
 | [cloudflared](https://github.com/cloudflare/cloudflared/tree/2026.11.0) | Apache-2.0 | Windows 远程连接，许可文本位于 `resources/mobile-cloudflared/LICENSE` |
 | Chromium (随 Electron) | BSD-3-Clause | 浏览器内核 |
 | [React / React DOM](https://react.dev/) | MIT | 界面渲染框架 |

@@ -4,7 +4,29 @@ import { moveWindowInPhysicalPixels } from '../capture-tools/desktop-regions';
 import { sendToLiveWebContents } from '../web-contents-send';
 
 const visiblePets = new WeakMap<BrowserWindow, BrowserWindow>();
+const ownedPets = new WeakMap<BrowserWindow, BrowserWindow>();
+let meeting: { owner: BrowserWindow; room: string; token: string; connected?: boolean } | undefined;
+export function markDesktopMeetingConnected(owner: BrowserWindow, room: string, token?: string) {
+  if (meeting?.owner === owner && meeting.room === room && meeting.token === token) meeting.connected = true;
+}
+export const desktopMeetingActive = (room: string) => meeting?.room === room && meeting.connected === true;
+export function reserveDesktopMeeting(owner: BrowserWindow, room: string, token: string) {
+  if (!meeting) meeting = { owner, room, token };
+  return meeting.owner === owner && meeting.room === room && meeting.token === token;
+}
+export function allowsDesktopMeeting(owner: BrowserWindow, room: string, token?: string) {
+  return meeting ? meeting.owner === owner && meeting.room === room && (!token || token === meeting.token) : token === undefined;
+}
+export function releaseDesktopMeeting(owner: BrowserWindow, token: string) {
+  if (meeting?.owner !== owner || meeting.token !== token) return;
+  const room = meeting.room;
+  meeting = undefined;
+  const pet = ownedPets.get(owner);
+  if (pet && !pet.isDestroyed()) pet.destroy();
+  return room;
+}
 export const callPetFor = (owner: BrowserWindow) => visiblePets.get(owner);
+export const hasDesktopPet = (owner: BrowserWindow) => ownedPets.has(owner);
 
 function petSize(workArea: Rectangle) {
   return { width: Math.min(CALL_PET_MAX_WIDTH, workArea.width), height: Math.min(CALL_PET_MAX_HEIGHT, workArea.height) };
@@ -38,11 +60,20 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
   let shape: Rectangle[] = [];
   let shapeScale = 0;
   const ownerContents = owner.webContents;
+  let opening: { name: string; token: string } | undefined;
+  let petName: string | undefined;
+  const reset = () => {
+    opening = undefined;
+    if (meeting?.owner === owner) releaseDesktopMeeting(owner, meeting.token);
+    if (pet && !pet.isDestroyed()) pet.destroy();
+  };
+  ownerContents.on('render-process-gone', reset);
   ownerContents.on('did-start-navigation', details => {
-    if (details.isMainFrame && !details.isSameDocument) pet?.destroy();
+    if (details.isMainFrame && !details.isSameDocument) reset();
   });
   ownerContents.setWindowOpenHandler(({ url, frameName }) => {
-    if (process.platform !== 'win32' || url !== 'about:blank' || !isCallPetWindowName(frameName) || pet) return { action: 'deny' };
+    if (process.platform !== 'win32' || url !== 'about:blank' || !isCallPetWindowName(frameName) || pet || meeting?.owner !== owner || opening?.token === meeting.token) return { action: 'deny' };
+    opening = { name: frameName, token: meeting.token };
     const { workArea } = screen.getDisplayMatching(owner.getBounds());
     const { width, height } = petSize(workArea);
     return { action: 'allow', overrideBrowserWindowOptions: {
@@ -55,7 +86,11 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
   });
   ownerContents.on('did-create-window', (window, { frameName }) => {
     if (!isCallPetWindowName(frameName)) return;
+    if (!opening || opening.name !== frameName || meeting?.token !== opening.token || pet) { window.destroy(); return; }
+    opening = undefined;
     pet = window;
+    petName = frameName;
+    ownedPets.set(owner, window);
     previousThrottling = ownerContents.getBackgroundThrottling();
     ownerContents.setBackgroundThrottling(false);
     window.setAlwaysOnTop(true, 'floating');
@@ -83,6 +118,9 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
     syncBounds();
     window.once('closed', () => {
       screen.off('display-metrics-changed', syncBounds);
+      if (pet !== window) return;
+      ownedPets.delete(owner);
+      petName = undefined;
       pet = undefined; dragOffset = undefined; shape = []; shapeScale = 0;
       visiblePets.delete(owner);
       if (ownerContents.isDestroyed()) return;
@@ -92,6 +130,10 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
   });
   const command = (event: Electron.IpcMainEvent, action: unknown) => {
     if (!pet || pet.isDestroyed() || ownerContents.isDestroyed() || event.sender !== ownerContents || event.senderFrame !== ownerContents.mainFrame) return;
+    if (action && typeof action === 'object' && 'name' in action && 'type' in action && (action.type === 'close' || action.type === 'return')) {
+      if (action.name !== petName) return;
+      action = action.type;
+    }
     if (action && typeof action === 'object' && 'type' in action && action.type === 'layout') {
       if (!('width' in action) || typeof action.width !== 'number' || !Number.isFinite(action.width) || action.width <= 0 ||
           !('height' in action) || typeof action.height !== 'number' || !Number.isFinite(action.height) || action.height <= 0 ||
@@ -133,5 +175,5 @@ export function bindCallPetWindow(owner: BrowserWindow): void {
     }
   };
   ipcMain.on(CALL_PET_COMMAND, command);
-  owner.once('closed', () => { ipcMain.off(CALL_PET_COMMAND, command); if (pet && !pet.isDestroyed()) pet.destroy(); });
+  owner.once('closed', () => { ipcMain.off(CALL_PET_COMMAND, command); reset(); });
 }
