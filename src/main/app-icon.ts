@@ -1,4 +1,4 @@
-import { existsSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync } from "node:fs";
 import path from "node:path";
 
 import { app, nativeImage, shell, type BrowserWindow, type BrowserWindowConstructorOptions, type NativeImage } from "electron";
@@ -42,14 +42,17 @@ export function registerWindowsSender() {
   if (process.platform !== 'win32') return;
   app.setAppUserModelId(WINDOWS_APP_ID);
   app.setToastActivatorCLSID(toastClsid);
-  const programs = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  const programs = process.env.WORLDLINEBOX_E2E === '1'
+    ? path.join(app.getPath('userData'), 'test-start-menu')
+    : path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs');
+  mkdirSync(programs, { recursive: true });
   const link = path.join(programs, '世界线盒子.lnk');
   const appPath = app.getAppPath();
   // Test builds share the checkout's executable and Windows sender identity.
   const project = !app.isPackaged && process.env.WORLDLINEBOX_E2E === '1'
     && path.basename(appPath) === 'e2e-app' && path.basename(path.dirname(appPath)) === '.tools'
     ? path.resolve(appPath, '..', '..') : appPath;
-  const icon = path.join(app.isPackaged ? process.resourcesPath : path.join(project, 'assets', 'icons'), 'app.ico');
+  const icon = app.isPackaged ? process.execPath : path.join(project, 'assets', 'icons', 'app.ico');
   // Only migrate the old shortcut if BOTH its app ID and executable belong to this checkout.
   const legacy = path.join(programs, app.isPackaged ? 'WorldlineBox.lnk' : 'Electron.lnk');
   const old = existsSync(legacy) ? shell.readShortcutLink(legacy) : undefined;
@@ -62,18 +65,24 @@ export function registerWindowsSender() {
     description: '世界线盒子', appUserModelId: WINDOWS_APP_ID, toastActivatorClsid: toastClsid };
   const current = existsSync(link) ? shell.readShortcutLink(link) : undefined;
   if (current && current.appUserModelId !== WINDOWS_APP_ID) return;
-  if (!current || current.target !== details.target || current.icon !== icon || current.args !== details.args ||
+  if (!current || current.target !== details.target || current.icon !== icon || current.iconIndex !== 0 || current.args !== details.args ||
       current.toastActivatorClsid?.toUpperCase() !== toastClsid) {
     if (!shell.writeShortcutLink(link, current ? 'update' : 'create', details)) throw new Error('无法登记 Windows 通知快捷方式。');
   }
 }
 
-/** Windows' grouped taskbar icon uses relaunch metadata, independently of the
- * HWND/title-bar image. Dev electron.exe otherwise supplies its stock icon. */
-export function applyWindowsTaskbarIcon(window:BrowserWindow):void {
-  if(process.platform!=='win32')return;
-  const icon=path.join(app.isPackaged?process.resourcesPath:path.join(process.cwd(),'assets','icons'),'app.ico');
-  if(!existsSync(icon))return;
-  window.setAppDetails({appId:WINDOWS_APP_ID,appIconPath:icon,appIconIndex:0,relaunchDisplayName:'WorldlineBox',
-    relaunchCommand:`"${process.execPath}"${app.isPackaged?'':` "${app.getAppPath()}"`}`});
+/** The installed EXE owns its icon. The development Electron host needs
+ * explicit launch arguments and the project's icon when pinned. */
+export function applyWindowsTaskbarIcon(window: BrowserWindow): void {
+  if (process.platform !== 'win32') return;
+  if (app.isPackaged) {
+    // Pin the installed app using its matching Start shortcut and embedded EXE
+    // icon. A custom relaunch command would create a separate shell shortcut.
+    window.setAppDetails({ appId: WINDOWS_APP_ID });
+    return;
+  }
+  const icon = path.join(process.cwd(), 'assets', 'icons', 'app.ico');
+  if (!existsSync(icon)) return;
+  window.setAppDetails({ appId: WINDOWS_APP_ID, appIconPath: icon, appIconIndex: 0, relaunchDisplayName: 'WorldlineBox',
+    relaunchCommand: `"${process.execPath}" "${app.getAppPath()}"` });
 }

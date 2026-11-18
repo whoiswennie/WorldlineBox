@@ -55,8 +55,8 @@ Source: "{#AppSourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdi
 Source: "ChineseSimplified.LICENSE.txt"; DestDir: "{app}\resources"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\世界线盒子"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\resources\app.ico"; AppUserModelID: "com.worldlinebox.app"; AppUserModelToastActivatorCLSID: "24BC5C0E-9196-41EA-90D5-8037889B7B7D"
-Name: "{autodesktop}\世界线盒子"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; IconFilename: "{app}\resources\app.ico"; AppUserModelID: "com.worldlinebox.app"; AppUserModelToastActivatorCLSID: "24BC5C0E-9196-41EA-90D5-8037889B7B7D"
+Name: "{group}\世界线盒子"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\{#AppExeName}"; IconIndex: 0; AppUserModelID: "com.worldlinebox.app"; AppUserModelToastActivatorCLSID: "24BC5C0E-9196-41EA-90D5-8037889B7B7D"
+Name: "{autodesktop}\世界线盒子"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; IconFilename: "{app}\{#AppExeName}"; IconIndex: 0; AppUserModelID: "com.worldlinebox.app"; AppUserModelToastActivatorCLSID: "24BC5C0E-9196-41EA-90D5-8037889B7B7D"
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
