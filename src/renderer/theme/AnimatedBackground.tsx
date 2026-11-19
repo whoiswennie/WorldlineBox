@@ -14,11 +14,16 @@ export type AnimatedBackgroundProps = {
   readonly fit?: 'cover' | 'fill';
 };
 
+const PLAYBACK_CHECK_INTERVAL_MS = 1000;
+const STALLED_PLAYBACK_CHECKS = 4;
+const HEALTHY_PLAYBACK_CHECKS = 3;
+const MAX_RECOVERY_RELOADS = 2;
+
 /** A decorative, silent video layer with an independent still-image fallback. */
 function AnimatedBackgroundSurface({ src, poster, playing = true, active = true, fit = 'cover' }: AnimatedBackgroundProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const nativeFocus = useRef<boolean | undefined>(undefined);
   const [ready, setReady] = useState(false);
-  const [failed, setFailed] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(() =>
     window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   );
@@ -32,10 +37,10 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
 
   useEffect(() => {
     const video = videoRef.current;
-    // Restore the source when StrictMode replays effect setup after cleanup.
-    if (video && active && !reducedMotion) video.src = src;
+    if (!video || !active || reducedMotion) return;
+    // Pair source attachment with cleanup so StrictMode can replay both.
+    video.src = src;
     return () => {
-      if (!video) return;
       video.pause();
       video.removeAttribute('src');
       video.load();
@@ -46,53 +51,147 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
     const video = videoRef.current;
     if (!video) return;
     const shell = (window as Window & { worldlinebox?: { shell?: Pick<WorldlineBoxShellApi, 'onWindowFocusChanged'> } }).worldlinebox?.shell;
-    let focused = shell ? document.hasFocus() : true;
-    const synchronize = () => {
-      if (active && playing && !reducedMotion && !failed && focused && document.visibilityState === 'visible') {
-        video.muted = true;
-        void video.play().catch(() => {
-          // Autoplay may be blocked by the host; the poster stays available.
-        });
-      } else {
-        video.pause();
-      }
+    const canCheckFrames = typeof video.requestVideoFrameCallback === 'function';
+    let domFocused = shell?.onWindowFocusChanged ? document.hasFocus() : true;
+    let shouldPlay = false;
+    let timer: number | undefined;
+    let frameRequest: number | undefined;
+    let framePresented = false;
+    let lastTime = video.currentTime;
+    let stalledChecks = 0;
+    let healthyChecks = 0;
+    let reloads = 0;
+    let resumeAt: number | undefined;
+
+    const playVideo = () => {
+      video.muted = true;
+      void video.play().catch(() => {
+        // The watchdog handles interrupted starts while playback is still requested.
+      });
     };
-    const onFocus = () => { focused = true; synchronize(); };
-    const onBlur = () => { focused = false; synchronize(); };
-    // Chromium may remain "visible" in a minimized, unthrottled Electron window.
-    // Use the existing native focus bridge as well as web visibility events.
-    const unsubscribeFocus = shell?.onWindowFocusChanged((value) => { focused = value; synchronize(); });
-    synchronize();
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('visibilitychange', synchronize);
-    video.addEventListener('canplay', synchronize);
-    return () => {
-      document.removeEventListener('visibilitychange', synchronize);
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('blur', onBlur);
-      unsubscribeFocus?.();
-      video.removeEventListener('canplay', synchronize);
+
+    const requestFrame = () => {
+      if (!canCheckFrames || frameRequest !== undefined) return;
+      frameRequest = video.requestVideoFrameCallback(() => {
+        frameRequest = undefined;
+        framePresented = true;
+      });
+    };
+
+    const clearFrameRequest = () => {
+      if (frameRequest !== undefined) video.cancelVideoFrameCallback(frameRequest);
+      frameRequest = undefined;
+      framePresented = false;
+    };
+
+    const stopPlayback = () => {
+      window.clearInterval(timer);
+      timer = undefined;
+      clearFrameRequest();
       video.pause();
     };
-  }, [active, failed, playing, reducedMotion, src]);
+
+    const checkPlayback = () => {
+      const time = video.currentTime;
+      // The media clock can advance while Chromium is still showing the same frame.
+      const progressed = canCheckFrames ? framePresented : time !== lastTime;
+      lastTime = time;
+      framePresented = false;
+      requestFrame();
+      if (!video.error && !video.paused && progressed) {
+        stalledChecks = 0;
+        if (reloads > 0 && ++healthyChecks >= HEALTHY_PLAYBACK_CHECKS) reloads = 0;
+        return;
+      }
+      healthyChecks = 0;
+      stalledChecks++;
+      if (stalledChecks === 1 && video.paused && !video.error) playVideo();
+      if (stalledChecks < STALLED_PLAYBACK_CHECKS) return;
+
+      setReady(false);
+      if (reloads >= MAX_RECOVERY_RELOADS) {
+        stopPlayback();
+        return;
+      }
+      reloads++;
+      stalledChecks = 0;
+      resumeAt ??= time;
+      clearFrameRequest();
+      video.load();
+      lastTime = video.currentTime;
+      playVideo();
+      requestFrame();
+    };
+
+    const restorePosition = () => {
+      if (resumeAt === undefined) return;
+      if (resumeAt > 0 && Number.isFinite(video.duration) && resumeAt < video.duration - 0.1) {
+        video.currentTime = resumeAt;
+      }
+      resumeAt = undefined;
+    };
+
+    const synchronize = () => {
+      const focused = nativeFocus.current ?? domFocused;
+      const eligible = active && playing && !reducedMotion && focused && document.visibilityState === 'visible';
+      if (eligible === shouldPlay) return;
+      shouldPlay = eligible;
+      if (!shouldPlay) {
+        stopPlayback();
+        return;
+      }
+      reloads = stalledChecks = healthyChecks = 0;
+      lastTime = video.currentTime;
+      playVideo();
+      requestFrame();
+      timer = window.setInterval(checkPlayback, PLAYBACK_CHECK_INTERVAL_MS);
+    };
+
+    const resumeIfPaused = () => {
+      if (timer !== undefined && video.paused && !video.error) playVideo();
+    };
+    const onFocusChange = (event: FocusEvent) => { domFocused = event.type === 'focus'; synchronize(); };
+    // DOM focus can move between WebContents inside a still-focused BrowserWindow.
+    const unsubscribeFocus = shell?.onWindowFocusChanged?.((focused) => {
+      nativeFocus.current = focused;
+      synchronize();
+    });
+    synchronize();
+    window.addEventListener('focus', onFocusChange);
+    window.addEventListener('blur', onFocusChange);
+    document.addEventListener('visibilitychange', synchronize);
+    video.addEventListener('canplay', resumeIfPaused);
+    video.addEventListener('pause', resumeIfPaused);
+    video.addEventListener('loadedmetadata', restorePosition);
+    return () => {
+      document.removeEventListener('visibilitychange', synchronize);
+      window.removeEventListener('focus', onFocusChange);
+      window.removeEventListener('blur', onFocusChange);
+      unsubscribeFocus?.();
+      video.removeEventListener('canplay', resumeIfPaused);
+      video.removeEventListener('pause', resumeIfPaused);
+      video.removeEventListener('loadedmetadata', restorePosition);
+      stopPlayback();
+    };
+  }, [active, playing, reducedMotion]);
 
   return (
     <div aria-hidden="true" className="app-animated-background" style={{ '--animated-background-fit': fit } as CSSProperties}>
       <img alt="" className="app-animated-background-poster" src={poster} />
       <video
         className="app-animated-background-video"
-        data-ready={ready && !failed && !reducedMotion && active && playing}
+        data-ready={ready && !reducedMotion && active && playing}
         disablePictureInPicture
         loop
         muted
-        onError={() => setFailed(true)}
+        onEmptied={() => setReady(false)}
+        onError={() => setReady(false)}
         onLoadedData={() => setReady(true)}
+        onPlaying={() => setReady(true)}
         playsInline
         poster={poster}
         preload={active && playing && !reducedMotion ? 'auto' : 'none'}
         ref={videoRef}
-        src={reducedMotion || !active ? undefined : src}
       />
       <div className="app-animated-background-scrim" />
     </div>

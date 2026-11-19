@@ -35,6 +35,7 @@ import type { LauncherNetwork } from './dsh/launcher-network';
 import { forkNetworkUtility } from './network-utility-process';
 import { APPLICATION_NETWORK_REQUEST } from '../shared/application-network';
 import type { MusicService } from './music/service';
+import { bindDesktopLyricsWindow } from './music/lyrics-window';
 import type { CaptureToolsService } from './capture-tools/service';
 import type { BrowserService } from './browser/service';
 import { importCapturedFile } from './browser/import-staged';
@@ -2450,7 +2451,7 @@ async function createMainWindow(): Promise<void> {
       mainWindow = undefined;
     }
   });
-  bindCallPetWindow(window);
+  bindCallPetWindow(window, bindDesktopLyricsWindow(window));
   window.webContents.on("will-navigate", (event, url) => { if (!isCurrentDocumentReload(window.webContents.getURL(), url)) event.preventDefault(); });
   window.webContents.session.on("will-download", (event, item) => {
     if (item.getURL().startsWith("worldlinebox-plugin:")) event.preventDefault();
@@ -5263,9 +5264,9 @@ async function startApplication(): Promise<void> {
   const sendInbox = (counts: Record<string, number>, openRoom?: string) => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(BOT_INBOX_CHANNEL, { counts, openRoom });
   };
-  ipcMain.handle(BOT_INBOX_CHANNEL, (event, room: unknown) => {
+  ipcMain.handle(BOT_INBOX_CHANNEL, (event, room: unknown, through: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed() || event.senderFrame !== mainWindow.webContents.mainFrame || event.sender !== mainWindow.webContents) return {};
-    if (typeof room === 'string' && mainWindow.isFocused() && mainWindow.isVisible()) desktopInbox?.read(room);
+    if (typeof room === 'string' && typeof through === 'number' && mainWindow.isFocused() && mainWindow.isVisible() && !mainWindow.isMinimized()) desktopInbox?.read(room, through);
     return desktopInbox?.snapshot() ?? {};
   });
   let mobileGateway: Awaited<ReturnType<typeof startMobileGateway>>;
@@ -5343,6 +5344,14 @@ async function startApplication(): Promise<void> {
         readLocalCallModel: companionId => readLocalCallModel(callModelProfile, companionId),
         scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
         cabinWorldApp: launcher?.companionCabinApp,
+        musicTool: (scope, input, signal, assertAllowed) => {
+          if (!musicService) throw Error('音乐应用暂不可用。');
+          return musicService.companionControl(scope, input, signal, assertAllowed);
+        },
+        prepareMusicShare: (id, input, signal) => {
+          if (!musicService) throw Error('音乐应用暂不可用。');
+          return musicService.prepareShare(id, input, signal);
+        },
         callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), "public", "companion-call") : path.join(__dirname, "..", "renderer", MAIN_WINDOW_VITE_NAME, "companion-call"), prewarmMemory: true, memory, media, assetManagerApp: companionAssetManagerApp,
         resolveBrowserContext: id => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.resolveCompanionContext(id); },
         browserTool: (scope, input, signal) => { if (!browserService) throw Error('内置浏览器尚未就绪。'); return browserService.companionTool(scope, input, signal); },

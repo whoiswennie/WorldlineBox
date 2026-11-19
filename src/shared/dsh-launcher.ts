@@ -226,6 +226,28 @@ export const dshLauncherRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('pack.delete'), packId: id }),
 ]);
 export type DshLauncherRequest = z.infer<typeof dshLauncherRequestSchema>;
+
+export function blocksDuringBundledDshUpdate(
+  state: Pick<DshLauncherState, 'instances' | 'operations' | 'snapshots' | 'cli'>,
+  request: DshLauncherRequest,
+): boolean {
+  if (!state.operations.some(operation => operation.kind === 'runtime.bundle' && operation.status === 'running')) return false;
+  if (request.type === 'instance.logs' || (request.type === 'instance.folder' && request.scope === 'logs')) return false;
+  switch (request.type) {
+    case 'companion.environment.ensure': case 'companion.environment.open': case 'companion.environment.configure':
+    case 'companion.environment.refresh': case 'companion.environment.upgrade': {
+      const shared = state.instances.find(instance => instance.isDefault);
+      return !!shared?.isBundled || !shared?.defaultSelectedByUser;
+    }
+  }
+  const instanceId = request.type === 'terminal.open' ? request.instanceId ?? state.cli?.selectedInstanceId ?? state.instances.find(instance => instance.isDefault)?.id
+    : request.type === 'cli.install-command' ? state.cli?.selectedInstanceId
+    : request.type === 'terminal.input' ? state.cli?.terminals?.find(terminal => terminal.id === (request.terminalId ?? state.cli?.activeTerminalId))?.instanceId
+    : 'instanceId' in request ? request.instanceId
+    : 'snapshotId' in request ? state.snapshots.find(snapshot => snapshot.id === request.snapshotId)?.instanceId : undefined;
+  return !!instanceId && state.instances.some(instance => instance.id === instanceId && instance.isBundled);
+}
+
 export const dshLauncherResponseSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), state: dshLauncherStateSchema.optional(),
     cabin: z.object({ available: z.boolean(), running: z.boolean(), version: z.string().optional() }).optional(),

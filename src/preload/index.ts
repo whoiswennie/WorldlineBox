@@ -10,7 +10,7 @@ import { network } from './bridge/application-network';
 import { llm } from './bridge/llm';
 import { music } from './bridge/music';
 import { companionBot } from './bridge/companion-bot';
-import { CALL_PET_CLOSED, CALL_PET_COMMAND, isCallPetWindowName, type CallPetApi, type CallPetCommand } from '../shared/companion-call-window';
+import { CALL_PET_ANCHOR_CHANGED, CALL_PET_CLOSED, CALL_PET_COMMAND, isCallPetWindowName, type CallPetAnchor, type CallPetApi, type CallPetCommand } from '../shared/companion-call-window';
 import { companionBotMedia } from './bridge/companion-bot-media';
 import { localSpeech } from './bridge/local-speech';
 import { automation } from './bridge/automation';
@@ -38,6 +38,13 @@ const companionCallPet: CallPetApi = Object.freeze({
     };
     ipcRenderer.on(CALL_PET_CLOSED, handle);
     return () => ipcRenderer.off(CALL_PET_CLOSED, handle);
+  },
+  onAnchorChanged(listener: (name: string, anchor: CallPetAnchor, revision: number) => void) {
+    const handle = (_event: Electron.IpcRendererEvent, name: unknown, anchor: CallPetAnchor, revision: number) => {
+      if (isCallPetWindowName(name)) listener(name, anchor, revision);
+    };
+    ipcRenderer.on(CALL_PET_ANCHOR_CHANGED, handle);
+    return () => ipcRenderer.off(CALL_PET_ANCHOR_CHANGED, handle);
   },
 });
 

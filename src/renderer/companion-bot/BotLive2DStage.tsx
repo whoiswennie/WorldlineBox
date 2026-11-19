@@ -18,16 +18,22 @@ export interface BotLive2DControls {
   presence?(value: 'idle' | 'waiting' | 'speaking'): void;
   audio?(value: number): void;
 }
-export function BotLive2DStage({ model, name, desktopPet, framing, onReady, onError }: { model: BotCallModel; name: string; desktopPet: boolean; framing: BotCallFraming; onReady(controls: BotLive2DControls): void; onError(message: string): void }) {
+export function BotLive2DStage({ model, name, desktopPet, hidden = false, framing, onReady, onError }: { model: BotCallModel; name: string; desktopPet: boolean; hidden?: boolean; framing: BotCallFraming; onReady(controls: BotLive2DControls): void; onError(message: string): void }) {
   const host = useRef<HTMLDivElement>(null), performanceLayer = useRef<BotCallPerformance>(undefined), controls = useRef<BotLive2DControls>(undefined);
   const minimumResolution = useRef(1);
   const frameRenderer = useRef<Live2DRenderer>(undefined);
   const initialFraming = useRef(framing);
+  const visible = useRef(!hidden);
+  const updateRendering = useRef<(visible: boolean) => void>(undefined);
   useLayoutEffect(() => {
     minimumResolution.current = desktopPet ? 2 : 1;
     frameRenderer.current?.syncFrameClock();
   }, [desktopPet]);
   useLayoutEffect(() => { initialFraming.current = framing; }, [framing]);
+  useLayoutEffect(() => {
+    visible.current = !hidden;
+    updateRendering.current?.(!hidden);
+  }, [hidden]);
   useEffect(() => {
     let cancelled = false, loaded = false, disposed = false, renderer: Live2DRenderer | undefined, resize: ResizeObserver | undefined, gaze: ReturnType<typeof trackCallGaze> | undefined;
     let stopFrame: (() => void) | undefined;
@@ -102,10 +108,22 @@ export function BotLive2DStage({ model, name, desktopPet, framing, onReady, onEr
         avatar.update(minimumResolution.current > 1 ? host.current?.ownerDocument.defaultView ?? undefined : undefined);
       };
       let lastRatio: number | undefined, lastMinimum = 0;
-      update(); stopFrame = renderer.onFrame(update); onReady(controls.current);
+      updateRendering.current = show => {
+        if (!show) {
+          stopFrame?.();
+          stopFrame = undefined;
+        } else if (!stopFrame) {
+          renderer!.syncViewport(minimumResolution.current);
+          frameView();
+          update();
+          stopFrame = renderer!.onFrame(update);
+        }
+      };
+      updateRendering.current(visible.current);
+      onReady(controls.current);
     };
     void load().catch(error => { loaded = true; if (!cancelled) onError(error instanceof Error ? error.message : '形象暂时无法载入。'); dispose(); });
-    return () => { cancelled = true; stopFrame?.(); resize?.disconnect(); gaze?.stop(); disposeAvatar?.(); performanceLayer.current = undefined; controls.current = undefined; frameRenderer.current = undefined; if (loaded) dispose(); };
+    return () => { cancelled = true; stopFrame?.(); resize?.disconnect(); gaze?.stop(); disposeAvatar?.(); performanceLayer.current = undefined; controls.current = undefined; frameRenderer.current = undefined; updateRendering.current = undefined; if (loaded) dispose(); };
   }, [model, name, onReady, onError]);
-  return <div className="bot-call-live2d" ref={host} aria-label={name + ' Live2D'} />;
+  return <div className="bot-call-live2d" ref={host} hidden={hidden} aria-label={name + ' Live2D'} />;
 }

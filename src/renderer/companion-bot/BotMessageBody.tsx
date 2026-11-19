@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { BotMessage } from '../../shared/companion-bot';
+import type { MusicShare } from '../../shared/music';
 import type { WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import { BrowserMarkdown } from '../browser/BrowserMarkdown';
 import { AttachmentKindIcon, BotAttachment } from './BotAttachment';
@@ -12,9 +13,10 @@ import { BotExecutionDetails, type BotExecutionAnswer, type BotExecutionContinue
 import {botReplyPresentation} from '../../shared/companion-bot-reply';
 import { BotTopicAppCard } from './BotApps';
 import { BotBrowserContextCard } from './BotBrowserContext';
+import { BotMusicShareCard } from '../music/BotMusicShareCard';
 
 const ignoreLink = () => undefined;
-interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onOpenBrowserContext?(id: string): void; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }
+interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; surface?: 'chat' | 'call'; musicEnabled?: boolean; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onOpenBrowserContext?(id: string): void; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }
 export function BotMessageBody(props: Props) {
   const original=props.message,pending=['queued','running'].includes(original.status),assistant=original.senderId!=='user';
   const presentation=assistant&&original.parts?.length?botReplyPresentation(original.parts,original.attachments):undefined;
@@ -22,10 +24,11 @@ export function BotMessageBody(props: Props) {
   const execution=original.execution;
   return <>
     {execution&&(pending||!!execution.continuation||!!execution.interruption)&&<div className="bot-message-progress"><BotExecutionDetails execution={execution} locale={props.locale} onAnswer={props.onAnswer} onContinue={props.onContinue}/></div>}
-    <MessageBody key={`${message.conversationId}:${message.id}`} {...props} statusText={execution?.interruption ? '' : props.statusText} message={message}/>
+    <MessageBody key={`${message.conversationId}:${message.id}`} {...props} statusText={execution?.interruption ? '' : props.statusText} message={message}
+      musicCards={original.parts?.flatMap(part => part.music ? [part.music] : []) ?? []} />
   </>;
 }
-function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOpenBrowserContext, onOpenUrl = ignoreLink }: Props) {
+function MessageBody({ message, streamedText, statusText, locale, surface = 'chat', musicEnabled = false, musicCards, mediaApi, onOpenBrowserContext, onOpenUrl = ignoreLink }: Props & { musicCards: MusicShare[] }) {
   const zh = locale === 'zh-CN', pending = ['queued', 'running'].includes(message.status), [expanded, setExpanded] = useState(false), id = useId(), contents = useRef<HTMLDivElement>(null);
   const hasText = !!message.content || pending && !!streamedText || ['failed', 'cancelled'].includes(message.status) && !!statusText;
   const text = (pending && streamedText) || message.content || statusText;
@@ -41,10 +44,11 @@ function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOp
     const target = bubble && transcript && bubble.getBoundingClientRect().height <= transcript.clientHeight ? bubble : contents.current;
     target.scrollIntoView?.({ block: 'nearest' });
   }, [expanded]);
-  if (!hasText && !attachments.length) return null;
-  return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !files.length ? ' is-inline-media-only' : ''}${!hasText && files.length === 1 && !stickers.length ? ' is-single-file-only' : ''}`}>
+  if (!hasText && !attachments.length && !musicCards.length) return null;
+  return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !musicCards.length && !files.length ? ' is-inline-media-only' : ''}${!hasText && !musicCards.length && files.length === 1 && !stickers.length ? ' is-single-file-only' : ''}`}>
     {hasText && <div className="bot-message-text">{message.senderId === 'user' ? message.content || statusText : <BrowserMarkdown text={text} pending={pending} open={onOpenUrl} linkAppearance="chat" locale={locale} />}</div>}
     {message.apps?.includes('asset-manager') && <BotTopicAppCard appId="asset-manager" locale={locale} connected />}
+    {message.apps?.includes('music') && <BotTopicAppCard appId="music" locale={locale} connected />}
     {message.browserContext && <BotBrowserContextCard context={message.browserContext} locale={locale} onOpen={onOpenBrowserContext ? () => onOpenBrowserContext(message.browserContext!.tabId) : undefined} />}
     {!!stickers.length && <div className="bot-message-attachments bot-message-inline-stickers">{stickers.map((media,index) => <BotAttachment key={media.id+':'+index} media={media} {...common} />)}</div>}
     {voices.map(media => <BotVoiceMessage key={media.id} media={media} conversationId={message.conversationId} locale={locale} />)}
@@ -57,5 +61,6 @@ function MessageBody({ message, streamedText, statusText, locale, mediaApi, onOp
       </button>
       <div className="bot-message-attachments bot-message-expanded-files" id={id} ref={contents} hidden={!expanded}>{expanded && <BotAttachmentBundle media={files} {...common} />}</div>
     </div>}
+    {musicCards.map(card => <BotMusicShareCard key={card.id} card={card} conversationId={message.conversationId} locale={locale} surface={surface} enabled={musicEnabled} />)}
   </div>;
 }

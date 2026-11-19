@@ -1,19 +1,31 @@
 export const CALL_PET_WINDOW = 'worldlinebox-call-pet';
 export const CALL_PET_COMMAND = 'companion-call:pet-command';
 export const CALL_PET_CLOSED = 'companion-call:pet-closed';
+export const CALL_PET_ANCHOR_CHANGED = 'companion-call:pet-anchor-changed';
 export const CALL_PET_MAX_WIDTH = 470;
 export const CALL_PET_MAX_HEIGHT = 630;
+export const CALL_PET_AVATAR_SIZE = 42;
+export const CALL_PET_AVATAR_EDGE = 4;
+export const CALL_PET_DOCK_INSET = 16;
+export interface CallPetAnchor {
+  x: number;
+  y: number;
+  side: 'left' | 'right';
+  edge: 'top' | 'bottom';
+  stacked: boolean;
+}
 export function isCallPetWindowName(name: unknown): name is string {
   return typeof name === 'string' && name.startsWith(`${CALL_PET_WINDOW}:`)
     && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(name.slice(CALL_PET_WINDOW.length + 1));
 }
-export interface CallPetRect { x: number; y: number; width: number; height: number }
+export interface CallPetRect { x: number; y: number; width: number; height: number; circular?: boolean }
 export type CallPetCommand = 'return' | 'close' | 'drag-end'
   | { type: 'return' | 'close'; name: string }
   | { type: 'drag-start' | 'drag-move'; x: number; y: number }
-  | { type: 'layout'; width: number; height: number; rects: CallPetRect[] };
+  | { type: 'layout'; name: string; width: number; height: number; rects: CallPetRect[]; anchorRevision?: number };
 export interface CallPetApi {
   supported: boolean;
   command(command: CallPetCommand): void;
   onClosed(listener: (name: string) => void): () => void;
+  onAnchorChanged(listener: (name: string, anchor: CallPetAnchor, revision: number) => void): () => void;
 }

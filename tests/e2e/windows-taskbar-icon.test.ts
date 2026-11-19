@@ -19,8 +19,8 @@ test('sets the WorldlineBox Windows taskbar identity and logo for main and child
     if (packaged) {
       const exe = await app.evaluate(() => process.execPath);
       const staleIcon = path.join(profile, 'removed-install', 'app.ico');
-      expect(await app.evaluate(({shell}, {link, staleIcon}) =>
-        shell.writeShortcutLink(link, 'update', {icon: staleIcon, iconIndex: 0}), {link, staleIcon})).toBe(true);
+      expect(await app.evaluate(({shell}, {link, staleIcon, exe}) =>
+        shell.writeShortcutLink(link, 'update', {target: exe, icon: staleIcon, iconIndex: 0}), {link, staleIcon, exe})).toBe(true);
       await app.close();
       app = await launch();
       await app.firstWindow();

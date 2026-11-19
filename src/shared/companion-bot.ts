@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { scheduleCommand, type CompanionScheduleState } from './companion-schedule';
 import type { BrowserPageContext } from './browser-page-context';
 import { botAppIdSchema, type BotAppId, type BotAppConnection } from './companion-apps';
+import type { MusicShare } from './music';
 import type {BotTopicContext} from './companion-native-context';
 import { botWorldCommandSchema, type BotWorldSnapshot } from './companion-bot-world';
 import type { BotTaskAttention, BotTaskPendingEffect } from './companion-bot-task';
@@ -78,7 +79,7 @@ export interface BotMessage {
   taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
-export interface BotReplyPart { id:string;kind:'text'|'media';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string; presentation?: BotCallCue }
+export interface BotReplyPart { id:string;kind:'text'|'media'|'music';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string; presentation?: BotCallCue; music?: MusicShare }
 export interface BotNativeReplyOutput {id:string;sequence:number;text?:string;files?:Array<{path:string;description?:string}>}
 export interface BotTaskProgress { phase: string; detail?: string; updatedAt?: string; toolName?: string }
 export interface BotTask { id: string; conversationId: string; companionId: string; companionName?: string; goal: string; status: string; summary?: string; summaryIsPreview?: boolean; error?: string;
@@ -123,6 +124,7 @@ export interface BotDataCleanup {
 export interface BotConversationActivity { messageId: string; sequence: number; senderName: string; preview: string; updatedAt: string }
 export interface BotSnapshot {
   callDelivery?: { cursor: number; more: boolean; messageIds: string[] };
+  desktopRead?: { conversationId: string; through: number };
   companions: BotCompanion[]; conversations: BotConversation[]; messages: BotMessage[]; tasks: BotTask[];
   presence?: Record<string, BotCompanionPresence>;
   conversationActivity?: Record<string, BotConversationActivity>;
@@ -203,7 +205,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.observe'), conversationId: id, companionId: id }),
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
   z.strictObject({ type: z.literal('app.detach'), conversationId: id, topicId: id, appId: botAppIdSchema }),
-  z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.enum(['asset-manager', 'cabin-world']), topicId: id.optional() }),
+  z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.enum(['asset-manager', 'cabin-world', 'music']), topicId: id.optional() }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
 export interface BotResponse { userName?: string; schedule?: CompanionScheduleState; callModel?: BotCallModel; callStage?: BotCallStage; interruptedReplyIds?: string[]; app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topicListStale?: boolean; topicListError?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
@@ -215,7 +217,7 @@ export type BotEvent = { type: 'changed'; conversationId?: string }
 export const BOT_INBOX_CHANNEL = 'companion-bot:message-inbox';
 export interface BotInboxEvent { counts: Record<string, number>; openRoom?: string }
 export interface WorldlineBoxBotApi {
-  inbox?(readRoom?: string): Promise<Record<string, number>>;
+  inbox?(readRoom?: string, through?: number): Promise<Record<string, number>>;
   onInbox?(listener: (event: BotInboxEvent) => void): () => void;
   request(input: BotRequest): Promise<BotResponse>;
   onEvent(listener: (event: BotEvent) => void): () => void;

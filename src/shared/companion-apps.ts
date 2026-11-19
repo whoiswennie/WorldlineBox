@@ -1,9 +1,20 @@
 import { z } from 'zod';
+import { globalMusicToolSchema, musicToolSchema } from './music';
 
-export const botAppIdSchema = z.enum(['browser', 'asset-manager', 'cabin-world']);
+export const botAppIdSchema = z.enum(['browser', 'asset-manager', 'cabin-world', 'music']);
 export type BotAppId = z.infer<typeof botAppIdSchema>;
-export type BotAppConnection = { id: 'asset-manager'; libraryCount: number } | { id: 'cabin-world' };
-export const botAppTools = { browser: 'browser', 'asset-manager': 'asset_manager', 'cabin-world': 'cabin_world' } as const;
+export type BotAppConnection = { id: 'asset-manager'; libraryCount: number } | { id: 'cabin-world' | 'music' };
+export const botAppTools = { browser: ['browser'], 'asset-manager': ['asset_manager'], 'cabin-world': ['cabin_world'], music: ['music', 'music_global_player'] } as const;
+const musicParameters = z.toJSONSchema(musicToolSchema, { io: 'input' }); delete musicParameters.$schema;
+export const COMPANION_MUSIC_TOOL = {
+  name: botAppTools.music[0], parameters: { type: 'object', ...musicParameters },
+  description: '聊天和会面默认用此工具放歌、换歌、暂停和继续。playlists 查歌单 ID、名称和简介，tracks 搜索指定歌单的曲目。play 指定 trackId 或 playlistId 即在本条回复发送并播放卡片。share 可按次序发送多首曲目或整份歌单，mode=once 顺序播完停止，list 列表循环，shuffle 随机，single 单曲循环。autoPlay 默认随新卡片播一次。pause、resume、previous、next、seek、volume、mode、lyrics、status 和无曲目参数的 play 操作当前会话的活动卡片。已发卡片后用 status 查看 playing、loading 和 error；无需再次发同一首歌。save_playlist、remove_playlist 可管理自定义歌单。',
+} as const;
+const globalMusicParameters = z.toJSONSchema(globalMusicToolSchema, { io: 'input' }); delete globalMusicParameters.$schema;
+export const COMPANION_GLOBAL_MUSIC_TOOL = {
+  name: botAppTools.music[1], parameters: { type: 'object', ...globalMusicParameters },
+  description: '世界线盒子「设置 → 音乐」中的全局播放器。status 只读实时歌曲、歌单、播放状态和进度，可以用来核实当前状态。只有从本轮用户表达判断对方明确想用软件全局播放器时，才调用播放、切换、音量等操作。lyrics 在这里指桌面悬浮歌词。普通点歌、换歌、一起听使用 music 交付对话卡片，卡片播放失败也使用 music 查看原因。',
+} as const;
 
 export const companionCabinArgumentsSchema = z.strictObject({
   tool: z.enum(['cabin_status', 'cabin_look', 'cabin_catalog', 'cabin_task', 'cabin_go', 'cabin_use', 'cabin_buy', 'cabin_eat', 'cabin_stop', 'cabin_restaurant', 'cabin_process', 'cabin_furniture']),
@@ -12,7 +23,7 @@ export const companionCabinArgumentsSchema = z.strictObject({
 export type CompanionCabinArguments = z.infer<typeof companionCabinArgumentsSchema>;
 const cabinParameters = z.toJSONSchema(companionCabinArgumentsSchema, { io: 'input' }); delete cabinParameters.$schema;
 export const COMPANION_CABIN_TOOL = {
-  name: botAppTools['cabin-world'], parameters: { type: 'object', ...cabinParameters },
+  name: botAppTools['cabin-world'][0], parameters: { type: 'object', ...cabinParameters },
   description: '感知并生活在当前伙伴自己的小屋世界住户中，身份由宿主绑定。cabin_status 查看自身状态，cabin_look 查看身边的家具、动作和出口，cabin_catalog 按 query 查找物件；cabin_go 用 place 和可选 zone，cabin_use 用 object 和 use，cabin_buy/cabin_eat 用 product，cabin_restaurant 用 action 和可选 dish。用实际目录中的编号。任务返回 running 时，可以继续自然聊天，必要时用 cabin_task 和 taskId 查完成回执。只在确认 done 后说做完了；不要重复发起仍在执行的动作。',
 } as const;
 

@@ -1,14 +1,17 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { ipcMain, net, type BrowserWindow } from 'electron';
 import { atomicJson } from '../dsh/files';
 import { fetchNeteasePlaylistCatalog, fetchNeteaseTrackLyrics, resolveNeteaseTrackStream } from './netease';
-import { MUSIC_CHANNEL, MUSIC_SAVE_CHANNEL, DEFAULT_MUSIC_PREFERENCES, musicPreferencesSchema, musicRequestSchema, musicCatalogSchema, type MusicPreferences, type NeteasePlaylistCatalog, type NeteaseTrackLyrics } from '../../shared/music';
+import { configureDesktopLyricsWindow } from './lyrics-window';
+import { MUSIC_CHANNEL, MUSIC_SAVE_CHANNEL, MUSIC_CONTROL_CHANNEL, MUSIC_CONTROL_RESULT_CHANNEL, MUSIC_CONTROL_CANCEL_CHANNEL, MUSIC_LYRICS_LAYOUT_CHANNEL, DEFAULT_MUSIC_PREFERENCES, DEFAULT_NETEASE_PLAYLIST_ID, DEFAULT_NETEASE_PLAYLIST_NAME, musicReplySchema, musicLyricsLayoutSchema, musicPreferencesSchema, musicRequestSchema, musicCatalogSchema, musicShareSchema, loadMusicQueue, type MusicCommand, type MusicReply, type MusicPreferences, type MusicExecution, type MusicShareInput, type NeteasePlaylistCatalog, type NeteaseTrackLyrics } from '../../shared/music';
 
 export class MusicService {
   private writes = Promise.resolve();
   private readonly catalogs = new Map<string, { expires: number; value: Promise<NeteasePlaylistCatalog> }>();
   private readonly lyricCache = new Map<string, { expires: number; value: Promise<NeteaseTrackLyrics> }>();
+  private readonly controls = new Map<string, (reply: MusicReply) => void>();
   private active = 0;
   constructor(private readonly userData: string, private readonly window: () => BrowserWindow | null,
     private readonly report: (error: unknown) => void) {}
@@ -28,19 +31,26 @@ export class MusicService {
     this.writes = this.writes.catch(() => undefined).then(() => atomicJson(path.join(this.userData, 'music-player.json'), preferences));
     return this.writes;
   }
+  private catalogFile(id: string): string {
+    return path.join(this.userData, 'music-catalogs', `${id}.json`);
+  }
+  private async savedCatalog(id: string): Promise<NeteasePlaylistCatalog | undefined> {
+    try {
+      const saved = musicCatalogSchema.parse(JSON.parse(await readFile(this.catalogFile(id), 'utf8')));
+      if (saved.id === id) return saved;
+    } catch { /* A local catalog may not have been fetched yet. */ }
+    return undefined;
+  }
   async catalog(id: string, refresh = false): Promise<NeteasePlaylistCatalog> {
     const cached = this.catalogs.get(id);
     if (!refresh && cached && cached.expires > Date.now()) return cached.value;
-    const file = path.join(this.userData, 'music-catalogs', `${id}.json`);
     const value = this.network(async () => {
       try {
         const catalog = musicCatalogSchema.parse(await fetchNeteasePlaylistCatalog(id, publicFetch, AbortSignal.timeout(60_000)));
-        await atomicJson(file, catalog); return catalog;
+        await atomicJson(this.catalogFile(id), catalog); return catalog;
       } catch (error) {
-        try {
-          const saved = musicCatalogSchema.parse(JSON.parse(await readFile(file, 'utf8')));
-          if (saved.id === id && Array.isArray(saved.tracks) && saved.tracks.length <= 10000) return { ...saved, stale: true };
-        } catch { /* Offline cache is optional. */ }
+        const saved = await this.savedCatalog(id);
+        if (saved) return { ...saved, stale: true };
         throw error;
       }
     });
@@ -63,6 +73,65 @@ export class MusicService {
     this.lyricCache.set(trackId, { expires: Date.now() + 1800_000, value }); this.trim(this.lyricCache, 100);
     try { return await value; } catch (error) { this.lyricCache.delete(trackId); throw error; }
   }
+  async prepareShare(id: string, input: MusicShareInput, signal: AbortSignal) {
+    const queue = await loadMusicQueue(input.queue, playlistId => this.catalog(playlistId), signal);
+    if (!queue.tracks.length) throw Error('这个歌单没有歌曲。');
+    return musicShareSchema.parse({ id, queue: input.queue, mode: input.mode,
+      title: (input.title ?? (input.queue.kind === 'tracks' && queue.tracks.length > 1 ? '音乐选集' : queue.name)).trim().slice(0, 100) || '分享的音乐',
+      trackCount: queue.tracks.length, preview: queue.tracks.slice(0, 3).map(track => track.name.slice(0, 200)) });
+  }
+  async companionControl(scope: Pick<MusicCommand, 'conversationId' | 'surface'>, input: MusicExecution, signal: AbortSignal, assertAllowed: () => void) {
+    assertAllowed(); signal.throwIfAborted();
+    if (input.action === 'tracks') {
+      const catalog = await this.catalog(input.playlistId);
+      signal.throwIfAborted(); assertAllowed();
+      const query = input.query.toLocaleLowerCase();
+      const matches = catalog.tracks.filter(track => !query || [track.name, ...track.artists, track.album].some(value => value.toLocaleLowerCase().includes(query)));
+      const tracks = matches.slice(input.offset, input.offset + input.limit).map(({ id, name, artists, album, durationMs }) => ({ id, name, artists, album, durationMs }));
+      return { playlistId: catalog.id, name: catalog.id === DEFAULT_NETEASE_PLAYLIST_ID ? DEFAULT_NETEASE_PLAYLIST_NAME : catalog.name,
+        total: matches.length, trackCount: catalog.tracks.length, stale: !!catalog.stale, tracks,
+        nextOffset: input.offset + tracks.length < matches.length ? input.offset + tracks.length : null };
+    }
+    if (input.action === 'save_playlist') {
+      if (input.playlist.id === DEFAULT_NETEASE_PLAYLIST_ID) throw Error('内置歌单不可修改。');
+      await this.catalog(input.playlist.id);
+    }
+    if (input.action === 'remove_playlist' && input.playlistId === DEFAULT_NETEASE_PLAYLIST_ID) throw Error('内置歌单不可删除。');
+    signal.throwIfAborted(); assertAllowed();
+    const owner = this.window();
+    if (!owner || owner.isDestroyed() || owner.webContents.isDestroyed()) throw Error('音乐播放器尚未打开。');
+    if (this.controls.size >= 12) throw Error('音乐播放器正在处理操作，请稍后重试。');
+    const command: MusicCommand = { id: randomUUID(), ...scope, control: input };
+    const result = await new Promise<Record<string, unknown>>((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer); this.controls.delete(command.id);
+        signal.removeEventListener('abort', abort);
+      };
+      const failure = (error: unknown) => { cleanup(); reject(error); };
+      const cancel = (error: unknown) => {
+        try {
+          if (!owner.isDestroyed() && !owner.webContents.isDestroyed()) owner.webContents.send(MUSIC_CONTROL_CANCEL_CHANNEL, command.id);
+        } finally { failure(error); }
+      };
+      const abort = () => cancel(signal.reason);
+      const timer = setTimeout(() => cancel(Error('音乐播放器响应超时。')), 75_000);
+      signal.addEventListener('abort', abort, { once: true });
+      this.controls.set(command.id, reply => {
+        cleanup();
+        if (reply.ok) resolve(reply.value ?? {}); else reject(Error(reply.error ?? '音乐播放器操作失败。'));
+      });
+      try { owner.webContents.send(MUSIC_CONTROL_CHANNEL, command); } catch (error) { failure(error); }
+    });
+    if (input.action !== 'status' || input.target !== 'global' || result.trackCount !== undefined) return result;
+    const playlist = musicRequestSchema.safeParse({ type: 'catalog', playlistId: result.playlistId });
+    if (!playlist.success || playlist.data.type !== 'catalog') return result;
+    const cached = await this.savedCatalog(playlist.data.playlistId);
+    signal.throwIfAborted(); assertAllowed();
+    const track = cached?.tracks.find(item => item.id === result.trackId);
+    return { ...result, playlistName: result.playlistName ?? cached?.name, trackCount: cached?.trackCount,
+      trackName: result.trackName ?? track?.name, artists: result.artists ?? track?.artists,
+      durationSeconds: result.durationSeconds || (track ? track.durationMs / 1000 : undefined) };
+  }
   registerIpc() {
     const authorized = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => {
       const window = this.window(); return !!window && !window.isDestroyed()
@@ -71,6 +140,17 @@ export class MusicService {
     ipcMain.on(MUSIC_SAVE_CHANNEL, (event, input: unknown) => {
       if (!authorized(event)) return;
       void this.save(input).catch(this.report);
+    });
+    ipcMain.on(MUSIC_CONTROL_RESULT_CHANNEL, (event, input: unknown) => {
+      if (!authorized(event)) return;
+      const parsed = musicReplySchema.safeParse(input);
+      if (parsed.success) this.controls.get(parsed.data.id)?.(parsed.data);
+    });
+    ipcMain.on(MUSIC_LYRICS_LAYOUT_CHANNEL, (event, input: unknown) => {
+      const owner = this.window();
+      if (!owner || !authorized(event)) return;
+      const parsed = musicLyricsLayoutSchema.safeParse(input);
+      if (parsed.success) configureDesktopLyricsWindow(owner, parsed.data);
     });
     ipcMain.handle(MUSIC_CHANNEL, async (event, input: unknown) => {
       if (!authorized(event)) return { ok: false, error: 'Unauthorized music sender.' };

@@ -13,7 +13,7 @@ import { inspectManagedProcess, instanceEnvironment, launchCli, parseReadyUrl, r
 import type { DshCliSelection } from './cli-terminal';
 import { NativeHostClient } from './native-host-client';
 import { CompanionInstanceLeases, nativeIdleConfirmed, type CompanionInstanceLeaseKind } from './companion-instance-leases';
-import { DshHostUnavailableError, DshMessageNotReadyError, isDshHostUnavailableError } from './host-errors';
+import { bundledDshUpdatingMessage, DshHostUnavailableError, DshMessageNotReadyError, isDshHostUnavailableError } from './host-errors';
 import { compareDshVersions, dshVersionPattern } from '../../shared/dsh-version-order';
 
 export interface RuntimeServiceLike {
@@ -141,9 +141,13 @@ export class InstanceService {
    * fields are retained for history and recovery, never used as a routing ACL. */
   companion(companionId: string): DshInstance | undefined { void companionId; return this.executionInstance(); }
   executionInstance(): DshInstance | undefined { const value = this.instances.find(instance => instance.isDefault); return value && { ...value }; }
+  private isBundledUpdating(id: string): boolean {
+    return !!this.options.operations.runningId('runtime.bundle') && this.instances.some(instance => instance.id === id && instance.isBundled);
+  }
   runningMessageHost(id = this.executionInstance()?.id): NativeHostClient {
     const instance = this.instances.find(item => item.id === id);
     if (!id || !instance) throw new DshMessageNotReadyError('configuration', '尚未配置共享 DSH');
+    if (this.isBundledUpdating(id)) throw new DshMessageNotReadyError('startup', '内置 DSH 正在更新', id);
     const host = this.hosts.get(id);
     if (this.closing || host?.stopping || this.stops.has(id) || this.idleStops.has(id) || instance.status === 'stopping')
       throw new DshMessageNotReadyError('closing', 'DSH 正在关闭', id);
@@ -345,6 +349,7 @@ export class InstanceService {
     const check = () => {
       signal?.throwIfAborted();
       if (this.closing) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。', id);
+      if (this.isBundledUpdating(id)) throw new DshHostUnavailableError('startup', bundledDshUpdatingMessage, id);
       if ((this.manualStops.get(id) ?? 0) !== stopEpoch || options.automatic && this.suspendedCompanions.has(id))
         throw new DshHostUnavailableError('stopped', 'DSH 实例已由用户关闭，请继续原任务或重新启动实例。', id);
     };
@@ -849,6 +854,7 @@ export class InstanceService {
       const id = 'instanceId' in request ? request.instanceId : undefined;
       const kind = request.type === 'instance.delete' ? 'instance.archive' : request.type;
       const operationId = await this.options.operations.run(kind, kind, id, async op => {
+        if (id && this.isBundledUpdating(id)) throw new Error(bundledDshUpdatingMessage);
         switch (request.type) {
           case 'instance.upgrade': await this.upgradeCompanion(request.instanceId, request.runtimeId, op); break;
           case 'instance.create': await this.create(request.name, request.runtimeId, op); break;

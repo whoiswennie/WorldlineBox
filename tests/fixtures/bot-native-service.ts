@@ -2,8 +2,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotService, type BotServiceOptions } from '../../src/main/companion-bot/service';
-import { BotDshBrain, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
+import { BotDshBrain, type BotDshResult, type BotDshRun } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
+import { BotMediaService } from '../../src/main/companion-bot/media-service';
 
 export class NativeServiceMemory extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw Error('No VCP subprocess in routing fixture'); }, embedding: async () => { throw Error('No embedding in routing fixture'); } }); }
@@ -15,8 +16,9 @@ export class NativeServiceMemory extends BotMemoryService {
   override async appendHistory() { return { appended: [] }; }
   override async close() {}
 }
-export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string | { text: string; peerResultsReceipt: string }>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext'>>) {
+export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string | Pick<BotDshResult, 'text' | 'artifacts' | 'peerResultsReceipt'>>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext' | 'musicTool' | 'prepareMusicShare'>>) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-native-routing-')), calls: BotDshRun[] = [];
+  const media = new BotMediaService({ root: path.join(root, 'media'), builtinRoot: path.resolve('resources/bot-stickers') });
   class Native extends BotDshBrain {
     constructor() { super({ getHost: async () => { throw Error('No DSH process in service routing fixture'); } }); }
     override async run(input: BotDshRun) {
@@ -29,10 +31,10 @@ export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<st
     override async archive() {}
     override async close() {}
   }
-  const service = new BotService({ root, brain: new Native(), memory: new NativeServiceMemory(path.join(root, 'memory')),
+  const service = new BotService({ root, brain: new Native(), memory: new NativeServiceMemory(path.join(root, 'memory')), media,
     model: () => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiKey: 'fixture' }), onEvent: () => undefined, ...options });
   await service.handle({ type: 'state' });
-  return { root, service, calls, close: async () => {
+  return { root, service, calls, media, close: async () => {
     await service.shutdown();
     if (path.dirname(root) !== path.resolve(os.tmpdir()) || !path.basename(root).startsWith('wlb-native-routing-')) throw Error('Invalid fixture root');
     await rm(root, { recursive: true, force: true });

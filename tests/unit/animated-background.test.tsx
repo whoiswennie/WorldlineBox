@@ -36,6 +36,7 @@ describe('animated wallpaper lifecycle', () => {
     await act(async () => root.unmount());
     container.remove();
     delete document.documentElement.dataset.animatedBackground;
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -82,9 +83,13 @@ describe('animated wallpaper lifecycle', () => {
       listener?.(true);
       expect(play).toHaveBeenCalled();
       play.mockClear();
+      pause.mockClear();
+      window.dispatchEvent(new Event('blur'));
+      expect(pause).not.toHaveBeenCalled();
       listener?.(false);
       expect(document.visibilityState).toBe('visible');
       expect(pause).toHaveBeenCalled();
+      window.dispatchEvent(new Event('focus'));
       expect(play).not.toHaveBeenCalled();
       listener?.(true);
       expect(play).toHaveBeenCalled();
@@ -105,6 +110,41 @@ describe('animated wallpaper lifecycle', () => {
     await act(async () => video.dispatchEvent(new Event('error')));
     expect(video.dataset.ready).toBe('false');
     expect(container.querySelector('img')?.getAttribute('src')).toBe('/cover.jpg');
+  });
+
+  it('reloads a stalled wallpaper at its last position and falls back after repeated failures', async () => {
+    vi.useFakeTimers();
+    const load = vi.mocked(HTMLMediaElement.prototype.load);
+    const video = await render();
+    Object.defineProperty(video, 'duration', { value: 25 });
+    video.currentTime = 8;
+    await act(async () => video.dispatchEvent(new Event('loadeddata')));
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(video.dataset.ready).toBe('false');
+    video.currentTime = 0;
+    video.dispatchEvent(new Event('loadedmetadata'));
+    expect(video.currentTime).toBe(8);
+
+    await act(() => vi.advanceTimersByTimeAsync(20_000));
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(video.dataset.ready).toBe('false');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not retry stalled playback while hidden or switched off', async () => {
+    vi.useFakeTimers();
+    const load = vi.mocked(HTMLMediaElement.prototype.load);
+    await render();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(load).not.toHaveBeenCalled();
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await render(false);
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(load).not.toHaveBeenCalled();
   });
 
   it('unloads an inactive module and releases the media on unmount', async () => {

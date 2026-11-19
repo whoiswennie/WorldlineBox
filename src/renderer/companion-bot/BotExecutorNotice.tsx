@@ -28,14 +28,16 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
   if(!api||!companionIds?.length)return null;
   const readiness=state?.executionReadiness;
   const instance=sharedDshInstance(state);
+  const updating=(!instance||instance.isBundled)&&state?.operations.some(operation=>operation.kind==='runtime.bundle'&&operation.status==='running');
   const failed=instance?.status==='failed'||readiness?.instanceId===instance?.id&&readiness?.status==='failed';
   const warming=readiness?.instanceId===instance?.id&&readiness?.status==='warming';
   const starting=busy||instance?.status==='starting',preparing=instance?.status==='running'&&warming,stopping=instance?.status==='stopping',unsupported=state?.supported===false;
-  if(instance?.status==='running'&&!error&&!starting&&!preparing&&!failed&&!unsupported)return null;
-  const pending=starting||preparing||stopping||!state&&!error;
+  if(instance?.status==='running'&&!error&&!starting&&!preparing&&!failed&&!unsupported&&!updating)return null;
+  const pending=updating||starting||preparing||stopping||!state&&!error;
   const text=error?(zh?'DSH 暂时不可用':'DSH is unavailable')
     :unsupported?(zh?'此系统暂不支持 DSH':'DSH is unavailable on this system')
     :!state?(zh?'正在连接 DSH…':'Checking DSH…')
+    :updating?(zh?'内置 DSH 正在更新…':'The built-in DSH is updating…')
     :failed?(zh?'DSH 启动失败':'DSH could not start')
     :starting?(zh?'DSH 正在启动…':'DSH is starting…')
     :preparing?(zh?'DSH 正在准备…':'DSH is preparing…')
@@ -47,7 +49,7 @@ export function BotExecutorNotice({ api, zh, companionIds, onOpenLauncher }: { a
   const label=<><span className="bot-executor-status-icon" aria-hidden="true"><BotIcon name="assets" /></span>
     <span className="bot-executor-status-label">{text}</span></>;
   const start=async()=>{
-    if(!instance||busy||starting||preparing||stopping||unsupported)return;
+    if(!canStart)return;
     const current=generation.current,requestedAt=revision.current;
     setBusy(true);setError('');
     try{

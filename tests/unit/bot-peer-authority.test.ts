@@ -134,6 +134,21 @@ it('refuses a forged user-reply marker and invalidates an unused reply grant aft
   expect(store.messagesPage(store.openDirect('bob').id).items).toEqual([]);
 });
 
+it('rechecks the original authority at settlement before publishing a staged user reply', () => {
+  const store = storeFixture(), { event, direct } = source(store);
+  const relayed = store.contactPeer(event, 'bob', 'stage-contact', '请交给用户', 'user');
+  expect(relayed.accepted).toBe(true);
+  const claimed = store.claim({ workerId: 'recipient', excludeLaneIds: [event.laneId] })!;
+  const target = store.openDirect('bob');
+  expect(store.stagePeerUserReply(claimed.event.id, { content: 'Pending content' }))
+    .toMatchObject({ status: 'staged', recipientId: 'user', conversationId: target.id });
+  expect(store.messagesPage(target.id).items).toEqual([]);
+  store.withdrawSources('alice', direct.securityDomainId, [event.id]);
+  expect(() => store.settle({ eventId: claimed.event.id, leaseToken: claimed.leaseToken, status: 'done' })).toThrow('授权已经失效');
+  expect(store.messagesPage(target.id).items).toEqual([]);
+  expect(store.settle({ eventId: claimed.event.id, leaseToken: claimed.leaseToken, status: 'failed' })).toBe(true);
+});
+
 it('projects real channel messages with bounded previews while excluding empty peers, unpublished replies, and private world activity', () => {
   const store = storeFixture(), direct = store.openDirect('alice'), empty = store.openPeer('alice', 'carol');
   const peer = store.openPeer('alice', 'bob'), world = store.createGroup({ kind: 'world', title: '世界私密状态', memberIds: ['alice'] });

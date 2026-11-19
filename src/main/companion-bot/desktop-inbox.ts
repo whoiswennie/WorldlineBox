@@ -21,11 +21,19 @@ export class DesktopInbox {
 
   snapshot() { return { ...this.counts }; }
 
-  read(room: string) {
-    if (this.counts[room]) { delete this.counts[room]; this.save(); }
+  read(room: string, through = this.store.publicationHead()) {
+    const head = this.store.publicationHead();
+    if (!Number.isSafeInteger(through) || through < 0 || through > head) return;
+    const previous = this.counts[room] ?? 0;
+    const remaining = through >= this.cursor ? 0 : Math.min(previous, this.store.companionInboxCount(room, through, this.cursor));
+    if (remaining) this.counts[room] = remaining; else delete this.counts[room];
+    // A fresh snapshot can render before the notification timer has scanned
+    // its messages. Consume the same read boundary during that scan.
+    if (head !== this.cursor) this.sync(true, { room, through });
+    else if (previous !== remaining) this.save();
   }
 
-  sync(alert = true) {
+  sync(alert = true, read?: { room: string; through: number }) {
     const head = this.store.publicationHead();
     if (head === this.cursor && alert) return;
     const rooms = this.store.conversations().filter(room => !room.meeting && room.memberIds.includes('user')
@@ -37,6 +45,7 @@ export class DesktopInbox {
       const page = this.store.companionInbox(rooms, this.cursor);
       this.cursor = page.cursor;
       for (const msg of page.messages) {
+        if (read && msg.room === read.room && msg.sequence <= read.through) continue;
         this.counts[msg.room] = (this.counts[msg.room] ?? 0) + 1;
         latest.set(msg.room, msg);
       }

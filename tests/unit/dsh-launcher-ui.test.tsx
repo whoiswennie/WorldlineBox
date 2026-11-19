@@ -134,6 +134,33 @@ it('shows the shared default and prevents starting it again while it prewarms', 
   expect(f.request).toHaveBeenCalledWith({ type: 'instance.start', instanceId: fallback.id });
 });
 
+it('explains blocked actions for the updating fallback and allows a fresh click after completion', async () => {
+  const fallback = { ...instance('instance-a', 'WorldlineBox DSH'), isBundled: true as const };
+  const custom = instance('instance-b', '独立实例');
+  const update: DshOperation = { id: 'bundle', kind: 'runtime.bundle', label: 'DSH 0.2.2-rc.5',
+    status: 'running', phase: 'extracting', startedAt: fallback.createdAt };
+  const f = fixture([update], { instances: [fallback, custom] });
+  await mount(f.api);
+  expect(button('启动实例').getAttribute('aria-disabled')).toBe('true');
+  await click('启动实例');
+  expect(document.querySelector('.launcher-notification-region')?.textContent).toContain('内置 DSH 正在更新');
+  await click('重命名');
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  await f.publish({ ...f.state(), instances: [{ ...fallback, status: 'running' }, custom] });
+  await click('打开 / 返回工作台');
+  await click('停止实例');
+  expect(f.request.mock.calls.map(([request]) => request.type)).toEqual(['state']);
+  await selectInstance(custom.id);
+  expect(button('启动实例').getAttribute('aria-disabled')).toBeNull();
+  await click('启动实例');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.start', instanceId: custom.id });
+  await f.publish({ ...f.state(), operations: [{ ...update, status: 'succeeded' }], instances: [fallback, custom] });
+  await selectInstance(fallback.id);
+  expect(f.request).not.toHaveBeenCalledWith({ type: 'instance.start', instanceId: fallback.id });
+  await click('启动实例');
+  expect(f.request).toHaveBeenCalledWith({ type: 'instance.start', instanceId: fallback.id });
+});
+
 it('shows the same release sync and its result after switching away from the catalogue', async () => {
   const subject = fixture([], { versions: { source: 'cache', stale: true, entries: [] } });
   await mount(subject.api);

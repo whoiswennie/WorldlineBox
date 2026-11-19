@@ -2,7 +2,7 @@ import { ipcRenderer } from 'electron';
 import { BOT_INBOX_CHANNEL, type BotInboxEvent, BOT_CHANNEL, BOT_EVENT_CHANNEL, BOT_SPEECH_CHANNEL, BOT_SPEECH_EVENT_CHANNEL, botRequestSchema, type BotEvent, type BotRequest, type BotResponse, type BotSpeechEvent, type BotSpeechRequest, type WorldlineBoxBotApi } from '../../shared/companion-bot';
 
 export const companionBot: WorldlineBoxBotApi = Object.freeze({
-  inbox: (room?: string) => ipcRenderer.invoke(BOT_INBOX_CHANNEL, room),
+  inbox: (room?: string, through?: number) => ipcRenderer.invoke(BOT_INBOX_CHANNEL, room, through),
   onInbox(listener: (event: BotInboxEvent) => void) {
     const handler = (_event: Electron.IpcRendererEvent, input: BotInboxEvent) => listener(input);
     ipcRenderer.on(BOT_INBOX_CHANNEL, handler);

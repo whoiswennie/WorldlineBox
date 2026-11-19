@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { z } from 'zod';
+import { isBotParticipantRequest } from './participant-request';
 import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution, BotMessageOrigin, BotMessageQuote } from '../../shared/companion-bot';
 import { appendBotExecutionStep, botCallReplyProgress } from '../../shared/companion-bot-execution';
 import { orderBotConversations } from '../../shared/bot-conversation-order';
@@ -40,6 +41,7 @@ import type { CompanionBrowserResult } from '../browser/service';
 import { botAppIdSchema, botAppTools, companionAssetArgumentsSchema, companionCabinArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
 import type { BotAssetManagerApp } from './asset-manager-app';
 import type { BotCabinWorldApp } from './cabin-world-app';
+import { DEFAULT_NETEASE_PLAYLIST_ID, globalMusicToolSchema, musicToolSchema, type MusicCommand, type MusicExecution, type MusicShare, type MusicShareInput } from '../../shared/music';
 import { BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
 import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from './call-models';
 import { BotSchedules } from './schedules';
@@ -76,6 +78,8 @@ export interface BotServiceOptions {
   readLocalCallModel?(companionId: string): Promise<BotCallModel | undefined>;
   assetManagerApp?: Pick<BotAssetManagerApp, 'connect' | 'execute'>;
   cabinWorldApp?: BotCabinWorldApp;
+  musicTool?(scope: Pick<MusicCommand, 'conversationId' | 'surface'>, input: MusicExecution, signal: AbortSignal, assertAllowed: () => void): Promise<unknown>;
+  prepareMusicShare?(id: string, input: MusicShareInput, signal: AbortSignal): Promise<MusicShare>;
   resolveBrowserContext?(referenceId: string): BrowserPageContext;
   browserTool?(scope: CompanionBrowserScope, input: CompanionBrowserArguments, signal: AbortSignal): Promise<CompanionBrowserResult>;
   root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel;
@@ -134,6 +138,7 @@ export class BotService {
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmPhases = new Map<string, 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory'>();
   private readonly companionControls = new Map<string, Promise<void>>();
+  private readonly musicControls = new Map<string, Set<AbortController>>();
   private readonly companionControlRevisions = new Map<string, number>();
   private readonly companionStartWaiters = new Map<string, Set<AbortController>>();
   private readonly maintenanceAbort = new AbortController();
@@ -314,6 +319,7 @@ export class BotService {
     const companions = this.store.listCompanions();
     const conversationActivity = this.store.conversationActivity();
     return { companions, presence: this.store.companionPresence(companions, true), conversations: orderBotConversations(this.store.conversations().filter(item => !item.meeting), conversationActivity), conversationActivity,
+      ...(room && before === undefined && room.memberIds.includes('user') && { desktopRead: { conversationId: room.id, through: this.store.historyProjectionHead(room.id) } }),
       ...(delivery && { callDelivery: { cursor: delivery.cursor, more: delivery.more, messageIds: delivery.messages.map(message => message.id) } }),
       messages: page.items.map(message => {
         const rawExecution = this.store.getMetadata('execution:' + message.id);
@@ -420,6 +426,24 @@ export class BotService {
     if (!this.topicApps(topicId).includes('cabin-world')) return undefined;
     const observation = await this.options.cabinWorldApp?.observe(companion, signal) ?? { status: 'unavailable' as const };
     return this.topicApps(topicId).includes('cabin-world') ? observation : undefined;
+  }
+  private musicScope(room: BotConversation, event: BotEvent): Pick<MusicCommand, 'conversationId' | 'surface'> {
+    return { conversationId: room.id, surface: this.isCallTurn(room, event) ? 'call' : 'chat' };
+  }
+  private async observeMusic(topicId: string | undefined, room: BotConversation, event: BotEvent, signal: AbortSignal) {
+    const attached = () => room.memberIds.includes('user') && this.topicApps(topicId).includes('music');
+    if (!attached() || !this.options.musicTool) return undefined;
+    const assertAllowed = () => {
+      this.assertCurrentEvent(event);
+      if (!attached()) throw Error('音乐应用已断开。');
+    };
+    try {
+      const value = await this.options.musicTool(this.musicScope(room, event), { action: 'status', target: 'global' },
+        AbortSignal.any([signal, AbortSignal.timeout(1200)]), assertAllowed);
+      assertAllowed();
+      if (value && typeof value === 'object') return { ...value, observedAt: new Date().toISOString() };
+    } catch { signal.throwIfAborted(); }
+    return undefined;
   }
   private chatRuntime(conversationId: string) {
     const runtime = this.topics.runtime(conversationId);
@@ -530,6 +554,15 @@ export class BotService {
       case 'app.connect': {
         const room = this.store.getConversation(input.conversationId);
         if (!room?.memberIds.includes('user')) throw new Error('不能为这个聊天连接应用。');
+        if (input.appId === 'music') {
+          if (!this.options.musicTool) throw Error('音乐应用暂不可用。');
+          if (input.topicId) {
+            this.topics.get(input.topicId, room.id);
+            this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify([...new Set([...this.topicApps(input.topicId), input.appId])]));
+            this.changed(room.id);
+          }
+          return { ok: true, app: { id: input.appId } };
+        }
         if (input.appId === 'cabin-world') {
           const enabled = room.memberIds.flatMap(id => {
             const actor = id === 'user' ? undefined : this.store.getCompanion(id);
@@ -560,6 +593,7 @@ export class BotService {
         const room = this.store.getConversation(input.conversationId);
         if (!room?.memberIds.includes('user')) throw Error('不能修改这个话题的应用。');
         this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify(this.topicApps(input.topicId).filter(id => id !== input.appId)));
+        if (input.appId === 'music') for (const control of this.musicControls.get(input.topicId) ?? []) control.abort();
         if (input.appId === 'browser') this.store.setMetadata('topic-browser:' + input.topicId, '');
         const active = this.topics.runtime(input.conversationId).running.filter(item => item.topicId === input.topicId);
         await Promise.all(active.map(async item => {
@@ -567,7 +601,7 @@ export class BotService {
           if (!event || !actor || !this.options.brain.revokeApplications) return;
           const stage = this.isCallTurn(room, event) ? botCallCapabilities(await this.callModel(actor.id), actor.id) : undefined;
           const system = buildNativeBotContext({ companion: actor, event, apps: this.topicApps(input.topicId), memories: '', files: [], conversation: room, stage, companions: this.store.listCompanions() }).system;
-          try { await this.options.brain.revokeApplications(this.topics.lane(event), [botAppTools[input.appId]], system); }
+          try { await this.options.brain.revokeApplications(this.topics.lane(event), [...botAppTools[input.appId]], system); }
           catch (error) { this.options.report?.(error); } // Local authorization was already revoked; the next admission reconciles native declarations.
         })); this.changed(input.conversationId);
         return { ok: true };
@@ -710,7 +744,7 @@ export class BotService {
           : undefined;
         const inheritedTopic = targetTopic ?? (input.type === 'message.send' && !input.newTopic && !previousApps ? this.topics.current(input.conversationId) : undefined);
         const inheritedApps: BotAppId[] = previousApps ? botAppIdSchema.array().parse(JSON.parse(previousApps))
-          : this.topicApps(inheritedTopic?.id).filter(id => id === 'cabin-world');
+          : this.topicApps(inheritedTopic?.id).filter(id => id === 'cabin-world' || (id === 'music' && targetTopic?.id === inheritedTopic?.id));
         const selectedApps = input.type === 'message.send' ? [...new Set([...(input.apps ?? inheritedApps), ...(browserContext ? ['browser' as const] : [])])].sort() : [];
         if (previousApps && previousApps !== JSON.stringify(selectedApps)) throw Error('同一发送请求不能更换已附加的应用，请重新发送。');
         const quoteKey = 'message-quote-ingress:' + input.conversationId + ':' + input.requestId;
@@ -980,7 +1014,12 @@ export class BotService {
   private async guideQueued(conversationId:string,messageId:string):Promise<void>{
     const rows=this.store.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? AND source_record_id=?').all(conversationId,messageId)) as Array<{id:string}>;
     const texts=new Map<string,string>();
-    for(const row of rows){const event=this.store.getEvent(row.id)!;texts.set(event.id,JSON.stringify({message:{id:messageId,senderId:'user',content:event.content},browserContext:event.payload.browserContext,files:await this.verifiedAttachmentFiles(event)}));}
+    for (const row of rows) {
+      const event = this.store.getEvent(row.id)!;
+      texts.set(event.id, JSON.stringify({ message: { id: messageId, senderId: event.senderId, senderName: event.senderName,
+        senderType: event.senderType, recipientId: event.companionId, content: event.content }, conversationId: event.conversationId,
+        browserContext: event.payload.browserContext, files: await this.verifiedAttachmentFiles(event) }));
+    }
     const commands=this.topics.reserveGuidance(conversationId,messageId,texts);
     this.changed(conversationId);await Promise.all(commands.filter(command=>command.status!=='accepted').map(command=>this.flushGuidance(command)));
   }
@@ -1030,15 +1069,26 @@ export class BotService {
     let lastDraftAt = 0, firstTextRecorded = false;
     let artifactProjection = Promise.resolve();
     const delivered = new Set<string>(),deliveredPaths=new Set<string>();
+    const deliversToUser = this.store.hasPeerUserReplyGrant(event.id);
     const projectArtifacts = (files: readonly {path:string}[],part?:{id:string;sequence:number}) => {
       const pending = files.filter(file => part?!delivered.has(part.id+':'+file.path):!deliveredPaths.has(file.path));
       for (const file of pending){delivered.add((part?.id??'fallback')+':'+file.path);deliveredPaths.add(file.path);}
       if (!pending.length) return;
       artifactProjection = artifactProjection.then(async () => {
         signal.throwIfAborted(); this.assertCurrentEvent(event);
+        const target = deliversToUser ? this.store.peerUserReplyTarget(event.id) : undefined;
         const attachments = await this.requireMedia().importFiles({ conversationId: event.conversationId, paths: pending.map(file => file.path) });
         signal.throwIfAborted();
-        if (!this.closed) { this.store.appendNativeArtifacts(event.id, claim.leaseToken, attachments);this.store.appendReplyPart(event.id,{id:part?.id??'fallback-files',sequence:part?.sequence,kind:'media',attachments}); this.changed(event.conversationId); }
+        if (this.closed) return;
+        if (target) {
+          const transferred = await this.transferDeliveryAttachments(event.conversationId, target.id, attachments, signal);
+          signal.throwIfAborted(); this.assertCurrentEvent(event);
+          this.store.stagePeerUserReply(event.id, { attachments: transferred });
+        } else {
+          this.store.appendNativeArtifacts(event.id, claim.leaseToken, attachments);
+          this.store.appendReplyPart(event.id, { id: part?.id ?? 'fallback-files', sequence: part?.sequence, kind: 'media', attachments });
+          this.changed(event.conversationId);
+        }
       });
       void artifactProjection.catch(() => undefined);
     };
@@ -1076,10 +1126,14 @@ export class BotService {
       const callback = await this.toolServer.forWorker(nativeLaneId, event.id);
       if (event.source === 'schedule' && event.payload.cabinWorld === true && await this.skipOfflineSchedule(event)) return;
       const topicId = this.topics.reference(event.id)?.id;
-      const cabinWorld = await this.observeCabin(topicId, companion, signal);
+      const [cabinWorld, musicPlayer] = await Promise.all([
+        this.observeCabin(topicId, companion, signal),
+        this.observeMusic(topicId, room, event, signal),
+      ]);
       signal.throwIfAborted(); this.assertCurrentEvent(event);
       const apps = this.topicApps(topicId);
-      const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files, conversation: room, stage, companions: this.store.listCompanions() });
+      const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files, conversation: room, stage,
+        companions: this.store.listCompanions(), userDeliveryGranted: deliversToUser, requestOrigin: this.store.peerRequestOrigin(event) });
       const context = frozen ? JSON.parse(frozen) as typeof refreshed : refreshed;
       if (frozen) {
         context.system = refreshed.system;
@@ -1094,9 +1148,12 @@ export class BotService {
         this.store.setMetadata('native-dispatch:' + event.id, 'unsent');
         this.store.setMetadata(persistKey, JSON.stringify(context));
       }
-      if (apps.includes('cabin-world')) {
+      if (apps.includes('cabin-world') || apps.includes('music') && musicPlayer) {
         const envelope = JSON.parse(context.prompt) as Record<string, unknown>;
-        context.prompt = JSON.stringify({ ...envelope, cabinWorld: cabinWorld ?? { status: 'unavailable' } });
+        context.prompt = JSON.stringify({ ...envelope,
+          ...(apps.includes('cabin-world') && { cabinWorld: cabinWorld ?? { status: 'unavailable' } }),
+          ...(apps.includes('music') && musicPlayer && { musicPlayer }),
+        });
       }
       this.updateExecution(event, { status: 'running', sessionId: BotDshBrain.sessionId(nativeLaneId), interruption: undefined });
       progress({ phase: 'waiting-model' });
@@ -1159,8 +1216,9 @@ export class BotService {
           // The native result contains committed assistant text only. Convert its final
           // answer through the same queue as call_present, with the default pose.
           const files = this.store.getMessage(event.replyMessageId)?.attachments ?? [];
+          const music = this.store.replyParts(event.replyMessageId).filter(part => part.music).map(part => part.text).filter(Boolean);
           const answer = (result.outputs?.findLast(output => output.text?.trim())?.text ?? result.text).trim()
-            || (files.length ? '已发送附件：' + files.map(file => file.name).join('、') + '。' : '');
+            || (files.length ? '已发送附件：' + files.map(file => file.name).join('、') + '。' : music.join('。'));
           if (!answer) throw Error('伙伴没有生成可发布的会面回应。');
           this.publishCallSegments(event, 'committed-meeting-answer:' + event.id, [
             { text: answer, ...(stage?.gestures.includes('blink') && { gesture: 'blink' }) },
@@ -1211,7 +1269,9 @@ export class BotService {
       else if(checkpoint!==undefined&&!this.store.replyParts(event.replyMessageId).length)text=(error as {partialText?:string}).partialText||text;
       this.updateExecution(event, { status: signal.aborted ? 'cancelled' : 'failed', question: undefined,
         continuation: !signal.aborted&&Number.isSafeInteger(checkpoint)?{checkpoint:checkpoint!}:undefined });
-      this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: signal.aborted ? 'cancelled' : 'failed', content: text.slice(0,512000), error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
+      this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: signal.aborted ? 'cancelled' : 'failed',
+        content: text.slice(0, 512000), retainUserDeliveryDraft: !signal.aborted && Number.isSafeInteger(checkpoint),
+        error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
       // A resumable turn still owns its prepared VCP context. Finish it once,
       // with the final answer, instead of closing and then reusing a failed job.
       if (prepared && checkpoint === undefined) this.store.enqueueMemoryJob(this.responseJob(event, prepared, text, false));
@@ -1415,6 +1475,16 @@ export class BotService {
     if (selected.length !== ids.length) throw new Error('附件尚未在当前聊天分享，或其来源已经撤回。');
     return selected.map(entry => ({ mediaId: entry.ref.id, grantId: entry.grantId }));
   }
+  private async transferDeliveryAttachments(sourceId: string, targetId: string, attachments: BotMediaRef[], signal: AbortSignal): Promise<BotMediaRef[]> {
+    const isBuiltin = (ref: BotMediaRef) => ref.url.startsWith('worldlinebox://bot-media/builtin/');
+    const local = [...new Set(attachments.filter(ref => !isBuiltin(ref)).map(ref => ref.id))];
+    if (!local.length) return attachments;
+    const transferred = await this.requireMedia().transferToConversation({
+      sourceConversationId: sourceId, targetConversationId: targetId, attachmentIds: local, signal,
+    });
+    const bySource = new Map(local.map((id, index) => [id, transferred[index]!]));
+    return attachments.map(ref => bySource.get(ref.id) ?? ref);
+  }
   private attachmentThrough(event: BotEvent): number { return event.sourceMessageSequence; }
   private async verifiedAttachmentFiles(event: BotEvent, ids = this.store.getMessage(event.sourceMessageRecordId)?.attachments?.map(ref => ref.id) ?? [], throughSourceSequence = this.attachmentThrough(event), signal?: AbortSignal) {
     signal?.throwIfAborted(); this.maintenanceAbort.signal.throwIfAborted();
@@ -1535,6 +1605,61 @@ export class BotService {
         }
         return this.publishCallSegments(event, call.callId, segments);
       }
+      case 'music':
+      case 'music_global_player': {
+        const topicId = this.topics.reference(event.id)?.id;
+        const assertAllowed = () => {
+          this.assertCurrentEvent(event);
+          const room = this.store.getConversation(event.conversationId);
+          if (!room?.memberIds.includes('user') || !topicId || !this.topicApps(topicId).includes('music')) throw Error('请先在当前用户话题连接音乐应用。');
+          return room;
+        };
+        const room = assertAllowed();
+        if (!this.options.musicTool || !topicId) throw Error('音乐应用暂不可用。');
+        const parsed = (call.name === 'music' ? musicToolSchema : globalMusicToolSchema).safeParse(args);
+        if (!parsed.success) return { accepted: false, reason: '音乐参数不符合当前工具声明，请按所选工具的参数重试。' };
+        const input = parsed.data, control = new AbortController();
+        const active = this.musicControls.get(topicId) ?? new Set<AbortController>();
+        active.add(control); this.musicControls.set(topicId, active);
+        try {
+          const live = AbortSignal.any([signal, control.signal, this.maintenanceAbort.signal]);
+          const scope = this.musicScope(room, event);
+          let share: MusicShareInput;
+          if (input.action === 'share') share = input;
+          else if (input.action === 'play' && input.target === 'inline' && (input.playlistId || input.trackId)) {
+            const playlistId = input.playlistId ?? DEFAULT_NETEASE_PLAYLIST_ID;
+            share = { action: 'share', mode: 'once', autoPlay: true, queue: input.trackId
+              ? { kind: 'tracks', tracks: [{ playlistId, trackId: input.trackId }] }
+              : { kind: 'playlist', playlistId } };
+          } else return await this.options.musicTool(scope, input, live, assertAllowed);
+          if (!this.options.prepareMusicShare) throw Error('音乐分享暂不可用。');
+          const partId = 'music-' + digest(event.id + ':' + call.callId);
+          const queueKey = JSON.stringify(share.queue);
+          const published = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.music ? [part.music] : []);
+          const findPrior = (cards: MusicShare[]) => cards.find(card => card.id === partId || JSON.stringify(card.queue) === queueKey);
+          const receipt = (card: MusicShare) => ({ published: true, messageId: event.replyMessageId, card });
+          const prior = findPrior(published());
+          if (prior) return { ...receipt(prior), reused: true };
+          const card = await this.options.prepareMusicShare(partId, share, live);
+          live.throwIfAborted(); assertAllowed();
+          const cards = published();
+          const concurrent = findPrior(cards);
+          if (concurrent) return { ...receipt(concurrent), reused: true };
+          if (cards.length >= 12) throw Error('请把歌曲组合在同一个播放卡片中。');
+          const saved = this.store.appendReplyPart(event.id, { id: partId, kind: 'music', music: card, text: '分享音乐：' + card.title });
+          this.changed(event.conversationId);
+          if (!saved || !share.autoPlay) return receipt(card);
+          try {
+            const playback = await this.options.musicTool(scope, { action: 'present', target: 'inline', card }, live, assertAllowed);
+            return { ...receipt(card), playback };
+          } catch (cause) {
+            return { ...receipt(card), playback: { accepted: false, reason: errorText(cause) } };
+          }
+        } finally {
+          active.delete(control);
+          if (!active.size) this.musicControls.delete(topicId);
+        }
+      }
       case 'cabin_world': {
         const stillAttached = () => this.topicApps(this.topics.reference(event.id)?.id).includes('cabin-world');
         if (!stillAttached() || !this.options.cabinWorldApp) throw Error('请先在当前话题的“应用”中连接小屋世界。');
@@ -1642,14 +1767,23 @@ export class BotService {
         return { files, total: refs.length, hasMore: offset + files.length < refs.length, nextOffset: offset + files.length < refs.length ? offset + files.length : undefined };
       }
       case 'chat_send_sticker': {
-        const [sticker] = await this.requireMedia().resolveForConversation(event.conversationId, [nonempty.parse(args.stickerId)]);
+        const destination = z.enum(['current', 'user']).optional().parse(args.destination);
+        const toUser = destination === 'user' || destination === undefined && this.store.hasPeerUserReplyGrant(event.id);
+        const target = toUser ? this.store.peerUserReplyTarget(event.id) : undefined;
+        const [sticker] = await this.requireMedia().resolveForConversation(event.conversationId, [nonempty.parse(args.stickerId)], signal);
         if (!sticker || sticker.kind !== 'sticker') throw new Error('只能发送已列出的真实表情。');
+        if (target) {
+          const attachments = await this.transferDeliveryAttachments(event.conversationId, target.id, [sticker], signal);
+          signal.throwIfAborted(); this.assertCurrentEvent(event);
+          return this.store.stagePeerUserReply(event.id, { attachments });
+        }
         signal.throwIfAborted();
         const message = this.store.taskTransaction(()=>{
           const message=this.store.publishForEvent(event.id, call.callId, { content: typeof args.caption === 'string' ? args.caption.slice(0, 24000) : '', attachments: [sticker] });
           this.store.appendReplyPart(event.id,{id:'media-'+digest(call.callId),kind:'media',sequence:call.rootSequence,text:message.content||undefined,attachments:[sticker],publicationId:message.id});return message;
         });
-        this.changed(event.conversationId); return { sent: true, messageId: message.id, attachmentIds: [sticker.id] };
+        this.changed(event.conversationId);
+        return { sent: true, conversationId: event.conversationId, messageId: message.id, attachmentIds: [sticker.id] };
       }
 
       case 'agent_memory_scopes': return new BotAgentMemoryScopes(this.store).list(event, z.strictObject({ cursor: z.string().min(1).max(160).optional(), limit: z.number().int().min(1).max(30).optional() }).parse(args));
@@ -1729,7 +1863,19 @@ export class BotService {
         await this.ensureConversationBindings(event.conversationId, [targetId]);
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         const destination = z.enum(['user', 'peer']).parse(args.destination), message = z.string().trim().min(1).max(4000).parse(args.message);
-        const result = this.store.contactPeer(event, targetId, call.callId, message, destination);
+        const ids = z.array(z.string().min(1).max(160)).max(16).parse(args.attachmentIds ?? []);
+        let transfer: { attachments: BotMediaRef[]; sourceIds: string[] } | undefined;
+        if (ids.length) {
+          const room = this.store.getConversation(event.conversationId);
+          if (!isBotParticipantRequest(event, room)) throw Error('转交附件需要有效的用户或伙伴请求。');
+          const grants = this.authorizedAttachmentGrants(event, ids);
+          const peer = this.store.openPeer(event.companionId, targetId);
+          const attachments = await this.transferDeliveryAttachments(event.conversationId, peer.id,
+            await this.requireMedia().resolveForConversation(event.conversationId, ids, signal), signal);
+          transfer = { attachments, sourceIds: this.store.attachmentGrantSourceIds(grants.map(grant => grant.grantId)) };
+        }
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        const result = this.store.contactPeer(event, targetId, call.callId, message, destination, transfer);
         if (!result.accepted) return { sent: false, reason: result.reason };
         this.scheduler.wake(); this.changed(result.conversationId); this.changed(event.conversationId);
         return this.contactReceipt(result.conversationId, targetId, destination);
@@ -1737,8 +1883,18 @@ export class BotService {
       case 'companion_reply_user': {
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         if (causalHop(event) >= maxCausalHop) return causalLimit();
-        const result = this.store.replyPeerToUser(event, call.callId, z.string().trim().min(1).max(24000).parse(args.message));
-        this.changed(result.conversationId); this.changed(event.conversationId); return result;
+        const content = z.string().trim().max(24000).optional().parse(args.message);
+        const ids = z.array(z.string().min(1).max(160)).max(16).parse(args.attachmentIds ?? []);
+        if (!content && !ids.length) throw Error('向用户回复需要文字或附件。');
+        const target = this.store.peerUserReplyTarget(event.id);
+        const staged = new Set(this.store.stagedPeerUserAttachmentIds(event.id));
+        const selected = [...new Set(ids)].filter(id => !staged.has(id));
+        const grants = this.authorizedAttachmentGrants(event, selected);
+        const sourceIds = this.store.attachmentGrantSourceIds(grants.map(grant => grant.grantId));
+        const attachments = selected.length ? await this.transferDeliveryAttachments(event.conversationId, target.id,
+          await this.requireMedia().resolveForConversation(event.conversationId, selected, signal), signal) : [];
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        return this.store.stagePeerUserReply(event.id, { content, attachments, sourceIds });
       }
       case 'message_peer': {
         const target = nonempty.parse(args.companionId), content = z.string().trim().max(8000).parse(args.content ?? ''), cause = derivedCause(event);
@@ -1752,8 +1908,7 @@ export class BotService {
         signal.throwIfAborted(); this.assertCurrentEvent(event);
         const result = this.store.tryEnqueueAutomatic({ conversationId: event.conversationId, senderId: event.companionId, source: 'companion', content,
           attachments, attachmentGrants, sourceIds: this.store.eventSourceIds(event.id), sourceMessageId: `${event.id}:${call.callId}`, recipientIds: [target], correlationId: cause.correlationId, causationId: cause.causationId, peerReturnSourceEventId: event.id,
-          payload: { hop: cause.hop, directedPeer: true, peerAssignment: { requesterId: event.companionId, requesterName: this.store.getCompanion(event.companionId)!.name,
-            originalSenderId: event.senderId, originalSenderType: event.senderType, originalSenderName: event.senderType === 'user' ? '用户' : event.senderName } } });
+          payload: { hop: cause.hop, directedPeer: true, peerAssignment: this.store.peerAssignment(event) } });
         if (!result.accepted) return { sent: false, reason: result.reason };
         this.scheduler.wake(); this.changed(event.conversationId); return { sent: true, eventIds: result.events.map(item => item.id) };
       }

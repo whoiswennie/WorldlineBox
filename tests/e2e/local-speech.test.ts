@@ -8,6 +8,47 @@ import type { WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { WorldlineBoxBotMediaApi } from '../../src/shared/companion-bot-media';
 import { dshRuntimeSchema, type WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
+import { enableCallVisualFixture } from './fixtures/call-visual-binding';
+
+// eslint-disable-next-line no-empty-pattern -- This test owns a real, isolated Electron window.
+test('previews the recorded WAV locally before and after a rejected send', async ({}) => {
+  const sample = path.resolve('tests/fixtures/media/sensevoice-zh.wav');
+  test.skip(!existsSync(sample) || !existsSync(path.resolve('resources/speech-models/model.int8.onnx')), 'Stage the local speech model and microphone sample.');
+  test.setTimeout(100_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-local-speech-e2e-'));
+  const launch = resolveElectronLaunchOptions();
+  const app = await electron.launch({ ...launch, args: [...launch.args, '--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-audio-capture=${sample}`],
+    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_DSH_SILENT: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }) });
+  try {
+    const page = await app.firstWindow();
+    const owner = await app.browserWindow(page);
+    await owner.evaluate(window => { window.hide(); window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false); });
+    await page.locator('[data-application-module="companions"]').click();
+    await expect(page.getByRole('button', { name: '拨打伙伴电话', exact: true })).toBeDisabled();
+    await enableCallVisualFixture(app, page);
+    await page.getByRole('button', { name: '录音发语音' }).click();
+    await expect(page.locator('.bot-voice-elapsed')).toHaveText('00:04', { timeout: 15_000 });
+    await page.getByRole('button', { name: '结束录音' }).click();
+    const panel = page.getByRole('region', { name: '本地语音' });
+    const preview = panel.getByRole('button', { name: '试听录音' }), pause = panel.getByRole('button', { name: '暂停试听' });
+    const audio = panel.locator('audio');
+    const position = () => audio.evaluate(element => (element as HTMLAudioElement).currentTime);
+    await preview.click();
+    await expect(pause).toBeVisible();
+    await expect.poll(position).toBeGreaterThan(0);
+    await pause.click();
+    await expect(preview).toBeVisible();
+    const src = await audio.getAttribute('src');
+    expect(src).toMatch(/^blob:/u);
+    await panel.getByRole('button', { name: '发送语音', exact: true }).click();
+    await expect(panel.getByRole('alert')).toContainText('录音已保留');
+    await expect(audio).toHaveAttribute('src', src!);
+    await preview.click();
+    await expect(pause).toBeVisible();
+    await panel.getByRole('button', { name: '关闭语音' }).click();
+    await expect(audio).toHaveCount(0);
+  } finally { await app.close(); await removeSpeechProfile(profile); }
+});
 
 async function removeSpeechProfile(profile: string): Promise<void> {
   if (path.dirname(path.resolve(profile)) !== path.resolve(tmpdir()) || !path.basename(profile).startsWith('wlb-local-speech-e2e-')) throw Error('Unexpected speech acceptance cleanup path');

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
-import { CALL_PET_MAX_HEIGHT, CALL_PET_MAX_WIDTH, CALL_PET_WINDOW, type CallPetApi, type CallPetRect } from '../../shared/companion-call-window';
+import { CALL_PET_AVATAR_EDGE, CALL_PET_AVATAR_SIZE, CALL_PET_DOCK_INSET, CALL_PET_MAX_HEIGHT, CALL_PET_MAX_WIDTH, CALL_PET_WINDOW, type CallPetApi, type CallPetRect } from '../../shared/companion-call-window';
 
 export const BotCallDocument = createContext<Document | undefined>(undefined);
 export const BotMeetingSession = createContext<string | undefined>(undefined);
@@ -12,6 +12,9 @@ function copyCallStyles(target: Document): void {
   target.documentElement.classList.add('bot-call-pet-document');
   target.documentElement.style.setProperty('--bot-call-pet-max-width', CALL_PET_MAX_WIDTH + 'px');
   target.documentElement.style.setProperty('--bot-call-pet-max-height', CALL_PET_MAX_HEIGHT + 'px');
+  target.documentElement.style.setProperty('--bot-call-compact-avatar-size', CALL_PET_AVATAR_SIZE + 'px');
+  target.documentElement.style.setProperty('--bot-call-compact-edge', CALL_PET_AVATAR_EDGE + 'px');
+  target.documentElement.style.setProperty('--bot-call-pet-dock-inset', CALL_PET_DOCK_INSET + 'px');
   const base = target.createElement('base'); base.href = document.baseURI;
   target.head.append(base);
   for (const style of document.head.querySelectorAll<HTMLStyleElement | HTMLLinkElement>('style, link[rel="stylesheet"]')) {
@@ -25,11 +28,11 @@ const petSurfaces = [
   '.bot-call-portrait-frame', '.bot-call-portrait h2', '.bot-call-loading', '.bot-call-notice',
   '.bot-call-bubble', '.bot-call-pet-progress', '.bot-call-review', '.bot-call-topics', '.bot-call-composer-host', '.bot-call-input-entry',
   '.bot-call-pet-options', '.bot-call-chat:not([hidden])', '.bot-topic-picker',
-  '.bot-desktop-capture-panel', '.bot-desktop-capture-status', '.bot-presence-status',
-  '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel', '.bot-diagnostic-dialog[open]', '.bot-call-send-error',
+  '.bot-desktop-capture-panel', '.bot-desktop-capture-status', '.bot-presence-status', '.bot-presence-error',
+  '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel', '.bot-diagnostic-dialog[open]', '.bot-call-send-error', '.bot-apps-picker',
 ].join(',');
 
-function trackPetLayout(pet: Window, host: HTMLElement, api: CallPetApi) {
+function trackPetLayout(pet: Window, name: string, host: HTMLElement, api: CallPetApi) {
   const observed = new Set<HTMLElement>();
   let frame = 0, previous = '';
   const measure = () => {
@@ -41,14 +44,16 @@ function trackPetLayout(pet: Window, host: HTMLElement, api: CallPetApi) {
     const rects: CallPetRect[] = [];
     const surfaces = new Set(host.querySelectorAll<HTMLElement>(petSurfaces));
     for (const node of observed) if (!surfaces.has(node)) { resize.unobserve(node); observed.delete(node); }
-    const add = ({ x, y, width, height }: CallPetRect, margin: number) => {
-      if (width > 0 && height > 0) rects.push({ x: x - margin, y: y - margin, width: width + 2 * margin, height: height + 2 * margin });
+    const add = ({ x, y, width, height }: CallPetRect, margin: number, circular?: boolean) => {
+      if (width > 0 && height > 0) rects.push({ x: x - margin, y: y - margin, width: width + 2 * margin, height: height + 2 * margin, circular });
     };
     for (const node of surfaces) {
       if (!observed.has(node)) { resize.observe(node); observed.add(node); }
-      add(node.getBoundingClientRect(), node.matches('.bot-call-portrait-frame,.bot-call-portrait h2') ? 0 : 7);
+      const circular = node.matches('.bot-call-compact-anchor');
+      const margin = circular || node.matches('.bot-call-portrait-frame,.bot-call-portrait h2') ? 0 : 7;
+      add(node.getBoundingClientRect(), margin, circular);
     }
-    const figure = host.querySelector<HTMLElement>('.bot-call-live2d');
+    const figure = host.querySelector<HTMLElement>('.bot-call-live2d:not([hidden])');
     const bounds = figure?.dataset.petFigure?.split(',').map(Number);
     if (figure && bounds?.length === 4 && bounds.every(Number.isFinite)) {
       const canvas = figure.getBoundingClientRect();
@@ -57,15 +62,18 @@ function trackPetLayout(pet: Window, host: HTMLElement, api: CallPetApi) {
       add({ x: canvas.x + left, y: canvas.y + top, width: Math.min(canvas.width, x + w) - left, height: Math.min(canvas.height, y + h) - top }, 12);
     }
     if (!rects.length) return;
-    const key = JSON.stringify([width, height, rects]);
+    const anchorRevision = overlay.classList.contains('is-pet-compact')
+      ? Number(pet.document.documentElement.dataset.callPetAnchorRevision ?? 0) : undefined;
+    const key = JSON.stringify([width, height, rects, anchorRevision]);
     if (key === previous) return;
     previous = key;
-    api.command({ type: 'layout', width, height, rects });
+    api.command({ type: 'layout', name, width, height, rects, anchorRevision });
   };
   const schedule = () => { if (!frame && !pet.closed) frame = pet.requestAnimationFrame(measure); };
   const resize = new ResizeObserver(schedule);
   const mutation = new MutationObserver(schedule);
-  mutation.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'data-pet-figure'] });
+  mutation.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'style', 'hidden', 'open', 'data-pet-figure'] });
+  mutation.observe(pet.document.documentElement, { attributes: true, attributeFilter: ['data-call-pet-anchor-revision'] });
   resize.observe(pet.document.documentElement);
   pet.addEventListener('resize', schedule);
   pet.document.head.addEventListener('load', schedule, true);
@@ -105,14 +113,27 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
     const child = active.current?.window;
     if (!host.isConnected) (child?.closed === false ? child.document : document).body.append(host);
     const off = api?.onClosed(name => onNativeClose(name));
+    const offAnchor = api?.onAnchorChanged((name, anchor, revision) => {
+      const child = active.current;
+      if (child?.name !== name || child.window.closed) return;
+      const root = child.window.document.documentElement;
+      root.style.setProperty('--bot-call-anchor-x', anchor.x + 'px');
+      root.style.setProperty('--bot-call-anchor-y', anchor.y + 'px');
+      root.dataset.callPetSide = anchor.side;
+      root.dataset.callPetEdge = anchor.edge;
+      root.toggleAttribute('data-call-pet-stacked', anchor.stacked);
+      root.dataset.callPetAnchorRevision = String(revision);
+    });
     return () => {
       off?.();
+      offAnchor?.();
       if (active.current) api?.command({ type: 'close', name: active.current.name });
       host.remove();
     };
   }, [api, host]);
   useLayoutEffect(() => {
-    if (!pet || pet.closed || !api) return;
+    const name = active.current?.name;
+    if (!pet || pet.closed || !name || !api) return;
     const target = pet.document;
     let drag: { pointer: number; x: number; y: number; clickTarget: HTMLElement | null; moved: boolean } | undefined;
     let suppressClick: HTMLElement | null = null;
@@ -150,7 +171,7 @@ export function useCallPet(onModeChange?: (active: boolean, returning?: boolean)
     target.addEventListener('click', click, true);
     for (const type of endings) target.addEventListener(type, end);
     pet.addEventListener('blur', stop);
-    const stopLayout = trackPetLayout(pet, host, api);
+    const stopLayout = trackPetLayout(pet, name, host, api);
     return () => {
       stopLayout();
       target.removeEventListener('pointerdown', start);

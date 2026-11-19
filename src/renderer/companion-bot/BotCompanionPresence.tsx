@@ -287,7 +287,8 @@ export function BotCompanionPresence({ api, conversationId, surface, petName, me
     : { power: 'Energy', low: 'Low · Screenshots', balanced: 'Balanced · Mixed', active: 'High · Continuous video', start: 'Start companion mode', resume: 'Resume companion mode', pause: 'Pause companion mode', stop: 'End companion mode', clear: 'Clear observation buffer' };
   const label = mode === 'paused' ? (zh ? '陪伴已暂停' : 'Companion mode paused') : mode === 'starting' ? (zh ? '正在连接桌面' : 'Connecting to the desktop')
     : status?.vision === false ? (zh ? '陪伴中 · 模型无图像能力' : 'Alongside you · model has no vision') : zh ? '陪伴中' : 'Alongside you';
-  const hint = error || status?.error || (mode === 'active' ? `${label} · ${words[energy]}` : label);
+  const diagnostic = error || status?.error;
+  const hint = mode === 'active' ? `${label} · ${words[energy]}` : label;
   const pausedForChat = interacting || status?.waitingForPartner;
   const capturing = recording || status?.screenshot === 'capturing';
   const last = status?.last;
@@ -306,9 +307,16 @@ export function BotCompanionPresence({ api, conversationId, surface, petName, me
       }}>{zh ? '查看心跳事件线' : 'View heartbeat timeline'}</button>
     </div>, controlsTarget)}
     {archiveScope && <BotPresenceArchive api={api} scope={archiveScope} zh={zh} onClose={() => setArchiveScope(undefined)} />}
-    {statusTarget && (mode !== 'off' || error) && createPortal(<div className="bot-presence-status" data-mode={mode}>
+    {statusTarget && createPortal(diagnostic && <div className="bot-presence-error-row">
+      <div className="bot-presence-error">
+        <div role="alert"><BotErrorNotice message={diagnostic} zh={zh} /></div>
+        {mode === 'off' && <button className="bot-presence-error-close" type="button"
+          aria-label={zh ? '关闭错误提示' : 'Dismiss error'} onClick={() => stop(false)}><BotIcon name="close" /></button>}
+      </div>
+    </div>, statusTarget)}
+    {statusTarget && mode !== 'off' && createPortal(<div className="bot-presence-status" data-mode={mode}>
       <i aria-hidden="true" className="bot-presence-dot" />
-      {error || status?.error ? <BotErrorNotice message={error || status!.error!} zh={zh} /> : <span className={petName && mode === 'active' && status?.vision !== false ? 'bot-sr-only' : undefined} role="status" title={hint}>{label}</span>}
+      <span className={petName && mode === 'active' && status?.vision !== false ? 'bot-sr-only' : undefined} role="status" title={hint}>{label}</span>
       {mode === 'active' && <>
         {pausedForChat && !capturing && <small className="bot-presence-countdown" data-capture="idle">{petName ? (zh ? petName + '正专心和你聊天，先不看屏幕' : petName + ' is chatting with you, screen capture paused') : (zh ? '心跳暂停 · 等待交流结束' : 'Heartbeat paused · waiting for conversation')}</small>}
         {status && (!pausedForChat || capturing) && <PresenceActivity status={status} recording={recording} zh={zh} petName={petName} />}

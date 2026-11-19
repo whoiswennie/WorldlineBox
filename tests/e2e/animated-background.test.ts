@@ -31,6 +31,22 @@ test('global wallpapers retain playback across modules and support decoding, pau
   try {
     const window = await application.firstWindow();
     const nativeWindow = await application.browserWindow(window);
+    const video = window.locator('.app-animated-background-video');
+    const playbackState = async () => ({
+      focused: await nativeWindow.evaluate((win) => {
+        // The isolated window still shares the desktop with other applications.
+        if (!win.isFocused() && !win.isMinimized()) { win.show(); win.focus(); }
+        return win.isFocused();
+      }),
+      ...await video.evaluate((element: HTMLVideoElement) => ({
+        paused: element.paused,
+        readyState: element.readyState,
+        time: element.currentTime,
+        visibility: document.visibilityState,
+        stall: element.dataset.testStall,
+      })),
+    });
+    const expectPlaying = () => expect.poll(playbackState).toMatchObject({ focused: true, paused: false });
     window.setDefaultTimeout(10_000);
     const launcher = window.locator('[data-application-module="dsh"]');
     const assets = window.locator('[data-application-module="assets"]');
@@ -43,7 +59,6 @@ test('global wallpapers retain playback across modules and support decoding, pau
       ['shuimo-danqing', '鲸鱼娘 · 水墨丹青', 25.333333, 1920],
     ] as const) {
       await settings.getByRole('radio', { name, exact: true }).click();
-      const video = window.locator('.app-animated-background-video');
       await expect(video).toHaveCount(1);
       expect(await window.locator('.app-animated-background').evaluate((element) => getComputedStyle(element).opacity)).toBe('0.4');
       await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2);
@@ -96,7 +111,37 @@ test('global wallpapers retain playback across modules and support decoding, pau
       await expect.poll(() => nativeWindow.evaluate((win) => win.isMinimized())).toBe(true);
       await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(true);
       await nativeWindow.evaluate((win) => { win.restore(); win.show(); win.focus(); });
-      await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.paused)).toBe(false);
+      await expectPlaying();
+
+      await video.evaluate((element: HTMLVideoElement) => { element.currentTime = element.duration - 0.15; });
+      await expect.poll(async () => (await playbackState()).time).toBeLessThan(2);
+      await expect.poll(async () => (await playbackState()).time).toBeGreaterThan(0.2);
+
+      if (id === 'whale-fantasy') {
+        await video.evaluate((element: HTMLVideoElement) => element.pause());
+        await expectPlaying();
+
+        await window.evaluate(() => {
+          const element = document.querySelector<HTMLVideoElement>('.app-animated-background-video')!;
+          element.currentTime = 6;
+          // Keep the media clock running while withholding frame callbacks until the source reloads.
+          let stalled = true;
+          const requestFrame = element.requestVideoFrameCallback.bind(element);
+          element.requestVideoFrameCallback = (callback) => requestFrame((now, metadata) => {
+            if (stalled) {
+              element.dataset.testStall = 'waiting';
+            } else {
+              element.dataset.testStall = 'recovered';
+              callback(now, metadata);
+            }
+          });
+          element.addEventListener('loadstart', () => { stalled = false; }, { once: true });
+        });
+        await expect.poll(playbackState).toMatchObject({ stall: 'waiting' });
+        await expect.poll(playbackState, { timeout: 15_000 }).toMatchObject({ stall: 'recovered' });
+        await expect(video).toHaveAttribute('data-ready', 'true');
+        await expect.poll(async () => (await playbackState()).time, { timeout: 4000 }).toBeGreaterThan(7);
+      }
       settings = await openAppearance(window);
     }
 
@@ -115,7 +160,7 @@ test('global wallpapers retain playback across modules and support decoding, pau
     await window.emulateMedia({ reducedMotion: 'reduce' });
     await expect(window.locator('.app-animated-background-video')).not.toHaveAttribute('src', /.+/);
     await window.emulateMedia({ reducedMotion: 'no-preference' });
-    await expect.poll(() => window.locator('.app-animated-background-video').evaluate((element: HTMLVideoElement) => element.paused)).toBe(false);
+    await expectPlaying();
 
     await settings.locator('.app-settings-background-file-input').setInputFiles(path.resolve('assets/icons/startup-logo.png'));
     const globalBackground = window.locator('.application-root > .app-theme-background');
@@ -125,7 +170,7 @@ test('global wallpapers retain playback across modules and support decoding, pau
     await expect(launcher).toHaveAttribute('aria-current', 'page');
     await window.keyboard.press('Escape');
     await assets.click();
-    expect(await window.locator('.app-shell').evaluate((element) => getComputedStyle(element).backgroundImage)).toBe('none');
+    expect(await window.locator('main.app-shell').evaluate((element) => getComputedStyle(element).backgroundImage)).toBe('none');
     expect(await window.getByText('导入资产以开始整理', { exact: true }).evaluate((element) => getComputedStyle(element).opacity)).toBe('1');
     await expect(globalBackground).toHaveAttribute('data-wallpaper', 'image');
     await launcher.click();

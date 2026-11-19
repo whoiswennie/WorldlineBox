@@ -10,9 +10,10 @@ import type { LauncherDialogState } from './LauncherDialog';
 
 type DetailTab = 'overview' | 'logs' | 'snapshots';
 
-export function InstanceDetails({ api, busy, instance, state, run, onDialog, onError, onOpenVersions, preparingStart = false }: {
+export function InstanceDetails({ api, busy, bundledUpdating, instance, state, run, onDialog, onError, onOpenVersions, preparingStart = false }: {
   readonly api: WorldlineBoxDshLauncherApi;
   readonly busy: boolean;
+  readonly bundledUpdating: boolean;
   readonly instance: DshInstance;
   readonly state: DshLauncherState;
   readonly run: LauncherRunRequest;
@@ -37,6 +38,7 @@ export function InstanceDetails({ api, busy, instance, state, run, onDialog, onE
   const readiness = state.executionReadiness;
   const prewarming = instance.status === 'stopped' && readiness?.instanceId === instance.id && readiness.status === 'warming';
   const starting = instance.status === 'starting' || preparingStart || !!pendingStart || prewarming;
+  const updateHint = bundledUpdating ? t('launcher.bundledUpdatingHint') : undefined;
 
   useEffect(() => {
     if (tab !== 'logs') return;
@@ -67,12 +69,13 @@ export function InstanceDetails({ api, busy, instance, state, run, onDialog, onE
       <div><div className="launcher-instance-title"><h1>{instance.name}</h1>{instance.isDefault ? <span className="launcher-badge">{t('launcher.default')}</span> : null}{bundled ? <span className="launcher-badge">{t('launcher.bundledInstance')}</span> : null}</div><p><span className={`launcher-status-dot is-${instance.status}`} />{t(`launcher.status.${instance.status}`)}<span className="launcher-inline-divider">·</span>DSH {runtime?.version ?? instance.runtimeId}</p></div>
       <div className="launcher-actions">
         {instance.status === 'running'
-          ? <Button data-dsh-open-workbench iconName="external-link" onClick={() => void run({ type: 'instance.open', instanceId: instance.id })} variant="primary">{t('launcher.open')}</Button>
-          : <Button disabled={busy || instance.status === 'stopping'} loading={starting} iconName={starting ? undefined : 'activity'} onClick={() => void run({ type: 'instance.start', instanceId: instance.id })} variant="primary">{starting ? `${t('launcher.status.starting')}…` : t('launcher.start')}</Button>}
+          ? <Button aria-disabled={bundledUpdating || undefined} title={updateHint} data-dsh-open-workbench iconName="external-link" onClick={() => void run({ type: 'instance.open', instanceId: instance.id })} variant="primary">{t('launcher.open')}</Button>
+          : <Button aria-disabled={bundledUpdating || undefined} title={updateHint} disabled={!bundledUpdating && (busy || instance.status === 'stopping')} loading={starting && !bundledUpdating} iconName={starting && !bundledUpdating ? undefined : 'activity'} onClick={() => void run({ type: 'instance.start', instanceId: instance.id })} variant="primary">{starting && !bundledUpdating ? `${t('launcher.status.starting')}…` : t('launcher.start')}</Button>}
         <Button disabled={!pendingStart && (busy || !['running', 'starting'].includes(instance.status))} iconName="stop" onClick={() => void run(pendingStart ? { type: 'operation.cancel', operationId: pendingStart.id } : { type: 'instance.stop', instanceId: instance.id })}>{t(pendingStart ? 'launcher.cancelOperation' : 'launcher.stop')}</Button>
         <Button disabled={bundled || busy || instance.status === 'starting' || instance.status === 'stopping'} iconName="download" onClick={upgrade}>{t('launcher.upgrade')}</Button>
       </div>
     </div>
+    {updateHint && <p className="launcher-help" role="status">{updateHint}</p>}
     <div aria-label={instance.name} className="launcher-tabs" role="tablist">{(['overview', 'logs', 'snapshots'] as const).map((item, index, tabs) => <button aria-controls={`dsh-detail-${instance.id}-${item}`} aria-selected={tab === item} id={`dsh-tab-${instance.id}-${item}`} key={item} onClick={() => setTab(item)} onKeyDown={(event) => {
       const nextIndex = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : undefined;
       if (nextIndex === undefined) return;

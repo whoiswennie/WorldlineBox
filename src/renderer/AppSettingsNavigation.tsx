@@ -15,6 +15,8 @@ export type AppSettingsNavigationProps = {
   pluginSettingsEntries: readonly PluginSettingsNavEntry[];
   onSelectCategory: (category: AppSettingsCategoryId) => void;
   onSelectPluginSettings: (pluginId: string) => void;
+  initiallyExpandPlugins?: boolean;
+  onOpenPluginSettingsRail?(): void;
 };
 
 /** Keyboard-accessible category rail for the consolidated settings center. */
@@ -24,10 +26,12 @@ export function AppSettingsNavigation({
   pluginSettingsEntries,
   onSelectCategory,
   onSelectPluginSettings,
+  initiallyExpandPlugins = false,
+  onOpenPluginSettingsRail,
 }: AppSettingsNavigationProps): ReactNode {
   const t = useT();
   const [pluginSettingsExpanded, setPluginSettingsExpanded] = useState(
-    () => activePluginSettingsId !== null,
+    () => initiallyExpandPlugins || activePluginSettingsId !== null,
   );
 
   const isPluginSettingsExpanded =
@@ -93,7 +97,7 @@ export function AppSettingsNavigation({
         <button
           aria-expanded={isPluginSettingsExpanded}
           className="app-settings-nav-item app-settings-nav-plugin-settings-toggle"
-          onClick={() => setPluginSettingsExpanded((value) => !value)}
+          onClick={onOpenPluginSettingsRail ?? (() => setPluginSettingsExpanded((value) => !value))}
           type="button"
         >
           <Icon name="sliders" size={16} />

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type Locator } from '@playwright/test';
 import * as koffi from 'koffi';
+import { BOT_MEDIA_CHANNEL, type BotPresenceStatus } from '../../src/shared/companion-bot-media';
+import type { CallPetApi } from '../../src/shared/companion-call-window';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
 import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 import { removeOwnedDirectorySync } from '../helpers/remove-owned-test-directory';
@@ -47,9 +49,10 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     const pet = await opening;
     const nativePet = await app.browserWindow(pet);
     const floating = pet.getByRole('dialog', { name: '与GPT会面' });
-    const avatar = floating.locator('.bot-call-portrait-frame img');
+    const anchor = floating.locator('.bot-call-compact-anchor');
+    const avatar = anchor.locator('img');
     await expect(avatar).toBeVisible();
-    await expect(floating.locator('.bot-call-portrait-frame')).toHaveCSS('box-shadow', 'none');
+    await expect(floating.locator('.bot-call-portrait-frame, .bot-call-live2d')).toHaveCount(0);
     await expect(floating).toHaveAttribute('aria-modal', 'false');
     await expect(page.locator('.bot-workspace')).not.toHaveClass(/is-modal-open/u);
     await expect(page.locator('.bot-main').getByRole('textbox', { name: '发送消息…' })).toBeVisible();
@@ -88,6 +91,11 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     };
     const corner = await nativeCoordinates({ x: 26, y: 30 });
     await expect.poll(() => rootAt(corner)).toBe(underHandle);
+    const orb = floating.getByRole('button', { name: '展开会面输入', exact: true });
+    await expect(orb).toHaveCSS('clip-path', 'circle(50%)');
+    const orbBox = (await orb.boundingBox())!;
+    const avatarCorner = await nativeCoordinates({ x: orbBox.x + 2, y: orbBox.y + 2 });
+    await expect.poll(() => rootAt(avatarCorner)).toBe(underHandle);
     click(corner);
     await expect(probePage.locator('#under')).toHaveAttribute('data-clicks', '1');
     // Wheel delivery depends on Windows' inactive-scroll preference. Keep
@@ -108,23 +116,40 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)?.destroy(), probe.id);
     await closeProbe;
     await nativePet.evaluate(native => { native.focus(); native.moveTop(); });
-    const orb = floating.getByRole('button', { name: '展开会面输入', exact: true });
-    const orbBox = (await orb.boundingBox())!;
-    expect(await orb.locator('img').boundingBox()).toEqual(orbBox);
+    expect(orbBox.width).toBe(42);
+    await expect(avatar).toBeVisible();
     const orbPoint = await nativeCoordinates({ x: orbBox.x + orbBox.width / 2, y: orbBox.y + orbBox.height / 2 });
     await expect.poll(() => rootAt(orbPoint)).toBe(petHandle);
-    click(orbPoint);
     const more = floating.getByRole('button', { name: '更多会面功能' });
-    await expect(more).toBeVisible();
+    await expect(async () => {
+      if (await orb.isVisible()) click(orbPoint);
+      await expect(more).toBeVisible({ timeout: 450 });
+    }).toPass({ timeout: 5000 });
+    await expect.poll(() => anchor.boundingBox()).toEqual(orbBox);
+    await expect(floating.locator('.bot-call-dock .bot-call-compact-anchor')).toHaveCount(0);
     await nativePet.evaluate(native => native.moveTop());
     const box = (await more.boundingBox())!;
     const menuPoint = await nativeCoordinates({ x: box.x + box.width / 2, y: box.y + box.height / 2 });
     await expect.poll(() => rootAt(menuPoint)).toBe(petHandle);
     click(menuPoint);
     await expect(more).toHaveAttribute('aria-expanded', 'true');
-    await floating.getByRole('button', { name: '收起会面输入', exact: true }).click();
-    const grip = (await orb.boundingBox())!;
-    const start = await nativeCoordinates({ x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 });
+    await expect.poll(() => anchor.boundingBox()).toEqual(orbBox);
+    await anchor.click();
+    await expect(orb).toBeVisible();
+    // Exercise the recording status's layout without capturing the real desktop.
+    await pet.locator('.bot-call-status-row').evaluate(row => {
+      const pill = row.ownerDocument.createElement('div');
+      pill.className = 'bot-presence-status';
+      pill.setAttribute('data-recording-fixture', '');
+      pill.textContent = '大肥鱼正在观察你 · 我在录下这段画面';
+      row.append(pill);
+    });
+    const recording = floating.locator('[data-recording-fixture]');
+    await expect(recording).toBeVisible();
+    await expect.poll(() => anchor.boundingBox()).toEqual(orbBox);
+    const pill = (await recording.boundingBox())!;
+    expect(pill.x + pill.width).toBeLessThan(orbBox.x);
+    await recording.evaluate(element => element.remove());
     const startBounds = await nativePet.evaluate(native => native.getBounds());
     const physicalSize = () => {
       const rect = Buffer.alloc(16);
@@ -135,15 +160,25 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     await pet.evaluate(() => document.addEventListener('pointerdown', event => {
       if ((event.target as Element).closest('[data-pet-drag]')) document.documentElement.dataset.gripPressed = 'true';
     }));
-    await expect.poll(() => rootAt(start)).toBe(petHandle);
-    expect(setCursorPos(start.x, start.y)).toBe(1);
-    mouseEvent(2, 0, 0, 0, 0);
-    try {
-      await expect(pet.locator('html')).toHaveAttribute('data-grip-pressed', 'true');
-      const moved = { x: start.x - 105, y: start.y - 30 };
-      expect(setCursorPos(moved.x, moved.y)).toBe(1);
+    const dragAvatar = async (move: (point: { x: number; y: number }) => { x: number; y: number }, verify: () => Promise<void>) => {
+      const grip = (await anchor.boundingBox())!;
+      const start = await nativeCoordinates({ x: grip.x + grip.width / 2, y: grip.y + grip.height / 2 });
+      await pet.evaluate(() => { delete document.documentElement.dataset.gripPressed; });
+      await expect.poll(() => rootAt(start)).toBe(petHandle);
+      expect(setCursorPos(start.x, start.y)).toBe(1);
+      mouseEvent(2, 0, 0, 0, 0);
+      try {
+        await expect(pet.locator('html')).toHaveAttribute('data-grip-pressed', 'true');
+        const moved = move(start);
+        expect(setCursorPos(Math.round((start.x + moved.x) / 2), Math.round((start.y + moved.y) / 2))).toBe(1);
+        await pet.evaluate(() => new Promise(requestAnimationFrame));
+        expect(setCursorPos(moved.x, moved.y)).toBe(1);
+        await verify();
+      } finally { mouseEvent(4, 0, 0, 0, 0); }
+    };
+    await dragAvatar(start => ({ x: start.x - 105, y: start.y - 30 }), async () => {
       await expect.poll(async () => (await nativePet.evaluate(native => native.getBounds())).x).toBeLessThan(startBounds.x - 30);
-    } finally { mouseEvent(4, 0, 0, 0, 0); }
+    });
     // Electron's DIP rounding can change by one depending on the new pixel origin.
     expect(physicalSize()).toEqual(startSize);
     await expect(orb).toBeVisible();
@@ -153,6 +188,56 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
       return width! <= probe.limit.width + 1 && height! <= probe.limit.height + 1;
     }).toBe(true);
     expect((await floating.locator('.bot-call-dock').boundingBox())!.width).toBeLessThanOrEqual(446);
+    const { workArea, topLeft, bottomRight, midpoint } = await app.evaluate(({ BrowserWindow, screen }, id) => {
+      const bounds = BrowserWindow.fromId(id)!.getBounds();
+      const { workArea } = screen.getDisplayMatching(bounds);
+      return {
+        workArea,
+        topLeft: screen.dipToScreenPoint({ x: workArea.x + 2, y: workArea.y + 2 }),
+        bottomRight: screen.dipToScreenPoint({ x: workArea.x + workArea.width - 2, y: workArea.y + workArea.height - 2 }),
+        midpoint: screen.dipToScreenPoint({ x: workArea.x + Math.round(workArea.width / 2), y: workArea.y + Math.round(workArea.height / 2) }),
+      };
+    }, petId);
+    const anchorOnScreen = async () => {
+      const { x, y } = await nativePet.evaluate(native => native.getContentBounds());
+      const local = (await anchor.boundingBox())!;
+      return { x: x + local.x, y: y + local.y, width: local.width, height: local.height };
+    };
+    const checkEdges = async (side: 'left' | 'right', edge: 'top' | 'bottom') => {
+      await expect(pet.locator('html')).toHaveAttribute('data-call-pet-side', side);
+      await expect(pet.locator('html')).toHaveAttribute('data-call-pet-edge', edge);
+      await expect.poll(async () => {
+        const { x, y, width, height } = await anchorOnScreen();
+        const horizontal = side === 'left' ? x - workArea.x : workArea.x + workArea.width - x - width;
+        const vertical = edge === 'top' ? y - workArea.y : workArea.y + workArea.height - y - height;
+        return Math.max(Math.abs(horizontal - 4), Math.abs(vertical - 4));
+      }).toBeLessThanOrEqual(2);
+    };
+    await dragAvatar(() => topLeft, () => checkEdges('left', 'top'));
+    const leftPlacement = await anchorOnScreen();
+    await orb.click();
+    await more.click();
+    const topMenu = floating.locator('.bot-call-pet-options');
+    await expect(topMenu).toBeVisible();
+    await expect.poll(anchorOnScreen).toEqual(leftPlacement);
+    const topDock = (await floating.locator('.bot-call-dock').boundingBox())!;
+    const leftAnchor = (await anchor.boundingBox())!;
+    expect(topDock.x).toBeGreaterThan(leftAnchor.x + leftAnchor.width);
+    expect((await topMenu.boundingBox())!.y).toBeGreaterThan(topDock.y);
+    await anchor.click();
+    await expect(orb).toBeVisible();
+    await dragAvatar(() => midpoint, async () => {
+      await expect(async () => {
+        const { x, y, width, height } = await anchorOnScreen();
+        expect(Math.abs(x + width / 2 - workArea.x - workArea.width / 2)).toBeLessThanOrEqual(2);
+        expect(Math.abs(y + height / 2 - workArea.y - workArea.height / 2)).toBeLessThanOrEqual(2);
+      }).toPass({ timeout: 5000 });
+    });
+    await dragAvatar(() => bottomRight, () => checkEdges('right', 'bottom'));
+    await dragAvatar(() => ({ x: topLeft.x, y: bottomRight.y }), () => checkEdges('left', 'bottom'));
+    await dragAvatar(() => ({ x: bottomRight.x, y: topLeft.y }), () => checkEdges('right', 'top'));
+    await dragAvatar(() => bottomRight, () => checkEdges('right', 'bottom'));
+    const placed = await anchorOnScreen();
     await page.locator('.bot-conversation').filter({ has: page.getByText('大肥鱼', { exact: true }) }).click();
     await expect(page.locator('.bot-chat-title h2')).toHaveText('大肥鱼');
     await expect(avatar).toBeVisible();
@@ -164,12 +249,127 @@ test('desktop pet passes clicks through empty space and keeps its own controls i
     await floating.getByRole('button', { name: '返回会面场景' }).click().catch(error => { if (!pet.isClosed()) throw error; });
     await expect(gpt).toBeVisible();
     await expect(page.locator('[data-application-view="companions"]')).toBeVisible();
+    const reopening = app.waitForEvent('window');
+    await gpt.getByRole('button', { name: '切换为桌宠', exact: true }).click();
+    const reopened = await reopening;
+    const reopenedNative = await app.browserWindow(reopened);
+    const reopenedAnchor = reopened.locator('.bot-call-compact-anchor');
+    await expect(reopenedAnchor).toHaveAttribute('aria-expanded', 'true');
+    await expect.poll(async () => {
+      const { x, y } = await reopenedNative.evaluate(native => native.getContentBounds());
+      const local = (await reopenedAnchor.boundingBox())!;
+      return Math.max(Math.abs(x + local.x - placed.x), Math.abs(y + local.y - placed.y));
+    }).toBeLessThanOrEqual(2);
+    await reopened.getByRole('button', { name: '更多会面功能', exact: true }).click();
+    await reopened.getByRole('button', { name: '返回会面场景' }).click().catch(error => { if (!reopened.isClosed()) throw error; });
     await gpt.getByRole('button', { name: '挂断', exact: true }).click();
     await expect(gpt).toHaveCount(0);
     await expect(page.locator('.bot-workspace')).not.toHaveClass(/is-modal-open/u);
   } finally {
     await app?.close();
     if (previousDpi) setThreadDpiAwarenessContext(previousDpi);
+    removeOwnedDirectorySync(profile);
+  }
+});
+
+test('desktop pet bounds long companion errors and keeps the diagnostics reachable', async () => {
+  test.skip(process.platform !== 'win32', 'Windows desktop pet');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-pet-error-'));
+  const app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+    WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
+  }) });
+  try {
+    const page = await app.firstWindow();
+    await page.locator('[data-application-module="companions"]').click();
+    const call = page.getByRole('button', { name: '拨打伙伴电话', exact: true });
+    await expect(call).toBeDisabled();
+    await enableCallVisualFixture(app, page);
+    await page.locator('.bot-sidebar-tabs').getByRole('tab', { name: /联系人/u }).click();
+    await page.locator('.bot-contact').filter({ has: page.getByText('GPT', { exact: true }) }).click();
+    await call.click();
+    const meeting = page.getByRole('dialog', { name: '与GPT会面' });
+    await meeting.getByRole('button', { name: '接通', exact: true }).click();
+    const opening = app.waitForEvent('window');
+    await meeting.getByRole('button', { name: '切换为桌宠' }).click();
+    const pet = await opening;
+    const anchor = pet.locator('.bot-call-compact-anchor');
+    await expect(anchor).toBeVisible();
+    const nativePet = await app.browserWindow(pet);
+    await expect.poll(() => nativePet.evaluate(win => win.isVisible())).toBe(true);
+    const avatar = (await anchor.boundingBox())!;
+    const drag = await app.evaluate(({ BrowserWindow, screen }, { id, x, y }) => {
+      const bounds = BrowserWindow.fromId(id)!.getContentBounds();
+      const { workArea } = screen.getDisplayMatching(bounds);
+      return { start: { x: bounds.x + x, y: bounds.y + y },
+        end: { x: workArea.x + 2, y: workArea.y + workArea.height - 2 } };
+    }, { id: await nativePet.evaluate(win => win.id), x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 });
+    await page.evaluate(({ start, end }) => {
+      const { companionCallPet } = Reflect.get(window, 'worldlinebox') as { companionCallPet: CallPetApi };
+      companionCallPet.command({ type: 'drag-start', ...start });
+      companionCallPet.command({ type: 'drag-move', ...end });
+      companionCallPet.command('drag-end');
+    }, drag);
+    await expect(pet.locator('html')).toHaveAttribute('data-call-pet-side', 'left');
+    await expect(pet.locator('html')).toHaveAttribute('data-call-pet-edge', 'bottom');
+    await anchor.click();
+    const rawError = `Provider response failed\n${'UnbrokenProviderOutput'.repeat(120)}\n${'Nested diagnostic detail\n'.repeat(120)}END`;
+    await app.evaluate(({ ipcMain }, { channel, error }) => {
+      const presence: BotPresenceStatus = { cycle: 1, capture: 'screen', vision: true, thinking: false, error };
+      let started = false;
+      ipcMain.removeHandler(channel);
+      ipcMain.handle(channel, (_event, input: { type: string }) => {
+        if (input.type === 'desktop.presence.start') {
+          if (started) return { ok: false, error: 'LlmError: Request timed out. (UND_ERR_CONNECT_TIMEOUT)' };
+          started = true;
+        }
+        return { ok: true, presence };
+      });
+    }, { channel: BOT_MEDIA_CHANNEL, error: rawError });
+    const controls = pet.getByRole('button', { name: '更多会面功能', exact: true });
+    const startPresence = async () => {
+      if (await controls.getAttribute('aria-expanded') === 'false') await controls.click();
+      await pet.getByRole('button', { name: '陪伴设置', exact: true }).click();
+      await pet.getByRole('combobox', { name: '精力值', exact: true }).selectOption('low');
+      await pet.getByRole('button', { name: '开始陪伴', exact: true }).click();
+      await anchor.click();
+    };
+    const error = pet.locator('.bot-presence-error');
+    const status = pet.locator('.bot-call-status-row .bot-presence-status');
+    await startPresence();
+    await expect(status.getByRole('button', { name: '暂停陪伴' })).toBeVisible();
+    const preview = error.locator('.bot-error-notice > p');
+    await expect(preview).toHaveCSS('-webkit-line-clamp', '2');
+    expect(await preview.evaluate(node => node.scrollHeight > node.clientHeight && node.scrollWidth <= node.clientWidth)).toBe(true);
+    expect(await error.evaluate(node => {
+      const box = node.getBoundingClientRect();
+      const status = node.closest('.bot-call-status-row')!.querySelector('.bot-presence-status')!.getBoundingClientRect();
+      return { fits: box.width <= 340 && box.top >= 0 && box.left >= 0 && box.right <= innerWidth, aboveStatus: box.bottom <= status.top };
+    })).toEqual({ fits: true, aboveStatus: true });
+    await error.getByRole('button', { name: '查看当前实例日志' }).click();
+    const logs = pet.getByRole('dialog', { name: '实例日志', exact: true });
+    await expect(logs).toBeVisible();
+    await logs.getByRole('button', { name: '关闭', exact: true }).click();
+    await error.getByRole('button', { name: '错误详情' }).click();
+    const detail = pet.getByRole('dialog', { name: '错误详情', exact: true });
+    await expect(detail.locator('pre')).toHaveJSProperty('textContent', rawError);
+    expect(await detail.evaluate(node => {
+      const box = node.getBoundingClientRect();
+      const pre = node.querySelector('pre')!;
+      return box.top >= 0 && box.left >= 0 && box.bottom <= innerHeight && box.right <= innerWidth
+        && pre.scrollHeight > pre.clientHeight && pre.scrollWidth <= pre.clientWidth;
+    })).toBe(true);
+    await detail.getByRole('button', { name: '关闭', exact: true }).click();
+    await status.getByRole('button', { name: '结束陪伴' }).click();
+    await expect(error).toHaveCount(0);
+    await anchor.click();
+    await startPresence();
+    await expect(error.getByRole('alert')).toContainText('模型请求超时');
+    await expect(status).toHaveCount(0);
+    await error.getByRole('button', { name: '关闭错误提示' }).click();
+    await expect(error).toHaveCount(0);
+  } finally {
+    await app.close();
     removeOwnedDirectorySync(profile);
   }
 });

@@ -31,9 +31,30 @@
 .bot-presence-settings button.is-quiet, .bot-call-window .bot-presence-settings button.is-quiet { justify-self:end; min-height:23px; padding:2px 4px; border-color:transparent; color:var(--ui-content-secondary); font-weight:400; }
 
 .bot-capture-status-row { display:flex; flex-wrap:wrap; gap:5px; min-width:0; }
-.bot-call-status-row:has(> .bot-presence-status) { flex-wrap:wrap; }
-.bot-call-status-row:has(> .bot-presence-status) > :not(.bot-presence-status) { flex-basis:110px; }
+.bot-call-status-row:has(> :is(.bot-presence-status, .bot-presence-error-row)) { flex-wrap:wrap; }
+.bot-call-status-row:has(> .bot-presence-status) > :not(.bot-presence-status, .bot-presence-error-row) { flex-basis:110px; }
 .bot-call-status-row > .bot-presence-status { flex:0 1 auto; order:1; }
+.bot-presence-error-row { width:100%; min-width:0; }
+.bot-call-status-row > .bot-presence-error-row { display:flex; flex:0 1 100%; order:-1; }
+.bot-call-status-row:has(> .bot-presence-error-row), .bot-call-status-row > .bot-presence-error-row { justify-content:flex-end; }
+[data-call-pet-side=left] .bot-call-status-row:has(> .bot-presence-error-row),
+[data-call-pet-side=left] .bot-call-status-row > .bot-presence-error-row { justify-content:flex-start; }
+[data-call-pet-edge=top] .bot-call-status-row > .bot-presence-error-row { order:2; }
+.bot-presence-error {
+  box-sizing:border-box; display:flex; align-items:flex-start; gap:6px;
+  width:min(100%, 340px); max-width:min(100%, 340px); min-width:0; padding:9px 10px;
+  border:1px solid color-mix(in srgb, var(--ui-status-danger-content) 24%, var(--ui-border-control)); border-radius:12px;
+  background:var(--ui-surface-raised); box-shadow:0 3px 12px #142c4e20;
+}
+.bot-presence-error > [role=alert] { flex:1; min-width:0; }
+.bot-presence-error > .bot-presence-error-close, .bot-call-window .bot-presence-error > .bot-presence-error-close {
+  display:grid; place-items:center; flex:none; width:22px; height:22px; padding:0; border:0; border-radius:6px;
+  background:transparent; color:var(--ui-content-secondary); cursor:pointer;
+}
+.bot-presence-error > .bot-presence-error-close:hover, .bot-call-window .bot-presence-error > .bot-presence-error-close:hover {
+  background:var(--ui-surface-hover); color:var(--ui-content-primary);
+}
+.bot-presence-error-close svg { width:13px; height:13px; }
 .bot-presence-status {
   display:inline-flex; align-items:center; gap:5px; width:max-content; max-width:100%; min-width:0;
   padding:3px 4px 3px 9px; border:1px solid var(--ui-border-control); border-radius:999px;
@@ -43,7 +64,6 @@
 .bot-presence-dot { flex:none; width:6px; height:6px; border-radius:50%; background:var(--ui-content-secondary); }
 .bot-presence-status[data-mode=active] .bot-presence-dot { background:#36a472; }
 .bot-presence-status > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.bot-presence-status > span[role=alert] { color:var(--ui-status-danger-content); }
 .bot-presence-status { flex-wrap:wrap; }
 .bot-presence-activity { display:inline-flex; align-items:center; flex-wrap:wrap; gap:4px; }
 .bot-presence-activity small { display:inline-flex; align-items:center; gap:4px; font-size:11px; }

@@ -19,7 +19,7 @@ export interface BotContactStatusItem {
   recipientEvent?: { id: string; status: BotEventStatus; receivedAt: string };
   peerReply?: { state: 'published' | 'not-observed' | 'unknown'; messageId?: string; createdAt?: string };
   userDirectDelivery?: { state: 'published' | 'delivered' | 'not-observed' | 'not-requested' | 'unknown';
-    messageId?: string; conversationId?: string; createdAt?: string; deliveredAt?: string; userRead: 'unknown' };
+    messageId?: string; conversationId?: string; createdAt?: string; deliveredAt?: string; hasText?: boolean; attachmentCount?: number; userRead: 'unknown' };
 }
 export interface BotContactStatusResult {
   available: boolean; reason?: string; items: BotContactStatusItem[]; hasMore: boolean; nextBefore?: number;
@@ -129,7 +129,7 @@ export class BotContactStatus {
     return { state: 'published', messageId: String(found.id), createdAt: String(found.created_at) };
   }
 
-  private userDelivery(source: BotEvent, recipient: BotEvent, destination: unknown): NonNullable<BotContactStatusItem['userDirectDelivery']> {
+  userDelivery(source: BotEvent, recipient: BotEvent, destination: unknown): NonNullable<BotContactStatusItem['userDirectDelivery']> {
     const unknown = { state: 'unknown' as const, userRead: 'unknown' as const };
     if (destination === 'peer') return { state: 'not-requested', userRead: 'unknown' };
     if (destination !== 'user') return unknown;
@@ -145,7 +145,8 @@ export class BotContactStatus {
       || typeof result.messageId !== 'string' || typeof result.conversationId !== 'string') return unknown;
     // Read only delivery metadata in the other companion's private room. The
     // full text and attachments of that room never enter this Router's view.
-    const published = this.store.taskTransaction(sql => sql.prepare(`SELECT m.id,m.conversation_id,m.created_at,o.status AS outbox_status,o.delivered_at
+    const published = this.store.taskTransaction(sql => sql.prepare(`SELECT m.id,m.conversation_id,m.created_at,o.status AS outbox_status,o.delivered_at,
+      length(trim(m.content))>0 AS has_text,json_array_length(m.attachments_json) AS attachment_count
       FROM bot_messages m JOIN bot_conversations c ON c.id=m.conversation_id
       JOIN bot_outbox o ON o.message_id=m.id AND o.event_id=? AND o.conversation_id=m.conversation_id
       WHERE m.id=? AND m.conversation_id=? AND m.sender_id=? AND m.sender_type='companion' AND m.status='sent'
@@ -159,6 +160,7 @@ export class BotContactStatus {
     if (this.store.withdrawnIn(recipient.companionId, direct.securityDomainId, [String(published.id)]).size) return unknown;
     return { state: published.outbox_status === 'delivered' && typeof published.delivered_at === 'string' ? 'delivered' : 'published',
       messageId: String(published.id), conversationId: String(published.conversation_id), createdAt: String(published.created_at),
+      hasText: published.has_text === 1, attachmentCount: Number(published.attachment_count),
       ...(published.outbox_status === 'delivered' && typeof published.delivered_at === 'string' ? { deliveredAt: published.delivered_at } : {}), userRead: 'unknown' };
   }
 }

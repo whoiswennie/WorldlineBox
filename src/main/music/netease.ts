@@ -1,6 +1,7 @@
 // Adapted from worldline-harness's MIT-licensed netease-music gateway.
 import type { NeteaseLyricLine, NeteasePlaylistCatalog, NeteasePlaylistTrack, NeteaseTrackLyrics, NeteaseTrackStream } from '../../shared/music';
-export const NETEASE_PLAYLIST_ID = '18322613388'
+import { DEFAULT_NETEASE_PLAYLIST_ID } from '../../shared/music';
+export const NETEASE_PLAYLIST_ID = DEFAULT_NETEASE_PLAYLIST_ID
 const NETEASE_ORIGIN = 'https://music.163.com'
 const REQUEST_HEADERS = {
   accept: 'application/json,text/plain,*/*',

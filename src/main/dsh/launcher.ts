@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
 import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron';
-import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance, type DshCompanionCapabilityState } from '../../shared/dsh-launcher';
+import { DSH_LAUNCHER_CHANNEL, DSH_LAUNCHER_CHANGED_CHANNEL, DSH_TERMINAL_OUTPUT_CHANNEL, blocksDuringBundledDshUpdate, dshLauncherRequestSchema, dshPackPublicationRecordSchema, type DshLauncherRequest, type DshLauncherResponse, type DshLauncherState, type DshInstance, type DshCompanionCapabilityState } from '../../shared/dsh-launcher';
 import { assertOwnedDirectory, atomicJson, copyTree, inventoryTree, readJson, redact, removeManaged } from './files';
 import { OperationStore } from './operations';
 import { RuntimeService } from './runtime-service';
@@ -21,7 +21,7 @@ import { compareDshVersions, dshVersionPattern } from '../../shared/dsh-version-
 import { configureWorkbenchBrowser } from './workbench-browser';
 import type { CompanionInstanceLeaseKind } from './companion-instance-leases';
 import { restoreCompanionKeepAlive, type CompanionEnvironmentOwner } from './companion-keep-alive';
-import { DshHostUnavailableError } from './host-errors';
+import { bundledDshUpdatingMessage, DshHostUnavailableError } from './host-errors';
 import { CabinWorld, cabinBridgeOnline } from '../cabin-world';
 import { BotCabinWorldApp } from '../companion-bot/cabin-world-app';
 import { connectCabinPlugin } from './cabin-plugin';
@@ -124,6 +124,8 @@ export class DshLauncher {
   }
   async startCompanionEnvironment(companionId: string, name: string, signal?: AbortSignal): Promise<DshInstance> {
     signal?.throwIfAborted();
+    await this.initialization;
+    this.assertBundledRequestAvailable({ type: 'companion.environment.open', companionId, name });
     const instance = await this.resolveCompanionInstance(companionId, name);
     signal?.throwIfAborted(); await this.instances.ensureHost(instance.id, signal); return this.instances.get(instance.id);
   }
@@ -278,7 +280,7 @@ export class DshLauncher {
       const records = this.instances.list();
       const current = records.find(value => value.id === this.cliTerminal.state().selectedInstanceId) ?? records.find(value => value.isDefault);
       if (!current) throw new Error('Create and select a DSH instance before opening its CLI terminal.');
-      await this.waitForBundledInstance(current.id);
+      this.assertBundledRequestAvailable({ type: 'terminal.open', instanceId: current.id });
       return this.instances.prepareCli(current.id);
     } });
     this.initialization = this.init();
@@ -354,6 +356,11 @@ export class DshLauncher {
       // Wait through snapshot, validation and any rollback before starting the shared Host.
       await this.operations.waitFor(await operation);
       if (this.closed) throw new DshHostUnavailableError('closing', 'DSH 启动器正在关闭。', instanceId);
+    }
+  }
+  private assertBundledRequestAvailable(request: DshLauncherRequest, state?: DshLauncherState): void {
+    if (this.operations.runningId('runtime.bundle') && blocksDuringBundledDshUpdate(state ?? this.state(), request)) {
+      throw new Error(bundledDshUpdatingMessage);
     }
   }
   private watchCompanionCapabilities(changed: () => void): void {
@@ -540,10 +547,9 @@ export class DshLauncher {
     if (request.type === 'cabin.open') { await this.openCabin(); return { ok: true, cabin: await this.cabin.state() }; }
     if (request.type === 'versions.refresh') return this.refreshVersions(request.ifStale);
     if (this.operations.list().some(operation => operation.status === 'running' && ['runtime.delete', 'runtime.cleanup'].includes(operation.kind)) && !['operation.cancel'].includes(request.type)) throw new Error('正在清理运行版本，请等待操作完成。');
-    if (!this.state().supported) throw new Error('DSH runtime management currently supports Windows x64.');
-    if ('instanceId' in request && request.instanceId && request.type !== 'instance.stop' && request.type !== 'instance.logs') {
-      await this.waitForBundledInstance(request.instanceId);
-    }
+    const state = this.state();
+    if (!state.supported) throw new Error('DSH runtime management currently supports Windows x64.');
+    this.assertBundledRequestAvailable(request, state);
     switch (request.type) {
       case 'companion.environment.create': case 'companion.environment.bind': {
         this.validateCompanion?.(request.companionId);
@@ -563,6 +569,7 @@ export class DshLauncher {
         const instance = await this.resolveCompanionInstance(request.companionId, request.name);
         const companionEnvironment = { mode: 'shared' as const, instance };
         if (request.type === 'companion.environment.open') {
+          this.assertBundledRequestAvailable({ type: 'instance.open', instanceId: instance.id });
           const opened = await this.instances.handle({ type: 'instance.open', instanceId: instance.id });
           return opened.ok ? { ...opened, companionEnvironment } : opened;
         }
@@ -597,13 +604,18 @@ export class DshLauncher {
         this.instances.get(request.instanceId);
         const epoch = ++this.selectionEpoch; const selection = await this.instances.prepareCli(request.instanceId);
         if (epoch !== this.selectionEpoch) return { ok: true, cancelled: true, state: this.state() };
+        this.assertBundledRequestAvailable(request);
         await this.cliTerminal.selectContext(selection);
         if (request.type === 'cli.select') return { ok: true, state: this.state() };
         const result = await this.instances.handle({ type: 'instance.default', instanceId: request.instanceId });
         return result.ok ? { ok: true, state: this.state() } : result;
       }
       case 'cli.install-command': await this.cliTerminal.installCommand(); return { ok: true, state: this.state() };
-      case 'terminal.open': await this.cliTerminal.open(request.instanceId ? await this.instances.prepareCli(request.instanceId) : undefined); return { ok: true, state: this.state() };
+      case 'terminal.open': {
+        const selection = request.instanceId ? await this.instances.prepareCli(request.instanceId) : undefined;
+        this.assertBundledRequestAvailable(request);
+        await this.cliTerminal.open(selection); return { ok: true, state: this.state() };
+      }
       case 'terminal.input': this.cliTerminal.write(request.text, request.terminalId); return { ok: true };
       case 'terminal.resize': this.cliTerminal.resize(request.terminalId, request.cols, request.rows); return { ok: true };
       case 'terminal.select': this.cliTerminal.select(request.terminalId); return { ok: true, state: this.state() };
@@ -706,6 +718,7 @@ export class DshLauncher {
       case 'pack.create': case 'pack.install': case 'pack.delete': return this.packs.handle(request);
       case 'backup.export': {
         const target = await this.saveArchive('dshbackup'); if (!target) return { ok: true, cancelled: true };
+        this.assertBundledRequestAvailable(request);
         return { ok: true, operationId: await this.operations.run(request.type, '导出实例完整备份（含凭据）', request.instanceId, async op => {
           const staging = path.join(this.rootPath, 'staging', randomUUID());
           const temporary = `${target}.${op.id}.tmp`;

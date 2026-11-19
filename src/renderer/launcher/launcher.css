@@ -112,6 +112,7 @@
 .launcher-path-button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; padding: 2px; border: 0; border-radius: var(--ui-radius-control); background: transparent; color: var(--ui-content-tertiary); cursor: pointer; }
 .launcher-path-button:hover { background: var(--ui-surface-hover); color: var(--ui-content-primary); }
 .launcher-help { margin: var(--ui-space-4) 0 0; color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); line-height: var(--ui-line-height-relaxed); }
+.launcher-instance-details .ui-button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
 .launcher-acquisition > .launcher-actions { margin-top: var(--ui-space-4); }
 .launcher-runtime-source { display: flex; flex-direction: column; gap: var(--ui-space-2); margin-top: var(--ui-space-5); color: var(--ui-content-tertiary); font-size: var(--ui-font-size-caption); }
 .launcher-runtime-source code { color: var(--ui-content-secondary); font-family: var(--ui-font-family-mono); overflow-wrap: anywhere; }
@@ -128,7 +129,9 @@
 .launcher-banner > button { display: flex; flex: 0 0 auto; align-items: center; padding: 2px; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .launcher-notification-region { position: fixed; z-index: var(--ui-layer-notice); right: var(--ui-space-5); bottom: var(--ui-space-5); max-width: min(560px, calc(100vw - 100px)); pointer-events: none; }
 .launcher-notification-region .launcher-notice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; max-width: 100%; margin: 0; padding: 9px 8px 9px 12px; border: 1px solid var(--ui-border-divider); color: var(--ui-content-primary); background: var(--ui-surface-raised); }
-.launcher-notification-region .launcher-notice.is-error { background: var(--ui-status-danger-surface); color: var(--ui-status-danger-content); border-color: var(--ui-status-danger); }
+.launcher-notification-region .launcher-notice.is-error .workspace-notice-icon {
+  color: var(--ui-status-danger-content); background: var(--ui-status-danger-surface); border-radius: 7px;
+}
 .launcher-notification-region .ui-feedback__message { white-space: normal; overflow: visible; }
 .launcher-notice-summary { display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
 .launcher-notice-summary > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }

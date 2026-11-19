@@ -1,11 +1,9 @@
 import { useSyncExternalStore } from 'react';
-import { DEFAULT_MUSIC_PREFERENCES, DEFAULT_NETEASE_PLAYLIST_ID, DEFAULT_NETEASE_PLAYLIST_NAME, musicPreferencesSchema, type MusicPreferences, type PlaybackMode } from '../../shared/music';
+import { DEFAULT_MUSIC_PREFERENCES, DEFAULT_NETEASE_PLAYLIST_ID, musicPreferencesSchema, savedNeteasePlaylists, type MusicPreferences, type PlaybackMode } from '../../shared/music';
 
 export { DEFAULT_NETEASE_PLAYLIST_ID } from '../../shared/music';
 export type { PlaybackMode } from '../../shared/music';
-export function resolveNeteasePlaylists(preferences: Pick<MusicPreferences, 'playlistId' | 'playlists'>) {
-  return [{ id: DEFAULT_NETEASE_PLAYLIST_ID, name: DEFAULT_NETEASE_PLAYLIST_NAME }, ...preferences.playlists.filter(item => item.id !== DEFAULT_NETEASE_PLAYLIST_ID)];
-}
+export const resolveNeteasePlaylists = savedNeteasePlaylists;
 
 /** One application-owned store. Audio and preferences survive every settings/tab remount. */
 export function createMusicPreferenceStore(initial: MusicPreferences, persist: (value: MusicPreferences) => void) {
@@ -26,6 +24,10 @@ export function createMusicPreferenceStore(initial: MusicPreferences, persist: (
   const actions = {
     setAutoPlay: (enabled: boolean) => mutate(draft => { draft.autoPlay = enabled; }),
     selectTrack: (id: string) => mutate(draft => { draft.trackId = id; draft.positionSeconds = 0; }),
+    initializeTrack: (playlistId: string, expected: string | undefined, fallback: string) => {
+      if (state.playlistId !== playlistId || state.trackId !== expected) return;
+      mutate(draft => { draft.trackId = fallback; draft.positionSeconds = 0; });
+    },
     rememberProgress: (id: string, position: number) => mutate(draft => {
       // A pause event from an outgoing source must never resurrect that old song.
       if (draft.trackId !== id) return;
@@ -34,11 +36,17 @@ export function createMusicPreferenceStore(initial: MusicPreferences, persist: (
     }),
     setVolume: (volume: number) => mutate(draft => { draft.volume = Math.max(0, Math.min(1, volume)); }),
     setPlaybackMode: (mode: PlaybackMode) => mutate(draft => { draft.playbackMode = mode; }),
-    savePlaylist: (name: string, id: string) => mutate(draft => {
-      if (id !== DEFAULT_NETEASE_PLAYLIST_ID) {
-        draft.playlists = [...draft.playlists.filter(item => item.id !== id), { id, name: name.trim().slice(0, 40) }];
-      }
-      activate(draft, id);
+    savePlaylist: (name: string, id: string, description = '', select = true) => mutate(draft => {
+      if (id === DEFAULT_NETEASE_PLAYLIST_ID) throw new Error('内置歌单不可修改。');
+      const item = { id, name, description };
+      draft.playlists = draft.playlists.some(playlist => playlist.id === id)
+        ? draft.playlists.map(playlist => playlist.id === id ? item : playlist)
+        : [...draft.playlists, item];
+      if (select) activate(draft, id);
+    }),
+    playTrack: (playlistId: string, trackId?: string) => mutate(draft => {
+      activate(draft, playlistId);
+      if (trackId !== undefined) { draft.trackId = trackId; draft.positionSeconds = 0; }
     }),
     removePlaylist: (id: string) => mutate(draft => {
       if (id === DEFAULT_NETEASE_PLAYLIST_ID) return;

@@ -80,8 +80,29 @@
 .bot-reply-progress-label { overflow-wrap:anywhere; }
 .bot-reply-progress-elapsed { font-variant-numeric:tabular-nums;white-space:nowrap; }
 .bot-workspace .bot-reply-progress .bot-stop { padding:3px 8px;margin:0 0 0 2px;font-size:11px;border:1px solid var(--ui-border-subtle);color:var(--ui-content-secondary); }
-.bot-error { position:absolute;top:66px;right:18px;z-index:var(--ui-layer-popover);display:flex;justify-content:space-between;align-items:center;gap:12px;width:max-content;max-width:min(520px,calc(100% - 36px));padding:10px 13px;border:1px solid var(--ui-border-subtle);border-radius:9px;box-shadow:var(--ui-shadow-menu);background:var(--ui-status-danger-surface);color:var(--ui-status-danger-content);font-size:12px;line-height:1.6;overflow-wrap:anywhere; }
-.bot-error button { border:0;background:transparent; }
+.bot-error {
+  position:absolute;top:66px;inset-inline-end:12px;z-index:var(--ui-layer-popover);box-sizing:border-box;
+  display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:9px;
+  width:min(365px,calc(100% - 24px));padding:11px;border:1px solid var(--ui-border-subtle);
+  border-radius:12px;background:var(--ui-surface-raised);box-shadow:var(--ui-shadow-menu);
+}
+.bot-error-toast-icon {
+  display:grid;place-items:center;width:25px;height:25px;border-radius:8px;
+  color:var(--ui-status-danger-content);background:var(--ui-status-danger-surface);
+}
+.bot-error-toast-icon .bot-icon { width:16px;height:16px; }
+.bot-error > .bot-error-notice { color:var(--ui-content-secondary); }
+.bot-error-toast-title { display:block;margin:0 0 2px;color:var(--ui-content-primary);font-size:13px;font-weight:600; }
+.bot-error > .bot-error-notice > p { max-height:min(10em,30vh);overflow:auto; }
+.bot-workspace .bot-error .bot-diagnostic-actions { gap:4px 10px;margin-top:7px; }
+.bot-workspace .bot-error .bot-diagnostic-actions > button {
+  min-height:25px;padding:2px 4px;border:0;border-radius:5px;color:var(--ui-content-secondary);font-size:11px;
+}
+.bot-workspace .bot-error .bot-diagnostic-actions > button:first-child { color:var(--ui-content-accent); }
+.bot-workspace .bot-error .bot-error-toast-close {
+  width:25px;height:25px;padding:0;border:0;border-radius:6px;color:var(--ui-content-secondary);
+}
+.bot-error-toast-close .bot-icon { width:15px;height:15px; }
 .bot-peer-avatar { display:block;position:relative;width:36px;height:36px;flex-shrink:0; }
 .bot-peer-avatar>.bot-avatar { position:absolute;width:26px;height:26px;box-shadow:0 0 0 2px var(--ui-surface-pane); }
 .bot-peer-avatar>.bot-avatar:first-child { left:0;top:0; }

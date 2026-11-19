@@ -1,6 +1,6 @@
 {
-  "version": "0.2.2-rc.4",
-  "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2-rc.4.tgz",
-  "integrity": "sha512-DRJaTWIk4ObkDOHxld+XjFgHdKzX5UApE7PjzE/Espy44m1fT4pY7LRJCMDCFD+ArIJ+Gwl1FL9g1/UlMwNvpw==",
-  "sourceSha256": "5544f3d343131eb142f79a29c3f474c54fb8aa55e5389afe895d1e1c09730884"
+  "version": "0.2.2-rc.5",
+  "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.2-rc.5.tgz",
+  "integrity": "sha512-cNbp12tLYLUTXaVli7zwwMjzmmEVCD1PRldg4oKtXM4+lFYckcaliMS2PU/FoThB4iAN/fKOSID0nrtRZU4Gjw==",
+  "sourceSha256": "67da5a3c458f46cd278e0eec6ad0e3a44e99fd13087c6f11a1b362268900a52c"
 }

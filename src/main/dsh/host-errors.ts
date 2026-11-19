@@ -1,5 +1,7 @@
 export type DshHostUnavailableReason = 'configuration' | 'stopped' | 'startup' | 'closing';
 
+export const bundledDshUpdatingMessage = '内置 DSH 正在更新，请等待更新完成后再操作。';
+
 /** No native admission was attempted by the operation that raised this error.
  * This describes Host availability, never the outcome of earlier native work. */
 export class DshHostUnavailableError extends Error {

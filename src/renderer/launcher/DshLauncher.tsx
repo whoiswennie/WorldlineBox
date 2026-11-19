@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 
 import {
+  blocksDuringBundledDshUpdate,
   type DshInstance,
   type DshPack,
   type DshLauncherRequest,
@@ -54,6 +55,11 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
   const [preparingCli, setPreparingCli] = useState<string | null>(null);
   const [queuedStart, setQueuedStart] = useState<string | null>(null);
   const [notifications, dispatchNotification] = useReducer(operationNotificationsReducer, initialOperationNotifications);
+  const reportBundledUpdate = useCallback(() => {
+    const message = t('launcher.bundledUpdatingHint');
+    setError(message);
+    return { ok: false as const, error: message };
+  }, [t]);
   const acceptState = useCallback((next: DshLauncherState) => {
     stateRef.current = next;
     setState(next);
@@ -92,6 +98,8 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
 
   const run = useCallback<LauncherRunRequest>(async (request) => {
     if (!api) return { ok: false, error: t('launcher.unavailable') };
+    const blockedByUpdate = () => stateRef.current && blocksDuringBundledDshUpdate(stateRef.current, request);
+    if (blockedByUpdate()) return reportBundledUpdate();
     if (request.type === 'versions.refresh') {
       try { return await api.request(request); }
       catch (cause) { return { ok: false, error: cause instanceof Error ? cause.message : String(cause) }; }
@@ -156,6 +164,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
       const result = await cliRequest.current.promise;
       setQueuedStart(null);
       if (!result.ok || result.cancelled) return result;
+      if (blockedByUpdate()) return reportBundledUpdate();
     }
     setRequesting(true);
     setError(null);
@@ -181,7 +190,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
       setError(message);
       return { ok: false, error: message };
     } finally { setRequesting(false); }
-  }, [api, t, acceptState, refresh]);
+  }, [api, t, acceptState, refresh, reportBundledUpdate]);
 
   const selected = state?.instances.find((instance) => instance.id === selectedId)
     ?? state?.instances.find((instance) => instance.isDefault)
@@ -189,6 +198,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
     ?? state?.instances[0];
   const runningOperations = state?.operations.filter((operation) => operation.status === 'running') ?? [];
   const bundledSetup = runningOperations.find(operation => operation.kind === 'runtime.bundle');
+  const bundledUpdating = !!bundledSetup && !!selected?.isBundled;
   const latestFailure = notifications.failures[0];
   const selectedBusy = requesting || queuedStart === selected?.id || runningOperations.some((operation) => operation.instanceId === selected?.id);
   const disabled = requesting || !state?.supported;
@@ -237,7 +247,7 @@ export function DshLauncher({ api }: { readonly api?: WorldlineBoxDshLauncherApi
               : page === 'packs' ? <PackPage state={state} disabled={requesting} onDialog={setDialog} run={run} />
               : page === 'operations' ? <LauncherOperationsPage state={state} disabled={requesting} run={run} />
               : page === 'archived' ? <ArchivedInstances state={state} disabled={requesting} run={run} onOpenVersions={openVersions} onDelete={instance => setDialog({ kind: 'delete-instance', instance })} />
-              : selected ? <InstanceDetails api={api} busy={selectedBusy} instance={selected} key={selected.id} onDialog={setDialog} onError={setError} onOpenVersions={openVersions} preparingStart={queuedStart === selected.id} run={run} state={state} />
+              : selected ? <InstanceDetails api={api} busy={selectedBusy} bundledUpdating={bundledUpdating} instance={selected} key={selected.id} onDialog={bundledUpdating ? reportBundledUpdate : setDialog} onError={setError} onOpenVersions={openVersions} preparingStart={queuedStart === selected.id} run={run} state={state} />
               : bundledSetup ? <EmptyState icon="box" title={t('launcher.bundledSetup', { version: bundledSetup.label })} description={operationPhase(t, bundledSetup.phase)} />
               : <EmptyState icon="box" title={t('launcher.noInstances')} description={t('launcher.noInstancesDescription')}><Button disabled={disabled} iconName={state.runtimes.length ? 'plus' : 'download'} onClick={state.runtimes.length ? openCreate : openVersions} variant="primary">{t(state.runtimes.length ? 'launcher.create' : 'launcher.getRuntime')}</Button></EmptyState>}
             </div>}

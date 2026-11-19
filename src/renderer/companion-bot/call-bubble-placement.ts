@@ -15,9 +15,9 @@ interface BubblePlacement {
   bottom?: number;
 }
 
-function placeBubble(safe: Edges, head: Edges | undefined, measure: (width: number) => number): BubblePlacement {
+function placeBubble(safe: Edges, head: Edges | undefined, measure: (width: number) => number, compact: boolean, widthLimit: number): BubblePlacement {
   const width = safe.right - safe.left, height = safe.bottom - safe.top;
-  const w = Math.min(maxWidth, width);
+  const w = Math.min(widthLimit, width);
   if (!head) return { direction: 'none', width: w, height: Math.min(maxHeight, height), x: safe.left + (width - w) / 2, top: safe.top };
   const left = clamp(head.left - gap, safe.left, safe.right) - safe.left;
   const right = safe.right - clamp(head.right + gap, safe.left, safe.right);
@@ -26,7 +26,7 @@ function placeBubble(safe: Edges, head: Edges | undefined, measure: (width: numb
   const below = safe.bottom - clamp(head.bottom + gap, safe.top, safe.bottom);
   const x = clamp((head.left + head.right - w) / 2, safe.left, safe.right - w);
   const candidates: BubblePlacement[] = [];
-  if (side >= 220) {
+  if (!compact && side >= 220) {
     const sideWidth = Math.min(maxWidth, side);
     candidates.push({ direction: right >= left ? 'left' : 'right', width: sideWidth, height: Math.min(maxHeight, height),
       x: right >= left ? safe.right - right : safe.left + left - sideWidth, centerY: (head.top + head.bottom) / 2 });
@@ -53,11 +53,19 @@ export function observeCallBubble(node: HTMLElement, scene: HTMLElement) {
     const frame = scene.getBoundingClientRect();
     if (frame.width < 1 || frame.height < 1) return;
     const padding = Math.min(gap, frame.width / 4, frame.height / 4);
-    const top = Math.max(padding, (header?.getBoundingClientRect().bottom ?? frame.top) - frame.top + padding);
+    let top = Math.max(padding, (header?.getBoundingClientRect().bottom ?? frame.top) - frame.top + padding);
     const progress = scene.querySelector('.bot-call-pet-progress');
-    const bottom = Math.max(top, Math.min(frame.bottom, dock?.getBoundingClientRect().top ?? frame.bottom,
-      progress?.getBoundingClientRect().top ?? frame.bottom) - frame.top - padding);
-    const live = scene.querySelector<HTMLElement>('.bot-call-live2d');
+    const compactAvatar = shell?.querySelector('.bot-call-compact-anchor');
+    const opensBelow = compactAvatar && view?.document.documentElement.dataset.callPetEdge === 'top';
+    const dockBounds = dock?.getBoundingClientRect();
+    const captureBounds = compactAvatar && dock?.querySelector('.bot-desktop-capture-panel')?.getBoundingClientRect();
+    const progressBounds = progress?.getBoundingClientRect();
+    if (opensBelow) top = Math.max(top, Math.max(dockBounds?.bottom ?? frame.top,
+      captureBounds ? captureBounds.bottom : frame.top, progressBounds?.bottom ?? frame.top) - frame.top + padding);
+    const bottom = opensBelow ? frame.height - padding : Math.max(top, Math.min(frame.bottom, dockBounds?.top ?? frame.bottom,
+      captureBounds ? captureBounds.top : frame.bottom, progressBounds?.top ?? frame.bottom) - frame.top - padding);
+    top = Math.min(top, bottom);
+    const live = scene.querySelector<HTMLElement>('.bot-call-live2d:not([hidden])');
     const bounds = live?.dataset.petHead?.split(',').map(Number);
     let head: Edges | undefined;
     if (live && bounds?.length === 4 && bounds.every(Number.isFinite)) {
@@ -65,11 +73,12 @@ export function observeCallBubble(node: HTMLElement, scene: HTMLElement) {
       const canvas = live.getBoundingClientRect(), left = canvas.left - frame.left + x, top = canvas.top - frame.top + y;
       head = { left, top, right: left + width, bottom: top + height };
     } else {
-      const portrait = scene.querySelector('.bot-call-portrait-frame')?.getBoundingClientRect();
+      const portrait = (compactAvatar ?? scene.querySelector('.bot-call-portrait-frame'))?.getBoundingClientRect();
       if (portrait) head = { left: portrait.left - frame.left, top: portrait.top - frame.top,
         right: portrait.right - frame.left, bottom: portrait.bottom - frame.top };
     }
     const card = node.querySelector<HTMLElement>('.bot-call-bubble');
+    const review = node.querySelector<HTMLElement>('.bot-call-review');
     const caption = card?.querySelector<HTMLElement>('.bot-call-bubble-text');
     const cardScroll = card?.scrollTop ?? 0, captionScroll = caption?.scrollTop ?? 0;
     const measured = new Map<number, number>();
@@ -81,11 +90,18 @@ export function observeCallBubble(node: HTMLElement, scene: HTMLElement) {
       const height = node.offsetHeight;
       measured.set(width, height);
       return height;
-    });
+    }, !!compactAvatar, compactAvatar && review ? review.offsetWidth : maxWidth);
     node.dataset.bubbleTail = placed.direction;
     node.style.left = placed.x + 'px';
     node.style.width = placed.width + 'px';
     node.style.maxHeight = placed.height + 'px';
+    const surface = card ?? review;
+    if (compactAvatar && head && surface && (placed.direction === 'down' || placed.direction === 'up')) {
+      const rect = surface.getBoundingClientRect();
+      const inset = Math.min(13, rect.width / 2);
+      const tip = clamp(frame.left + (head.left + head.right) / 2, rect.left + inset, rect.right - inset);
+      node.style.setProperty('--bot-call-tail-x', tip - frame.left - placed.x - 5 + 'px');
+    } else node.style.removeProperty('--bot-call-tail-x');
     const height = node.offsetHeight;
     if (card && cardScroll) card.scrollTop = cardScroll;
     if (caption && captionScroll) caption.scrollTop = captionScroll;
@@ -101,9 +117,11 @@ export function observeCallBubble(node: HTMLElement, scene: HTMLElement) {
     frameRequest = view.requestAnimationFrame(() => { frameRequest = undefined; position(); });
   };
   const resize = new ResizeObserver(schedule);
-  for (const target of [node, scene, dock, header]) if (target) resize.observe(target);
+  const captureControls = dock?.querySelector('.bot-capture-controls-row');
+  for (const target of [node, scene, dock, header, captureControls]) if (target) resize.observe(target);
   const figures = new MutationObserver(schedule);
-  figures.observe(scene, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-pet-head'] });
+  figures.observe(scene, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['data-pet-head', 'hidden'] });
+  if (view) figures.observe(view.document.documentElement, { attributes: true, attributeFilter: ['data-call-pet-anchor-revision'] });
   position();
   return () => {
     if (frameRequest !== undefined) view?.cancelAnimationFrame(frameRequest);

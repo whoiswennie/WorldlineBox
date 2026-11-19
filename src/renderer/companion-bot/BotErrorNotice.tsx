@@ -23,12 +23,14 @@ function diagnose(text: string, zh: boolean) {
     return { hint: zh ? '服务暂时限制了请求频率，稍等片刻再试。' : 'The provider is rate limiting requests. Try again shortly.' };
   if (/(?:DSH|Host).*(?:启动超时|startup timed out|startup timeout)/i.test(text))
     return { hint: zh ? 'DSH 启动超时，伙伴尚未连上执行环境。可以查看本次启动的实例日志。' : 'DSH startup timed out. Check the instance log for the startup attempt.' };
+  if (/UND_ERR_CONNECT_TIMEOUT|connect(?:ion)? (?:time(?:d out|out))|request (?:time(?:d out|out))/i.test(text))
+    return { hint: zh ? '模型请求超时。请检查网络和服务地址后重试。' : 'The model request timed out. Check the network and service endpoint, then retry.' };
   if (/ETIMEDOUT|ECONNREFUSED|ENOTFOUND|fetch failed|network error|请求超时|连接超时/i.test(text))
     return { hint: zh ? '服务连接失败，请检查网络和服务地址后重试。' : 'Connection failed. Check the network and service endpoint.' };
   return { hint: '' };
 }
 
-export function BotErrorNotice({ message, zh }: { message: string; zh: boolean }) {
+export function BotErrorNotice({ message, zh, toast = false }: { message: string; zh: boolean; toast?: boolean }) {
   const { api, state, openModelSettings, revealAppLog } = useContext(BotDiagnostics);
   const detail = safeDetail(message);
   const { hint, settings } = diagnose(detail, zh);
@@ -67,8 +69,13 @@ export function BotErrorNotice({ message, zh }: { message: string; zh: boolean }
     catch { setFeedback(zh ? '可以选中下方文字手动复制。' : 'Select the text below to copy it.'); }
   };
   const logLabel = namedId ? (zh ? '查看实例日志' : 'View instance log') : (zh ? '查看当前实例日志' : 'View current instance log');
+  const unsentDsh = toast ? /^(.*DSH[^，\n]*)，本次消息未发送。/u.exec(detail)?.[1] : undefined;
+  const summary = unsentDsh
+    ? (zh ? `${unsentDsh}。请在启动器确认共享 DSH 已就绪后重试。` : 'Check the shared DSH instance in the launcher, then try again.')
+    : hint || detail;
   return <div className="bot-error-notice">
-    <p>{hint || detail}</p>
+    {toast && <strong className="bot-error-toast-title">{unsentDsh ? (zh ? '消息未发送' : 'Message not sent') : (zh ? '操作未完成' : 'Action incomplete')}</strong>}
+    <p>{summary}</p>
     <div className="bot-diagnostic-actions">
       {api && instance && <button type="button" onClick={() => open('log')}>{logLabel}</button>}
       {settings && openModelSettings && <button type="button" onClick={event => {

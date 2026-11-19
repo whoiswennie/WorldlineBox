@@ -173,7 +173,7 @@ it('initializes memory Node without waiting for the same shared Host preparation
   expect(f.create).not.toHaveBeenCalled();
 });
 
-it('finishes the bundled upgrade before startup consumers can use the old profile', async () => {
+it('rejects manual operations during a bundled upgrade and lets background consumers resume safely', async () => {
   const f = fixture();
   const bundled = Object.assign(f.records[0]!, { isBundled: true, keepAlive: true });
   const target = { ...bundledDshRelease, id: 'bundled-next', npmIntegrity: bundledDshRelease.integrity, adapter: 'node-cli-web-v1' };
@@ -191,15 +191,25 @@ it('finishes the bundled upgrade before startup consumers can use the old profil
   try {
     await operations.init();
     Object.assign(f.launcher, { operations, bundledRuntime: { directory, archiver: '' } });
-    vi.spyOn(f.launcher, 'state').mockReturnValue({ supported: true } as ReturnType<DshLauncher['state']>);
+    vi.spyOn(f.launcher, 'state').mockImplementation(() => ({ supported: true, instances: f.records, operations: operations.list(),
+      snapshots: [{ id: 'old-snapshot', instanceId: bundled.id }] }) as ReturnType<DshLauncher['state']>);
     const route = Reflect.get(f.launcher, 'handle').bind(f.launcher);
     const first = await route({ type: 'runtime.bundle' });
     expect((await route({ type: 'runtime.bundle' })).operationId).toBe(first.operationId);
+    for (const request of [
+      { type: 'instance.start', instanceId: bundled.id }, { type: 'instance.open', instanceId: bundled.id },
+      { type: 'instance.stop', instanceId: bundled.id }, { type: 'instance.rename', instanceId: bundled.id, name: 'renamed' },
+      { type: 'snapshot.delete', snapshotId: 'old-snapshot' }, { type: 'terminal.open', instanceId: bundled.id },
+      { type: 'companion.environment.open', companionId: 'fish', name: 'Fish' },
+    ]) await expect(route(request)).rejects.toThrow('内置 DSH 正在更新');
+    await expect(route({ type: 'instance.logs', instanceId: bundled.id })).resolves.toMatchObject({ ok: true });
+    await expect(route({ type: 'instance.start', instanceId: 'selected' })).resolves.toMatchObject({ ok: true });
+    handle.mockClear();
     const wait = vi.spyOn(operations, 'waitFor');
     const requests = [
       f.launcher.botNodePath(), f.launcher.restoreCompanionEnvironments([{ id: 'fish', name: 'Fish' }]),
-      route({ type: 'instance.open', instanceId: bundled.id }), f.launcher.botHost(bundled.id),
-    ];
+      f.launcher.botHost(bundled.id),
+    ] as const;
     await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(requests.length));
     expect(f.ensureHost).not.toHaveBeenCalled();
     expect(handle).not.toHaveBeenCalled();
@@ -208,7 +218,9 @@ it('finishes the bundled upgrade before startup consumers can use the old profil
 
     finish();
     const results = await Promise.all(requests);
-    expect(results[3].instance.runtimeId).toBe(target.id);
+    expect(results[2].instance.runtimeId).toBe(target.id);
+    expect(handle).not.toHaveBeenCalled();
+    await expect(route({ type: 'instance.open', instanceId: bundled.id })).resolves.toMatchObject({ ok: true });
     expect(handle).toHaveBeenCalledWith({ type: 'instance.open', instanceId: bundled.id });
     expect(operations.list()).toEqual([expect.objectContaining({ status: 'succeeded' })]);
     expect(install).not.toHaveBeenCalled();

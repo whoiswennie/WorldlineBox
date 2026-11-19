@@ -52,10 +52,33 @@ it('starts immediately and fills the existing composer on the second click witho
 });
 it('sends a playable voice through its separate action and retains the recording on a failed send', async () => {
   const fixture = await mount(); fixture.onVoice.mockRejectedValueOnce(Error('发送失败，请重试。'));
-  await recorded('录音发语音'); expect(fixture.onVoice).not.toHaveBeenCalled(); await click('发送语音');
+  await recorded('录音发语音');
+  const preview = host.querySelector('audio')!;
+  expect(preview.src).toMatch(/^blob:/);
+  expect(fixture.onVoice).not.toHaveBeenCalled();
+  await click('发送语音');
   expect(host.textContent).toContain('发送失败'); expect(host.querySelector('[aria-label="发送语音"]')).not.toBeNull();
+  expect(host.querySelector('audio')).toBe(preview); expect(host.querySelector('[aria-label="试听录音"]')).not.toBeNull();
   await click('发送语音'); expect(fixture.onVoice).toHaveBeenCalledTimes(2); expect(fixture.onText).not.toHaveBeenCalled();
+  expect(host.querySelector('audio')).toBeNull();
+  expect(preview.hasAttribute('src')).toBe(false);
   expect(fixture.requests.filter(request => request.type === 'speech.voice')).toHaveLength(1);
+});
+it('offers local preview while the recording is being processed and after recognition fails', async () => {
+  let finish!: (result: LocalSpeechResponse) => void;
+  const fixture = await mount(input => input.type === 'speech.voice' ? new Promise(resolve => { finish = resolve; }) : Promise.resolve({ ok: true }));
+  await click('录音发语音');
+  expect(host.querySelector('audio')).toBeNull();
+  await click('结束录音');
+  const preview = host.querySelector('audio')!;
+  expect(host.querySelector('.is-processing [aria-label="试听录音"]')).not.toBeNull();
+  await act(() => finish({ ok: false, error: '识别暂时失败' }));
+  expect(host.querySelector('audio')).toBe(preview);
+  expect(host.querySelector('[aria-label="试听录音"]')).not.toBeNull();
+  expect(fixture.onVoice).not.toHaveBeenCalled();
+  await click('关闭语音');
+  expect(host.querySelector('audio')).toBeNull();
+  expect(preview.hasAttribute('src')).toBe(false);
 });
 it('cancels pending recognition on chat change and prevents late results from reaching another composer', async () => {
   let resolve!: (value: LocalSpeechResponse) => void;

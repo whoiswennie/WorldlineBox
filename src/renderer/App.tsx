@@ -906,7 +906,8 @@ function ToolButton({
 
 export interface AssetManagerHandle {
   closeSettings?(): void;
-  openSettings: (category?: AppSettingsCategoryId) => void;
+  openSettings: (category?: AppSettingsCategoryId, expandPlugins?: boolean) => void;
+  openAppLog(): void;
   revealExtensionSave: (event: ExtensionSaveCompletedEvent) => void;
 }
 
@@ -1889,14 +1890,17 @@ export function AssetManager({
   const handledExtensionSaveRef = useRef<ExtensionSaveCompletedEvent | null>(null);
   const [appSettingsCategory, setAppSettingsCategory] =
     useState<AppSettingsCategoryId>("general");
+  const [expandSettingsPlugins, setExpandSettingsPlugins] = useState(false);
 
   useImperativeHandle(settingsRef, () => ({
     closeSettings: () => setAppSettingsOpen(false),
     revealExtensionSave: setDeferredExtensionSave,
-    openSettings: (category = "general") => {
+    openSettings: (category = "general", expandPlugins = false) => {
       setAppSettingsCategory(category);
+      setExpandSettingsPlugins(expandPlugins);
       setAppSettingsOpen(true);
     },
+    openAppLog: () => openAppLog(),
   }), []);
 
   const [pluginContributionEpoch, setPluginContributionEpoch] = useState(0);
@@ -12471,7 +12475,7 @@ export function AssetManager({
   const globalSettingsOverlayOpen = appSettingsOpen || appLogOpen ||
     scriptSandboxPreviewOpen || aboutOpen || openSourceLicensesOpen ||
     aiConnectionFailureGate.open || pluginUiDialogOpen || criticalConfirmation.request !== null;
-  useEffect(() => {
+  useLayoutEffect(() => {
     onShellStateChange({ settingsOpen: globalSettingsOverlayOpen, settingsDisabled: busy });
   }, [globalSettingsOverlayOpen, busy, onShellStateChange]);
 
@@ -16667,6 +16671,7 @@ export function AssetManager({
       />
       {renderApplicationDialog(<AppSettingsDialog
         activeCategory={appSettingsCategory}
+        initiallyExpandPlugins={expandSettingsPlugins}
         aiConfigPanel={
           <AiConfigDialog
             open={appSettingsOpen && appSettingsCategory === "ai"}

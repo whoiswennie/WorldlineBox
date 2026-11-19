@@ -27,18 +27,18 @@ import {
 import type { AiUiPreferences } from "./ai-ui-preferences";
 import type { CanvasPreferences, CanvasCaptionAlign } from "./canvas-preferences";
 import { Icon } from "./Icons";
-import { iconActionAttrs } from "./icon-action-attrs";
 import { useT } from "./i18n";
 import type { WorldlineBoxPluginManagerApi } from "../shared/plugin-manager-api";
 import type { WorldlineBoxMcpSettingsApi } from "../shared/mcp";
 import type { WorldlineBoxMobileAccessApi } from "../shared/mobile-access";
 import { MobileAccessSettingsPage } from './MobileAccessSettingsPage';
-import { DialogShell } from "./ui/patterns";
+import { AppSettingsWindow } from "./AppSettingsWindow";
 import { MusicSettingsSlot } from './music/MusicProvider';
 import { CaptureToolsSettingsPage } from './capture-tools/CaptureToolsSettingsPage';
 
 export interface AppSettingsDialogProps {
   open: boolean;
+  initiallyExpandPlugins?: boolean;
   activeCategory: AppSettingsCategoryId;
   onClose: () => void;
   onActiveCategoryChange: (category: AppSettingsCategoryId) => void;
@@ -85,6 +85,7 @@ export interface AppSettingsDialogProps {
  */
 export function AppSettingsDialog({
   open,
+  initiallyExpandPlugins,
   activeCategory,
   onClose,
   onActiveCategoryChange,
@@ -148,10 +149,6 @@ export function AppSettingsDialog({
     open && !showingPluginSettings && activeCategory === "appearance",
   );
 
-  function handleClose() {
-    onClose();
-  }
-
   function selectCategory(category: AppSettingsCategoryId) {
     setPluginSettingsPluginId(null);
     setShowingCommunity(false);
@@ -178,30 +175,7 @@ export function AppSettingsDialog({
   if (!open) return null;
 
   return (
-    <div
-      // While an appearance control is being adjusted, the backdrop fades
-      // its dim + blur out so the live result on the app is visible (a93).
-      className={`dialog-backdrop app-settings-backdrop${appearanceAdjusting ? " is-adjusting" : ""}`}
-      role="presentation"
-      {...appearanceAdjustHandlers}
-    >
-      <DialogShell
-        className="create-dialog app-settings-dialog"
-        contentClassName="ui-dialog-shell__content--flush"
-        dialogId="app-settings-dialog"
-        headerActions={(
-          <button
-            className="dialog-close"
-            onClick={handleClose}
-            type="button"
-            {...iconActionAttrs(t("common.close"))}
-          >
-            <Icon name="close" size={16} />
-          </button>
-        )}
-        onRequestClose={handleClose}
-        title={t("settings.title")}
-      >
+    <AppSettingsWindow onClose={onClose} appearanceAdjusting={appearanceAdjusting} backdropProps={appearanceAdjustHandlers}>
         <div className="app-settings-frame">
           <AppSettingsNavigation
             activeCategory={showingPluginSettings ? null : activeCategory}
@@ -209,6 +183,7 @@ export function AppSettingsDialog({
             pluginSettingsEntries={pluginSettingsEntries}
             onSelectCategory={selectCategory}
             onSelectPluginSettings={openPluginSettings}
+            initiallyExpandPlugins={initiallyExpandPlugins}
           />
           <main
             aria-labelledby={showingPluginSettings
@@ -359,7 +334,6 @@ export function AppSettingsDialog({
             ) : null}
           </main>
         </div>
-      </DialogShell>
-    </div>
+    </AppSettingsWindow>
   );
 }

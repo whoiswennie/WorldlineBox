@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { BotStore, BotTaskSql } from './store';
 import type { BotEvent } from './types';
+import { BotContactStatus } from './contact-status';
 
 const key = (parts: string[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 type Route = { event_id: string; source_event_id: string; source_epoch: number; target_epoch: number; result_event_id: string | null; return_event_id: string | null };
@@ -98,17 +99,36 @@ export class BotPeerReturns {
   private receipt(source: BotEvent, results: SettledPeer[]): string {
     return key([source.id, ...results.map(({ result }) => result.id)]);
   }
+  private consumed(sql: BotTaskSql, source: BotEvent, results: SettledPeer[], nativeReceipt?: string): boolean {
+    return !!this.store.getMessage(source.replyMessageId)?.content.trim() && (nativeReceipt === this.receipt(source, results)
+      || results.every(({ result }) => sql.prepare(`SELECT 1 FROM bot_peer_bridges
+        WHERE source_owner=? AND source_id=? AND target_message_id=? LIMIT 1`).get(source.companionId, result.replyMessageId, source.replyMessageId)));
+  }
+  canFinalize(source: BotEvent, nativeReceipt?: string): boolean {
+    return this.store.taskTransaction(sql => {
+      const routes = this.routes(sql, source.id);
+      if (!routes.length) return true;
+      const results = routes.flatMap(route => {
+        const request = this.store.getEvent(route.event_id), result = route.result_event_id && this.store.getEvent(route.result_event_id);
+        return request && result && this.valid(request, route.target_epoch) && this.readableResult(source, result, route.target_epoch) ? [{ request, result }] : [];
+      });
+      return results.length === routes.length && this.consumed(sql, source, results, nativeReceipt);
+    });
+  }
   private resultItems(results: SettledPeer[]) {
     const contentLimit = Math.min(16000, Math.floor(48000 / results.length));
     return results.map(({ request, result }) => {
       const message = this.store.getMessage(result.replyMessageId)!;
-      const directGrant = this.store.getMetadata('peer-user-reply-grant:' + request.id);
+      const origin = request.causationId && this.store.getEvent(request.causationId);
+      const delivery = origin && this.store.hasPeerUserReplyGrant(request.id)
+        ? new BotContactStatus(this.store).userDelivery(origin, request, 'user') : undefined;
       return { companionId: result.companionId, companionName: this.store.getCompanion(result.companionId)!.name,
         requestEventId: request.id, requestMessageId: request.sourceMessageRecordId, conversationId: result.conversationId,
         messageId: message.id, status: result.status, content: message.content.slice(0, contentLimit), contentIsExcerpt: message.content.length > contentLimit,
         error: result.error, attachmentIds: message.attachments?.map(ref => ref.id) ?? [],
         readArgs: { messageId: message.id, offset: 0, limit: 1200 },
-        userDirectDelivery: !!(directGrant && JSON.parse(directGrant).reply) };
+        userDirectDelivery: delivery?.state === 'published' || delivery?.state === 'delivered',
+        ...(delivery ? { userDelivery: delivery } : {}) };
     });
   }
   private bridgeSources(sql: BotTaskSql, results: SettledPeer[], conversationId: string, replyId: string): void {
@@ -124,14 +144,10 @@ export class BotPeerReturns {
       if (source.status !== 'done' || this.store.getMetadata('meeting-interrupted:' + source.id) || !this.valid(source,routes[0]!.source_epoch)) return;
       const results = routes.map(route => ({ route, request: this.store.getEvent(route.event_id)!, result: this.store.getEvent(route.result_event_id!)! }));
       if (results.some(({route,request,result}) => !request || !result || !this.valid(request,route.target_epoch) || !this.readableResult(source,result,route.target_epoch))) return;
-      const sourceReply=this.store.getMessage(source.replyMessageId);
       // An HTTP response can be lost before the model receives it. Suppress
       // the fallback only when the native reply proves it used this whole batch
       // or the requester explicitly read each publication through chat history.
-      const consumed = !!sourceReply?.content.trim() && (peerResultsReceipt === this.receipt(source, results)
-        || results.every(({result})=>sql.prepare(`SELECT 1 FROM bot_peer_bridges
-          WHERE source_owner=? AND source_id=? AND target_message_id=? LIMIT 1`).get(source.companionId,result.replyMessageId,source.replyMessageId)));
-      if(consumed){
+      if (this.consumed(sql, source, results, peerResultsReceipt)) {
         sql.prepare('UPDATE bot_peer_returns SET return_event_id=? WHERE source_event_id=?').run(source.id,source.id);
         const assignment=source.sourceInstanceId===BOT_PEER_RETURN_SOURCE?(source.payload.peerReturn as {assignmentEventId:string}).assignmentEventId:source.id;
         sql.prepare('UPDATE bot_peer_returns SET result_event_id=? WHERE event_id=? AND result_event_id IS NULL').run(source.id,assignment);

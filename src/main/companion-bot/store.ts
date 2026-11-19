@@ -26,6 +26,16 @@ interface Connection {
   transaction<T>(fn: () => T): (() => T) & { immediate(): T }; close(): void;
 }
 export type BotTaskSql = Pick<Connection, 'prepare'>;
+type PeerUserReplyReceipt = {
+  sent: true; conversationId: string; messageId: string; senderId: string; recipientId: 'user';
+};
+type PeerUserReplyGrant = {
+  sourceEventId: string; relayMessageId: string; peerConversationId: string; recipientId: string;
+  requesterId: string; correlationId: string; sourceAclRevision: number;
+  reply?: { fingerprint: string; result: PeerUserReplyReceipt };
+};
+type PeerUserReplyDraft = { content: string; attachments: BotMediaRef[]; sourceIds: string[] };
+const peerUserGrantKey = (eventId: string) => 'peer-user-reply-grant:' + eventId;
 type Row = Record<string, string | number | null>;
 const asRow = (raw: unknown): Row => raw as Row;
 const hash = (parts: readonly string[]) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
@@ -41,6 +51,9 @@ const companionMessageVisibilitySql = `EXISTS(SELECT 1 FROM bot_members member W
   AND (NOT ${internalTaskMessageSql} OR EXISTS(SELECT 1 FROM bot_inbox own LEFT JOIN bot_tasks task ON task.id=json_extract(own.payload_json,'$.taskId')
     WHERE own.source_record_id=m.id AND own.source='task' AND own.companion_id=?
     AND (json_type(own.payload_json,'$.taskId') IS NULL OR task.companion_id=? AND task.conversation_id=m.conversation_id)))`;
+const companionInboxMessageSql = `m.sender_type='companion' AND m.kind='message' AND m.status='sent'
+  AND (length(trim(m.content))>0 OR m.attachments_json<>'[]')
+  AND NOT EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id)`;
 const memoryBlockedCte = `WITH audience(domain_key,companion_id) AS(VALUES(?,?)),blocked(id) AS(
   SELECT w.source_id FROM bot_withdrawn_sources w,audience a WHERE w.domain_key=a.domain_key
   UNION SELECT w.source_id FROM bot_private_notice_exclusions w,audience a WHERE w.domain_key=a.domain_key
@@ -116,6 +129,8 @@ export class BotStore {
       CREATE TABLE IF NOT EXISTS bot_topic_events(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id) ON DELETE CASCADE,conversation_id TEXT NOT NULL,topic_id TEXT NOT NULL REFERENCES bot_native_topics(id));
       CREATE TABLE IF NOT EXISTS bot_peer_returns(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id) ON DELETE CASCADE,source_event_id TEXT NOT NULL REFERENCES bot_inbox(id) ON DELETE CASCADE,source_epoch INTEGER NOT NULL,target_epoch INTEGER NOT NULL,result_event_id TEXT,return_event_id TEXT);
       CREATE INDEX IF NOT EXISTS bot_peer_returns_source ON bot_peer_returns(source_event_id);
+      CREATE INDEX IF NOT EXISTS bot_peer_returns_delivery ON bot_peer_returns(return_event_id);
+      CREATE TABLE IF NOT EXISTS bot_peer_user_drafts(event_id TEXT PRIMARY KEY REFERENCES bot_inbox(id) ON DELETE CASCADE,payload_json TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS bot_topic_events_topic ON bot_topic_events(topic_id,event_id);
       CREATE TABLE IF NOT EXISTS bot_topic_bindings(topic_id TEXT NOT NULL REFERENCES bot_native_topics(id),conversation_id TEXT NOT NULL,companion_id TEXT NOT NULL,native_lane_id TEXT NOT NULL,lane_epoch INTEGER NOT NULL,PRIMARY KEY(topic_id,companion_id));
       CREATE UNIQUE INDEX IF NOT EXISTS bot_topic_bindings_native ON bot_topic_bindings(native_lane_id);
@@ -580,6 +595,30 @@ export class BotStore {
       this.setMetadata(key, created.id); return created;
     }).immediate();
   }
+  /** Follow only the host's registered delegation and return routes. */
+  peerRequestOrigin(source: BotEvent): BotEvent {
+    let origin = source;
+    const seen = new Set([source.id]);
+    const route = this.db.prepare(`SELECT source_event_id FROM bot_peer_returns
+      WHERE event_id=? OR return_event_id=? ORDER BY event_id LIMIT 1`);
+    for (let hop = 0; hop < 32; hop++) {
+      const prior = route.get(origin.id, origin.id) as { source_event_id: string } | undefined;
+      if (!prior || seen.has(prior.source_event_id)) break;
+      const parent = this.getEvent(prior.source_event_id);
+      if (!parent || parent.correlationId !== source.correlationId) break;
+      seen.add(parent.id);
+      origin = parent;
+    }
+    return origin;
+  }
+  peerAssignment(source: BotEvent) {
+    const origin = this.peerRequestOrigin(source);
+    return {
+      requesterId: source.companionId, requesterName: this.getCompanion(source.companionId)!.name,
+      originalSenderId: origin.senderId, originalSenderType: origin.senderType,
+      originalSenderName: origin.senderType === 'user' ? '用户' : origin.senderName,
+    };
+  }
   /** Communication always belongs to the pair's own channel. A request for a
    * user-facing answer grants the recipient one separate publication, never
    * membership of (or an incoming message in) its user-private channel. */
@@ -609,8 +648,8 @@ export class BotStore {
       const result = this.tryEnqueueAutomatic({ conversationId: room.id, source: 'companion', senderId: sender.id, recipientIds: [targetId],
         content: text(content, '转达内容', 8000), sourceMessageId: `peer-contact:${source.id}:${callId}`, correlationId: source.correlationId, causationId: source.id,
         payload: { hop: source.source === 'user' ? 1 : Number(source.payload.hop ?? 0) + 1, userRequestedContact: true, contactRequester: source.senderType === 'companion' ? 'companion' : 'user', originalSenderName: source.senderType === 'user' ? '用户' : source.senderName, responseDestination: destination === 'user' ? 'user-direct' : 'peer',
-          peerAssignment: { requesterId: sender.id, requesterName: sender.name, originalSenderId: source.senderId, originalSenderType: source.senderType, originalSenderName: source.senderType === 'user' ? '用户' : source.senderName } }, attachments, sourceIds: transferSources, peerReturnSourceEventId: source.id });
-      if (result.accepted && destination === 'user') for (const event of result.events) this.setMetadata(`peer-user-reply-grant:${event.id}`,
+          peerAssignment: this.peerAssignment(source) }, attachments, sourceIds: transferSources, peerReturnSourceEventId: source.id });
+      if (result.accepted && destination === 'user') for (const event of result.events) this.setMetadata(peerUserGrantKey(event.id),
         JSON.stringify({ sourceEventId: source.id, relayMessageId: result.message.id, peerConversationId: room.id, recipientId: target.id,
           requesterId: sender.id, correlationId: source.correlationId, sourceAclRevision: source.aclRevision }));
       if (result.accepted) for (const sourceId of new Set([...this.eventSourceIds(source.id), ...additionalSources])) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
@@ -620,44 +659,101 @@ export class BotStore {
     }).immediate();
   }
   /** Returns an already committed reply without sending or guessing absence. */
-  peerReplyReceipt(eventId: string, callId: string, content: string): { sent: true; conversationId: string; messageId: string; senderId: string; recipientId: 'user' } | undefined {
+  peerReplyReceipt(eventId: string, callId: string, content: string): PeerUserReplyReceipt | undefined {
     const saved = this.getMetadata(`peer-user-reply-receipt:${eventId}:${callId}`);
     if (!saved) return;
-    const receipt = JSON.parse(saved) as { fingerprint: string; result: { sent: true; conversationId: string; messageId: string; senderId: string; recipientId: 'user' } };
+    const receipt = JSON.parse(saved) as { fingerprint: string; result: PeerUserReplyReceipt };
     if (receipt.fingerprint !== hash([text(content, '回复内容', 24000)])) throw new Error('向用户回复的回执内容不匹配。');
     return receipt.result;
+  }
+  private peerUserRequest(event: BotEvent): BotEvent | undefined {
+    if (this.getMetadata(peerUserGrantKey(event.id))) return event;
+    if (event.sourceInstanceId !== 'peer-return-v1') return;
+    const assignment = (event.payload.peerReturn as { assignmentEventId?: string } | undefined)?.assignmentEventId;
+    if (!assignment || !this.getMetadata(peerUserGrantKey(assignment)) ||
+      !this.db.prepare('SELECT 1 FROM bot_peer_returns WHERE return_event_id=? AND source_event_id=? LIMIT 1').get(event.id, event.causationId)) return;
+    const request = this.getEvent(assignment);
+    if (request?.status === 'done' && request.companionId === event.companionId && request.conversationId === event.conversationId
+      && request.correlationId === event.correlationId && request.securityDomainId === event.securityDomainId) return request;
+  }
+  hasPeerUserReplyGrant(eventId: string): boolean {
+    const event = this.getEvent(eventId);
+    return !!event && !!this.peerUserRequest(event);
+  }
+  private authorizePeerUserReply(eventId: string, status: 'running' | 'done' = 'running') {
+    const event = this.getEvent(eventId), request = event && this.peerUserRequest(event);
+    const savedGrant = request && this.getMetadata(peerUserGrantKey(request.id));
+    if (!event || !request || event.status !== status || event.source !== 'companion' || !savedGrant) throw new Error('当前伙伴私聊没有向用户回复的有效授权。');
+    const grant = JSON.parse(savedGrant) as PeerUserReplyGrant;
+    const origin = this.getEvent(grant.sourceEventId), originRoom = origin && this.getConversation(origin.conversationId), peer = this.getConversation(event.conversationId);
+    if (!origin || !originRoom || !isBotParticipantRequest(origin, originRoom) || originRoom.dissolvedAt || originRoom.revision !== grant.sourceAclRevision
+      || origin.status === 'cancelled' || origin.status === 'failed' || !originRoom.memberIds.includes(grant.requesterId)
+      || peer?.kind !== 'peer' || peer.revision !== event.aclRevision || peer.revision !== request.aclRevision || peer.id !== grant.peerConversationId
+      || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([grant.requesterId, grant.recipientId].sort())
+      || event.companionId !== grant.recipientId || request.senderId !== grant.requesterId || request.sourceMessageRecordId !== grant.relayMessageId
+      || event.correlationId !== grant.correlationId || origin.correlationId !== grant.correlationId
+      || this.getCompanion(event.companionId)?.enabled === false
+      || this.withdrawnIn(origin.companionId, origin.securityDomainId, this.eventSourceIds(origin.id)).size
+      || this.withdrawnIn(event.companionId, event.securityDomainId, [...this.eventSourceIds(event.id), ...this.eventSourceIds(request.id)]).size)
+      throw new Error('向用户回复的原始授权已经失效。');
+    return { event, request, origin, grant };
+  }
+  peerUserReplyTarget(eventId: string): BotConversation {
+    const { event } = this.authorizePeerUserReply(eventId);
+    return this.openDirect(event.companionId);
+  }
+  private peerUserReplyDraft(eventId: string): PeerUserReplyDraft | undefined {
+    const row = this.db.prepare('SELECT payload_json FROM bot_peer_user_drafts WHERE event_id=?').get(eventId) as { payload_json: string } | undefined;
+    return row ? JSON.parse(row.payload_json) as PeerUserReplyDraft : undefined;
+  }
+  stagePeerUserReply(eventId: string, input: Partial<PeerUserReplyDraft>) {
+    return this.db.transaction(() => {
+      const { event, request, grant } = this.authorizePeerUserReply(eventId);
+      const content = input.content?.trim() ?? '';
+      const staged = this.peerUserReplyDraft(request.id);
+      if (grant.reply) {
+        if (input.attachments?.length || content && grant.reply.fingerprint !== hash([content])) throw Error('本次授权回复已经发送。');
+        return { status: 'published' as const, ...grant.reply.result };
+      }
+      if (content && staged?.content && content !== staged.content) throw Error('本次回复已暂存正文。');
+      const attachments = [...new Map([...(staged?.attachments ?? []), ...(input.attachments ?? [])].map(ref => [ref.id, ref])).values()];
+      if ((!content && !staged?.content && !attachments.length) || content.length > 24000 || attachments.length > 16) throw Error('向用户回复需要文字或附件，每条最多 16 个附件。');
+      const sourceIds = [...new Set([...(staged?.sourceIds ?? []), ...(input.sourceIds ?? [])])];
+      if (this.withdrawnIn(event.companionId, event.securityDomainId, sourceIds).size) throw Error('附件来源已经撤回。');
+      this.db.prepare('INSERT INTO bot_peer_user_drafts VALUES(?,?) ON CONFLICT(event_id) DO UPDATE SET payload_json=excluded.payload_json')
+        .run(request.id, JSON.stringify({ content: content || staged?.content || '', attachments, sourceIds }));
+      return { status: 'staged' as const, conversationId: this.openDirect(event.companionId).id, recipientId: 'user' as const, attachmentIds: attachments.map(ref => ref.id) };
+    }).immediate();
+  }
+  stagedPeerUserAttachmentIds(eventId: string): string[] {
+    const event = this.getEvent(eventId), request = event && this.peerUserRequest(event);
+    return request ? this.peerUserReplyDraft(request.id)?.attachments.map(ref => ref.id) ?? [] : [];
+  }
+  private publishPeerUserReply({ event, request, origin, grant }: ReturnType<BotStore['authorizePeerUserReply']>, draft: PeerUserReplyDraft): PeerUserReplyReceipt {
+    const room = this.openDirect(event.companionId);
+    const originSources = this.eventSourceIds(origin.id);
+    const replySources = new Set([...this.eventSourceIds(event.id), ...this.eventSourceIds(request.id), ...draft.sourceIds]);
+    const { message } = this.enqueue({ conversationId: room.id, senderId: event.companionId, source: 'companion',
+      recipientIds: [], content: draft.content, attachments: draft.attachments, sourceInstanceId: 'peer-user-reply',
+      sourceMessageId: request.id, correlationId: event.correlationId, causationId: event.id, sourceIds: [...new Set([...originSources, ...replySources])] });
+    const bridge = this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)');
+    for (const sourceId of originSources) bridge.run(origin.companionId, origin.securityDomainId, sourceId, room.id, message.id);
+    for (const sourceId of replySources) bridge.run(event.companionId, event.securityDomainId, sourceId, room.id, message.id);
+    this.db.prepare('INSERT OR IGNORE INTO bot_outbox(id,event_id,conversation_id,message_id,created_at) VALUES(?,?,?,?,?)')
+      .run(message.id, request.id, room.id, message.id, message.createdAt);
+    this.enqueueMemoryJob({ key: `peer-user-reply-history:${request.id}`, kind: 'projection',
+      payload: { scope: { companionId: event.companionId, conversationId: room.id, securityDomainId: room.securityDomainId } } });
+    const result: PeerUserReplyReceipt = { sent: true, conversationId: room.id, messageId: message.id, senderId: event.companionId, recipientId: 'user' };
+    this.setMetadata(peerUserGrantKey(request.id), JSON.stringify({ ...grant, reply: { fingerprint: hash([draft.content]), result } }));
+    return result;
   }
   replyPeerToUser(source: BotEvent, callId: string, content: string) {
     const reply = text(content, '回复内容', 24000), fingerprint = hash([reply]);
     return this.db.transaction(() => {
       const prior = this.peerReplyReceipt(source.id, callId, reply); if (prior) return prior;
-      const event = this.getEvent(source.id), savedGrant = event && this.getMetadata(`peer-user-reply-grant:${event.id}`);
-      if (!event || event.status !== 'running' || event.source !== 'companion' || !savedGrant) throw new Error('当前伙伴私聊没有向用户回复的有效授权。');
-      const grant = JSON.parse(savedGrant) as { sourceEventId: string; relayMessageId: string; peerConversationId: string; recipientId: string;
-        requesterId: string; correlationId: string; sourceAclRevision: number; reply?: { fingerprint: string; result: NonNullable<ReturnType<BotStore['peerReplyReceipt']>> } };
-      const origin = this.getEvent(grant.sourceEventId), originRoom = origin && this.getConversation(origin.conversationId), peer = this.getConversation(event.conversationId);
-      if (!origin || !originRoom || !isBotParticipantRequest(origin, originRoom) || originRoom.dissolvedAt || originRoom.revision !== grant.sourceAclRevision
-        || !originRoom.memberIds.includes(grant.requesterId) || peer?.kind !== 'peer' || peer.revision !== event.aclRevision || peer.id !== grant.peerConversationId
-        || JSON.stringify([...peer.memberIds].sort()) !== JSON.stringify([grant.requesterId, grant.recipientId].sort())
-        || event.companionId !== grant.recipientId || event.senderId !== grant.requesterId || event.sourceMessageRecordId !== grant.relayMessageId
-        || event.correlationId !== grant.correlationId || origin.correlationId !== grant.correlationId
-        || this.withdrawnIn(origin.companionId, origin.securityDomainId, this.eventSourceIds(origin.id)).size
-        || this.withdrawnIn(event.companionId, event.securityDomainId, this.eventSourceIds(event.id)).size) throw new Error('向用户回复的原始授权已经失效。');
+      const authorized = this.authorizePeerUserReply(source.id), { event, grant } = authorized;
       if (grant.reply && grant.reply.fingerprint !== fingerprint) throw new Error('本次授权回复已经发送，不能再次发布不同内容。');
-      let result = grant.reply?.result;
-      if (!result) {
-        const room = this.openDirect(event.companionId);
-        const { message } = this.enqueue({ conversationId: room.id, senderId: event.companionId, source: 'companion', recipientIds: [], content: reply,
-          sourceInstanceId: 'peer-user-reply', sourceMessageId: event.id, correlationId: event.correlationId, causationId: event.id,
-          sourceIds: [...new Set([...this.eventSourceIds(event.id), ...this.eventSourceIds(origin.id)])] });
-        for (const sourceId of this.eventSourceIds(origin.id)) this.db.prepare('INSERT OR IGNORE INTO bot_peer_bridges VALUES(?,?,?,?,?)')
-          .run(origin.companionId, origin.securityDomainId, sourceId, room.id, message.id);
-        this.db.prepare('INSERT OR IGNORE INTO bot_outbox(id,event_id,conversation_id,message_id,created_at) VALUES(?,?,?,?,?)')
-          .run(message.id, event.id, room.id, message.id, message.createdAt);
-        this.enqueueMemoryJob({ key: `peer-user-reply-history:${event.id}`, kind: 'projection', payload: { scope: { companionId: event.companionId, conversationId: room.id, securityDomainId: room.securityDomainId } } });
-        result = { sent: true, conversationId: room.id, messageId: message.id, senderId: event.companionId, recipientId: 'user' };
-        this.setMetadata(`peer-user-reply-grant:${event.id}`, JSON.stringify({ ...grant, reply: { fingerprint, result } }));
-      }
+      const result = grant.reply?.result ?? this.publishPeerUserReply(authorized, { content: reply, attachments: [], sourceIds: [] });
       this.setMetadata(`peer-user-reply-receipt:${event.id}:${callId}`, JSON.stringify({ fingerprint, result }));
       return result;
     }).immediate();
@@ -1182,15 +1278,15 @@ export class BotStore {
   }
   /** Committed native text and actual media publications share one ordered
    * reply. Event/log identities make transport replay a no-op. */
-  appendReplyPart(eventId:string,part:Omit<BotReplyPart,'sequence'>&{sequence?:number}):void{
-    this.db.transaction(()=>{
+  appendReplyPart(eventId:string,part:Omit<BotReplyPart,'sequence'>&{sequence?:number}):boolean{
+    return this.db.transaction(()=>{
       const event=this.getEvent(eventId),lane=event&&this.getLane(event.laneId),room=event&&this.getConversation(event.conversationId);
       if(!event||!lane||!room||event.status!=='running'||room.revision!==event.aclRevision||this.getEventNativeEpoch(eventId)!==undefined&&this.getEventNativeEpoch(eventId)!==lane.epoch)throw Error('回复片段没有当前事件授权。');
       if(!part.id||part.id.length>300||part.sequence!==undefined&&(!Number.isSafeInteger(part.sequence)||part.sequence<0))throw Error('原生回复片段身份无效。');
       const prior=this.db.prepare('SELECT payload_json FROM bot_reply_parts WHERE message_id=? AND id=?').get(event.replyMessageId,part.id) as {payload_json:string}|undefined;
       const sequence=prior?(JSON.parse(prior.payload_json) as BotReplyPart).sequence:part.sequence??Number((this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS value FROM bot_reply_parts WHERE message_id=?').get(event.replyMessageId) as {value:number}).value);
       const value:BotReplyPart={...part,sequence},payload=JSON.stringify(value);
-      if(prior){if(prior.payload_json!==payload)throw Error('同一原生片段标识对应了不同内容。');return;}
+      if(prior){if(prior.payload_json!==payload)throw Error('同一原生片段标识对应了不同内容。');return false;}
       if(part.publicationId&&!this.db.prepare('SELECT 1 FROM bot_publications WHERE event_id=? AND message_id=?').get(eventId,part.publicationId))throw Error('媒体片段缺少真实发送回执。');
       this.db.prepare('INSERT INTO bot_reply_parts(message_id,event_id,conversation_id,id,sequence,payload_json,publication_id) VALUES(?,?,?,?,?,?,?)').run(event.replyMessageId,eventId,event.conversationId,part.id,sequence,payload,part.publicationId??null);
       if(part.attachments?.length){
@@ -1198,13 +1294,14 @@ export class BotStore {
         this.db.prepare('UPDATE bot_messages SET attachments_json=? WHERE id=?').run(JSON.stringify(refs),message.id);
         this.bindMessageAttachments({...message,attachments:refs},false,undefined,this.eventSourceIds(event.id));
       }
+      return true;
     }).immediate();
   }
   replyParts(messageId:string):BotReplyPart[]{return this.db.prepare('SELECT payload_json FROM bot_reply_parts WHERE message_id=? ORDER BY sequence,ordinal').all(messageId).map(row=>JSON.parse(String(asRow(row).payload_json)) as BotReplyPart);}
   markDispatched(eventId: string, leaseToken: string, dshEventId: string): boolean {
     return !!this.db.prepare("UPDATE bot_inbox SET dsh_event_id=? WHERE id=? AND lease_token=? AND status='running'").run(dshEventId, eventId, leaseToken).changes;
   }
-  settle(input: { eventId: string; leaseToken: string; status: 'done' | 'failed' | 'cancelled'; content?: string; error?: string; dshEventId?: string; memoryJobs?: BotMemoryJobInput[]; metadata?: Array<{ key: string; value: string }>; peerResultsReceipt?: string }): boolean {
+  settle(input: { eventId: string; leaseToken: string; status: 'done' | 'failed' | 'cancelled'; content?: string; error?: string; dshEventId?: string; memoryJobs?: BotMemoryJobInput[]; metadata?: Array<{ key: string; value: string }>; peerResultsReceipt?: string; retainUserDeliveryDraft?: boolean }): boolean {
     if (input.content && input.content.length > 512000) throw new Error('回复过大。');
     return this.db.transaction(() => {
       const event = this.getEvent(input.eventId); if (!event) return false;
@@ -1219,7 +1316,16 @@ export class BotStore {
       this.db.prepare('UPDATE bot_messages SET status=?,content=COALESCE(?,content),error=? WHERE id=?')
         .run(input.status === 'done' ? 'sent' : input.status, input.content ?? null, input.error ?? null, event.replyMessageId);
       const reply = this.getMessage(event.replyMessageId);
-      const visibleReply = !!reply?.content.trim() || !!reply?.attachments?.length;
+      const userRequest = this.peerUserRequest(event), userReply = userRequest && this.peerUserReplyDraft(userRequest.id);
+      if (userRequest && userReply && input.status === 'done' && this.peerReturns.canFinalize(event, input.peerResultsReceipt)) {
+        const authorized = this.authorizePeerUserReply(event.id, 'done');
+        if (this.withdrawnIn(event.companionId, event.securityDomainId, userReply.sourceIds).size) throw Error('附件来源已经撤回。');
+        if (!authorized.grant.reply) this.publishPeerUserReply(authorized, userReply);
+        this.db.prepare('DELETE FROM bot_peer_user_drafts WHERE event_id=?').run(userRequest.id);
+      } else if (userRequest && userReply && input.status !== 'done' && !input.retainUserDeliveryDraft) {
+        this.db.prepare('DELETE FROM bot_peer_user_drafts WHERE event_id=?').run(userRequest.id);
+      }
+      const visibleReply = !!reply?.content.trim() || !!reply?.attachments?.length || !!reply?.parts?.some(part => part.music);
       this.bindMessageSources(event.replyMessageId, this.eventSourceIds(event.id));
       if (input.status === 'done' && visibleReply) {
         const messages = input.memoryJobs?.filter(job => job.kind === 'projection').flatMap(job => Array.isArray(job.payload.messages) ? job.payload.messages : []) as Array<{ id?: string; timestamp?: number }> | undefined;
@@ -1240,7 +1346,11 @@ export class BotStore {
       if (result.changes) {
         this.finishReplyTiming(event);
         this.db.prepare("UPDATE bot_messages SET status='cancelled',content=CASE WHEN ? THEN '' ELSE content END WHERE id=?").run(clearContent ? 1 : 0, event.replyMessageId);
-        if (notifyPeer) this.peerReturns.settled(this.getEvent(event.id)!);
+        if (notifyPeer) {
+          const userRequest = this.peerUserRequest(event);
+          if (userRequest) this.db.prepare('DELETE FROM bot_peer_user_drafts WHERE event_id=?').run(userRequest.id);
+          this.peerReturns.settled(this.getEvent(event.id)!);
+        }
       }
       return !!result.changes;
     }).immediate();
@@ -1437,13 +1547,16 @@ export class BotStore {
     const rows = this.db.prepare(`SELECT p.sequence,m.id,m.conversation_id,m.sender_name,substr(trim(m.content),1,160) AS preview
       FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id
       WHERE p.sequence>? AND p.conversation_id IN (SELECT value FROM json_each(?))
-        AND m.sender_type='companion' AND m.kind='message' AND m.status='sent'
-        AND (length(trim(m.content))>0 OR m.attachments_json<>'[]')
-        AND NOT EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id)
+        AND ${companionInboxMessageSql}
       ORDER BY p.sequence LIMIT 81`).all(after, JSON.stringify(roomIds)).map(asRow);
     const messages = rows.slice(0,80).map(row => ({ id: String(row.id), sequence: Number(row.sequence), room: String(row.conversation_id),
       sender: String(row.sender_name), preview: String(row.preview) || '[附件]' }));
     return { cursor: rows.length > 80 ? messages[79]!.sequence : head, more: rows.length > 80, messages };
+  }
+  companionInboxCount(room: string, after: number, through: number): number {
+    const row = this.db.prepare(`SELECT COUNT(*) AS count FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id
+      WHERE p.conversation_id=? AND p.sequence>? AND p.sequence<=? AND ${companionInboxMessageSql}`).get(room, after, through);
+    return Number(asRow(row).count);
   }
   /** UI placeholders receive their sequence before completion. Hot model
    * history follows actual publication, while the trigger bounds future input. */
