@@ -49,16 +49,8 @@ internal static class SetupLauncher
                     return 1;
                 }
 
-                string installer = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "installer", "WorldlineBoxInstall.exe");
-                if (!File.Exists(installer) || !File.Exists(Path.ChangeExtension(installer, null) + "-1.bin"))
-                {
-                    throw new FileNotFoundException(Chinese
-                        ? "请完整解压安装包，再打开 WorldlineBoxSetup.exe。"
-                        : "Extract the entire installer ZIP, then open WorldlineBoxSetup.exe.");
-                }
-
                 if (quiet)
-                    return RunInstaller(installer, OriginalArguments());
+                    return SetupPayload.Run(installer => RunInstaller(installer, OriginalArguments()), (copied, total) => { });
 
                 string token = Guid.NewGuid().ToString("N");
                 // The elevated wizard may run under a different administrator account.
@@ -72,14 +64,17 @@ internal static class SetupLauncher
                 using (var ready = new EventWaitHandle(false, EventResetMode.ManualReset,
                     @"Local\WorldlineBox.SetupReady." + token, out firstInstance, security))
                 {
-                    return ShowProgress(installer, "/WLBREADY=" + token + OriginalArguments(), ready);
+                    return ShowProgress("/WLBREADY=" + token + OriginalArguments(), ready);
                 }
             }
         }
         catch (Exception error)
         {
             if (!quiet)
-                MessageBox.Show(error.Message, Caption, MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show(error is InvalidDataException
+                    ? (Chinese ? "安装文件不完整或已损坏，请重新下载安装程序。"
+                               : "The installer is incomplete or damaged. Download it again.")
+                    : error.Message, Caption, MessageBoxButton.OK, MessageBoxImage.Error);
             return 1;
         }
     }
@@ -101,7 +96,7 @@ internal static class SetupLauncher
         }
     }
 
-    private static int ShowProgress(string installer, string arguments, EventWaitHandle ready)
+    private static int ShowProgress(string arguments, EventWaitHandle ready)
     {
         var resources = Assembly.GetExecutingAssembly();
         Window window;
@@ -114,31 +109,60 @@ internal static class SetupLauncher
             ((Image)window.FindName("Logo")).Source = source;
             window.Icon = source;
         }
-        string status = Chinese ? "正在准备安装" : "Preparing setup";
+        var status = (TextBlock)window.FindName("Status");
+        var detail = (TextBlock)window.FindName("Detail");
         ((TextBlock)window.FindName("InstallerLabel")).Text = Chinese ? "安装程序" : "Windows installer";
-        ((TextBlock)window.FindName("Status")).Text = status;
-        ((TextBlock)window.FindName("Detail")).Text = Chinese
-            ? "安装向导即将打开。Windows 可能会请求管理员权限。"
-            : "The setup wizard is opening. Windows may ask for permission.";
+        status.Text = Chinese ? "正在准备安装" : "Preparing setup";
+        detail.Text = Chinese ? "正在读取安装文件…" : "Reading the installer…";
         var progress = (ProgressBar)window.FindName("Progress");
         progress.IsIndeterminate = true;
         progress.Tag = SystemParameters.ClientAreaAnimation ? "animate" : null;
-        AutomationProperties.SetName(progress, status);
+        AutomationProperties.SetName(progress, status.Text);
         window.MouseLeftButtonDown += (sender, eventArgs) => window.DragMove();
 
         Task<int> installerProcess = null;
+        long copiedBytes = 0, totalBytes = 0;
+        var animate = progress.Tag;
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
         window.ContentRendered += (sender, eventArgs) =>
         {
             if (installerProcess != null)
                 return;
-            installerProcess = Task.Run(() => RunInstaller(installer, arguments));
+            installerProcess = Task.Run(() => SetupPayload.Run(installer => RunInstaller(installer, arguments),
+                (copied, total) =>
+                {
+                    Interlocked.Exchange(ref totalBytes, total);
+                    Interlocked.Exchange(ref copiedBytes, copied);
+                }));
             timer.Start();
         };
         timer.Tick += (sender, eventArgs) =>
         {
             if (ready.WaitOne(0) || installerProcess.IsCompleted)
+            {
                 window.Close();
+                return;
+            }
+            long total = Interlocked.Read(ref totalBytes);
+            if (total == 0)
+                return;
+            long copied = Interlocked.Read(ref copiedBytes);
+            bool opening = copied >= total;
+            progress.IsIndeterminate = opening;
+            progress.Tag = opening ? animate : null;
+            progress.Value = (double)copied / total * 100;
+            if (opening)
+            {
+                status.Text = Chinese ? "正在打开安装向导" : "Opening setup";
+                detail.Text = Chinese ? "Windows 可能会请求管理员权限。" : "Windows may ask for administrator permission.";
+                AutomationProperties.SetName(progress, status.Text);
+            }
+            else
+            {
+                string percent = ((double)copied / total).ToString("0%");
+                detail.Text = Chinese ? "已准备 " + percent + "，完成后会打开安装向导。"
+                    : "Preparing installation files · " + percent;
+            }
         };
         var app = new Application();
         app.Run(window);

@@ -25,7 +25,7 @@ WorldlineBox 是一个本地优先的桌面应用，结合**虚拟伙伴、持�
 
 ### 首次使用和扫码连接
 
-1. 在 Windows 10 / 11 x64 上完整解压 `WorldlineBoxSetup.zip`，打开解压后的 `WorldlineBoxSetup.exe`。在「启动器 → DeepSeek Harness」安装官方运行版本，创建或选择共享执行实例。在「设置 → 全局模型」配置兼容 OpenAI Chat Completions 的模型，先在「伙伴」发送一条消息验证。
+1. 在 Windows 10 / 11 x64 上打开 `WorldlineBoxSetup.exe` 安装。在「启动器 → DeepSeek Harness」安装官方运行版本，创建或选择共享执行实例。在「设置 → 全局模型」配置兼容 OpenAI Chat Completions 的模型，先在「伙伴」发送一条消息验证。
 2. 在 Android 上安装 `WorldlineBoxMobile.apk`。电脑打开「设置 → 手机连接 → 显示配对二维码」，用手机 App 扫码。配对后优先局域网直连，电脑和手机重启或内网 IP 改变时会自动重连。电脑可暂停或删除设备授权。
 3. 在手机选择现有伙伴，发送消息或附件。回到桌面可按消息来源筛选。需要朗读或流式通话语音时，在桌面保存 DeepSeek 官方 API 凭据，合成音色为 Stella。
 
@@ -163,7 +163,7 @@ WorldlineBox 资产插件与 DSH 原生插件属于不同协议，分别在各�
 | `02-Start-Development.bat` | 检查已准备环境并启动开发模式，正常启动会编译当前源码；不自动安装依赖或重编译原生模块。 |
 | `03-Build-Installer.bat` | 依次执行类型检查、应用打包及产物校验、Inno Setup 安装器构建。 |
 
-离线安装包为 **`out/make/inno/WorldlineBoxSetup.zip`**，同目录提供 SHA-256 校验文件。
+离线安装程序为 **`out/make/inno/WorldlineBoxSetup.exe`**，同目录提供 SHA-256 校验文件。
 打包应用目录为 `out/WorldlineBox-win32-x64/`，应用入口为其中的 `WorldlineBox.exe`。
 `npm run package` 仅生成打包应用；要生成正式 EXE 安装器，应使用 `03` 或按构建文档继续执行 `make:inno`。
 

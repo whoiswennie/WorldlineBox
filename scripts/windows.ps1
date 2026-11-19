@@ -321,8 +321,7 @@ try {
         Run-Npm @('run', 'package')
         Run-Npm @('run', 'verify:package')
         Run-Npm @('run', 'make:inno')
-        Write-Host "Installer bundle: $(Join-Path $projectRoot 'out\make\inno\WorldlineBoxSetup.zip')" -ForegroundColor Green
-        Write-Host 'Extract the entire ZIP, then open WorldlineBoxSetup.exe.'
+        Write-Host "Installer: $(Join-Path $projectRoot 'out\make\inno\WorldlineBoxSetup.exe')" -ForegroundColor Green
     }
     exit 0
 } catch {

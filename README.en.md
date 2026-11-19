@@ -14,7 +14,7 @@ WorldlineBox is a local-first desktop app combining companions, persistent world
 
 The desktop app runs companions, memory and DSH tasks, manages assets, and authorizes devices. [WorldlineBox Mobile](https://github.com/whoiswennie/WorldlineBoxMobile) is the Android client for chatting with those companions, following streamed responses and task stages, exchanging files, and opening portrait-mode calls over SSH.
 
-1. On Windows x64, extract the entire `WorldlineBoxSetup.zip` and open `WorldlineBoxSetup.exe`. On Android, install `WorldlineBoxMobile.apk`.
+1. On Windows x64, open `WorldlineBoxSetup.exe` to install. On Android, install `WorldlineBoxMobile.apk`.
 2. Install and select a shared DSH instance in the desktop launcher, configure the model under Settings, and verify a desktop chat.
 3. In desktop Settings, open Phone connection and display the pairing QR code. Scan it in the Android app. On a shared LAN the phone rediscovers the computer after restarts or IP changes. Away from home, if the temporary tunnel address has changed, scan an updated code for the same computer to keep the existing pairing.
 
@@ -84,7 +84,7 @@ Double-click these files in the project root:
 
 - `01-Setup-Environment.bat`: prepare pinned Node.js, npm dependencies, Electron, native database modules, the isolated companion memory runtime, companion SDK, speech and embedding model runtimes, verified media tools and Inno Setup.
 - `02-Start-Development.bat`: check the existing environment and run development using the current user's `%APPDATA%\WorldlineBox` profile, shared with the installed app.
-- `03-Build-Installer.bat` type-checks and packages the app, then creates `out/make/inno/WorldlineBoxSetup.zip` and its SHA-256 file.
+- `03-Build-Installer.bat` type-checks and packages the app, then creates `out/make/inno/WorldlineBoxSetup.exe` and its SHA-256 file.
 
 Initial setup needs internet access. Only `01` installs dependencies, native modules and missing Python/C++ Build Tools (through winget when available). Build tools and download caches live under `.tools/`, and the bundled application tools under `resources/portable-tools/win32-x64`; global Node.js is not replaced. `02` never installs dependencies or rebuilds native modules; Forge/Vite still compile the current source. `03` builds the installer. If setup is incomplete or the dependency lock changes, run `01` explicitly. Build tools, dependencies, caches and outputs are excluded from Git.
 

@@ -39,9 +39,10 @@
       <ProgressBar x:Name="Progress" Height="4" Margin="0,21,0,0" Focusable="False">
         <ProgressBar.Template>
           <ControlTemplate TargetType="ProgressBar">
-            <Grid ClipToBounds="True">
+            <Grid x:Name="PART_Track" ClipToBounds="True">
               <Border Background="#DFE5F1" CornerRadius="2" />
-              <Border Width="104" HorizontalAlignment="Left" CornerRadius="2">
+              <Border x:Name="PART_Indicator" Width="0" HorizontalAlignment="Left" CornerRadius="2" Background="#7282CF" />
+              <Border x:Name="WaitingSegment" Width="104" HorizontalAlignment="Left" CornerRadius="2" Visibility="Collapsed">
                 <Border.RenderTransform>
                   <TranslateTransform x:Name="Segment" X="124" />
                 </Border.RenderTransform>
@@ -56,15 +57,22 @@
               </Border>
             </Grid>
             <ControlTemplate.Triggers>
+              <Trigger Property="IsIndeterminate" Value="True">
+                <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed" />
+                <Setter TargetName="WaitingSegment" Property="Visibility" Value="Visible" />
+              </Trigger>
               <Trigger Property="Tag" Value="animate">
                 <Trigger.EnterActions>
-                  <BeginStoryboard>
+                  <BeginStoryboard Name="WaitingAnimation">
                     <Storyboard>
                       <DoubleAnimation Storyboard.TargetName="Segment" Storyboard.TargetProperty="X"
                                        From="-104" To="352" Duration="0:0:1.45" RepeatBehavior="Forever" />
                     </Storyboard>
                   </BeginStoryboard>
                 </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <RemoveStoryboard BeginStoryboardName="WaitingAnimation" />
+                </Trigger.ExitActions>
               </Trigger>
             </ControlTemplate.Triggers>
           </ControlTemplate>
