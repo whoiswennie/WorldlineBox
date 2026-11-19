@@ -319,9 +319,10 @@ try {
         $env:WORLDLINEBOX_ELECTRON_ZIP_DIR = $toolsRoot
         Run-Npm @('run', 'typecheck')
         Run-Npm @('run', 'package')
+        Run-Npm @('run', 'verify:package')
         Run-Npm @('run', 'make:inno')
-        $installer = 'WorldlineBoxSetup.exe'
-        Write-Host "Installer: $(Join-Path $projectRoot "out\make\inno\$installer")" -ForegroundColor Green
+        Write-Host "Installer bundle: $(Join-Path $projectRoot 'out\make\inno\WorldlineBoxSetup.zip')" -ForegroundColor Green
+        Write-Host 'Extract the entire ZIP, then open WorldlineBoxSetup.exe.'
     }
     exit 0
 } catch {

@@ -144,7 +144,7 @@ This upgrade was developed on Windows without a usable Docker, bash or WSL Linux
 
 ### Windows installer (Inno Setup)
 
-The Windows installer `WorldlineBoxSetup.exe` is built with **Inno Setup 6** (script `assets/inno/worldlineboxsetup.iss`, outputting to `out/make/inno/WorldlineBoxSetup.exe`):
+`03-Build-Installer.bat` produces `out/make/inno/WorldlineBoxSetup.zip` and a SHA-256 file. It uses **Inno Setup 6** for the wizard and its data, the Windows .NET Framework C# compiler for the launcher, and the project's 7-Zip dependency to assemble the ZIP. Extract the entire archive, then open `WorldlineBoxSetup.exe`.
 
 #### 1. Install Inno Setup compiler dependency (ISCC.exe)
 

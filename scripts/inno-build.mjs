@@ -2,8 +2,7 @@
 /**
  * WorldlineBox Windows 安装器（Inno Setup）构建脚本。
  *
- * 流程：ISCC.exe 编译 assets/inno/worldlineboxsetup.iss → out/make/inno/WorldlineBoxSetup.exe，
- * 并校验产物（存在 + 非空）。
+ * 编译 Inno Setup 向导和 Windows 启动程序，生成离线安装 ZIP 与 SHA-256。
  *
  * 前置：
  *   - 已执行 npm run package（Inno 从 out/WorldlineBox-win32-x64 打包）
@@ -15,7 +14,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { createReadStream, existsSync, statSync, mkdirSync, readFileSync, mkdtempSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, statSync, mkdirSync, readFileSync, mkdtempSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,10 +40,58 @@ const defaultIscc = process.env.WORLDLINEBOX_INNO_TOOLS
   : path.join(process.env.LOCALAPPDATA || '', 'WorldlineBoxTools', 'inno', 'tools', 'ISCC.exe');
 
 const defaultOut = path.join(repoRoot, 'out', 'make', 'inno');
+const installerAssets = path.join(repoRoot, 'assets', 'inno');
+const windowsDirectory = process.env.SystemRoot || 'C:\\Windows';
+const framework = path.join(windowsDirectory, 'Microsoft.NET', 'Framework64', 'v4.0.30319');
+const launcherCompiler = path.join(framework, 'csc.exe');
+const wpfLibraries = ['PresentationCore.dll', 'PresentationFramework.dll', 'WindowsBase.dll'].map(
+  (name) => path.join(framework, 'WPF', name),
+);
+const sevenZip = path.join(repoRoot, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe');
 
 function fail(message) {
   console.error(`[inno-build] FAILED: ${message}`);
   process.exit(1);
+}
+
+function runBundleCommand(command, args, cwd) {
+  const result = spawnSync(command, args, { cwd, stdio: 'inherit', windowsHide: true });
+  if (result.error || result.status !== 0) {
+    fail(`${path.basename(command)} could not create the installer bundle (${result.error?.message || result.status}). See ${cwd}.`);
+  }
+}
+
+function bundleInstaller(staging, version, filename) {
+  const installerFolder = path.join(staging, 'installer');
+  const innoExe = path.join(installerFolder, 'WorldlineBoxInstall.exe');
+  const innoData = path.join(installerFolder, 'WorldlineBoxInstall-1.bin');
+  if (!existsSync(innoExe) || !existsSync(innoData) || statSync(innoData).size < 100 * 1024 * 1024) {
+    fail(`Incomplete installer in ${installerFolder}`);
+  }
+
+  const launcher = path.join(staging, 'WorldlineBoxSetup.exe');
+  const versionSource = path.join(staging, 'Version.cs');
+  writeFileSync(versionSource, [
+    'using System.Reflection;',
+    '[assembly: AssemblyTitle("WorldlineBox Setup")]',
+    '[assembly: AssemblyProduct("WorldlineBox")]',
+    `[assembly: AssemblyFileVersion(${JSON.stringify(version.split(/[-+]/)[0])})]`,
+    `[assembly: AssemblyInformationalVersion(${JSON.stringify(version)})]`,
+  ].join('\n'));
+  runBundleCommand(launcherCompiler, [
+    '/nologo', '/target:winexe', '/platform:x64', '/optimize+', '/codepage:65001',
+    '/reference:System.Xaml.dll', ...wpfLibraries.map((library) => `/reference:${library}`),
+    `/out:${launcher}`, `/win32manifest:${path.join(installerAssets, 'SetupLauncher.manifest')}`,
+    `/win32icon:${path.join(repoRoot, 'assets', 'icons', 'app.ico')}`,
+    `/resource:${path.join(installerAssets, 'SetupProgress.xaml')},SetupProgress.xaml`,
+    `/resource:${path.join(repoRoot, 'assets', 'icons', 'startup-logo.png')},SetupLogo.png`,
+    path.join(installerAssets, 'SetupLauncher.cs'), versionSource,
+  ], staging);
+  runBundleCommand(sevenZip, [
+    'a', '-tzip', '-mx=0', filename,
+    'WorldlineBoxSetup.exe', 'installer\\WorldlineBoxInstall.exe', 'installer\\WorldlineBoxInstall-1.bin',
+  ], staging);
+  return [innoExe, innoData, launcher, versionSource];
 }
 
 async function main() {
@@ -54,6 +101,9 @@ async function main() {
 
   if (!existsSync(defaultIscc)) {
     fail(`ISCC.exe not found at ${defaultIscc} (set WORLDLINEBOX_INNO_TOOLS or install per CLAUDE.md)`);
+  }
+  for (const tool of [launcherCompiler, sevenZip, ...wpfLibraries]) {
+    if (!existsSync(tool)) fail(`Windows installer build tool not found: ${tool}`);
   }
   const packageDir = process.argv.includes('--package')
     ? path.resolve(process.argv[process.argv.indexOf('--package') + 1])
@@ -77,8 +127,10 @@ async function main() {
   let staging;
   for (let attempt = 0; attempt < 3; attempt++) {
     staging = mkdtempSync(path.join(outDir, '.build-'));
+    const installerFolder = path.join(staging, 'installer');
+    mkdirSync(installerFolder);
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(defaultIscc, [`/DAppVersion=${version}`, `/DAppSourceDir=${packageDir}`, `/O${staging}`, path.join(repoRoot, 'assets', 'inno', 'worldlineboxsetup.iss')], {
+      const child = spawn(defaultIscc, [`/DAppVersion=${version}`, `/DAppSourceDir=${packageDir}`, `/O${installerFolder}`, path.join(installerAssets, 'worldlineboxsetup.iss')], {
         cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'], shell: false, windowsHide: true,
       });
       let tail = '';
@@ -91,24 +143,26 @@ async function main() {
     console.warn('[inno-build] Resource update was temporarily blocked; retrying in a fresh build directory.');
     await new Promise(resolve => setTimeout(resolve, 1500));
   }
-  const stagedExe = path.join(staging, 'WorldlineBoxSetup.exe');
-  if (!existsSync(stagedExe) || statSync(stagedExe).size < 100 * 1024 * 1024) fail(`Installer not produced or suspiciously small: ${stagedExe}`);
+  const filename = 'WorldlineBoxSetup.zip';
+  const buildInputs = bundleInstaller(staging, version, filename);
+  const stagedZip = path.join(staging, filename);
   const hash = createHash('sha256');
-  for await (const chunk of createReadStream(stagedExe)) hash.update(chunk);
-  const stagedChecksum = stagedExe + '.sha256';
-  const filename = 'WorldlineBoxSetup.exe';
+  for await (const chunk of createReadStream(stagedZip)) hash.update(chunk);
+  const stagedChecksum = stagedZip + '.sha256';
   writeFileSync(stagedChecksum, `${hash.digest('hex')}  ${filename}\n`);
-  const setupExe = path.join(outDir, filename);
+  const setupZip = path.join(outDir, filename);
   for (let attempt = 0; ; attempt++) {
-    try { renameSync(stagedExe, setupExe); break; }
+    try { renameSync(stagedZip, setupZip); break; }
     catch (error) {
-      if (attempt === 9 || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) fail(`Installer was built successfully but could not be published: ${stagedExe} (${error.message})`);
+      if (attempt === 9 || !['EACCES', 'EPERM', 'EBUSY'].includes(error.code)) fail(`Installer was built successfully but could not be published: ${stagedZip} (${error.message})`);
       await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
-  renameSync(stagedChecksum, setupExe + '.sha256');
+  renameSync(stagedChecksum, setupZip + '.sha256');
+  for (const file of buildInputs) unlinkSync(file);
+  rmdirSync(path.join(staging, 'installer'));
   rmdirSync(staging); // Empty directory only; failed build evidence is preserved.
-  console.log(`[inno-build] Windows installer written to ${setupExe} (${(statSync(setupExe).size / 1024 / 1024).toFixed(1)} MB)`);
+  console.log(`[inno-build] Windows installer bundle written to ${setupZip} (${(statSync(setupZip).size / 1024 / 1024).toFixed(1)} MB)`);
 }
 
 main().catch(error => fail(error.message));

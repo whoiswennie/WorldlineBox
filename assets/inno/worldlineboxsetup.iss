@@ -1,7 +1,5 @@
 ; WorldlineBox Windows 安装器（Inno Setup，参考 VS Code build/win32/code.iss）。
-; 多语言：ShowLanguageDialog=yes 始终显示语言选择（默认选中系统语言，
-; 见 [Languages] 顺序与 Inno 检测逻辑）；向导含安装路径选择页；per-machine
-; 安装（UAC 一开始提示）；卸载器 unins000.exe 自动生成。
+; WorldlineBoxSetup.exe 负责启动反馈，Inno 向导负责语言选择和全用户安装。
 ; 构建：ISCC.exe assets\inno\worldlineboxsetup.iss（SourceDir 指向打包产物父目录）
 
 #define AppName "WorldlineBox"
@@ -27,7 +25,9 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
 OutputDir=..\..\out\make\inno
-OutputBaseFilename=WorldlineBoxSetup
+OutputBaseFilename=WorldlineBoxInstall
+DiskSpanning=yes
+DiskSliceSize=max
 Compression=lzma
 SolidCompression=yes
 SetupIconFile=..\..\assets\icons\app.ico
@@ -40,6 +40,7 @@ ShowLanguageDialog=yes
 WizardStyle=modern
 ; per-machine：安装到 Program Files，UAC 提权（产品要求"一开始提示"）
 PrivilegesRequired=admin
+SetupMutex=WorldlineBox.InnoSetup
 CloseApplications=force
 
 [Languages]
@@ -59,6 +60,34 @@ Name: "{group}\世界线盒子"; Filename: "{app}\{#AppExeName}"; IconFilename: 
 Name: "{autodesktop}\世界线盒子"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; IconFilename: "{app}\{#AppExeName}"; IconIndex: 0; AppUserModelID: "com.worldlinebox.app"; AppUserModelToastActivatorCLSID: "24BC5C0E-9196-41EA-90D5-8037889B7B7D"
 
 [Code]
+function OpenEvent(DesiredAccess: Cardinal; InheritHandle: Boolean; Name: String): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(Event: THandle): Boolean;
+  external 'SetEvent@kernel32.dll stdcall';
+function CloseHandle(Handle: THandle): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+var
+  LauncherNotified: Boolean;
+
+procedure CurPageChanged(CurPageID: Integer);
+var
+  ReadyToken: String;
+  Event: THandle;
+begin
+  if LauncherNotified then
+    Exit;
+  ReadyToken := ExpandConstant('{param:WLBREADY|}');
+  if Length(ReadyToken) <> 32 then
+    Exit;
+  Event := OpenEvent($0002, False, 'Local\WorldlineBox.SetupReady.' + ReadyToken);
+  if Event <> 0 then
+  begin
+    LauncherNotified := SetEvent(Event);
+    CloseHandle(Event);
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
