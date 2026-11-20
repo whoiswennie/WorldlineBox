@@ -37,6 +37,7 @@ import { APPLICATION_NETWORK_REQUEST } from '../shared/application-network';
 import type { MusicService } from './music/service';
 import { bindDesktopLyricsWindow } from './music/lyrics-window';
 import type { CaptureToolsService } from './capture-tools/service';
+import { bindBilibiliPlayer } from './browser/bilibili-player';
 import type { BrowserService } from './browser/service';
 import { importCapturedFile } from './browser/import-staged';
 import { parseLinkedVirtualFolderId } from '../shared/linked-folder-tree';
@@ -679,7 +680,7 @@ let mainWindow: BrowserWindow | undefined;
 let dshLauncher: DshLauncher | undefined;
 let closeGlobalNetwork: (() => Promise<void>) | undefined;
 let disposeGlobalNetworkIpc: (() => void) | undefined;
-let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool' | 'resolveCompanionContext'> | undefined;
+let browserService: Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool' | 'videoTool' | 'videoLogin' | 'resolveCompanionContext' | 'companionTabs' | 'companionTabReference'> | undefined;
 let captureToolsService: CaptureToolsService | undefined;
 let musicService: MusicService | undefined;
 let botService: BotService | undefined;
@@ -2393,6 +2394,7 @@ async function createMainWindow(): Promise<void> {
         : {}),
     ...(linuxRoundedCorners ? linuxRoundedWindowOptions() : {}),
     webPreferences: {
+      webviewTag: true,
       preload: path.join(__dirname, "index.js"),
       // A hidden startup window must still finish module fetches and paint.
       // Restore normal background throttling immediately after first readiness.
@@ -2407,6 +2409,7 @@ async function createMainWindow(): Promise<void> {
     },
   });
 
+  bindBilibiliPlayer(window.webContents);
   mainWindow = window;
   bindRendererEffects(app, window);
   if (linuxRoundedCorners) attachLinuxRoundedCorners(window);
@@ -2451,7 +2454,8 @@ async function createMainWindow(): Promise<void> {
       mainWindow = undefined;
     }
   });
-  bindCallPetWindow(window, bindDesktopLyricsWindow(window));
+  const savedLyricsBounds = await musicService?.readLyricsBounds();
+  bindCallPetWindow(window, bindDesktopLyricsWindow(window, savedLyricsBounds, bounds => musicService?.rememberLyricsBounds(bounds)));
   window.webContents.on("will-navigate", (event, url) => { if (!isCurrentDocumentReload(window.webContents.getURL(), url)) event.preventDefault(); });
   window.webContents.session.on("will-download", (event, item) => {
     if (item.getURL().startsWith("worldlinebox-plugin:")) event.preventDefault();
@@ -5344,6 +5348,11 @@ async function startApplication(): Promise<void> {
         readLocalCallModel: companionId => readLocalCallModel(callModelProfile, companionId),
         scheduledWorldOnline: () => launcher?.scheduledCabinOnline() ?? Promise.resolve(false),
         cabinWorldApp: launcher?.companionCabinApp,
+        videoLogin: () => browserService?.videoLogin() ?? Promise.resolve('unknown'),
+        videoTool: (input, signal) => {
+          if (!browserService) throw Error('内置浏览器尚未就绪。');
+          return browserService.videoTool(input, signal);
+        },
         musicTool: (scope, input, signal, assertAllowed) => {
           if (!musicService) throw Error('音乐应用暂不可用。');
           return musicService.companionControl(scope, input, signal, assertAllowed);
@@ -5482,7 +5491,9 @@ async function startApplication(): Promise<void> {
     return { ok: true };
   });
   app.once('before-quit', () => desktopSpeech?.controller.abort());
-  const mobileOptions = { root: app.getPath('userData'), bot: ensureBotService, media: ensureBotMediaService, speech: deepSeekSpeech,
+  const mobileOptions = { root: app.getPath('userData'), music: musicService,
+    browserTabs: () => browserService?.companionTabs() ?? [],
+    browserTabReference: async (id: string) => { if (!browserService) throw Error('内置浏览器尚未启动。'); return browserService.companionTabReference(id); }, bot: ensureBotService, media: ensureBotMediaService, speech: deepSeekSpeech,
     callAssetsRoot: MAIN_WINDOW_VITE_DEV_SERVER_URL ? path.join(app.getAppPath(), 'public', 'companion-call') : path.join(__dirname, '..', 'renderer', MAIN_WINDOW_VITE_NAME, 'companion-call'),
     report: (error: unknown) => logger?.error('companion-bot.mobile', error) };
   const usePublicMobileEndpoint = process.env.WORLDLINEBOX_E2E !== '1' || process.env.WORLDLINEBOX_MOBILE_PUBLIC_TEST === '1';

@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type {
   MusicControl,
-  MusicLyricsLayout,
+  MusicLyricsWindowConfig,
   MusicShare,
   MusicQueuedTrack,
   NeteaseLyricLine,
@@ -45,7 +45,7 @@ const PLAYBACK_MODE_MARKS: Readonly<Record<PlaybackMode, string>> = {
 }
 
 export type NeteaseMusicProps =
-  Pick<MusicPreferenceStore, 'useStore' | 'actions'> & { target: HTMLDivElement | null; endpoint?: MusicEndpoint; inline?: boolean; onClose?(): void; configureLyrics?(layout: MusicLyricsLayout): void;
+  Pick<MusicPreferenceStore, 'useStore' | 'actions'> & { target: HTMLDivElement | null; endpoint?: MusicEndpoint; inline?: boolean; onClose?(): void; configureLyrics?(config: MusicLyricsWindowConfig): void;
     loadCatalog: (playlistId: string, signal: AbortSignal, refresh?: boolean) => Promise<NeteasePlaylistCatalog>
     resolveStream: (
       playlistId: string,
@@ -120,6 +120,7 @@ export function NeteaseMusic({
   configureLyrics,
 }: NeteaseMusicProps) {
   const autoPlay = useStore(state => state.autoPlay)
+  const desktopLyricsVisible = useStore(state => state.desktopLyricsVisible)
   const storedTrackId = useStore(state => state.trackId)
   const storedPosition = useStore(state => state.positionSeconds ?? 0)
   const storedVolume = useStore(state => state.volume ?? 0.8)
@@ -142,7 +143,11 @@ export function NeteaseMusic({
   const [lyricsOpen, setLyricsOpen] = useState(false)
   const [queueOpen, setQueueOpen] = useState(!inline)
   const [sharedQueue, setSharedQueue] = useState<{ card: MusicShare; tracks: MusicQueuedTrack[]; coverUrl: string }>()
-  const floating = useFloatingLyrics(configureLyrics)
+  const reportLyricsError = useCallback((error: unknown) => setStreamError(messageOf(error)), [])
+  const floating = useFloatingLyrics({
+    restore: !inline && desktopLyricsVisible, rememberVisibility: actions.setDesktopLyricsVisible,
+    reportError: reportLyricsError, configure: configureLyrics,
+  })
   const [lyricsState, setLyricsState] = useState<LyricsState>({ phase: 'idle' })
   const [autoSkipTrackId, setAutoSkipTrackId] = useState<string>()
   const audio = useRef<HTMLAudioElement>(null)
@@ -373,6 +378,9 @@ export function NeteaseMusic({
     () => findActiveLyricIndex(lyricLines, currentTime),
     [currentTime, lyricLines],
   )
+  const activeLyricLine = lyricLines[activeLyricIndex]
+  const lyricText = activeLyricLine?.text
+    ?? (currentTrack ? lyricsState.phase === 'loading' ? '正在加载歌词…' : currentTrack.name : '桌面歌词')
   const managedPlaylist = playlists.find(item => item.id === playlistId)
   const runControl = async (control: MusicControl, active: AbortSignal): Promise<Record<string, unknown>> => {
     // The provider owns command/session cancellation. A development Strict Mode
@@ -525,9 +533,10 @@ export function NeteaseMusic({
           if (Date.now() - lastProgressWrite.current >= PROGRESS_WRITE_INTERVAL_MS) remember()
         }}
       />
-      {!inline && floating.target ? <FloatingLyrics target={floating.target} line={lyricLines[activeLyricIndex]}
-        layout={floating.layout} change={floating.setLayout} close={() => floating.show(false)}
-        fallback={currentTrack ? lyricsState.phase === 'loading' ? '正在加载歌词…' : currentTrack.name : '桌面歌词'} /> : null}
+      {!inline && floating.target ? <FloatingLyrics target={floating.target} text={lyricText} translation={activeLyricLine?.translatedText}
+        layout={floating.layout} captions={floating.captions} change={floating.setLayout} close={() => floating.show(false)}
+        playing={playing} canPlay={currentTrack !== undefined && source !== undefined} canSkip={tracks.length > 0}
+        togglePlayback={() => requestPlay()} skip={move} /> : null}
       {target ? createPortal(<div className={`${css.root} ${inline ? css.inline : css.settingsRoot}`}>
       <section
         id={inline ? undefined : 'worldline-netease-music-panel'}

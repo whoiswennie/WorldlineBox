@@ -23,6 +23,9 @@ export function createMusicPreferenceStore(initial: MusicPreferences, persist: (
   };
   const actions = {
     setAutoPlay: (enabled: boolean) => mutate(draft => { draft.autoPlay = enabled; }),
+    setDesktopLyricsVisible: (visible: boolean) => {
+      if (state.desktopLyricsVisible !== visible) mutate(draft => { draft.desktopLyricsVisible = visible; });
+    },
     selectTrack: (id: string) => mutate(draft => { draft.trackId = id; draft.positionSeconds = 0; }),
     initializeTrack: (playlistId: string, expected: string | undefined, fallback: string) => {
       if (state.playlistId !== playlistId || state.trackId !== expected) return;

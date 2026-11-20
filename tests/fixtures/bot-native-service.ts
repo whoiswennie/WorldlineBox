@@ -16,7 +16,7 @@ export class NativeServiceMemory extends BotMemoryService {
   override async appendHistory() { return { appended: [] }; }
   override async close() {}
 }
-export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string | Pick<BotDshResult, 'text' | 'artifacts' | 'peerResultsReceipt'>>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext' | 'musicTool' | 'prepareMusicShare'>>) {
+export async function nativeServiceFixture(run: (input: BotDshRun) => Promise<string | Pick<BotDshResult, 'text' | 'artifacts' | 'peerResultsReceipt'>>, options?: Partial<Pick<BotServiceOptions, 'browserTool' | 'resolveBrowserContext' | 'musicTool' | 'prepareMusicShare' | 'videoLogin' | 'videoTool' | 'onEvent'>>) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-native-routing-')), calls: BotDshRun[] = [];
   const media = new BotMediaService({ root: path.join(root, 'media'), builtinRoot: path.resolve('resources/bot-stickers') });
   class Native extends BotDshBrain {

@@ -18,7 +18,9 @@ import { BotCallVoiceControls } from './BotCallVoiceControls';
 import { BotCallDialogue, isLiveCallReply, type BotCallPlayback, type BotCallTurn } from './BotCallDialogue';
 import { BotComposer, BotSpeechMuteButton } from './BotComposer';
 import { BotApps, BotTopicAppCard } from './BotApps';
-import { useBotMusicApp } from './useBotMusicApp';
+import { useBotTopicApp } from './useBotTopicApp';
+import { VideoLoginDialog } from './VideoLoginDialog';
+import { useVideoSurface } from './BotVideoCard';
 import { useInlineMusicSurface } from '../music/MusicProvider';
 import { BotTopicBar } from './BotTopicBar';
 import { isBotFilePaste } from './clipboard-paste';
@@ -152,7 +154,9 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
       } while (refreshAgain.current && live.current);
     } finally { refreshing.current = false; }
   }, [conversationId, meeting, request]);
-  const music = useBotMusicApp(conversationId, runtime, request, refresh);
+  const video = useBotTopicApp('video', conversationId, runtime, request, refresh);
+  const videoSurface = useVideoSurface(api, conversationId, 'call', phase === 'connected' && !desktop.pet, revealMusic, !legacy);
+  const music = useBotTopicApp('music', conversationId, runtime, request, refresh);
   useEffect(() => {
     if (snapshot?.callDelivery?.more) void refresh();
   }, [snapshot?.callDelivery, refresh]);
@@ -233,13 +237,11 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
           if (!result.ok || !live.current) return { ok: false };
         }
         if (stageState.current.interrupted) updateStage({ ...stageState.current, interrupted: false });
-        input = { type: 'message.send', conversationId, content, requestId, topicId, attachmentIds, surface: 'call',
-          ...(music.pending ? { apps: ['music'] } : {}) };
+        input = { type: 'message.send', conversationId, content, requestId, topicId, attachmentIds, surface: 'call' };
         attempts.current.set(requestId, input);
       }
       const result = await request(input);
       if (result.ok) {
-        if (music.pending) music.clearDraft();
         setTurn(current => current?.id === requestId ? { ...current, replyIds: result.replyMessageIds ?? [] } : current);
         attempts.current.delete(requestId);
         void refresh();
@@ -531,12 +533,12 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
       {more && <button type="button" onClick={() => void loadEarlier()}>{zh ? '更早的对话' : 'Earlier messages'}</button>}
       {!chat.length && <div className="bot-call-chat-welcome">{desktop.pet && <BotIcon name="history" />}{zh ? '还没有消息。' : 'No messages yet.'}</div>}
       {chat.map(message => {
-        const captions = message.parts?.some(part => part.music) ? undefined : message.parts?.filter(part => part.presentation && part.text);
+        const captions = message.parts?.some(part => part.music || part.video) ? undefined : message.parts?.filter(part => part.presentation && part.text);
         return <article key={message.id} className={message.senderId === 'user' ? 'is-user' : ''} data-call-message={message.id}>
           <small>{message.senderId === 'user' ? (zh ? '我' : 'You') : message.senderName}</small>
           {captions?.map(part => <p className="bot-call-log-bubble" key={part.id}>{part.text}</p>)}
-          <BotMessageBody message={{ ...message, execution: undefined, ...(captions?.length ? { parts: message.parts?.filter(part => part.music), content: '' } : {}) }}
-            statusText={message.status === 'failed' ? (zh ? '回复失败。' : 'Reply failed.') : ''} surface="call" musicEnabled={phase === 'connected'} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
+          <BotMessageBody message={{ ...message, execution: undefined, ...(captions?.length ? { parts: message.parts?.filter(part => part.music || part.video), content: '' } : {}) }}
+            statusText={message.status === 'failed' ? (zh ? '回复失败。' : 'Reply failed.') : ''} surface="call" videoPlayback={videoSurface} musicEnabled={phase === 'connected'} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
           {message.error && <BotErrorNotice message={message.error} zh={zh} />}
           {!legacy && message.execution?.question && <BotMessageBody message={{ ...message, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(message.id, id, text)} />}
         </article>;
@@ -560,6 +562,8 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
           {meetingMenu}
         </div>}
       {topics}
+      {video.loginPrompt && <VideoLoginDialog state={video.loginPrompt} zh={zh} dismiss={video.dismissLogin} openUrl={onOpenUrl} />}
+      {video.attached && <BotTopicAppCard appId="video" locale={locale} connected onOpen={() => onOpenUrl?.('https://www.bilibili.com/')} onRemove={() => void video.detach().catch(cause => setSendError(String(cause)))} />}
       {music.attached && <BotTopicAppCard appId="music" locale={locale} connected onRemove={() => void music.detach().catch(cause => setSendError(String(cause)))} />}
     <div className="bot-call-composer-host">
       <BotComposer meeting locale={locale} draft={draft} setDraft={setDraft} onTypingActivity={setTyping} disabled={!conversationId} busy={sending} group={false} world={false} conversationId={conversationId}
@@ -567,7 +571,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
         desktopCapture={{ surface: desktop.pet ? 'pet' : 'chat', companionName: companion.name, attach: attachFiles, statusTarget: petStatusRow, controlsTarget: petCaptureControls,
           interacting: chatInteracting || typing || sending || presenting || voiceInputActive || voiceHold }}
         addFiles={() => addFiles()} removeFile={id => setFiles(current => current.filter(file => file.id !== id))} sendSticker={media => submit(media)}
-        extraTools={<>{composerTools}<BotApps locale={locale} disabled={sending || !conversationId} musicAttached={music.attached} onMusic={music.connect} />{inputActions}</>} showInputTools={!desktop.pet || hudMenu || voiceInputActive} compact status={composerStatus} onVoiceInputStart={voice.stop} onVoiceInputActivity={setVoiceInputActive} />
+        extraTools={<>{composerTools}<BotApps locale={locale} disabled={sending || !conversationId} videoAttached={video.attached} onVideo={video.connect} musicAttached={music.attached} onMusic={music.connect} />{inputActions}</>} showInputTools={!desktop.pet || hudMenu || voiceInputActive} compact status={composerStatus} onVoiceInputStart={voice.stop} onVoiceInputActivity={setVoiceInputActive} />
     </div></div>}{!compactPet && !composerExpanded && <button type="button" className="bot-call-input-entry" data-pet-drag={desktop.pet ? '' : undefined} aria-expanded="false"
       aria-label={zh ? '展开会面输入' : 'Expand meeting input'} title={zh ? '展开会面输入' : 'Expand meeting input'}
       onClick={() => { setHudMenu(false); setComposerExpanded(true); }}><img src={startupLogo} alt="" draggable={false} /></button>}

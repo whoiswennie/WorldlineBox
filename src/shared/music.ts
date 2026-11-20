@@ -9,11 +9,28 @@ export const MUSIC_LYRICS_LAYOUT_CHANNEL = 'worldlinebox:music-lyrics-layout';
 export const MUSIC_LYRICS_WINDOW = 'wlb-music-lyrics';
 export const MUSIC_LYRICS_LOCK_INSET = 8;
 export const MUSIC_LYRICS_LOCK_SIZE = 28;
-export const musicLyricsLayoutSchema = z.strictObject({
+export const MUSIC_LYRICS_CAPTION_METRICS = {
+  toolbarSpace: MUSIC_LYRICS_LOCK_INSET + MUSIC_LYRICS_LOCK_SIZE + 8,
+  edgeSpace: 12,
+  lineHeight: 1.4,
+} as const;
+const musicLyricsPlacementSchema = z.strictObject({
   locked: z.boolean(), orientation: z.enum(['horizontal', 'vertical']), fontSize: z.number().int().min(16).max(40),
 });
+const defaultLyricColors = { fillColor: '#ffffff', strokeColor: '#151920' };
+const lyricColorSchema = z.string().regex(/^#[\da-f]{6}$/i);
+export const musicLyricsLayoutSchema = musicLyricsPlacementSchema.extend({
+  fillColor: lyricColorSchema.default(defaultLyricColors.fillColor),
+  strokeColor: lyricColorSchema.default(defaultLyricColors.strokeColor),
+});
 export type MusicLyricsLayout = z.infer<typeof musicLyricsLayoutSchema>;
-export const DEFAULT_MUSIC_LYRICS_LAYOUT: MusicLyricsLayout = { locked: false, orientation: 'horizontal', fontSize: 25 };
+export const DEFAULT_MUSIC_LYRICS_LAYOUT: MusicLyricsLayout = {
+  locked: false, orientation: 'horizontal', fontSize: 25, ...defaultLyricColors,
+};
+export const musicLyricsWindowConfigSchema = musicLyricsPlacementSchema.extend({
+  captionExtent: z.number().int().positive(),
+});
+export type MusicLyricsWindowConfig = z.infer<typeof musicLyricsWindowConfigSchema>;
 export const DEFAULT_NETEASE_PLAYLIST_ID = '18322613388';
 export const DEFAULT_NETEASE_PLAYLIST_NAME = '幻酱的作品集';
 export const DEFAULT_NETEASE_PLAYLIST_DESCRIPTION = '收录世界线盒子开发者「幻」的翻唱作品。白幻和黑幻是演唱者「幻」的两种形态。';
@@ -66,6 +83,7 @@ const positionSchema = z.object({ trackId: musicIdSchema.optional(), positionSec
 export const savedPlaylistSchema = z.object({ id: musicIdSchema, name: z.string().trim().min(1).max(40), description: z.string().trim().max(500).default('') });
 export const musicPreferencesSchema = positionSchema.extend({
   autoPlay: z.boolean().default(false), volume: z.number().finite().min(0).max(1).default(0.8),
+  desktopLyricsVisible: z.boolean().default(false),
   playbackMode: playbackModeSchema.default('list'),
   playlistId: musicIdSchema.default(DEFAULT_NETEASE_PLAYLIST_ID),
   playlists: z.array(savedPlaylistSchema).max(100).default([]).transform(items => items.filter(item => item.id !== DEFAULT_NETEASE_PLAYLIST_ID)),
@@ -144,7 +162,7 @@ export interface WorldlineBoxMusicApi {
   onCommand?(listener: (command: MusicCommand) => void): () => void;
   onCommandCancelled?(listener: (id: string) => void): () => void;
   reply?(reply: MusicReply): void;
-  configureLyrics?(layout: MusicLyricsLayout): void;
+  configureLyrics?(config: MusicLyricsWindowConfig): void;
 }
 export const musicCatalogSchema = z.object({
   id: musicIdSchema, name: z.string().max(1000), coverUrl: z.string().max(4096),

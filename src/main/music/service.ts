@@ -1,14 +1,20 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { ipcMain, net, type BrowserWindow } from 'electron';
-import { atomicJson } from '../dsh/files';
+import { ipcMain, net, type BrowserWindow, type Rectangle } from 'electron';
+import { z } from 'zod';
+import { atomicJson, readJson } from '../dsh/files';
 import { fetchNeteasePlaylistCatalog, fetchNeteaseTrackLyrics, resolveNeteaseTrackStream } from './netease';
 import { configureDesktopLyricsWindow } from './lyrics-window';
-import { MUSIC_CHANNEL, MUSIC_SAVE_CHANNEL, MUSIC_CONTROL_CHANNEL, MUSIC_CONTROL_RESULT_CHANNEL, MUSIC_CONTROL_CANCEL_CHANNEL, MUSIC_LYRICS_LAYOUT_CHANNEL, DEFAULT_MUSIC_PREFERENCES, DEFAULT_NETEASE_PLAYLIST_ID, DEFAULT_NETEASE_PLAYLIST_NAME, musicReplySchema, musicLyricsLayoutSchema, musicPreferencesSchema, musicRequestSchema, musicCatalogSchema, musicShareSchema, loadMusicQueue, type MusicCommand, type MusicReply, type MusicPreferences, type MusicExecution, type MusicShareInput, type NeteasePlaylistCatalog, type NeteaseTrackLyrics } from '../../shared/music';
+import { MUSIC_CHANNEL, MUSIC_SAVE_CHANNEL, MUSIC_CONTROL_CHANNEL, MUSIC_CONTROL_RESULT_CHANNEL, MUSIC_CONTROL_CANCEL_CHANNEL, MUSIC_LYRICS_LAYOUT_CHANNEL, DEFAULT_MUSIC_PREFERENCES, DEFAULT_NETEASE_PLAYLIST_ID, DEFAULT_NETEASE_PLAYLIST_NAME, musicReplySchema, musicLyricsWindowConfigSchema, musicPreferencesSchema, musicRequestSchema, musicCatalogSchema, musicShareSchema, loadMusicQueue, type MusicCommand, type MusicReply, type MusicPreferences, type MusicExecution, type MusicShareInput, type NeteasePlaylistCatalog, type NeteaseTrackLyrics } from '../../shared/music';
+
+const lyricsBoundsFile = 'desktop-lyrics-bounds.json';
+const lyricsBoundsSchema = z.object({ x: z.int32(), y: z.int32(), width: z.int32().positive(), height: z.int32().positive() });
 
 export class MusicService {
   private writes = Promise.resolve();
+  private pendingLyricsBounds?: Rectangle;
+  private lyricsBoundsTimer?: ReturnType<typeof setTimeout>;
   private readonly catalogs = new Map<string, { expires: number; value: Promise<NeteasePlaylistCatalog> }>();
   private readonly lyricCache = new Map<string, { expires: number; value: Promise<NeteaseTrackLyrics> }>();
   private readonly controls = new Map<string, (reply: MusicReply) => void>();
@@ -30,6 +36,27 @@ export class MusicService {
     preferences.positions = Object.fromEntries(Object.entries(preferences.positions).filter(([id]) => ids.has(id)));
     this.writes = this.writes.catch(() => undefined).then(() => atomicJson(path.join(this.userData, 'music-player.json'), preferences));
     return this.writes;
+  }
+  async readLyricsBounds(): Promise<Rectangle | undefined> {
+    if (this.pendingLyricsBounds) return this.pendingLyricsBounds;
+    await this.writes.catch(() => undefined);
+    try {
+      return lyricsBoundsSchema.safeParse(await readJson(path.join(this.userData, lyricsBoundsFile))).data;
+    } catch (error) { this.report(error); return undefined; }
+  }
+  rememberLyricsBounds(bounds: Rectangle): void {
+    this.pendingLyricsBounds = bounds;
+    clearTimeout(this.lyricsBoundsTimer);
+    this.lyricsBoundsTimer = setTimeout(() => this.saveLyricsBounds(), 180);
+  }
+  private saveLyricsBounds(): void {
+    clearTimeout(this.lyricsBoundsTimer);
+    this.lyricsBoundsTimer = undefined;
+    const bounds = this.pendingLyricsBounds;
+    if (!bounds) return;
+    this.pendingLyricsBounds = undefined;
+    this.writes = this.writes.catch(() => undefined).then(() => atomicJson(path.join(this.userData, lyricsBoundsFile), bounds));
+    void this.writes.catch(this.report);
   }
   private catalogFile(id: string): string {
     return path.join(this.userData, 'music-catalogs', `${id}.json`);
@@ -149,7 +176,7 @@ export class MusicService {
     ipcMain.on(MUSIC_LYRICS_LAYOUT_CHANNEL, (event, input: unknown) => {
       const owner = this.window();
       if (!owner || !authorized(event)) return;
-      const parsed = musicLyricsLayoutSchema.safeParse(input);
+      const parsed = musicLyricsWindowConfigSchema.safeParse(input);
       if (parsed.success) configureDesktopLyricsWindow(owner, parsed.data);
     });
     ipcMain.handle(MUSIC_CHANNEL, async (event, input: unknown) => {
@@ -165,7 +192,7 @@ export class MusicService {
       } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; }
     });
   }
-  flush(): Promise<void> { return this.writes; }
+  flush(): Promise<void> { this.saveLyricsBounds(); return this.writes; }
 }
 const publicFetch = (input: string | URL, init?: RequestInit): Promise<Response> => init?.redirect === 'manual'
   ? publicRedirect(String(input), init) : net.fetch(String(input), { ...init, credentials: 'omit' });

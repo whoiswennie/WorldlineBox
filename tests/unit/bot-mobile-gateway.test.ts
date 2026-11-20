@@ -14,7 +14,7 @@ import { MobileAccessSettings } from '../../src/main/companion-bot/mobile-access
 import { startMobileSsh } from '../../src/main/companion-bot/mobile-ssh';
 import { MOBILE_ACCESS_PORT } from '../../src/shared/mobile-access';
 import { BotService } from '../../src/main/companion-bot/service';
-import { NativeServiceMemory, waitNative } from '../fixtures/bot-native-service';
+import { nativeCallback, nativeServiceFixture, NativeServiceMemory, waitNative } from '../fixtures/bot-native-service';
 import { DshMessageNotReadyError } from '../../src/main/dsh/host-errors';
 
 async function freePort(): Promise<number> {
@@ -409,4 +409,54 @@ it('updates the same open LAN invitation when the public route changes without d
     access.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+it('shares topic app changes in both directions and resolves only tracks published into the mobile conversation', async () => {
+  const token = 'c'.repeat(64);
+  const musicTrack = { id: '12', name: '单曲', artists: ['作者'], album: '', coverUrl: '', durationMs: 60000 };
+  const fixture = await nativeServiceFixture(async run => {
+    await nativeCallback(run, 'music', { action: 'play', playlistId: '7', trackId: '12' });
+    await nativeCallback(run, 'bilibili_video', { action: 'play', video: 'BV1B7411m7LV' });
+    return '一起听，一起看。';
+  }, {
+    musicTool: async () => ({}),
+    prepareMusicShare: async (id, input) => ({ id, title: '单曲', preview: ['单曲'], mode: input.mode, queue: input.queue, trackCount: 1 }),
+    videoTool: async () => ({ card: { videoId: 'BV1B7411m7LV', page: 2, title: '视频第二集' } }),
+  });
+  const { service, root, media } = fixture;
+  const port = await freePort();
+  await writeFile(path.join(root, 'mobile-access.json'), JSON.stringify({ token, port }));
+  const gateway = await startMobileGateway({ root, bot: async () => service, media: async () => media, report: () => undefined,
+    music: { catalog: async () => ({ id: '7', name: '歌单', trackCount: 1, tracks: [musicTrack], coverUrl: '' }),
+      track: async () => ({ trackId: '12', url: 'https://music.126.net/sample.mp3' }) },
+  });
+  const base = `http://127.0.0.1:${port}/mobile/v1`;
+  const headers = { authorization: 'Bearer ' + token };
+  const mobile = async (data: object) => (await fetch(base + '/requests', { method: 'POST', headers, body: JSON.stringify(data) })).json();
+  try {
+    const room = (await service.handle({ type: 'state' })).snapshot!.conversations.find(r => r.kind === 'direct')!.id;
+    const state = async () => (await mobile({ type: 'state', conversationId: room, history: true })).snapshot;
+    await service.handle({ type: 'app.connect', conversationId: room, appId: 'music' });
+    const runtime = (await state()).chatRuntime;
+    expect(runtime.apps).toEqual(['music']);
+    const topicId = runtime.topic.id;
+    expect((await mobile({ type: 'app.connect', conversationId: room, topicId, appId: 'video' })).ok).toBe(true);
+    expect((await service.handle({ type: 'state', conversationId: room })).snapshot?.chatRuntime?.apps).toEqual(['music','video']);
+    const sent = await mobile({ type: 'message.send', conversationId: room, topicId, content: '放音乐和视频', requestId: 'both-cards' });
+    await waitNative(() => service.store.getMessage(sent.replyMessageIds[0])?.status === 'sent');
+    const message = (await state()).messages.find((m: {id:string}) => m.id === sent.replyMessageIds[0]);
+    expect(message.displayContent).toBe('一起听，一起看。');
+    expect(message.cards).toMatchObject([{ kind: 'music', title: '单曲' }, { kind: 'video', videoId: 'BV1B7411m7LV', page: 2, player: expect.stringContaining('p=2') }]);
+    const query = new URLSearchParams({ conversationId: room, messageId: message.id, cardId: message.cards[0].id });
+    const music = (extra = '') => fetch(base + '/card-music?' + query + extra, { headers });
+    expect((await (await music()).json()).tracks).toMatchObject([{ id: '12' }]);
+    expect((await (await music('&trackId=12')).json()).stream.trackId).toBe('12');
+    expect((await music('&trackId=99')).status).toBe(404);
+    await mobile({ type: 'app.detach', conversationId: room, topicId, appId: 'music' });
+    expect((await service.handle({ type: 'state', conversationId: room })).snapshot?.chatRuntime?.apps).toEqual(['video']);
+    await service.handle({ type: 'app.detach', conversationId: room, topicId, appId: 'video' });
+    expect((await state()).chatRuntime.apps).toEqual([]);
+    expect((await music()).ok).toBe(true);
+  } finally { gateway?.close(); await fixture.close(); }
 });

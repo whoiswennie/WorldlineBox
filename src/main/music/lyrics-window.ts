@@ -1,17 +1,26 @@
 import { screen, type BrowserWindow, type Rectangle, type WindowOpenHandlerResponse } from 'electron';
-import { DEFAULT_MUSIC_LYRICS_LAYOUT, MUSIC_LYRICS_LOCK_INSET, MUSIC_LYRICS_LOCK_SIZE, MUSIC_LYRICS_WINDOW, type MusicLyricsLayout } from '../../shared/music';
+import { DEFAULT_MUSIC_LYRICS_LAYOUT, MUSIC_LYRICS_CAPTION_METRICS, MUSIC_LYRICS_LOCK_INSET, MUSIC_LYRICS_LOCK_SIZE, MUSIC_LYRICS_WINDOW, type MusicLyricsWindowConfig } from '../../shared/music';
 
-const windows = new WeakMap<BrowserWindow, (layout: MusicLyricsLayout) => void>();
-export function configureDesktopLyricsWindow(owner: BrowserWindow, layout: MusicLyricsLayout) {
-  windows.get(owner)?.(layout);
+const windows = new WeakMap<BrowserWindow, (config: MusicLyricsWindowConfig) => void>();
+export function configureDesktopLyricsWindow(owner: BrowserWindow, config: MusicLyricsWindowConfig) {
+  windows.get(owner)?.(config);
 }
 
-function place(workArea: Rectangle, layout: MusicLyricsLayout, previous?: Rectangle): Rectangle {
-  const vertical = layout.orientation === 'vertical';
-  const width = Math.min(workArea.width, Math.round(vertical ? 92 + layout.fontSize * 2.8 : 315 + layout.fontSize * 14));
-  const height = Math.min(workArea.height, Math.round(vertical ? 170 + layout.fontSize * 10 : 42 + layout.fontSize * 2.1));
+const { toolbarSpace, edgeSpace, lineHeight } = MUSIC_LYRICS_CAPTION_METRICS;
+const defaultConfig: MusicLyricsWindowConfig = {
+  locked: DEFAULT_MUSIC_LYRICS_LAYOUT.locked,
+  orientation: DEFAULT_MUSIC_LYRICS_LAYOUT.orientation,
+  fontSize: DEFAULT_MUSIC_LYRICS_LAYOUT.fontSize,
+  captionExtent: Math.ceil(DEFAULT_MUSIC_LYRICS_LAYOUT.fontSize * lineHeight) + 2 * edgeSpace,
+};
+
+function place(workArea: Rectangle, config: MusicLyricsWindowConfig, previous?: Rectangle): Rectangle {
+  const { orientation, fontSize, captionExtent } = config;
+  const vertical = orientation === 'vertical';
+  const width = Math.min(workArea.width, vertical ? Math.max(150, captionExtent) : 315 + fontSize * 14);
+  const height = Math.min(workArea.height, vertical ? 2 * toolbarSpace + 100 + fontSize * 10 : toolbarSpace + captionExtent);
   const x = previous ? previous.x + (previous.width - width) / 2 : workArea.x + (workArea.width - width) / 2;
-  const y = previous ? previous.y + (previous.height - height) / 2 : workArea.y + workArea.height - height - 24;
+  const y = (previous ? previous.y + previous.height : workArea.y + workArea.height - 24) - height;
   return {
     x: Math.round(Math.min(Math.max(x, workArea.x), workArea.x + workArea.width - width)),
     y: Math.round(Math.min(Math.max(y, workArea.y), workArea.y + workArea.height - height)),
@@ -19,10 +28,12 @@ function place(workArea: Rectangle, layout: MusicLyricsLayout, previous?: Rectan
   };
 }
 
-export function bindDesktopLyricsWindow(owner: BrowserWindow) {
+export function bindDesktopLyricsWindow(owner: BrowserWindow, savedBounds?: Rectangle, rememberBounds?: (bounds: Rectangle) => void) {
   let lyrics: BrowserWindow | undefined;
-  let layout = DEFAULT_MUSIC_LYRICS_LAYOUT;
-  let previous: Rectangle | undefined;
+  let config = defaultConfig;
+  let previous = savedBounds;
+  let placed: Rectangle | undefined;
+  let placing = false;
   let passThrough: boolean | undefined;
   let hitTest: ReturnType<typeof setInterval> | undefined;
   const syncPointer = () => {
@@ -31,19 +42,27 @@ export function bindDesktopLyricsWindow(owner: BrowserWindow) {
     const left = bounds.x + bounds.width - MUSIC_LYRICS_LOCK_INSET - MUSIC_LYRICS_LOCK_SIZE;
     const top = bounds.y + MUSIC_LYRICS_LOCK_INSET;
     const overLock = pointer.x >= left && pointer.x < left + MUSIC_LYRICS_LOCK_SIZE && pointer.y >= top && pointer.y < top + MUSIC_LYRICS_LOCK_SIZE;
-    const ignore = layout.locked && !overLock;
+    const ignore = config.locked && !overLock;
     if (passThrough !== ignore) { passThrough = ignore; lyrics.setIgnoreMouseEvents(ignore); }
   };
-  const configure = (next: MusicLyricsLayout) => {
-    const resized = next.orientation !== layout.orientation || next.fontSize !== layout.fontSize;
-    layout = next;
+  const restoreBounds = () => {
     if (!lyrics || lyrics.isDestroyed()) return;
-    if (resized) {
-      const bounds = lyrics.getBounds();
-      lyrics.setBounds(place(screen.getDisplayMatching(bounds).workArea, layout, bounds));
-    }
-    clearInterval(hitTest);
-    if (layout.locked) { hitTest = setInterval(syncPointer, 32); hitTest.unref(); }
+    const bounds = lyrics.getBounds();
+    const next = place(screen.getDisplayMatching(bounds).workArea, config, previous);
+    if (next.x === bounds.x && next.y === bounds.y && next.width === bounds.width && next.height === bounds.height) return;
+    placing = true;
+    try {
+      lyrics.setBounds(next);
+      placed = lyrics.getBounds();
+    } finally { placing = false; }
+  };
+  const configure = (next: MusicLyricsWindowConfig) => {
+    const resized = next.orientation !== config.orientation || next.fontSize !== config.fontSize || next.captionExtent !== config.captionExtent;
+    config = next;
+    if (!lyrics || lyrics.isDestroyed()) return;
+    if (resized) restoreBounds();
+    if (config.locked && !hitTest) { hitTest = setInterval(syncPointer, 32); hitTest.unref(); }
+    if (!config.locked) { clearInterval(hitTest); hitTest = undefined; }
     syncPointer();
   };
   windows.set(owner, configure);
@@ -56,19 +75,20 @@ export function bindDesktopLyricsWindow(owner: BrowserWindow) {
   owner.webContents.on('did-create-window', (child, { frameName }) => {
     if (frameName !== MUSIC_LYRICS_WINDOW) return;
     lyrics = child;
+    placed = child.getBounds();
     child.once('closed', () => {
       if (lyrics !== child) return;
-      lyrics = undefined; passThrough = undefined; clearInterval(hitTest);
+      lyrics = undefined; passThrough = undefined; clearInterval(hitTest); hitTest = undefined;
     });
-    const remember = () => { previous = child.getBounds(); syncPointer(); };
-    child.on('move', remember);
-    child.on('resize', remember);
-    const restoreBounds = () => {
-      if (!child.isDestroyed()) {
-        const bounds = child.getBounds();
-        child.setBounds(place(screen.getDisplayMatching(bounds).workArea, layout, bounds));
+    child.on('move', () => {
+      const bounds = child.getBounds();
+      // Only a drag updates the anchor. Growing a long lyric near a screen edge can shift its bounds.
+      if (!placing && (bounds.x !== placed?.x || bounds.y !== placed?.y)) {
+        placed = previous = bounds;
+        rememberBounds?.(bounds);
       }
-    };
+      syncPointer();
+    });
     screen.on('display-removed', restoreBounds);
     screen.on('display-metrics-changed', restoreBounds);
     child.once('closed', () => {
@@ -80,7 +100,7 @@ export function bindDesktopLyricsWindow(owner: BrowserWindow) {
     child.webContents.on('will-frame-navigate', event => event.preventDefault());
     child.webContents.on('will-attach-webview', event => event.preventDefault());
     child.webContents.setZoomFactor(1);
-    configure(layout);
+    configure(config);
     child.showInactive();
   });
   return (url: string, frameName: string): WindowOpenHandlerResponse | undefined => {
@@ -90,7 +110,7 @@ export function bindDesktopLyricsWindow(owner: BrowserWindow) {
     return { action: 'allow', overrideBrowserWindowOptions: {
       title: 'WorldlineBox · 桌面歌词', frame: false, transparent: true, show: false,
       alwaysOnTop: true, skipTaskbar: true, resizable: false, fullscreenable: false,
-      ...place(workArea, layout, previous),
+      ...place(workArea, config, previous),
       webPreferences: { backgroundThrottling: false },
     } };
   };

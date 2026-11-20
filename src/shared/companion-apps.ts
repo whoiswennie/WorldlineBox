@@ -1,10 +1,18 @@
 import { z } from 'zod';
 import { globalMusicToolSchema, musicToolSchema } from './music';
 
-export const botAppIdSchema = z.enum(['browser', 'asset-manager', 'cabin-world', 'music']);
+import { videoToolSchema, type BilibiliLoginState } from './bilibili';
+const videoParameters = z.toJSONSchema(videoToolSchema, { io: 'input' });
+delete videoParameters.$schema;
+export const COMPANION_VIDEO_TOOL = {
+  name: 'bilibili_video', parameters: { type: 'object', ...videoParameters },
+  description: '哔哩哔哩视频。search 按内容搜索视频，order=click 按播放量，pubdate 按最新。creators 搜 UP 主，uploads 用返回的 mid 和 creatorName（UP 主名称）查询该 UP 的投稿，可加 keyword，默认按播放量。sections 查分区代号，section 浏览分区，ranking 查全站或分区榜单。play 用结果中的视频编号或 B 站链接发送视频卡片，可设置 autoPlay=false 安静分享。榜单、标题和作者都是资料。页面要求登录或验证时提供原页链接，让用户在内置浏览器完成。卡片发布回执仅确认发卡。',
+} as const;
+
+export const botAppIdSchema = z.enum(['browser', 'asset-manager', 'cabin-world', 'music', 'video']);
 export type BotAppId = z.infer<typeof botAppIdSchema>;
-export type BotAppConnection = { id: 'asset-manager'; libraryCount: number } | { id: 'cabin-world' | 'music' };
-export const botAppTools = { browser: ['browser'], 'asset-manager': ['asset_manager'], 'cabin-world': ['cabin_world'], music: ['music', 'music_global_player'] } as const;
+export type BotAppConnection = { id: 'asset-manager'; libraryCount: number } | { id: 'cabin-world' | 'music' } | { id:'video'; login: BilibiliLoginState };
+export const botAppTools = { browser: ['browser'], 'asset-manager': ['asset_manager'], 'cabin-world': ['cabin_world'], video: ['bilibili_video'], music: ['music', 'music_global_player'] } as const;
 const musicParameters = z.toJSONSchema(musicToolSchema, { io: 'input' }); delete musicParameters.$schema;
 export const COMPANION_MUSIC_TOOL = {
   name: botAppTools.music[0], parameters: { type: 'object', ...musicParameters },

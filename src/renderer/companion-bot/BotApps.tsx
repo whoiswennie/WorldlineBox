@@ -9,6 +9,7 @@ import './bot-apps.css';
 const topicApps = {
   'asset-manager': { icon: 'assets', zh: '资产库', en: 'Assets', labelZh: '资产管理器', labelEn: 'Asset manager' },
   'cabin-world': { icon: 'cabin', zh: '小屋世界', en: 'Cabin World', labelZh: '小屋世界', labelEn: 'Cabin World' },
+  video: { icon: 'video', zh: '视频', en: 'Video', labelZh: '哔哩哔哩视频', labelEn: 'Bilibili video' },
   music: { icon: 'music', zh: '音乐', en: 'Music', labelZh: '音乐', labelEn: 'Music' },
 } as const;
 type TopicApp = keyof typeof topicApps;
@@ -23,15 +24,15 @@ type AppChoice = {
   open(): void;
 };
 
-export function BotTopicAppCard({ appId, locale, connected = false, onRemove }: { appId: TopicApp; locale: 'zh-CN' | 'en'; connected?: boolean; onRemove?(): void }) {
+export function BotTopicAppCard({ appId, locale, connected = false, onOpen, onRemove }: { appId: TopicApp; locale: 'zh-CN' | 'en'; connected?: boolean; onOpen?(): void; onRemove?(): void }) {
   const zh = locale === 'zh-CN';
   const app = topicApps[appId], remove = zh ? '移除' + app.labelZh : 'Remove ' + app.labelEn;
   const title = appId === 'cabin-world' ? (zh ? '伙伴会在此话题中感知自己的小屋近况' : 'The companion can sense their surroundings in this topic')
     : connected ? (zh ? '已连接此话题' : 'Connected to this topic') : (zh ? '已附加' : 'Attached');
-  return <div className="bot-app-card" data-app-id={appId} title={title}><BotIcon name={app.icon} /><strong>{zh ? app.zh : app.en}</strong>{onRemove && <button type="button" title={remove} aria-label={remove} onClick={onRemove}><BotIcon name="close" /></button>}</div>;
+  return <div className="bot-app-card" data-app-id={appId} title={title}>{onOpen ? <button type="button" className="bot-app-open-site" title={zh ? '在内置浏览器打开哔哩哔哩' : 'Open Bilibili in the built-in browser'} onClick={onOpen}><BotIcon name={app.icon} /><strong>{zh ? app.zh : app.en}</strong></button> : <><BotIcon name={app.icon} /><strong>{zh ? app.zh : app.en}</strong></>}{onRemove && <button type="button" title={remove} aria-label={remove} onClick={onRemove}><BotIcon name="close" /></button>}</div>;
 }
 
-export function BotApps({ locale, disabled, browserAvailable, browserApi, browserContext, assetAttached, cabinAttached, musicAttached, onBrowser, onAssets, onCabin, onMusic, onBrowserActivityChange }: { locale: 'zh-CN' | 'en'; disabled?: boolean; browserAvailable?: boolean; browserApi?: WorldlineBoxBrowserApi; browserContext?: BrowserPageContext; assetAttached?: boolean; cabinAttached?: boolean; musicAttached?: boolean; onBrowser?(context: BrowserPageContext): Promise<void>; onAssets?(): Promise<void>; onCabin?(): Promise<void>; onMusic?(): Promise<void>; onBrowserActivityChange?(active: boolean): void }) {
+export function BotApps({ locale, disabled, browserAvailable, browserApi, browserContext, assetAttached, cabinAttached, musicAttached, videoAttached, onVideo, onBrowser, onAssets, onCabin, onMusic, onBrowserActivityChange }: { locale: 'zh-CN' | 'en'; disabled?: boolean; browserAvailable?: boolean; browserApi?: WorldlineBoxBrowserApi; browserContext?: BrowserPageContext; assetAttached?: boolean; cabinAttached?: boolean; musicAttached?: boolean; videoAttached?: boolean; onVideo?(): Promise<void>; onBrowser?(context: BrowserPageContext): Promise<void>; onAssets?(): Promise<void>; onCabin?(): Promise<void>; onMusic?(): Promise<void>; onBrowserActivityChange?(active: boolean): void }) {
   const zh = locale === 'zh-CN', root = useRef<HTMLDivElement>(null);
   const surface = useBotCallDocument();
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(''), [error, setError] = useState('');
@@ -44,7 +45,7 @@ export function BotApps({ locale, disabled, browserAvailable, browserApi, browse
     surface.addEventListener('pointerdown', outside); surface.addEventListener('keydown', escape);
     return () => { surface.removeEventListener('pointerdown', outside); surface.removeEventListener('keydown', escape); };
   }, [open, surface]);
-  const choices = { 'asset-manager': { attached: assetAttached, connect: onAssets }, 'cabin-world': { attached: cabinAttached, connect: onCabin }, music: { attached: musicAttached, connect: onMusic } };
+  const choices = { 'asset-manager': { attached: assetAttached, connect: onAssets }, 'cabin-world': { attached: cabinAttached, connect: onCabin }, music: { attached: musicAttached, connect: onMusic }, video: { attached: videoAttached, connect: onVideo } };
   const attach = async (id: string, operation: () => Promise<void>) => {
     setBusy(id); setError('');
     try { await operation(); setOpen(false); }

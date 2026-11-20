@@ -1,0 +1,23 @@
+.bot-video-card { width: min(31rem, 100%); max-width: 100%; margin-block: .55rem .15rem; overflow: hidden; border: 1px solid var(--border, #8884); border-radius: 12px; background: var(--surface, Canvas); }
+.bot-video-preview, .bot-video-frame { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 16 / 9; min-width: min(18rem, 58vw); background: #17191f; color: white; }
+button.bot-video-preview { padding: 0; border: 0; border-radius: 0; overflow: hidden; cursor: pointer; }
+.bot-video-preview img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.bot-video-preview span { position: relative; display: grid; place-items: center; width: 2.8rem; height: 2.8rem; border-radius: 50%; background: #111b; }
+.bot-video-frame webview { display: flex; width: 100%; height: 100%; }
+.bot-video-caption { padding: .65rem .85rem; }
+.bot-video-caption strong { display: block; overflow-wrap: anywhere; }
+.bot-video-actions, .bot-video-actions > div { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.bot-video-actions { justify-content: space-between; margin-top: .25rem; }
+.bot-video-actions button { border: 0; padding: .2rem 0; background: transparent; font: inherit; font-size: .82em; color: inherit; cursor: pointer; }
+.bot-video-actions button:hover { text-decoration: underline; }
+.bot-app-card button.bot-app-open-site { width: auto; gap: 6px; padding-inline: 0 3px; }
+.bot-app-card button.bot-app-open-site .bot-icon { width: 16px; height: 16px; }
+.bot-video-login { width: min(26rem, 90vw); padding: 1.4rem; border: 1px solid var(--ui-border-subtle); border-radius: 14px; background: var(--ui-surface-raised, Canvas); color: var(--ui-content-primary, CanvasText); box-shadow: 0 16px 52px #0003; }
+.bot-video-login::backdrop { background: #0005; }
+.bot-video-login h3 { margin: 0 0 .6rem; }
+.bot-video-login p { margin: 0; font-size: .92rem; line-height: 1.65; color: var(--ui-content-secondary); white-space: normal; }
+.bot-video-login footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: .6rem; margin-top: 1.25rem; }
+.bot-video-login footer button { width: auto; height: auto; padding: .5rem .85rem; border: 1px solid var(--ui-border-subtle); border-radius: 8px; cursor: pointer; }
+.bot-video-login .is-primary { background: var(--ui-content-primary, CanvasText); color: var(--ui-surface-raised, Canvas); }
+.bot-video-caption [role=alert] { display: block; margin-top: .4rem; }
+

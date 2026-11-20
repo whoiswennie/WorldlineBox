@@ -174,7 +174,7 @@ export function MusicProvider({ children, api }: { children: ReactNode; api?: Wo
     void api.preferences().then(value => {
       if (!cancelled) {
         setStore(createMusicPreferenceStore(value, next => api.savePreferences(next)));
-        if (value.autoPlay) setActivated(true);
+        if (value.autoPlay || value.desktopLyricsVisible) setActivated(true);
       }
     }).catch(cause => { if (!cancelled) setError(String(cause)); });
     return () => { cancelled = true; };

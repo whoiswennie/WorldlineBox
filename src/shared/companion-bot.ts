@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { scheduleCommand, type CompanionScheduleState } from './companion-schedule';
 import type { BrowserPageContext } from './browser-page-context';
 import { botAppIdSchema, type BotAppId, type BotAppConnection } from './companion-apps';
+import type { VideoShare } from './bilibili';
 import type { MusicShare } from './music';
 import type {BotTopicContext} from './companion-native-context';
 import { botWorldCommandSchema, type BotWorldSnapshot } from './companion-bot-world';
@@ -79,7 +80,7 @@ export interface BotMessage {
   taskFollowup?: BotTaskFollowupReceipt;
   taskNotice?: { taskId: string; kind: 'task_done' | 'task_progress'; replyMessageId?: string; companionId?: string; companionName?: string; title?: string; status?: string };
 }
-export interface BotReplyPart { id:string;kind:'text'|'media'|'music';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string; presentation?: BotCallCue; music?: MusicShare }
+export interface BotReplyPart { id:string;kind:'text'|'media'|'music'|'video';sequence:number;text?:string;attachments?:BotMediaRef[];publicationId?:string; presentation?: BotCallCue; music?: MusicShare; video?: VideoShare }
 export interface BotNativeReplyOutput {id:string;sequence:number;text?:string;files?:Array<{path:string;description?:string}>}
 export interface BotTaskProgress { phase: string; detail?: string; updatedAt?: string; toolName?: string }
 export interface BotTask { id: string; conversationId: string; companionId: string; companionName?: string; goal: string; status: string; summary?: string; summaryIsPreview?: boolean; error?: string;
@@ -205,11 +206,14 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.observe'), conversationId: id, companionId: id }),
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
   z.strictObject({ type: z.literal('app.detach'), conversationId: id, topicId: id, appId: botAppIdSchema }),
-  z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.enum(['asset-manager', 'cabin-world', 'music']), topicId: id.optional() }),
+  z.strictObject({ type: z.literal('app.browser'), conversationId: id, topicId: id.optional(), referenceId: z.string().uuid() }),
+  z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.enum(['asset-manager', 'cabin-world', 'music', 'video']), topicId: id.optional() }),
 ]);
 export type BotRequest = z.infer<typeof botRequestSchema>;
 export interface BotResponse { userName?: string; schedule?: CompanionScheduleState; callModel?: BotCallModel; callStage?: BotCallStage; interruptedReplyIds?: string[]; app?: BotAppConnection; topicContext?:BotTopicContext; ok: boolean; error?: string; snapshot?: BotSnapshot; conversationId?: string; messageId?: string; replyMessageIds?: string[]; memory?: unknown; world?: BotWorldSnapshot; history?: BotHistoryPage; taskPage?: BotTaskPage; task?: BotTask; taskRemoved?: boolean; personas?: BotPersonaTemplateList; persona?: BotPersonaTemplate; cleanup?: BotDataCleanup; topics?: BotNativeTopic[]; nextTopicCursor?: string; topicListStale?: boolean; topicListError?: string; topic?: BotNativeTopic; compacted?: boolean; compactionSettled?: boolean }
 export type BotEvent = { type: 'changed'; conversationId?: string }
+  | { type: 'music-present'; conversationId: string; surface: 'chat' | 'call'; cardId: string }
+  | { type: 'video-present'; conversationId: string; surface: 'chat' | 'call'; cardId: string }
   | { type: 'progress'; conversationId: string; messageId: string; progress: BotReplyProgress }
   | { type: 'data-cleared'; companionId: string }
   | { type: 'text'; conversationId: string; messageId: string; text: string }

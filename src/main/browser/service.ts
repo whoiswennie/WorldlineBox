@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { closeSync, existsSync, mkdirSync, openSync, statSync, unlinkSync } from 'node:fs';
 import { app, clipboard, dialog, ipcMain, Menu, session, shell, WebContentsView, type BrowserWindow, type DownloadItem, type Session } from 'electron';
+import { BROWSER_PARTITION, type VideoToolInput } from '../../shared/bilibili';
+import { bilibiliLogin, bilibiliTool } from './bilibili';
+import { isPlayerFullscreen } from './bilibili-player';
 import type { CaptureImageSource } from '../../shared/capture-tools';
 import { BROWSER_CHANGED, BROWSER_FOCUS, BROWSER_REQUEST, BROWSER_HOME, browserRequestSchema, type BrowserDownload, type BrowserRequest, type BrowserResponse, type BrowserState, type BrowserTab } from '../../shared/browser';
 import { getApplicationNetwork } from '../application-network';
@@ -81,11 +84,20 @@ export class BrowserService {
         tab.title = '搜索 · ' + query.slice(0, 100); this.layout(); this.changed();
       } });
   }
+  async videoLogin() {
+    await this.init();
+    return bilibiliLogin(this.scope!);
+  }
+  async videoTool(input: VideoToolInput, signal: AbortSignal) {
+    await this.init();
+    signal.throwIfAborted();
+    return bilibiliTool(this.scope!, input, signal);
+  }
   private init(): Promise<void> { return this.initialization ??= this.initialize(); }
   private async initialize(): Promise<void> {
     await this.store.init();
     await this.ai.init();
-    this.scope = session.fromPartition('persist:worldlinebox-browser');
+    this.scope = session.fromPartition(BROWSER_PARTITION);
     await (await getApplicationNetwork()).attachSession(this.scope);
     if (this.captureHooks) {
       this.preloadRegistration = this.scope.registerPreloadScript({ type: 'frame', filePath: path.join(__dirname, 'browser-capture.js') });
@@ -98,9 +110,10 @@ export class BrowserService {
           return selected.canceled ? undefined : selected.filePaths[0]; },
         changed: () => this.changed(false), sources: () => this.captureSources(), source: tabId => this.captureSource(tabId) });
     }
-    this.scope.setPermissionCheckHandler((contents, permission, origin) => !!contents && this.owns(contents.id) && this.permissionAllowed(origin, permission));
+    this.scope.setPermissionCheckHandler((contents, permission, origin) => isPlayerFullscreen(contents, permission, origin) || !!contents && this.owns(contents.id) && this.permissionAllowed(origin, permission));
     this.scope.setPermissionRequestHandler((contents, permission, callback, details) => {
       const origin = this.origin(details.requestingUrl || contents.getURL());
+      if (origin && isPlayerFullscreen(contents, permission, origin)) { callback(true); return; }
       if (!this.owns(contents.id) || !origin) { callback(false); return; }
       if (this.permissionAllowed(origin, permission)) { callback(true); return; }
       const saved = this.store.data.sitePermissions[origin]?.[permission];
@@ -638,6 +651,14 @@ export class BrowserService {
     while (this.pageContexts.size > 64) this.pageContexts.delete(this.pageContexts.keys().next().value!);
     return value;
   }
+  companionTabs() {
+    return this.store.data.tabs.filter(tab => /^https?:\/\//.test(tab.url)).map(({ id, title, url }) => ({ id, title, host: new URL(url).host }));
+  }
+  async companionTabReference(id: string) {
+    const tab = this.requireTab(id);
+    await this.waitForPage(tab, AbortSignal.timeout(30_000));
+    return this.createPageContext(id).referenceId;
+  }
   resolveCompanionContext(referenceId: string): BrowserPageContext {
     const saved = this.pageContexts.get(referenceId), view = saved && this.views.get(saved.value.tabId)?.view;
     if (!saved || !view || view.webContents.isDestroyed() || view.webContents.id !== saved.contentsId || this.navigationVersions.get(saved.value.tabId) !== saved.version
@@ -938,7 +959,7 @@ export class BrowserService {
   }
 }
 
-export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool' | 'resolveCompanionContext'> {
+export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undefined, captureHooks?: BrowserCaptureHooks, onSelection?: (text: string) => Promise<void>, fullscreenShortcut?: (input: Electron.Input) => boolean, getModelConfig?: () => AiConnectionConfig): Pick<BrowserService, 'shutdown' | 'closeLibrary' | 'captureViewport' | 'selectedText' | 'saveScreenshot' | 'companionTool' | 'videoTool' | 'videoLogin' | 'resolveCompanionContext' | 'companionTabs' | 'companionTabReference'> {
   let browser: BrowserService | undefined;
   ipcMain.handle(BROWSER_REQUEST, async (event, input: unknown): Promise<BrowserResponse> => {
     const owner = getWindow(); if (!owner || event.sender !== owner.webContents || event.senderFrame !== owner.webContents.mainFrame) return { ok: false, error: '无权访问浏览器。' };
@@ -957,7 +978,11 @@ export function registerBrowserIpc(getWindow: () => BrowserWindow | null | undef
   });
   ipcMain.on(BROWSER_CAPTURE_SELECTION_STATE, (event, value: unknown) => browser?.captureSelectionState(event, value));
   return { shutdown: async () => { await browser?.shutdown(); }, closeLibrary: libraryId => browser?.closeLibrary(libraryId),
+    companionTabs: () => browser?.companionTabs() ?? [],
+    companionTabReference: async id => { if (!browser) throw Error('请先在电脑内置浏览器打开网页。'); return browser.companionTabReference(id); },
     resolveCompanionContext: id => { if (!browser) throw Error('内置浏览器尚未启动。'); return browser.resolveCompanionContext(id); },
+    videoLogin: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).videoLogin(),
+    videoTool: (input, signal) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).videoTool(input, signal),
     companionTool: (scope, input, signal) => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).companionTool(scope, input, signal),
     captureViewport: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).captureViewport(),
     selectedText: () => (browser ??= new BrowserService(getWindow, undefined, captureHooks, onSelection, fullscreenShortcut, getModelConfig)).selectedText(),

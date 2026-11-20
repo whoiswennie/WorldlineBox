@@ -47,7 +47,7 @@ test('composer Apps connects browser, assets and Cabin World independently', asy
     expect((await mcp()).snapshot?.runtime.status).toBe('stopped');
     await page.getByRole('button', { name: '应用', exact: true }).click();
     const picker = page.getByRole('dialog', { name: '连接应用', exact: true }); await expect(picker).toBeVisible();
-    await expect(picker.locator('.bot-app-choice')).toHaveCount(3); expect((await mcp()).snapshot?.runtime.status).toBe('stopped');
+    await expect(picker.locator('.bot-app-choice')).toHaveCount(5); expect((await mcp()).snapshot?.runtime.status).toBe('stopped');
     const bounds = await picker.boundingBox(), viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
     expect(bounds!.x).toBeGreaterThan(0); expect(bounds!.y).toBeGreaterThan(0); expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(viewport.width);
     const evidence = path.resolve('artifacts/companion-apps'); await mkdir(evidence, { recursive: true });

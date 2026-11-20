@@ -1,4 +1,4 @@
-import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test';
+import { _electron as electron, expect, test, type ElectronApplication, type Locator } from '@playwright/test';
 import { mkdtemp, mkdir, readFile, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -47,8 +47,25 @@ function silenceWav(seconds = 180) {
   bytes.writeUInt16LE(1,20);bytes.writeUInt16LE(1,22);bytes.writeUInt32LE(8000,24);bytes.writeUInt32LE(16000,28);
   bytes.writeUInt16LE(2,32);bytes.writeUInt16LE(16,34);bytes.write('data',36);bytes.writeUInt32LE(length,40);return bytes;
 }
+const multilingualLyrics = [
+  { timeMs: 53000, text:'メロディーが夜の街に響く。ゆっくり歩きながら、遠い灯りを見上げる。',
+    translatedText:'旋律在夜晚的街道回响。', direction:'ltr' },
+  { timeMs: 54000, text:'밤하늘 아래 우리 함께 천천히 걸어가요.',
+    translatedText:'我们一起在夜空下慢慢走。', direction:'ltr' },
+  { timeMs: 54500, text:'月色 Moonlight / 夜の空 / 밤하늘',
+    translatedText:'同一片夜空。', direction:'ltr', sidewaysRuns:['夜の空', '밤하늘'] },
+  { timeMs: 56000, text:'Вечер стих, и далёкие огни снова зажглись.',
+    translatedText:'夜色渐静，远处的灯又亮了。', direction:'ltr' },
+  { timeMs: 57000, text:'ในค่ำคืนที่เงียบสงบ แสงไฟไกล ๆ ค่อย ๆ สว่างขึ้น',
+    translatedText:'静夜里，远处的灯渐渐亮了。', direction:'ltr' },
+  { timeMs: 58000, text:'هدأ المساء وأضاءت الأضواء البعيدة من جديد — Pop',
+    translatedText:'夜色渐静，远处的灯又亮了。', direction:'rtl' },
+  { timeMs: 59000, text:'रात ढली और दूर की रोशनी फिर जल उठी।',
+    translatedText:'夜深了，远处的灯再次亮起。', direction:'ltr' },
+];
+
 async function installPublicMusicFixture(application: ElectronApplication, defaults: typeof DEFAULT_MUSIC_PREFERENCES) {
-  await application.evaluate(({ipcMain,app},value)=>{
+  await application.evaluate(({ipcMain,app},{defaults: value, samples})=>{
     // Network projections are a deterministic fixture. Preference saves still use the
     // production MUSIC_SAVE handler and its actual atomic userData file.
     const fs=process.getBuiltinModule('fs');const path=process.getBuiltinModule('path');
@@ -60,10 +77,39 @@ async function installPublicMusicFixture(application: ElectronApplication, defau
       }
       if(input.type==='catalog') return {ok:true,value:{id:input.playlistId,name:'静谧时光 · 播放验收',coverUrl:'',trackCount:3,tracks:['101','102','103'].map((id,index)=>({id,name:['薄雾与晨光','远处的山','雨后的窗'][index],artists:['Worldline 测试音频'],album:'本地静音 PCM',coverUrl:'',durationMs:180000}))}};
       if(input.type==='stream')return {ok:true,value:{trackId:input.trackId,url:`https://test.music.126.net/${input.trackId}.wav`}};
-      if(input.type==='lyrics')return {ok:true,value:{trackId:input.trackId,lines:[{timeMs:0,text:'测试歌词 · 开始'},{timeMs:10000,text:'测试歌词 · 十秒',translatedText:'A quiet moment'},{timeMs:40000,text:'测试歌词 · 四十秒'}]}};
+      if(input.type==='lyrics')return {ok:true,value:{trackId:input.trackId,lines:[
+        {timeMs:0,text:'测试歌词 · 开始'},
+        {timeMs:10000,text:'测试歌词 · 十秒',translatedText:'A quiet moment'},
+        {timeMs:40000,text:'测试歌词 · 四十秒'},
+        {timeMs:50000,text:'换行测试 · ' + '晚风吹过，灯光随着旋律亮起来。'.repeat(4),
+          translatedText:'Pop Pop, the evening lights begin to glow with the rhythm. '.repeat(3).trim()},
+        {timeMs:52000,text:'When it felt like too much and we started to fight',
+          translatedText:'当压力袭来，我们开始争吵'},
+        {timeMs:55000,text:'竖排测试 · ' + '晚风吹过，灯光随着旋律亮起来。'.repeat(4),
+          translatedText:'黄昏落下，街灯依次亮起。'},
+        ...samples,
+        {timeMs:60000,text:'溢出测试 · ' + '晚风经过窗边'.repeat(300) + ' · 结束'},
+      ].sort((a, b) => a.timeMs - b.timeMs)}};
       return {ok:false,error:'Unexpected music fixture operation'};
     });
-  },defaults);
+  },{defaults,samples:multilingualLyrics.map(({timeMs,text,translatedText})=>({timeMs,text,translatedText}))});
+}
+
+function captionGeometry(viewport: Locator) {
+  return viewport.evaluate(node => {
+    const bounds = node.getBoundingClientRect();
+    const vertical = getComputedStyle(node).writingMode === 'vertical-rl';
+    const boxes = [...node.querySelectorAll('b,small')].map(child => {
+      const range = document.createRange();
+      range.selectNodeContents(child);
+      return [...range.getClientRects()];
+    });
+    return {
+      inside: boxes.flat().every(rect => rect.left >= bounds.left + 4 && rect.right <= bounds.right - 4
+        && rect.top >= bounds.top + 4 && rect.bottom <= bounds.bottom - 4),
+      wraps: new Set(boxes[0]!.map(rect => vertical ? rect.left : rect.top)).size > 2,
+    };
+  });
 }
 // eslint-disable-next-line no-empty-pattern -- Playwright requires this signature even without browser fixtures.
 test('music keeps real audio across tabs, renders desktop lyrics, and manages named playlists',async ({})=>{
@@ -71,19 +117,22 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
   const parent=await realpath(tmpdir());const root=await mkdtemp(path.join(parent,'worldlinebox-music-e2e-'));
   const userData=path.join(root,'user-data');await mkdir(userData);
   let application:ElectronApplication|undefined;
-  const launch=async()=>{
+  const launch=async(restoreOnColdStart = false)=>{
     const app=await electron.launch({executablePath:resolveElectronExecutablePath(),args:[resolveElectronAppPath()],env:electronLaunchEnv({WORLDLINEBOX_E2E:'1',WORLDLINEBOX_E2E_DSH_SILENT:'1',WORLDLINEBOX_E2E_USER_DATA_PATH:userData})});
     application=app;
     const page=await app.firstWindow();
-    await expect(page.locator('[data-dsh-launcher]')).toBeVisible();
     await installPublicMusicFixture(app,DEFAULT_MUSIC_PREFERENCES);
     await app.context().route('https://test.music.126.net/**',route=>{
       const bytes=silenceWav();const range=/bytes=(\d+)-(\d*)/.exec(route.request().headers()['range']??'');
       const start=range?Number(range[1]):0;const end=range&&range[2]?Math.min(Number(range[2]),bytes.length-1):bytes.length-1;
       return route.fulfill({status:range?206:200,contentType:'audio/wav',body:bytes.subarray(start,end+1),headers:{'accept-ranges':'bytes','content-length':String(end-start+1),...(range?{'content-range':`bytes ${start}-${end}/${bytes.length}`}:{})}});
     });
-    await page.reload(); const native=await app.browserWindow(page);await native.evaluate(win=>{win.webContents.setBackgroundThrottling(false);win.unmaximize();win.setSize(1440,960);win.hide();});
-    await expect.poll(() => native.evaluate(win => win.webContents.executeJavaScript('!!document.querySelector("[data-dsh-launcher]")', false))).toBe(true);
+    if (!restoreOnColdStart) {
+      await expect(page.locator('[data-dsh-launcher]')).toBeVisible();
+      await page.reload();
+    }
+    const native=await app.browserWindow(page);await native.evaluate(win=>{win.webContents.setBackgroundThrottling(false);win.unmaximize();win.setSize(1440,960);win.hide();});
+    await expect.poll(() => native.evaluate(win => win.webContents.executeJavaScript('!!document.querySelector("[data-dsh-launcher]")', false)), { timeout:15_000 }).toBe(true);
     return {app,page};
   };
   try {
@@ -157,20 +206,97 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     const lyricWindow = await application.browserWindow(lyricPage);
     await expect.poll(() => application!.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().some(window => window.isAlwaysOnTop() && window.getTitle().includes('桌面歌词')))).toBe(true);
+    const overlayControls = lyricPage.getByRole('group', { name:'桌面歌词播放控制' });
+    const globalTrack = () => page.locator('[data-global-music-audio]').evaluate((node: HTMLAudioElement) =>
+      ({ file:node.src.split('/').at(-1), paused:node.paused }));
+    await overlayControls.getByRole('button', { name:'播放', exact:true }).click();
+    await expect.poll(globalTrack).toEqual({ file:'101.wav', paused:false });
+    await overlayControls.getByRole('button', { name:'暂停', exact:true }).click();
+    await expect.poll(globalTrack).toEqual({ file:'101.wav', paused:true });
+    await overlayControls.getByRole('button', { name:'下一首' }).click();
+    await expect.poll(globalTrack).toEqual({ file:'102.wav', paused:false });
+    await overlayControls.getByRole('button', { name:'上一首' }).click();
+    await expect.poll(globalTrack).toEqual({ file:'101.wav', paused:false });
+    await overlayControls.getByRole('button', { name:'暂停', exact:true }).click();
+    await expect.poll(globalTrack).toEqual({ file:'101.wav', paused:true });
     await panel.getByRole('button',{name:'打开滚动歌词'}).click();
     await panel.getByRole('button',{name:'测试歌词 · 四十秒'}).click();
     await expect.poll(() => application!.evaluate(({ BrowserWindow }) => {
       const child = BrowserWindow.getAllWindows().find(window => window.getTitle().includes('桌面歌词'));
       return child?.webContents.executeJavaScript('document.querySelector("b")?.textContent');
     })).toBe('测试歌词 · 四十秒');
-    expect(await lyricPage.locator('.card').evaluate(node => getComputedStyle(node).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+    await expect(lyricPage.locator('.card')).toHaveCSS('background-color', 'rgba(225, 231, 241, 0.28)');
+    await expect(lyricPage.locator('.card')).toHaveCSS('box-shadow', /inset/);
+    const viewport = lyricPage.locator('.caption-viewport');
+    await expect.poll(() => captionGeometry(viewport)).toMatchObject({ inside:true });
     const wide = await lyricWindow.evaluate(window => window.getBounds());
+    await panel.getByRole('button', { name:/^换行测试/ }).click();
+    await expect(viewport.locator('small')).toHaveCSS('writing-mode', 'horizontal-tb');
+    await expect.poll(() => captionGeometry(viewport)).toEqual({ inside:true, wraps:true });
+    await expect.poll(() => lyricWindow.evaluate(window => window.getBounds().height)).toBeGreaterThan(wide.height);
+    await lyricPage.getByLabel('歌词描边颜色').fill('#0088cc');
+    await lyricPage.getByLabel('歌词填充颜色').fill('#ffdf91');
+    for (const tag of ['b', 'small']) {
+      await expect(viewport.locator(tag)).toHaveCSS('color', 'rgb(255, 223, 145)');
+      await expect(viewport.locator(tag)).toHaveCSS('-webkit-text-stroke-color', 'rgb(0, 136, 204)');
+    }
+    await panel.getByRole('button', { name:/^溢出测试/ }).click();
+    await expect(viewport).toHaveAttribute('data-scrollable', '');
+    expect(await viewport.evaluate(node => {
+      node.scrollTop = node.scrollHeight;
+      const tail = document.createRange();
+      const text = node.querySelector('b')!.firstChild!;
+      tail.setStart(text, text.textContent!.length - 2);
+      tail.setEndAfter(text);
+      return tail.getBoundingClientRect().bottom < node.getBoundingClientRect().bottom;
+    })).toBe(true);
+    await panel.getByRole('button', { name:/^换行测试/ }).click();
     await lyricPage.getByRole('button', { name:'切换竖排' }).click();
     await expect(lyricPage.locator('.card')).toHaveAttribute('data-orientation', 'vertical');
+    await expect(viewport.locator('small')).toHaveCSS('writing-mode', 'vertical-rl');
+    await expect(viewport.locator('small')).toHaveCSS('text-orientation', 'sideways');
+    await panel.getByRole('button', { name:/^When it felt/ }).click();
+    await expect(viewport.locator('b')).toHaveText(/^When it felt/);
+    await expect(viewport.locator('b')).toHaveCSS('writing-mode', 'vertical-rl');
+    await expect(viewport.locator('b')).toHaveCSS('text-orientation', 'sideways');
+    await expect(viewport.locator('small')).toHaveCSS('text-orientation', 'mixed');
+    await expect.poll(() => lyricWindow.evaluate(window => {
+      const { width, height } = window.getBounds();
+      return height > width;
+    })).toBe(true);
+    await expect.poll(() => captionGeometry(viewport)).toMatchObject({ inside:true });
+    for (const sample of multilingualLyrics) {
+      await panel.getByRole('button', { name: sample.text }).click();
+      await expect(viewport.locator('b')).toHaveText(sample.text);
+      await expect(viewport.locator('b')).toHaveCSS('writing-mode', 'vertical-rl');
+      await expect(viewport.locator('b')).toHaveCSS('text-orientation', sample.sidewaysRuns ? 'mixed' : 'sideways');
+      await expect(viewport.locator('b')).toHaveCSS('direction', sample.direction);
+      await expect(viewport.locator('small')).toHaveCSS('text-orientation', 'mixed');
+      await expect(viewport.locator('small')).toHaveCSS('direction', 'ltr');
+      for (const text of sample.sidewaysRuns ?? []) {
+        const run = viewport.locator('b span').filter({ hasText:text });
+        await expect(run).toHaveCSS('text-orientation', 'sideways');
+      }
+      await expect.poll(() => captionGeometry(viewport)).toMatchObject({ inside:true });
+    }
+    await panel.getByRole('button', { name:/^竖排测试/ }).click();
+    await expect(viewport.locator('b')).toHaveCSS('writing-mode', 'vertical-rl');
+    await expect(viewport.locator('small')).toHaveCSS('writing-mode', 'vertical-rl');
     await expect.poll(() => lyricWindow.evaluate(window => window.getBounds().height)).toBeGreaterThan(wide.height);
     const size = await lyricPage.locator('b').evaluate(node => parseFloat(getComputedStyle(node).fontSize));
     await lyricPage.getByRole('button', { name:'放大歌词' }).click();
     await expect.poll(() => lyricPage.locator('b').evaluate(node => parseFloat(getComputedStyle(node).fontSize))).toBe(size + 2);
+    const increaseFont = lyricPage.getByRole('button', { name:'放大歌词' });
+    for (let fontSize = size + 2; fontSize < 40; fontSize += 2) await increaseFont.click();
+    await expect(increaseFont).toBeDisabled();
+    await expect.poll(() => captionGeometry(viewport)).toEqual({ inside:true, wraps:true });
+    await panel.getByRole('button', { name:/^溢出测试/ }).click();
+    await expect(viewport).toHaveAttribute('data-scrollable', '');
+    await viewport.hover();
+    await lyricPage.mouse.wheel(0, 144);
+    await expect.poll(() => viewport.evaluate(node => node.scrollLeft)).toBeLessThan(0);
+    await panel.getByRole('button', { name:'测试歌词 · 四十秒' }).click();
+    await expect.poll(() => captionGeometry(viewport)).toMatchObject({ inside:true });
     await lyricWindow.evaluate(window => {
       const setIgnore = window.setIgnoreMouseEvents.bind(window);
       Reflect.set(window, 'testClickThrough', false);
@@ -178,17 +304,56 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     });
     await lyricPage.getByRole('button', { name:'锁定桌面歌词' }).click();
     await expect(lyricPage.getByRole('group', { name:'桌面歌词布局' })).toHaveCount(0);
+    await expect(overlayControls).toHaveCount(0);
+    await expect(lyricPage.locator('.card')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(lyricPage.locator('.card')).toHaveCSS('box-shadow', 'none');
     await expect.poll(() => lyricWindow.evaluate(window => Reflect.get(window, 'testClickThrough'))).toBe(true);
     await lyricPage.getByRole('button', { name:'解锁桌面歌词' }).click();
     await expect.poll(() => lyricWindow.evaluate(window => Reflect.get(window, 'testClickThrough'))).toBe(false);
-    await panel.getByRole('button',{name:'关闭桌面歌词'}).click();
+    const savedBounds = process.platform === 'win32' ? await application.evaluate(({ BrowserWindow, screen }) => {
+      const window = BrowserWindow.getAllWindows().find(child => child.getTitle().includes('桌面歌词'))!;
+      const bounds = window.getBounds();
+      const { workArea } = screen.getDisplayMatching(bounds);
+      window.setPosition(workArea.x + Math.round((workArea.width - bounds.width) / 5),
+        workArea.y + Math.round((workArea.height - bounds.height) / 3));
+      return window.getBounds();
+    }) : undefined;
+    if (savedBounds) {
+      await expect.poll(async () => {
+        const stored = await readFile(path.join(userData, 'desktop-lyrics-bounds.json'), 'utf8').catch(() => undefined);
+        return stored && JSON.parse(stored);
+      }).toEqual(savedBounds);
+    }
+    await lyricPage.getByRole('button', { name:'锁定桌面歌词' }).click();
+    await expect(lyricPage.locator('.card')).toHaveAttribute('data-locked', 'true');
     await panel.getByRole('button',{name:'返回歌单'}).click();
-    await expect.poll(async ()=>JSON.parse(await readFile(path.join(userData,'music-player.json'),'utf8')).positionSeconds).toBe(40);
+    const savedPlayer = async () => JSON.parse(await readFile(path.join(userData, 'music-player.json'), 'utf8'));
+    await expect.poll(savedPlayer).toMatchObject({ positionSeconds:40, desktopLyricsVisible:true, autoPlay:false });
     await application.close();application=undefined;
-    run=await launch();application=run.app;page=run.page;
-    await page.getByRole('button',{name:'设置',exact:true}).click();await page.getByRole('tab',{name:'音乐',exact:true}).click();
+    run=await launch(true);application=run.app;page=run.page;
+    const restoredLyrics = () => application!.windows().find(candidate => candidate.url() === 'about:blank');
+    await expect.poll(async () => restoredLyrics()?.locator('b').textContent({ timeout:500 }).catch(() => null), { timeout:15_000 })
+      .toBe('测试歌词 · 四十秒');
+    const restoredOverlay = restoredLyrics()!;
+    await expect(restoredOverlay.locator('.card')).toHaveAttribute('data-orientation', 'vertical');
+    await expect(restoredOverlay.locator('b')).toHaveCSS('font-size', '40px');
+    if (savedBounds) {
+      const restoredWindow = await application.browserWindow(restoredOverlay);
+      await expect.poll(async () => {
+        const bounds = await restoredWindow.evaluate(window => window.getBounds());
+        const centerOffset = bounds.x + bounds.width / 2 - (savedBounds.x + savedBounds.width / 2);
+        const bottomOffset = bounds.y + bounds.height - (savedBounds.y + savedBounds.height);
+        return Math.max(Math.abs(centerOffset), Math.abs(bottomOffset));
+      }).toBeLessThanOrEqual(2);
+    }
+    await restoredOverlay.getByRole('button', { name:'解锁桌面歌词' }).click();
+    await expect(restoredOverlay.getByLabel('歌词描边颜色')).toHaveValue('#0088cc');
+    await expect(restoredOverlay.getByLabel('歌词填充颜色')).toHaveValue('#ffdf91');
     await expect.poll(()=>page.locator('[data-global-music-audio]').evaluate((node:HTMLAudioElement)=>node.currentTime)).toBe(40);
     expect(await page.locator('[data-global-music-audio]').evaluate((node:HTMLAudioElement)=>node.paused)).toBe(true);
+    await page.getByRole('button',{name:'设置',exact:true}).click();await page.getByRole('tab',{name:'音乐',exact:true}).click();
+    await page.getByRole('button', { name:'关闭桌面歌词' }).click();
+    await expect.poll(savedPlayer).toMatchObject({ desktopLyricsVisible:false });
     await expect(page.getByRole('slider',{name:'音量'})).toHaveValue('0.35');
     await page.getByRole('button',{name:'播放模式：列表循环'}).click();
     await expect(page.getByRole('button',{name:'播放模式：单曲循环'})).toBeVisible();
@@ -217,9 +382,9 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     await page.getByRole('button', { name: '应用', exact: true }).click();
     const apps = page.getByRole('dialog', { name: '连接应用' });
     const appChoices = apps.getByRole('button');
-    await expect(appChoices).toHaveCount(4);
+    await expect(appChoices).toHaveCount(5);
     const rows = await appChoices.evaluateAll(buttons => buttons.map(button => button.getBoundingClientRect().top));
-    expect(new Set(rows).size).toBe(4);
+    expect(new Set(rows).size).toBe(5);
     expect((await apps.boundingBox())!.width).toBeLessThan(180);
     await apps.screenshot({ path: test.info().outputPath('apps-menu.png') });
     await apps.getByRole('button', { name: '音乐', exact: true }).click();
@@ -282,7 +447,7 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     await expect(meeting.locator('.bot-message-bubble [data-music-card="meeting-work"]').getByRole('region', { name:'对话音乐播放器' })).toContainText('远处的山');
     const lyricsOpening = application.waitForEvent('window');
     expect(await control({ action:'lyrics', target:'global', visible:true })).toMatchObject({ ok:true });
-    await lyricsOpening;
+    const commandOverlay = await lyricsOpening;
     if (process.platform === 'win32') {
       const petOpening = application.waitForEvent('window');
       await meeting.getByRole('button', { name:'切换为桌宠' }).click();
@@ -294,6 +459,14 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     }
     await expect.poll(() => application!.evaluate(({ BrowserWindow }) =>
       BrowserWindow.getAllWindows().some(window => window.isAlwaysOnTop() && window.getTitle().includes('桌面歌词')))).toBe(true);
+    await commandOverlay.getByRole('button', { name:'关闭桌面歌词' }).click();
+    await expect.poll(savedPlayer).toMatchObject({ desktopLyricsVisible:false });
+    await application.close();application=undefined;
+    run=await launch();application=run.app;page=run.page;
+    await expect(page.locator('[data-global-music-audio]')).toHaveCount(0);
+    expect(restoredLyrics()).toBeUndefined();
+    await page.getByRole('button',{name:'设置',exact:true}).click();await page.getByRole('tab',{name:'音乐',exact:true}).click();
+    await expect(page.getByRole('button', { name:'打开桌面歌词' })).toBeVisible();
   } finally {
     await application?.close().catch(()=>undefined);
     await removeProfile(root,parent);

@@ -41,6 +41,7 @@ import type { CompanionBrowserResult } from '../browser/service';
 import { botAppIdSchema, botAppTools, companionAssetArgumentsSchema, companionCabinArgumentsSchema, type BotAppId } from '../../shared/companion-apps';
 import type { BotAssetManagerApp } from './asset-manager-app';
 import type { BotCabinWorldApp } from './cabin-world-app';
+import { videoToolSchema, type BilibiliLoginState, type VideoToolInput, type VideoShare } from '../../shared/bilibili';
 import { DEFAULT_NETEASE_PLAYLIST_ID, globalMusicToolSchema, musicToolSchema, type MusicCommand, type MusicExecution, type MusicShare, type MusicShareInput } from '../../shared/music';
 import { BOT_CALL_SEGMENTS_PER_TURN, botCallSegmentSchema, type BotCallModel, type BotCallSegment } from '../../shared/companion-call';
 import { botCallCapabilities, readBotCallModel, validateBotCallPerformance } from './call-models';
@@ -78,6 +79,8 @@ export interface BotServiceOptions {
   readLocalCallModel?(companionId: string): Promise<BotCallModel | undefined>;
   assetManagerApp?: Pick<BotAssetManagerApp, 'connect' | 'execute'>;
   cabinWorldApp?: BotCabinWorldApp;
+  videoLogin?(): Promise<BilibiliLoginState>;
+  videoTool?(input: VideoToolInput, signal: AbortSignal): Promise<{card?: Omit<VideoShare,'id'>; result?: unknown}>;
   musicTool?(scope: Pick<MusicCommand, 'conversationId' | 'surface'>, input: MusicExecution, signal: AbortSignal, assertAllowed: () => void): Promise<unknown>;
   prepareMusicShare?(id: string, input: MusicShareInput, signal: AbortSignal): Promise<MusicShare>;
   resolveBrowserContext?(referenceId: string): BrowserPageContext;
@@ -138,6 +141,7 @@ export class BotService {
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmPhases = new Map<string, 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory'>();
   private readonly companionControls = new Map<string, Promise<void>>();
+  private readonly videoRequests = new Map<string, Set<AbortController>>();
   private readonly musicControls = new Map<string, Set<AbortController>>();
   private readonly companionControlRevisions = new Map<string, number>();
   private readonly companionStartWaiters = new Map<string, Set<AbortController>>();
@@ -422,12 +426,22 @@ export class BotService {
     const parsed = botAppIdSchema.array().safeParse(JSON.parse(this.store.getMetadata('topic-apps:' + topicId) || '[]'));
     return parsed.success ? parsed.data : [];
   }
+  private attachTopicApp(roomId: string, topicId: string | undefined, app: BotAppId, browser?: BrowserPageContext) {
+    const room = this.store.getConversation(roomId);
+    if (!room?.memberIds.includes('user') || room.dissolvedAt) throw Error('聊天权限已变化。');
+    this.store.taskTransaction(() => {
+      const topic = topicId ? this.topics.get(topicId, roomId) : this.topics.current(roomId) ?? this.topics.newDraft(roomId, randomUUID());
+      this.store.setMetadata('topic-apps:' + topic.id, JSON.stringify([...new Set([...this.topicApps(topic.id), app])]));
+      if (browser) this.store.setMetadata('topic-browser:' + topic.id, JSON.stringify(browser));
+    });
+    this.changed(roomId);
+  }
   private async observeCabin(topicId: string | undefined, companion: BotCompanion, signal: AbortSignal) {
     if (!this.topicApps(topicId).includes('cabin-world')) return undefined;
     const observation = await this.options.cabinWorldApp?.observe(companion, signal) ?? { status: 'unavailable' as const };
     return this.topicApps(topicId).includes('cabin-world') ? observation : undefined;
   }
-  private musicScope(room: BotConversation, event: BotEvent): Pick<MusicCommand, 'conversationId' | 'surface'> {
+  private playbackScope(room: BotConversation, event: BotEvent): Pick<MusicCommand, 'conversationId' | 'surface'> {
     return { conversationId: room.id, surface: this.isCallTurn(room, event) ? 'call' : 'chat' };
   }
   private async observeMusic(topicId: string | undefined, room: BotConversation, event: BotEvent, signal: AbortSignal) {
@@ -438,7 +452,7 @@ export class BotService {
       if (!attached()) throw Error('音乐应用已断开。');
     };
     try {
-      const value = await this.options.musicTool(this.musicScope(room, event), { action: 'status', target: 'global' },
+      const value = await this.options.musicTool(this.playbackScope(room, event), { action: 'status', target: 'global' },
         AbortSignal.any([signal, AbortSignal.timeout(1200)]), assertAllowed);
       assertAllowed();
       if (value && typeof value === 'object') return { ...value, observedAt: new Date().toISOString() };
@@ -551,17 +565,23 @@ export class BotService {
       this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
     }
     switch (input.type) {
+      case 'app.browser': {
+        const context = this.options.resolveBrowserContext?.(input.referenceId);
+        if (!context) throw Error('请重新选择内置浏览器标签页。');
+        this.attachTopicApp(input.conversationId, input.topicId, 'browser', context);
+        return { ok: true };
+      }
       case 'app.connect': {
         const room = this.store.getConversation(input.conversationId);
         if (!room?.memberIds.includes('user')) throw new Error('不能为这个聊天连接应用。');
-        if (input.appId === 'music') {
-          if (!this.options.musicTool) throw Error('音乐应用暂不可用。');
-          if (input.topicId) {
-            this.topics.get(input.topicId, room.id);
-            this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify([...new Set([...this.topicApps(input.topicId), input.appId])]));
-            this.changed(room.id);
-          }
-          return { ok: true, app: { id: input.appId } };
+        if (input.appId === 'music' || input.appId === 'video') {
+          if (input.appId === 'video' && !this.options.videoTool) throw Error('视频应用暂不可用。');
+          if (input.appId === 'music' && !this.options.musicTool) throw Error('音乐应用暂不可用。');
+          const connection = input.appId === 'video'
+            ? { id: 'video' as const, login: await this.options.videoLogin?.() ?? 'unknown' as const }
+            : { id: 'music' as const };
+          this.attachTopicApp(room.id, input.topicId, input.appId);
+          return { ok: true, app: connection };
         }
         if (input.appId === 'cabin-world') {
           const enabled = room.memberIds.flatMap(id => {
@@ -572,12 +592,7 @@ export class BotService {
           if (!this.options.cabinWorldApp) throw Error('小屋世界应用暂不可用。');
           if (input.topicId) this.topics.get(input.topicId, room.id);
           await this.options.cabinWorldApp.connect(this.maintenanceAbort.signal, room.kind === 'direct' ? enabled[0] : undefined);
-          if (input.topicId) {
-            if (!this.store.getConversation(room.id)?.memberIds.includes('user')) throw Error('聊天权限已变化。');
-            this.topics.get(input.topicId, room.id);
-            this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify([...new Set([...this.topicApps(input.topicId), input.appId])]));
-            this.changed(room.id);
-          }
+          this.attachTopicApp(room.id, input.topicId, input.appId);
           return { ok: true, app: { id: input.appId } };
         }
         if (!this.options.assetManagerApp) throw new Error('资产管理器应用尚未就绪。');
@@ -586,6 +601,7 @@ export class BotService {
           connection = await this.options.assetManagerApp.connect({ companionId: actor!.id, companionName: actor!.name, conversationId: room.id }, this.maintenanceAbort.signal);
         }
         if (!connection) throw new Error('请先选择一个启用的伙伴。');
+        this.attachTopicApp(room.id, input.topicId, input.appId);
         return { ok: true, app: connection };
       }
       case 'app.detach': {
@@ -593,6 +609,7 @@ export class BotService {
         const room = this.store.getConversation(input.conversationId);
         if (!room?.memberIds.includes('user')) throw Error('不能修改这个话题的应用。');
         this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify(this.topicApps(input.topicId).filter(id => id !== input.appId)));
+        if (input.appId === 'video') for (const request of this.videoRequests.get(input.topicId) ?? []) request.abort();
         if (input.appId === 'music') for (const control of this.musicControls.get(input.topicId) ?? []) control.abort();
         if (input.appId === 'browser') this.store.setMetadata('topic-browser:' + input.topicId, '');
         const active = this.topics.runtime(input.conversationId).running.filter(item => item.topicId === input.topicId);
@@ -734,17 +751,22 @@ export class BotService {
         const running=input.type==='message.send'&&this.topics.runtime(input.conversationId).running.length>0;
         const browserKey = 'browser-context-ingress:' + input.conversationId + ':' + input.requestId;
         const previousBrowser = input.type === 'message.send' && this.store.ingressExists(input.conversationId, input.requestId) ? this.store.getMetadata(browserKey) : undefined;
-        const browserContext = input.type === 'message.send' && input.browserContextId ? previousBrowser ? browserPageContextSchema.parse(JSON.parse(previousBrowser)) : this.options.resolveBrowserContext?.(input.browserContextId) : undefined;
-        if (input.type === 'message.send' && input.browserContextId && !browserContext) throw Error('内置浏览器连接不可用，请重新附加网页。');
-        if (browserContext && input.type === 'message.send' && browserContext.referenceId !== input.browserContextId) throw Error('同一发送请求不能更换网页上下文。');
         const appIngressKey = 'app-ingress:' + input.conversationId + ':' + input.requestId;
         const previousApps = this.store.getMetadata(appIngressKey);
         const targetTopic = input.type === 'message.send' && !previousApps
           ? input.topicId ? this.topics.get(input.topicId, input.conversationId) : !input.newTopic && !running ? this.topics.current(input.conversationId) : undefined
           : undefined;
         const inheritedTopic = targetTopic ?? (input.type === 'message.send' && !input.newTopic && !previousApps ? this.topics.current(input.conversationId) : undefined);
+        const storedBrowser = targetTopic && this.topicApps(targetTopic.id).includes('browser')
+          ? this.store.getMetadata('topic-browser:' + targetTopic.id) : undefined;
+        const attachedReference = input.type === 'message.send' ? input.browserContextId ??
+          (storedBrowser ? browserPageContextSchema.parse(JSON.parse(storedBrowser)).referenceId : undefined) : undefined;
+        const browserContext = previousBrowser ? browserPageContextSchema.parse(JSON.parse(previousBrowser))
+          : attachedReference ? this.options.resolveBrowserContext?.(attachedReference) : undefined;
+        if (attachedReference && !browserContext) throw Error('内置浏览器连接不可用，请重新附加网页。');
+        if (previousBrowser && attachedReference && browserContext?.referenceId !== attachedReference) throw Error('同一发送请求不能更换网页上下文。');
         const inheritedApps: BotAppId[] = previousApps ? botAppIdSchema.array().parse(JSON.parse(previousApps))
-          : this.topicApps(inheritedTopic?.id).filter(id => id === 'cabin-world' || (id === 'music' && targetTopic?.id === inheritedTopic?.id));
+          : this.topicApps(inheritedTopic?.id).filter(id => id === 'cabin-world' || targetTopic?.id === inheritedTopic?.id);
         const selectedApps = input.type === 'message.send' ? [...new Set([...(input.apps ?? inheritedApps), ...(browserContext ? ['browser' as const] : [])])].sort() : [];
         if (previousApps && previousApps !== JSON.stringify(selectedApps)) throw Error('同一发送请求不能更换已附加的应用，请重新发送。');
         const quoteKey = 'message-quote-ingress:' + input.conversationId + ':' + input.requestId;
@@ -1216,9 +1238,9 @@ export class BotService {
           // The native result contains committed assistant text only. Convert its final
           // answer through the same queue as call_present, with the default pose.
           const files = this.store.getMessage(event.replyMessageId)?.attachments ?? [];
-          const music = this.store.replyParts(event.replyMessageId).filter(part => part.music).map(part => part.text).filter(Boolean);
+          const shares = this.store.replyParts(event.replyMessageId).filter(part => part.music || part.video).map(part => part.text).filter(Boolean);
           const answer = (result.outputs?.findLast(output => output.text?.trim())?.text ?? result.text).trim()
-            || (files.length ? '已发送附件：' + files.map(file => file.name).join('、') + '。' : music.join('。'));
+            || (files.length ? '已发送附件：' + files.map(file => file.name).join('、') + '。' : shares.join('。'));
           if (!answer) throw Error('伙伴没有生成可发布的会面回应。');
           this.publishCallSegments(event, 'committed-meeting-answer:' + event.id, [
             { text: answer, ...(stage?.gestures.includes('blink') && { gesture: 'blink' }) },
@@ -1605,6 +1627,40 @@ export class BotService {
         }
         return this.publishCallSegments(event, call.callId, segments);
       }
+      case 'bilibili_video': {
+        const topicId = this.topics.reference(event.id)?.id;
+        const assertAllowed = () => {
+          signal.throwIfAborted();
+          this.assertCurrentEvent(event);
+          const room = this.store.getConversation(event.conversationId);
+          if (!room?.memberIds.includes('user') || !this.topicApps(topicId).includes('video')) throw Error('请先在当前话题连接视频应用。');
+          return room;
+        };
+        const room = assertAllowed();
+        if (!this.options.videoTool || !topicId) throw Error('视频应用暂不可用。');
+        const input = videoToolSchema.parse(args);
+        const controller = new AbortController();
+        const active = this.videoRequests.get(topicId) ?? new Set<AbortController>();
+        active.add(controller);
+        this.videoRequests.set(topicId, active);
+        const live = AbortSignal.any([signal, this.maintenanceAbort.signal, controller.signal]);
+        const {result, card: detail} = await this.options.videoTool(input, live).finally(() => {
+          active.delete(controller);
+          if (!active.size) this.videoRequests.delete(topicId);
+        });
+        live.throwIfAborted();
+        assertAllowed();
+        if (input.action !== 'play' || !detail) return result;
+        const id = 'video-' + digest(event.id + ':' + call.callId);
+        const prior = this.store.replyParts(event.replyMessageId).find(part => part.video && (part.id === id ||
+          part.video.videoId === detail.videoId && part.video.page === detail.page));
+        if (prior) return { published: true, card: prior.video, reused: true };
+        const card = { ...detail, id };
+        const saved = this.store.appendReplyPart(event.id, { id, kind: 'video', video: card, text: '分享视频：' + card.title });
+        this.changed(room.id);
+        if (saved && input.autoPlay) this.emit({ type: 'video-present', ...this.playbackScope(room,event), cardId:id });
+        return { published: true, card };
+      }
       case 'music':
       case 'music_global_player': {
         const topicId = this.topics.reference(event.id)?.id;
@@ -1623,7 +1679,7 @@ export class BotService {
         active.add(control); this.musicControls.set(topicId, active);
         try {
           const live = AbortSignal.any([signal, control.signal, this.maintenanceAbort.signal]);
-          const scope = this.musicScope(room, event);
+          const scope = this.playbackScope(room, event);
           let share: MusicShareInput;
           if (input.action === 'share') share = input;
           else if (input.action === 'play' && input.target === 'inline' && (input.playlistId || input.trackId)) {
@@ -1649,6 +1705,7 @@ export class BotService {
           const saved = this.store.appendReplyPart(event.id, { id: partId, kind: 'music', music: card, text: '分享音乐：' + card.title });
           this.changed(event.conversationId);
           if (!saved || !share.autoPlay) return receipt(card);
+          this.emit({ type: 'music-present', ...scope, cardId: card.id });
           try {
             const playback = await this.options.musicTool(scope, { action: 'present', target: 'inline', card }, live, assertAllowed);
             return { ...receipt(card), playback };

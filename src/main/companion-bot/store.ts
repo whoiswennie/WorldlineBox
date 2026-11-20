@@ -1325,7 +1325,7 @@ export class BotStore {
       } else if (userRequest && userReply && input.status !== 'done' && !input.retainUserDeliveryDraft) {
         this.db.prepare('DELETE FROM bot_peer_user_drafts WHERE event_id=?').run(userRequest.id);
       }
-      const visibleReply = !!reply?.content.trim() || !!reply?.attachments?.length || !!reply?.parts?.some(part => part.music);
+      const visibleReply = !!reply?.content.trim() || !!reply?.attachments?.length || !!reply?.parts?.some(part => part.music || part.video);
       this.bindMessageSources(event.replyMessageId, this.eventSourceIds(event.id));
       if (input.status === 'done' && visibleReply) {
         const messages = input.memoryJobs?.filter(job => job.kind === 'projection').flatMap(job => Array.isArray(job.payload.messages) ? job.payload.messages : []) as Array<{ id?: string; timestamp?: number }> | undefined;

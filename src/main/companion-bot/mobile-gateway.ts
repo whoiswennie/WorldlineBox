@@ -18,7 +18,10 @@ import type { BotMediaService } from './media-service';
 import type { BotService } from './service';
 import type { BotConversation } from './types';
 import { speechText, type DeepSeekSpeech } from './deepseek-speech';
-import { callReplyText } from '../../shared/companion-bot-reply';
+import { loadMusicQueue } from '../../shared/music';
+import type { MusicService } from '../music/service';
+import { videoPlayerUrl } from '../../shared/bilibili';
+import { botReplyPresentation, callReplyText } from '../../shared/companion-bot-reply';
 
 const configSchema = z.strictObject({
   port: z.number().int().min(1024).max(65535).default(47831),
@@ -27,11 +30,14 @@ const configSchema = z.strictObject({
 const id = z.string().min(1).max(160).regex(/^[^\/\\\x00-\x1f\x7f]+$/u);
 const requestTypes = new Set<BotRequest['type']>([
   'state', 'conversation.open', 'message.send', 'message.guide', 'message.dequeue', 'call.open', 'call.interrupt', 'user.identity',
-  'reply.cancel', 'execution.answer', 'execution.continue', 'topic.list', 'topic.new', 'topic.select', 'topic.compact',
+  'reply.cancel', 'execution.answer', 'execution.continue', 'topic.list', 'topic.new', 'topic.select', 'topic.compact', 'app.connect', 'app.detach', 'app.browser',
 ]);
 
 interface Options {
   root: string;
+  music?: Pick<MusicService, 'catalog' | 'track'>;
+  browserTabs?(): Array<{ id: string; title: string; host: string }>;
+  browserTabReference?(id: string): Promise<string>;
   access?: MobileAccessSettings;
   port?: number;
   speech?: DeepSeekSpeech;
@@ -95,7 +101,11 @@ function projectMessage(message: BotMessage, meeting = false) {
   const { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing, progress, execution, topic, quote, error } = message;
   const cues = message.parts?.filter(part => part.presentation);
   const caption = meeting && senderId !== 'user' && !cues?.length ? callReplyText(message) : '';
-  return { id, conversationId, senderId, senderName, content, sequence, status, createdAt, attachments, timing,
+  const cards = (message.parts ?? []).filter(part => part.music || part.video).map(({ music, video }) =>
+    music ? { kind: 'music', id: music.id, title: music.title, preview: music.preview, trackCount: music.trackCount, mode: music.mode }
+      : { kind: 'video', ...video!, player: videoPlayerUrl(video!) });
+  return { id, conversationId, senderId, senderName, content, apps: message.apps,
+    ...(cards.length ? { cards, displayContent: botReplyPresentation(message.parts!).content } : {}), sequence, status, createdAt, attachments, timing,
     progress: progress && projectProgress(status, progress), topic, quote,
     ...(error ? { error: '伙伴回复失败，请在电脑端查看详情后重试。' } : {}),
     ...(cues?.length ? { cues: cues.map(({ id, text, presentation }) => ({
@@ -172,7 +182,7 @@ export async function startMobileGateway(options: Options) {
       responses.set(res, device);
       res.once('close', () => responses.delete(res));
     }
-    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, inbox: true, downloadOriginal: true, remoteHost: options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
+    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, topicApps: true, inbox: true, downloadOriginal: true, remoteHost: options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
     if (device && options.access && url.pathname === '/mobile/v1/profile') {
       if (method === 'PUT') {
         const profile = z.strictObject({ name: mobileDeviceName }).safeParse(await readJson(req));
@@ -310,7 +320,7 @@ export async function startMobileGateway(options: Options) {
         ...(inboxAfter !== undefined ? { inbox: { ...bot.store.companionInbox(rooms.map(room => room.id), inboxAfter === -1 ? undefined : inboxAfter), pushAfter: device ? options.access?.pushAfter(device) : undefined } } : {}),
         messages: projected.map(message => projectMessage(message, meeting && message.conversationId === projectedRoom)), cursor: latest, ...(history ? { hasMore: snapshot.hasMore } : {}),
         callDelivery: snapshot.callDelivery, ready: snapshot.runtime.ready,
-        ...(chatRuntime ? { chatRuntime: { topic: chatRuntime.topic, queued: chatRuntime.queued, running: chatRuntime.running, hiddenMessageIds: chatRuntime.hiddenMessageIds,
+        ...(chatRuntime ? { chatRuntime: { topic: chatRuntime.topic, apps: chatRuntime.apps, queued: chatRuntime.queued, running: chatRuntime.running, hiddenMessageIds: chatRuntime.hiddenMessageIds,
           contexts: Object.fromEntries(Object.entries(chatRuntime.contexts ?? {}).map(([companionId, context]) =>
             [companionId, { pressure: context.pressure, phase: context.activity?.phase }])) } } : {}),
       } });
@@ -330,6 +340,30 @@ export async function startMobileGateway(options: Options) {
     }
     if (!roomId.success) throw new RequestError(400, '缺少有效的会话。');
     requireRoom(roomId.data);
+    if (method === 'GET' && url.pathname === '/mobile/v1/browser-tabs') {
+      const tab = url.searchParams.get('tabId');
+      if (!tab) return json(res, 200, { ok: true, tabs: options.browserTabs?.() ?? [] });
+      if (!options.browserTabReference || !options.browserTabs?.().some(item => item.id === tab)) throw new RequestError(404, '标签页已关闭。');
+      const referenceId = await options.browserTabReference(tab);
+      requireRoom(roomId.data);
+      return json(res, 200, { ok: true, referenceId });
+    }
+    if (method === 'GET' && url.pathname === '/mobile/v1/card-music') {
+      const message = bot.store.getMessage(id.parse(url.searchParams.get('messageId')));
+      const card = message?.conversationId === roomId.data && message.parts?.find(part => part.music?.id === url.searchParams.get('cardId'))?.music;
+      if (!card || !options.music) throw new RequestError(404, '这张音乐卡片暂不可用。');
+      const controller = new AbortController();
+      res.once('close', () => controller.abort());
+      const queue = await loadMusicQueue(card.queue, playlist => options.music!.catalog(playlist), controller.signal);
+      requireRoom(roomId.data);
+      const trackId = url.searchParams.get('trackId');
+      if (!trackId) return json(res, 200, { ok: true, tracks: queue.tracks });
+      const track = queue.tracks.find(item => item.id === trackId);
+      if (!track) throw new RequestError(404, '卡片中没有这首歌。');
+      const stream = await options.music.track(track.playlistId, track.id, 'stream');
+      requireRoom(roomId.data);
+      return json(res, 200, { ok: true, stream });
+    }
     if (method === 'GET' && url.pathname === '/mobile/v1/call-asset') {
       const room = bot.store.getConversation(roomId.data);
       const relative = url.searchParams.get('path') ?? '';
@@ -517,7 +551,7 @@ export async function startMobileGateway(options: Options) {
         for (const res of subscribers.keys()) send(res, 'data: {"type":"changed"}\n\n');
         return;
       }
-      if (event.type !== 'changed' && event.type !== 'text' && event.type !== 'progress') return;
+      if (event.type !== 'music-present' && event.type !== 'video-present' && event.type !== 'changed' && event.type !== 'text' && event.type !== 'progress') return;
       const payload = `data: ${JSON.stringify(event.type === 'progress' ? { ...event, progress: projectProgress('running', event.progress) } : event)}\n\n`;
       for (const [res, roomId] of subscribers) {
         if (roomId && event.conversationId && event.conversationId !== roomId && !(event.type === 'changed' && inboxStreams.has(res))) continue;

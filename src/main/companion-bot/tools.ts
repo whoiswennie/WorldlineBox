@@ -1,5 +1,5 @@
 import type { BotDshTool } from './dsh-brain';
-import { botAppTools, COMPANION_ASSET_CAPABILITY_TOOL, COMPANION_CABIN_TOOL, COMPANION_MUSIC_TOOL, COMPANION_GLOBAL_MUSIC_TOOL } from '../../shared/companion-apps';
+import { botAppTools, COMPANION_VIDEO_TOOL, COMPANION_ASSET_CAPABILITY_TOOL, COMPANION_CABIN_TOOL, COMPANION_MUSIC_TOOL, COMPANION_GLOBAL_MUSIC_TOOL } from '../../shared/companion-apps';
 import { COMPANION_BROWSER_CAPABILITY_TOOL } from '../../shared/companion-browser';
 import { BOT_CALL_SEGMENT_LENGTH, BOT_CALL_MIN_DURATION_MS, BOT_CALL_MAX_DURATION_MS, botCallGestures } from '../../shared/companion-call';
 import { BOT_DESKTOP_MAX_SECONDS, BOT_DESKTOP_MIN_SECONDS } from '../../shared/companion-bot-media';
@@ -9,7 +9,7 @@ const string = (description: string, maxLength = 16000) => ({ type: 'string', de
 const memoryConversation = { type: 'string', maxLength: 160, description: '可省略，默认当前域。用户私聊可选agent_memory_scopes列出的本人参与且用户可查看的会话，包括伙伴私聊；不能传路径或其他伙伴。' };
 /** Application interaction tools augment native DSH tools without another agent loop. */
 export const BOT_TOOLS: BotDshTool[] = [
-COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_ASSET_CAPABILITY_TOOL, COMPANION_CABIN_TOOL, COMPANION_MUSIC_TOOL, COMPANION_GLOBAL_MUSIC_TOOL,
+COMPANION_BROWSER_CAPABILITY_TOOL, COMPANION_VIDEO_TOOL, COMPANION_ASSET_CAPABILITY_TOOL, COMPANION_CABIN_TOOL, COMPANION_MUSIC_TOOL, COMPANION_GLOBAL_MUSIC_TOOL,
 { name: 'companion_recognize_audio', description: '用本地语音识别转写本会话已分享的音频或视频。传 attachmentId，可选起始秒数和处理时长，得到带时间的文字；如果返回 nextStartSeconds，从该时间继续读取。自动陪伴录像的字幕已经在 observation.audio 中，无需调用。',
   parameters: object({ attachmentId: string('已分享的音频或视频附件 ID', 160),
     startSeconds: { type: 'number', minimum: 0, maximum: 10000000 }, seconds: { type: 'integer', minimum: 1, maximum: 7200 } }, []) },
