@@ -10,6 +10,7 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [pairing, setPairing] = useState<MobileSettingsResult['pairing']>();
+  const [notice, setNotice] = useState('');
   const [removeId, setRemoveId] = useState<string>();
 
   useEffect(() => {
@@ -32,6 +33,7 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
       if (result.state) setState(result.state);
       setPairing(result.pairing);
       if (input.type === 'pair.cancel' || input.type === 'service' && !input.enabled) setPairing(undefined);
+      if (input.type === 'device.cleanup') setNotice(zh ? `已清理 ${result.cleaned ?? 0} 条失效记录。` : `Cleared ${result.cleaned ?? 0} expired records.`);
       if (input.type === 'device.remove') setRemoveId(undefined);
     } catch (failure) {
       setError(failure instanceof Error && failure.message ? failure.message : zh ? '操作失败。' : 'The operation failed.');
@@ -64,21 +66,22 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
       </div>}
     </section>
     <section className="mobile-access-card">
-      <h3>{zh ? '已配对设备' : 'Paired devices'}</h3>
+      <div className="mobile-access-row"><h3>{zh ? '已配对设备' : 'Paired devices'}</h3><button type="button" disabled={busy || !state} onClick={() => void request({ type: 'device.cleanup' })}>{zh ? '清理失效连接' : 'Clear expired connections'}</button></div>
+      {notice && <p role="status">{notice}</p>}
       {!state?.devices.length && <p>{zh ? '暂无设备' : 'No paired devices'}</p>}
       {state?.devices.slice().sort((a, b) => Number(b.connected) - Number(a.connected) || b.createdAt.localeCompare(a.createdAt)).map(device => <div className="mobile-access-row mobile-access-device" key={device.id}>
         <div className="mobile-device-identity"><strong>{device.name}</strong>
-          <span className="mobile-device-status" data-online={device.connected}>{device.paused ? zh ? '已暂停' : 'Paused' : device.connected ? zh ? '在线' : 'Online' : zh ? '离线' : 'Offline'}</span>
-          <p>{device.lastSeen && !device.connected ? zh ? '上次在线' : 'Last seen' : zh ? '配对于' : 'Paired'} {new Date(device.lastSeen && !device.connected ? device.lastSeen : device.createdAt).toLocaleString(zh ? 'zh-CN' : 'en')} · {device.id.slice(0, 6)}</p></div>
+          <span className="mobile-device-status" data-online={device.connected}>{device.released ? zh ? '已取消配对' : 'Unpaired' : device.paused ? zh ? '已暂停' : 'Paused' : device.connected ? zh ? '在线' : 'Online' : zh ? '离线' : 'Offline'}</span>
+          <p>{device.staleAddress && (zh ? '旧远程地址已失效 · ' : 'Remote address expired · ')}{device.lastSeen && !device.connected ? zh ? '上次在线' : 'Last seen' : zh ? '配对于' : 'Paired'} {new Date(device.lastSeen && !device.connected ? device.lastSeen : device.createdAt).toLocaleString(zh ? 'zh-CN' : 'en')} · {device.id.slice(0, 6)}</p></div>
         <div className="mobile-access-actions">
           <button type="button" role="switch" aria-checked={!!device.pushEnabled} className="mobile-push-toggle"
-            disabled={busy || !device.pushEnabled && (!device.connected || !device.supportsPush || device.paused)}
+            disabled={busy || device.released || !device.pushEnabled && (!device.connected || !device.supportsPush || device.paused)}
             title={!device.connected ? zh ? '手机在线时可开启' : 'Connect the phone to enable' : !device.supportsPush ? zh ? '请更新手机端' : 'Update the mobile app' : undefined}
             onClick={() => void request({ type: 'device.push', id: device.id, enabled: !device.pushEnabled })}>
             <i aria-hidden="true" />{zh ? '信息推送' : 'Message alerts'}
           </button>
-          <button type="button" disabled={busy} onClick={() => void request({ type: device.paused ? 'device.resume' : 'device.pause', id: device.id })}>
-            {device.paused ? zh ? '允许重连' : 'Allow reconnect' : zh ? '断开连接' : 'Disconnect'}
+          <button type="button" disabled={busy || device.released} onClick={() => void request({ type: device.paused ? 'device.resume' : 'device.pause', id: device.id })}>
+            {device.released ? zh ? '已取消配对' : 'Unpaired' : device.paused ? zh ? '允许重连' : 'Allow reconnect' : zh ? '断开连接' : 'Disconnect'}
           </button>
           {removeId === device.id ? <><button type="button" disabled={busy} onClick={() => void request({ type: 'device.remove', id: device.id })}>{zh ? '确认删除' : 'Confirm removal'}</button><button type="button" onClick={() => setRemoveId(undefined)}>{zh ? '取消' : 'Cancel'}</button></>
             : <button type="button" disabled={busy} onClick={() => setRemoveId(device.id)}>{zh ? '删除设备' : 'Remove device'}</button>}

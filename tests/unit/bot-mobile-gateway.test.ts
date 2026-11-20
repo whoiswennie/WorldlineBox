@@ -182,11 +182,11 @@ it('routes a mobile attachment and one durable message into the same desktop top
     expect(tracked.snapshot.messages).toMatchObject([{ id: result.id }]);
     const quote = { type: 'message.send', conversationId: room, content: '请解释刚才的结果', requestId: 'phone-quote', topicId: topic.id, quoteMessageId: result.id };
     const quoted = await (await call(quote)).json();
-    expect(quoted.message.quote).toMatchObject({ id: result.id, excerpt: '已汇总' });
+    expect(quoted.message.quote).toBeUndefined();
     expect((await (await call(quote)).json()).messageId).toBe(quoted.messageId);
-    expect((await (await call({ ...quote, quoteMessageId: accepted.messageId })).json()).ok).toBe(false);
+    expect((await (await call({ ...quote, quoteMessageId: accepted.messageId })).json()).messageId).toBe(quoted.messageId);
     await waitNative(() => service.store.getMessage(quoted.replyMessageIds[0])?.status === 'sent');
-    expect(JSON.parse(calls.at(-1)!.prompt).message.quote).toMatchObject({ id: result.id, excerpt: '已汇总' });
+    expect(JSON.parse(calls.at(-1)!.prompt).message.quote).toBeUndefined();
     const transcript = { type: 'state', conversationId: room, history: true };
     expect((await (await call(transcript)).json()).snapshot).toMatchObject({ hasMore: false,
       messages: expect.arrayContaining([expect.objectContaining({ id: quoted.messageId })]) });
@@ -252,17 +252,28 @@ it('pairs a device once, disconnects its live stream, resumes it, and revokes it
     const stream = (await fetch(`${base}/events`, { headers })).body!.getReader();
     expect(Buffer.from((await stream.read()).value!).toString()).toContain('ready');
     expect((await settings.request({ type: 'state' })).state?.devices[0]?.connected).toBe(true);
+    const secondCode = JSON.parse((await pair()).pairing!.image).code;
+    const secondToken = 'd'.repeat(64), secondHeaders = { authorization: 'Bearer ' + secondToken };
+    expect(await settings.redeem(secondCode, secondToken, '第二部手机')).toBe(true);
+    const secondStream = (await fetch(base + '/events', { headers: secondHeaders })).body!.getReader();
+    expect(Buffer.from((await secondStream.read()).value!).toString()).toContain('ready');
+    expect((await settings.request({ type: 'state' })).state?.devices.filter(device => device.connected)).toHaveLength(2);
     await settings.request({ type: 'device.pause', id });
     await expect(stream.read()).rejects.toThrow();
     expect((await health()).status).toBe(401);
+    expect(settings.confirmsUnpaired(token)).toBe(false);
+    expect((await settings.request({ type: 'device.cleanup' })).cleaned).toBe(0);
     await settings.request({ type: 'device.resume', id });
     expect((await health()).status).toBe(200);
-    await settings.request({ type: 'device.remove', id });
+    expect((await fetch(base + '/profile', { method: 'DELETE', headers })).ok).toBe(true);
+    expect(settings.confirmsUnpaired(token)).toBe(true);
+    expect((await settings.request({ type: 'device.cleanup' })).cleaned).toBe(1);
     expect((await health()).status).toBe(401);
     settings.close();
     settings = new MobileAccessSettings(root, start, render);
     await settings.initialize();
-    expect((await settings.request({ type: 'state' })).state?.devices).toEqual([]);
+    expect((await settings.request({ type: 'state' })).state?.devices).toMatchObject([{ name: '第二部手机' }]);
+    expect((await fetch(base + '/health', { headers: secondHeaders })).ok).toBe(true);
     expect((await health()).status).toBe(401);
   } finally {
     settings.close();
@@ -322,6 +333,7 @@ it('accepts QR and device SSH credentials and limits forwarding to the companion
     await access.request({ type: 'device.remove', id });
     await closed;
     await expect(login('mobile', token)).rejects.toThrow();
+    (await login('check-removed', token, fingerprint)).end();
   } finally {
     for (const client of clients) client.end();
     access.close();
@@ -453,10 +465,18 @@ it('shares topic app changes in both directions and resolves only tracks publish
     expect((await (await music()).json()).tracks).toMatchObject([{ id: '12' }]);
     expect((await (await music('&trackId=12')).json()).stream.trackId).toBe('12');
     expect((await music('&trackId=99')).status).toBe(404);
-    await mobile({ type: 'app.detach', conversationId: room, topicId, appId: 'music' });
+    const next = (await mobile({ type: 'topic.new', conversationId: room, requestId: 'new-room-topic' })).topic;
+    expect(next.id).not.toBe(topicId);
+    expect((await state()).chatRuntime.apps).toEqual(['music', 'video']);
+    await mobile({ type: 'app.detach', conversationId: room, topicId: next.id, appId: 'music' });
+    await service.handle({ type: 'topic.select', conversationId: room, topicId });
     expect((await service.handle({ type: 'state', conversationId: room })).snapshot?.chatRuntime?.apps).toEqual(['video']);
     await service.handle({ type: 'app.detach', conversationId: room, topicId, appId: 'video' });
     expect((await state()).chatRuntime.apps).toEqual([]);
+    expect((await music()).status).toBe(403);
+    await expect(service.handle({ type: 'message.send', conversationId: room, requestId: 'stale-app', content: '继续', apps: ['music'] })).rejects.toThrow('已关闭');
+    expect((await mobile({type:'execution.workbench', messageId:message.id})).ok).toBe(false);
+    await service.handle({ type: 'app.connect', conversationId: room, appId: 'music' });
     expect((await music()).ok).toBe(true);
   } finally { gateway?.close(); await fixture.close(); }
 });

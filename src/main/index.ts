@@ -5341,6 +5341,10 @@ async function startApplication(): Promise<void> {
         getHost: getWorkerHost });
       const brain = worker;
       botService = new BotService({ root, brain, desktopMeetingActive,
+        openSessionWorkbench: async (instanceId, laneId, sessionId, cwd) => {
+          if (!launcher) throw Error('DSH 启动器尚未就绪。');
+          await launcher.openSessionWorkbench(instanceId, laneId, sessionId, cwd);
+        },
         assertMessageReady: () => {
           if (!launcher) throw new DshMessageNotReadyError('startup', 'DSH 启动器尚未就绪');
           launcher.assertMessageReady();

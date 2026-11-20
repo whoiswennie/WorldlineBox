@@ -486,6 +486,22 @@ export class DshLauncher {
       companionCapabilityRevisions: Object.fromEntries(this.instances.list().map(instance => [instance.id, this.companionCapabilityEpoch.get(instance.id) ?? 0])),
       network: this.network.state(), versions: this.versions.state(), packPublications: structuredClone(this.publications), executionReadiness: this.executionReadiness };
   }
+  async openSessionWorkbench(instanceId: string, laneId: string, sessionId: string, cwd: string): Promise<void> {
+    await this.initialization;
+    const instance = this.instances.get(instanceId);
+    const client = await this.instances.ensureHost(instance.id);
+    const sessions = await client.request<Array<{ sessionId: string; exists: boolean }>>('/bot/topics', { bindings: [{ laneId, sessionId, cwd }] });
+    if (!sessions.some(row => row.sessionId === sessionId && row.exists)) throw Error('原 DSH 实例中已找不到这段会话。');
+    const target = new URL(this.instances.getUrl(instance.id)!);
+    await this.openWorkbench(instance, target.href);
+    const window = this.windows.get(instance.id);
+    if (!window || window.isDestroyed()) throw Error('DSH 工作台已关闭。');
+    target.hash = 'wlb-session=' + encodeURIComponent(sessionId);
+    await window.loadURL(target.href);
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  }
   private async openWorkbench(instance: DshInstance, value: string): Promise<void> {
     const pending = this.openingWindows.get(instance.id); if (pending) return pending;
     const task = this.openWorkbenchNow(instance, value); this.openingWindows.set(instance.id, task);

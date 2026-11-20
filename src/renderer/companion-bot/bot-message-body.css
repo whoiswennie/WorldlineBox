@@ -25,3 +25,6 @@
 .bot-workspace .bot-message-text .browser-markdown .browser-markdown-link:not(.browser-markdown-link-card) { display:inline;max-width:100%;padding:0;border:0;border-radius:0;background:transparent;color:var(--bot-accent,var(--ui-content-accent));font:inherit;line-height:inherit;text-align:left;white-space:normal;text-decoration:underline;text-decoration-color:color-mix(in srgb,currentColor 35%,transparent);text-underline-offset:3px;overflow-wrap:anywhere; }
 .bot-workspace .bot-message-text .browser-markdown .browser-markdown-link:not(.browser-markdown-link-card):hover { background:transparent;text-decoration-color:currentColor; }
 @media(max-width:850px){.bot-message-bubble{padding:10px 13px}.bot-message-file-summary strong{font-size:11px}.bot-message-file-affordance{padding-left:2px}.bot-message-file-summary small{font-size:9px}}
+
+.bot-disabled-media { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--ui-border-subtle); border-radius: 10px; }
+.bot-disabled-media small { color: var(--ui-content-secondary); }

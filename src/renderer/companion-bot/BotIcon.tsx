@@ -13,6 +13,7 @@ const paths = {
   close: 'M6 6l12 12M18 6L6 18',
   copy: 'M8 6V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z',
   quote: 'M10 8H4l-1 5v3h6v-5H5m15-3h-6l-1 5v3h6v-5h-4',
+  workbench: 'M13 4h7v7m0-7-9 9M9 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4',
   mobile: 'M8 2h8a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2zm4 17h.01',
   microphone: 'M9 5a3 3 0 0 1 6 0v7a3 3 0 0 1-6 0zM5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8',
   dictation: 'M4 4h16M12 4v16M8 20h8M4 10V8M20 10V8M3 14v5M6 12v9M18 13v7M21 15v3',

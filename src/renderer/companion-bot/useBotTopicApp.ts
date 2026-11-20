@@ -16,7 +16,6 @@ export function useBotTopicApp(appId: 'music' | 'video', conversationId: string,
       await refresh();
     },
     async detach() {
-      if (!topicId) return;
       const result = await request({ type: 'app.detach', conversationId, topicId, appId });
       if (!result.ok) throw Error(result.error ?? '应用断开失败。');
       await refresh();

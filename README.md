@@ -8,7 +8,7 @@
 
 Windows x64 · Electron / React / TypeScript / Three.js · 本地数据存储 · MIT
 
-[English](README.en.md) · [Windows 下载](https://github.com/whoiswennie/WorldlineBox/releases/latest) · [Android 0.1.4 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.4) · [使用手册](docs/user-guide/README.md)
+[English](README.en.md) · [Windows 下载](https://github.com/whoiswennie/WorldlineBox/releases/latest) · [Android 0.1.5 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.5) · [使用手册](docs/user-guide/README.md)
 
 </div>
 

@@ -109,7 +109,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     setInteractions(false);
     setHistoryOpen(true);
   }, []);
-  useInlineMusicSurface(legacy?.items[0]?.conversationId ?? conversationId, 'call', phase === 'connected', revealMusic);
+  useInlineMusicSurface(legacy?.items[0]?.conversationId ?? conversationId, 'call', phase === 'connected' && !!snapshot?.chatRuntime?.apps?.includes('music'), revealMusic);
   const messages = snapshot?.messages ?? emptyMessages;
   const latestMessages = useRef(messages);
   useLayoutEffect(() => { latestMessages.current = messages; }, [messages]);
@@ -155,7 +155,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     } finally { refreshing.current = false; }
   }, [conversationId, meeting, request]);
   const video = useBotTopicApp('video', conversationId, runtime, request, refresh);
-  const videoSurface = useVideoSurface(api, conversationId, 'call', phase === 'connected' && !desktop.pet, revealMusic, !legacy);
+  const videoSurface = useVideoSurface(api, conversationId, 'call', phase === 'connected' && video.attached && !desktop.pet, revealMusic, !legacy);
   const music = useBotTopicApp('music', conversationId, runtime, request, refresh);
   useEffect(() => {
     if (snapshot?.callDelivery?.more) void refresh();
@@ -538,7 +538,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
           <small>{message.senderId === 'user' ? (zh ? '我' : 'You') : message.senderName}</small>
           {captions?.map(part => <p className="bot-call-log-bubble" key={part.id}>{part.text}</p>)}
           <BotMessageBody message={{ ...message, execution: undefined, ...(captions?.length ? { parts: message.parts?.filter(part => part.music || part.video), content: '' } : {}) }}
-            statusText={message.status === 'failed' ? (zh ? '回复失败。' : 'Reply failed.') : ''} surface="call" videoPlayback={videoSurface} musicEnabled={phase === 'connected'} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
+            statusText={message.status === 'failed' ? (zh ? '回复失败。' : 'Reply failed.') : ''} surface="call" videoPlayback={videoSurface} apps={runtime?.apps} musicEnabled={phase === 'connected'} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
           {message.error && <BotErrorNotice message={message.error} zh={zh} />}
           {!legacy && message.execution?.question && <BotMessageBody message={{ ...message, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(message.id, id, text)} />}
         </article>;

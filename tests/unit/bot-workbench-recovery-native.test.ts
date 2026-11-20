@@ -57,9 +57,17 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('recovers a failed cold Web
       const response = await fetch(`http://127.0.0.1:${port}`, { method: 'POST', body: JSON.stringify({ action, sessionId, ...extra }), signal: AbortSignal.timeout(30000) });
       const result = await response.json(); if (!response.ok) throw Error(JSON.stringify(result)); return result as T;
     };
-    const brain = new BotDshBrain({ getHost: async () => ({ client }) });
+    const brain = new BotDshBrain({ getHost: async (_id, _signal, laneId) => {
+      if (laneId) service?.store.setMetadata('native-host:' + laneId, native.instance.id);
+      return { client };
+    } });
+    let openedSession: string | undefined;
     const root = path.join(native.root, 'chat'), media = new BotMediaService({ root: path.join(root, 'media'), builtinRoot: path.resolve('resources/bot-stickers') }); await mkdir(root);
-    service = new BotService({ root, media, memory: new WorkbenchMemory(path.join(root, 'memory')), onEvent: () => undefined,
+    service = new BotService({ root, media, openSessionWorkbench: async (instanceId, laneId, sessionId, cwd) => {
+      expect(instanceId).toBe(native.instance.id);
+      expect(await client.request('/bot/topics', { bindings: [{ laneId, sessionId, cwd }] })).toMatchObject([{ sessionId, exists: true }]);
+      openedSession = sessionId;
+    }, memory: new WorkbenchMemory(path.join(root, 'memory')), onEvent: () => undefined,
       model: () => ({ apiFormat: 'openai_chat', model: 'workbench-fixture', baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'test-only', contextWindow: 65536, maxTokens: 1024 }),
       brain: { run: input => brain.run({ ...input, onEvent: event => { trace.push(event); input.onEvent?.(event); } }), cancel: id => brain.cancel(id),
         cancelDurable: (input, suspend) => brain.cancelDurable(input, suspend), send: (id, input) => brain.send(id, input), archive: id => brain.archive(id), close: () => brain.close() } });
@@ -78,6 +86,19 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('recovers a failed cold Web
     const topic = (await service.handle({ type: 'state', conversationId: room.id })).snapshot!.chatRuntime!.topic!;
     const binding = service.store.taskTransaction(sql => sql.prepare('SELECT native_lane_id FROM bot_topic_bindings WHERE topic_id=?').get(topic.id)) as { native_lane_id: string };
     const sessionId = BotDshBrain.sessionId(binding.native_lane_id);
+    expect((await service.handle({ type: 'execution.workbench', messageId: first.replyMessageIds![0]! })).ok).toBe(true);
+    expect(openedSession).toBe(sessionId);
+    if (process.env.WORLDLINEBOX_WORKBENCH_CHROMIUM) {
+      const { chromium } = await import('playwright');
+      const browser = await chromium.launch({ executablePath: process.env.WORLDLINEBOX_WORKBENCH_CHROMIUM });
+      try {
+        const page = await browser.newPage();
+        await page.goto(native.instances.getUrl(native.instance.id)!);
+        await page.evaluate(id => { location.hash = 'wlb-session=' + id; }, sessionId);
+        await page.waitForFunction(id => !location.hash && localStorage.getItem('dsh.sessions.current')?.includes(id), sessionId, { timeout: 18000 });
+        expect(await page.locator('body').innerText()).toContain('INITIAL_COMPANION');
+      } finally { await browser.close(); }
+    }
     await native.instances.stop(native.instance.id); client = await native.instances.ensureHost(native.instance.id);
     await web('prompt', sessionId, { id: 'web-cold-error', text: 'MANUAL_COLD_FAILED' });
     const failed = await web('wait', sessionId);

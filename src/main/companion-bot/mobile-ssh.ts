@@ -33,9 +33,15 @@ export async function startMobileSsh(root: string, access: MobileAccessSettings,
     clients.set(client, entry);
     const handshake = setTimeout(() => client.end(), 20_000);
     client.once('close', () => { clearTimeout(handshake); clients.delete(client); });
+    let unpairedProof = false;
     client.on('authentication', context => {
       if (context.method !== 'password') { context.reject(['password']); return; }
       const password = context.password;
+      if (context.username === 'check-removed' && access.confirmsUnpaired(password)) {
+        unpairedProof = true;
+        context.accept();
+        return;
+      }
       if (context.username === 'pair' && access.canPair(password)) {
         entry.authorized = () => access.canPair(password);
       } else if (context.username === 'mobile') {
@@ -47,6 +53,7 @@ export async function startMobileSsh(root: string, access: MobileAccessSettings,
       context.accept();
     });
     client.once('ready', () => {
+      if (unpairedProof) return; // No SSH channels on a status probe. The client closes after authentication.
       clearTimeout(handshake);
       client.on('session', (_accept, reject) => reject());
       client.on('tcpip', (accept, reject, info) => {

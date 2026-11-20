@@ -1,3 +1,4 @@
+import { hostname } from 'node:os';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { DshMessageNotReadyError } from '../dsh/host-errors';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -182,8 +183,12 @@ export async function startMobileGateway(options: Options) {
       responses.set(res, device);
       res.once('close', () => responses.delete(res));
     }
-    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, topicApps: true, inbox: true, downloadOriginal: true, remoteHost: options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
+    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, computerName: hostname(), chatApps: true, topicApps: true, inbox: true, downloadOriginal: true, remoteHost: device ? await options.access?.advertisedRemote(device) : options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
     if (device && options.access && url.pathname === '/mobile/v1/profile') {
+      if (method === 'DELETE') {
+        await options.access.releaseDevice(device);
+        return json(res, 200, { ok: true });
+      }
       if (method === 'PUT') {
         const profile = z.strictObject({ name: mobileDeviceName }).safeParse(await readJson(req));
         if (!profile.success) throw new RequestError(400, '请输入 1 到 80 字的名字。');
@@ -354,14 +359,19 @@ export async function startMobileGateway(options: Options) {
       if (!card || !options.music) throw new RequestError(404, '这张音乐卡片暂不可用。');
       const controller = new AbortController();
       res.once('close', () => controller.abort());
+      const requireMusic = () => {
+        requireRoom(roomId.data);
+        if (!bot.chatAppEnabled(roomId.data, 'music')) throw new RequestError(403, '音乐应用已关闭，请在聊天应用中启用后播放。');
+      };
+      requireMusic();
       const queue = await loadMusicQueue(card.queue, playlist => options.music!.catalog(playlist), controller.signal);
-      requireRoom(roomId.data);
+      requireMusic();
       const trackId = url.searchParams.get('trackId');
       if (!trackId) return json(res, 200, { ok: true, tracks: queue.tracks });
       const track = queue.tracks.find(item => item.id === trackId);
       if (!track) throw new RequestError(404, '卡片中没有这首歌。');
       const stream = await options.music.track(track.playlistId, track.id, 'stream');
-      requireRoom(roomId.data);
+      requireMusic();
       return json(res, 200, { ok: true, stream });
     }
     if (method === 'GET' && url.pathname === '/mobile/v1/call-asset') {

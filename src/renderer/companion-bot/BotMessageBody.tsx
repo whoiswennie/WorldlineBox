@@ -18,7 +18,7 @@ import { BotBrowserContextCard } from './BotBrowserContext';
 import { BotMusicShareCard } from '../music/BotMusicShareCard';
 
 const ignoreLink = () => undefined;
-interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; surface?: 'chat' | 'call'; musicEnabled?: boolean; videoPlayback?: VideoSurface; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onOpenBrowserContext?(id: string): void; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }
+interface Props { message: BotMessage; streamedText?: string; statusText: string; locale: 'zh-CN' | 'en'; surface?: 'chat' | 'call'; apps?: BotMessage['apps']; musicEnabled?: boolean; videoPlayback?: VideoSurface; mediaApi?: WorldlineBoxBotMediaApi; onOpenUrl?(url: string): void; onOpenBrowserContext?(id: string): void; onAnswer?: BotExecutionAnswer; onContinue?: BotExecutionContinue }
 export function BotMessageBody(props: Props) {
   const original=props.message,pending=['queued','running'].includes(original.status),assistant=original.senderId!=='user';
   const presentation=assistant&&original.parts?.length?botReplyPresentation(original.parts,original.attachments):undefined;
@@ -31,7 +31,7 @@ export function BotMessageBody(props: Props) {
       musicCards={original.parts?.flatMap(part => part.music ? [part.music] : []) ?? []} />
   </>;
 }
-function MessageBody({ message, streamedText, statusText, locale, surface = 'chat', musicEnabled = false, musicCards, videoCards, videoPlayback, mediaApi, onOpenBrowserContext, onOpenUrl = ignoreLink }: Props & { musicCards: MusicShare[]; videoCards: VideoShare[] }) {
+function MessageBody({ message, streamedText, statusText, locale, surface = 'chat', musicEnabled = false, apps = [], musicCards, videoCards, videoPlayback, mediaApi, onOpenBrowserContext, onOpenUrl = ignoreLink }: Props & { musicCards: MusicShare[]; videoCards: VideoShare[] }) {
   const zh = locale === 'zh-CN', pending = ['queued', 'running'].includes(message.status), [expanded, setExpanded] = useState(false), id = useId(), contents = useRef<HTMLDivElement>(null);
   const hasText = !!message.content || pending && !!streamedText || ['failed', 'cancelled'].includes(message.status) && !!statusText;
   const text = (pending && streamedText) || message.content || statusText;
@@ -51,9 +51,9 @@ function MessageBody({ message, streamedText, statusText, locale, surface = 'cha
   return <div className={`bot-message-bubble${files.length ? ' has-file-summary' : ''}${expanded ? ' is-expanded-files' : ''}${expanded && files.length >= 3 ? ' is-expanded-bundle' : ''}${!hasText && !musicCards.length && !videoCards.length && !files.length ? ' is-inline-media-only' : ''}${!hasText && !musicCards.length && !videoCards.length && files.length === 1 && !stickers.length ? ' is-single-file-only' : ''}`}>
     {hasText && <div className="bot-message-text">{message.senderId === 'user' ? message.content || statusText : <BrowserMarkdown text={text} pending={pending} open={onOpenUrl} linkAppearance="chat" locale={locale} />}</div>}
     {message.apps?.includes('asset-manager') && <BotTopicAppCard appId="asset-manager" locale={locale} connected />}
-    {message.apps?.includes('video') && <BotTopicAppCard appId="video" locale={locale} connected onOpen={() => onOpenUrl('https://www.bilibili.com/')} />}
+    {message.apps?.includes('video') && <BotTopicAppCard appId="video" locale={locale} connected onOpen={apps.includes('video') ? () => onOpenUrl('https://www.bilibili.com/') : undefined} />}
     {message.apps?.includes('music') && <BotTopicAppCard appId="music" locale={locale} connected />}
-    {message.browserContext && <BotBrowserContextCard context={message.browserContext} locale={locale} onOpen={onOpenBrowserContext ? () => onOpenBrowserContext(message.browserContext!.tabId) : undefined} />}
+    {message.browserContext && <BotBrowserContextCard context={message.browserContext} locale={locale} onOpen={apps.includes('browser') && onOpenBrowserContext ? () => onOpenBrowserContext(message.browserContext!.tabId) : undefined} />}
     {!!stickers.length && <div className="bot-message-attachments bot-message-inline-stickers">{stickers.map((media,index) => <BotAttachment key={media.id+':'+index} media={media} {...common} />)}</div>}
     {voices.map(media => <BotVoiceMessage key={media.id} media={media} conversationId={message.conversationId} locale={locale} />)}
     {files.length === 1 && <div className="bot-message-single-file"><BotAttachment media={files[0]!} {...common} /></div>}
@@ -65,7 +65,7 @@ function MessageBody({ message, streamedText, statusText, locale, surface = 'cha
       </button>
       <div className="bot-message-attachments bot-message-expanded-files" id={id} ref={contents} hidden={!expanded}>{expanded && <BotAttachmentBundle media={files} {...common} />}</div>
     </div>}
-    {videoCards.map(card => <BotVideoCard key={card.id} card={card} playback={videoPlayback} zh={zh} openUrl={onOpenUrl} />)}
-    {musicCards.map(card => <BotMusicShareCard key={card.id} card={card} conversationId={message.conversationId} locale={locale} surface={surface} enabled={musicEnabled} />)}
+    {videoCards.map(card => !apps.includes('video') ? <div className="bot-disabled-media" key={card.id}><strong>{card.title}</strong><small>{zh ? '视频应用已关闭，在聊天应用中启用后可播放。' : 'Enable the video app in this chat to play.'}</small></div> : <BotVideoCard key={card.id} card={card} playback={videoPlayback} zh={zh} openUrl={onOpenUrl} />)}
+    {musicCards.map(card => !apps.includes('music') ? <div className="bot-disabled-media" key={card.id}><strong>{card.title}</strong><small>{zh ? '音乐应用已关闭，在聊天应用中启用后可播放。' : 'Enable the music app in this chat to play.'}</small></div> : <BotMusicShareCard key={card.id} card={card} conversationId={message.conversationId} locale={locale} surface={surface} enabled={musicEnabled} />)}
   </div>;
 }

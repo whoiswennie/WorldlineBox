@@ -5,7 +5,7 @@ import { z } from 'zod';
 import QRCode from 'qrcode';
 import { MOBILE_ACCESS_PORT, mobileDeviceName, mobileToken, type MobileEndpointMode, type MobileSettingsRequest, type MobileSettingsResult } from '../../shared/mobile-access';
 
-const deviceSchema = z.object({ id: z.string().uuid(), name: mobileDeviceName, createdAt: z.string(), hash: mobileToken, paused: z.boolean(), lastSeen: z.string().optional(), pushAfter: z.number().int().nonnegative().optional() });
+const deviceSchema = z.object({ id: z.string().uuid(), name: mobileDeviceName, createdAt: z.string(), hash: mobileToken, paused: z.boolean(), released: z.boolean().optional(), remoteAddress: z.string().optional(), lastSeen: z.string().optional(), pushAfter: z.number().int().nonnegative().optional() });
 const storageSchema = z.object({ enabled: z.boolean(), devices: z.array(deviceSchema).max(32) });
 type StoredState = z.infer<typeof storageSchema>;
 type Listener = { host: string; sshPort: number; fingerprint: string; transport?: 'wss'; lan?: { hosts: string[]; port: number }; remoteStatus?: 'connecting' | 'unavailable' | 'ready'; endpointMode?: MobileEndpointMode; alive?(): boolean; close(): void; disconnect(id: string): void; connected(id: string): boolean; supportsPush?(id: string): boolean; pushChanged?(id: string): void; publicationHead?(): Promise<number> };
@@ -120,13 +120,18 @@ export class MobileAccessSettings {
     return { image: pending.image, expiresAt: new Date(pending.expires).toISOString() };
   }
 
+  private staleAddress(device: StoredState['devices'][number]) {
+    const current = this.remoteHost();
+    return !!current && !!device.remoteAddress && device.remoteAddress !== current;
+  }
+
   private snapshot() {
     return { enabled: this.state.enabled, running: !!this.listener && (this.listener.alive?.() ?? true),
       lanReady: !!this.listener?.lan?.hosts.length, remoteStatus: this.listener?.remoteStatus,
       endpointMode: this.listener?.endpointMode ?? (this.fixedEndpoint ? 'fixed' as const : undefined), error: this.error,
-      devices: this.state.devices.map(({ id, name, createdAt, paused, pushAfter }) => ({ id, name, createdAt, paused,
+      devices: this.state.devices.map(device => { const { id, name, createdAt, paused, pushAfter, released } = device; return { id, name, createdAt, paused, released, staleAddress: this.staleAddress(device),
         pushEnabled: pushAfter !== undefined, supportsPush: this.listener?.supportsPush?.(id) ?? false,
-        connected: this.online(id), lastSeen: this.lastSeen.get(id) })) };
+        connected: this.online(id), lastSeen: this.lastSeen.get(id) }; }) };
   }
 
   private online(id: string) {
@@ -139,6 +144,16 @@ export class MobileAccessSettings {
   request(input: MobileSettingsRequest): Promise<MobileSettingsResult> {
     return this.serialize(async () => {
       if (this.closed) throw new Error('移动服务正在关闭。');
+      let cleaned: number | undefined;
+      if (input.type === 'device.cleanup') {
+        cleaned = this.state.devices.filter(device => device.released || this.staleAddress(device)).length;
+        if (cleaned) {
+          const removed = this.state.devices.filter(device => device.released);
+          await this.save({ ...this.state, devices: this.state.devices.filter(device => !device.released)
+            .map(device => this.staleAddress(device) ? { ...device, remoteAddress: undefined } : device) });
+          for (const device of removed) { this.lastSeen.delete(device.id); this.lastCheckpoint.delete(device.id); }
+        }
+      }
       if (input.type === 'service') {
         await this.save({ ...this.state, enabled: input.enabled });
         if (input.enabled) {
@@ -180,7 +195,7 @@ export class MobileAccessSettings {
         if (input.type !== 'device.resume') this.listener?.disconnect(input.id);
         if (input.type === 'device.remove') { this.lastSeen.delete(input.id); this.lastCheckpoint.delete(input.id); }
       }
-      return { ok: true, state: this.snapshot(), pairing: await this.currentPairing() };
+      return { ok: true, cleaned, state: this.snapshot(), pairing: await this.currentPairing() };
     });
   }
 
@@ -189,9 +204,9 @@ export class MobileAccessSettings {
       const hash = sha(token).digest('hex');
       if (this.closed || !this.listener || !this.state.enabled) return false;
       if (!this.pending || this.pending.expires <= Date.now() || !timingSafeEqual(this.pending.hash, sha(code).digest())) return false;
-      if (this.pending.redeemedToken) return this.pending.redeemedToken === hash && this.state.devices.some(item => item.hash === hash && !item.paused);
+      if (this.pending.redeemedToken) return this.pending.redeemedToken === hash && this.state.devices.some(item => item.hash === hash && !item.paused && !item.released);
       if (this.state.devices.length >= 32 || this.state.devices.some(item => item.hash === hash)) return false;
-      await this.save({ ...this.state, devices: [...this.state.devices, { id: randomUUID(), name, createdAt: new Date().toISOString(), hash, paused: false }] });
+      await this.save({ ...this.state, devices: [...this.state.devices, { id: randomUUID(), name, createdAt: new Date().toISOString(), hash, paused: false, remoteAddress: this.remoteHost() }] });
       if (this.pending) this.pending = { hash: this.pending.hash, expires: this.pending.expires, redeemedToken: hash };
       return true;
     });
@@ -206,7 +221,7 @@ export class MobileAccessSettings {
     if (this.closed || !this.state.enabled || !header?.startsWith('Bearer ') || !mobileToken.safeParse(header.slice(7)).success) return;
     const digest = sha(header.slice(7)).digest();
     const device = this.state.devices.find(item => timingSafeEqual(Buffer.from(item.hash, 'hex'), digest));
-    if (!device || device.paused) return;
+    if (!device || device.paused || device.released) return;
     const now = Date.now(), lastSeen = new Date(now).toISOString();
     this.lastSeen.set(device.id, lastSeen);
     if (now - (this.lastCheckpoint.get(device.id) ?? 0) > 5 * 60_000) {
@@ -217,6 +232,31 @@ export class MobileAccessSettings {
       }).catch(() => this.lastCheckpoint.delete(device.id));
     }
     return device.id;
+  }
+
+  // Positive proof for a pinned phone. Paused devices still own a valid pairing.
+  confirmsUnpaired(token: string) {
+    if (!this.state.enabled || this.closed || !mobileToken.safeParse(token).success) return false;
+    const hash = sha(token).digest('hex');
+    return !this.state.devices.some(device => !device.released && device.hash === hash);
+  }
+
+  async advertisedRemote(id: string) {
+    const address = this.remoteHost();
+    if (address && this.state.devices.some(device => device.id === id && device.remoteAddress !== address)) {
+      await this.serialize(async () => {
+        if (this.closed) return;
+        await this.save({ ...this.state, devices: this.state.devices.map(device => device.id === id ? { ...device, remoteAddress: address } : device) });
+      });
+    }
+    return address;
+  }
+
+  releaseDevice(id: string) {
+    return this.serialize(async () => {
+      await this.save({ ...this.state, devices: this.state.devices.map(device =>
+        device.id === id ? { ...device, released: true, pushAfter: undefined } : device) });
+    });
   }
 
   deviceName(id: string) {

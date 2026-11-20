@@ -107,6 +107,8 @@ it('automatically observes each started or steered task, keeping the same eviden
   f.preparation.resolve();
   const send = (content: string, delivery?: 'steer') => f.service.handle({ type: 'message.send', conversationId, content,
     delivery, requestId: content, ...(content === '早啊' ? { apps: ['cabin-world' as const] } : {}) });
+  await f.service.handle({ type: 'app.connect', conversationId, appId: 'cabin-world' });
+  reads = 0;
   await send('早啊');
   const first = await until(() => f.run);
   expect(JSON.parse(first.prompt).cabinWorld).toMatchObject({ place: '小屋' });

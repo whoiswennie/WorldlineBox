@@ -54,10 +54,12 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('changes app tools in the s
     expect(attached.chatRuntime!.apps).toEqual(['asset-manager']);
     await service.handle({ type: 'app.detach', conversationId: room.id, topicId, appId: 'asset-manager' });
     const removed = await send('removed'); expect(removed.messages.at(-1)!.execution!.sessionId).toBe(session);
+    await service.handle({ type: 'app.browser', conversationId: room.id, referenceId: browserContext.referenceId });
     const browser = await send('browser-task', ['browser'], browserContext.referenceId); expect(browser.messages.at(-1)!.execution!.sessionId).toBe(session);
     await service.handle({ type: 'app.detach', conversationId: room.id, topicId, appId: 'browser' });
     await send('browser-removed');
     const beforeRevoked = appCalls;
+    await service.handle({ type: 'app.connect', conversationId: room.id, appId: 'asset-manager' });
     const revoking = send('active-revoke', ['asset-manager']);
     await expect.poll(() => observations.some(item => item.latest === 'active-revoke'), { timeout: 40000 }).toBe(true);
     await service.handle({ type: 'app.detach', conversationId: room.id, topicId, appId: 'asset-manager' }); releaseModel(); await revoking;

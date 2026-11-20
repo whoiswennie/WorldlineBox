@@ -674,6 +674,8 @@ it('keeps the far-right sidebar control and removes live controls once the final
   snapshots.a!.messages[0] = { ...snapshots.a!.messages[0]!, status: 'sent', content: '查询完成。', execution: { ...snapshots.a!.messages[0]!.execution!, status: 'succeeded' } }; await changed();
   expect(host.querySelector('.bot-execution-toggle,.bot-message-progress')).toBeNull();
   expect(host.querySelector('.bot-message-text')?.textContent).toBe('查询完成。');
+  await act(() => host.querySelector<HTMLButtonElement>('[title="在 DSH 工作台查看会话"]')!.click());
+  expect(requests.at(-1)).toEqual({type:'execution.workbench', messageId:'reply-a'});
 });
 
 it('routes an inline DSH answer to that exact native execution without sending a new chat message', async () => {
@@ -683,15 +685,16 @@ it('routes an inline DSH answer to that exact native execution without sending a
   expect(sends()).toHaveLength(0);
 });
 
-it('removes a connected app from the next input immediately while native detach acknowledgement is still pending', async () => {
+it('reflects the host detach and does not replay old app choices on send', async () => {
   snapshots.a!.chatRuntime = { topic: { id: 'topic-a', conversationId: 'a', title: '当前任务', createdAt: at, updatedAt: at }, apps: ['asset-manager'], running: [], queued: [], hiddenMessageIds: [] };
   await mount(); const pending = deferred<BotResponse>();
   override = request => request.type === 'app.detach' ? pending.promise : request.type === 'message.send' ? Promise.resolve({ ok: true }) : undefined;
   await act(() => host.querySelector<HTMLButtonElement>('[aria-label="移除资产管理器"]')!.click());
+  snapshots.a!.chatRuntime!.apps = [];
+  await act(() => pending.resolve({ ok: true }));
   expect(host.querySelector('.bot-composer-dock [data-app-id="asset-manager"]')).toBeNull();
   await input(composer(), '继续当前任务'); await click('发送 ↑');
-  expect(sends().at(-1)?.apps).toEqual([]);
-  await act(() => pending.resolve({ ok: true }));
+  expect(sends().at(-1)).not.toHaveProperty('apps');
 });
 it('activates an app only on selection and carries it on the outgoing input', async () => {
   await mount(); expect(requests.filter(request => request.type === 'app.connect')).toHaveLength(0);
@@ -699,20 +702,27 @@ it('activates an app only on selection and carries it on the outgoing input', as
   await act(() => host.querySelectorAll<HTMLButtonElement>('.bot-app-choice')[1]!.click());
   expect(requests.filter(request => request.type === 'app.connect')).toHaveLength(1);
   await input(composer(), '请整理这些资产'); await click('发送 ↑');
-  expect(sends().at(-1)?.apps).toEqual(['asset-manager']);
+  expect(sends().at(-1)).not.toHaveProperty('apps');
 });
 
 it('replaces the one attached browser page and sends only the chosen reference with the user input', async () => {
   const tabs = ['Alpha', 'Beta'].map((title, index) => ({ id: title, title, url: `https://example.com/${index}`, loading: false, muted: false, pinned: false, zoom: 1, canGoBack: false, canGoForward: false }));
   const contexts = tabs.map(tab => ({ referenceId: crypto.randomUUID(), tabId: tab.id, title: tab.title, url: tab.url, selection: '', capturedAt: new Date().toISOString() }));
   const browserRequest = vi.fn<WorldlineBoxBrowserApi['request']>(async request => request.type === 'state' ? { ok: true, state: { tabs, activeTabId: 'Beta', bookmarks: [], downloads: [], historyCount: 0, preferences: { homepage: 'about:blank', restoreSession: true, searchEngine: 'bing', askDownloadLocation: false }, permissions: [], fullscreen: false, revision: 0 } } : request.type === 'page.context' ? { ok: true, pageContext: contexts.find(context => context.tabId === request.id) } : { ok: false, error: 'Unexpected browser mutation' });
+  override = req => {
+    if (req.type !== 'app.browser') return;
+    snapshots.a!.chatRuntime = { apps: ['browser'], browserContext: contexts.find(c => c.referenceId === req.referenceId),
+      running: [], queued: [], hiddenMessageIds: [] };
+    return Promise.resolve({ok:true});
+  };
   await mount(undefined, { request: browserRequest, onChanged: () => () => undefined } as unknown as WorldlineBoxBrowserApi);
   const choose = async (index: number) => { await click('应用'); await click('浏览器'); await act(() => host.querySelectorAll<HTMLButtonElement>('.bot-browser-tab-list [role="option"]')[index]!.click()); };
   await choose(0); expect(host.querySelector('.bot-composer-dock [data-browser-context-tab]')?.getAttribute('data-browser-context-tab')).toBe('Alpha');
   await choose(1); expect(host.querySelectorAll('.bot-composer-dock [data-browser-context-tab]')).toHaveLength(1);
   expect(host.querySelector('.bot-composer-dock [data-browser-context-tab]')?.getAttribute('data-browser-context-tab')).toBe('Beta');
   await input(composer(), '请处理选择的网页'); await click('发送 ↑');
-  expect(sends().at(-1)).toMatchObject({ browserContextId: contexts[1]!.referenceId, apps: ['browser'] });
+  expect(requests.filter(r => r.type === 'app.browser').at(-1)).toMatchObject({referenceId: contexts[1]!.referenceId});
+  expect(sends().at(-1)).not.toHaveProperty('browserContextId');
   expect(sends().at(-1)).not.toHaveProperty('browserContextIds');
   expect(browserRequest.mock.calls.filter(([request]) => request.type === 'page.context').map(([request]) => request)).toEqual([{ type: 'page.context', id: 'Alpha' }, { type: 'page.context', id: 'Beta' }]);
 });
@@ -734,5 +744,6 @@ it('blocks sending while a replacement page is loading and retains the original 
   expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(false);
   await act(() => pending.resolve({ ok: true, pageContext: { ...old, referenceId: crypto.randomUUID(), tabId: 'new-page' } }));
   expect(host.querySelector('.bot-composer-dock [data-browser-context-tab]')?.getAttribute('data-browser-context-tab')).toBe('old-page');
-  await click('发送 ↑'); expect(sends().at(-1)?.browserContextId).toBe(old.referenceId);
+  await click('发送 ↑'); expect(sends().at(-1)).not.toHaveProperty('browserContextId');
+  expect(requests.some(r => r.type === 'app.browser')).toBe(false);
 });

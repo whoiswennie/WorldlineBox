@@ -73,6 +73,7 @@ function repeatsObservation(answer: string, prior: string) {
 }
 
 export interface BotServiceOptions {
+  openSessionWorkbench?(instanceId: string, laneId: string, sessionId: string, cwd: string): Promise<void>;
   assertMessageReady?(): void;
   desktopMeetingActive?(conversationId: string): boolean;
   callAssetsRoot?: string;
@@ -141,8 +142,8 @@ export class BotService {
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmPhases = new Map<string, 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory'>();
   private readonly companionControls = new Map<string, Promise<void>>();
-  private readonly videoRequests = new Map<string, Set<AbortController>>();
-  private readonly musicControls = new Map<string, Set<AbortController>>();
+  private readonly appConnections = new Map<string, AbortController>();
+  private readonly appRequests = new Map<string, Set<AbortController>>();
   private readonly companionControlRevisions = new Map<string, number>();
   private readonly companionStartWaiters = new Map<string, Set<AbortController>>();
   private readonly maintenanceAbort = new AbortController();
@@ -421,18 +422,42 @@ export class BotService {
     if (!room) throw new Error('会话不存在。');
     await this.ensureCompanionBindings([...room.memberIds, ...additionalIds]);
   }
+  private chatAppKey(room: BotConversation) { return 'chat-apps:' + room.id + ':' + room.revision; }
+
+  private chatApps(room: BotConversation): { apps: BotAppId[]; browser?: BrowserPageContext } {
+    if (!room.memberIds.includes('user') || room.dissolvedAt) return { apps: [] };
+    const key = this.chatAppKey(room);
+    const saved = this.store.getMetadata(key);
+    if (saved) return JSON.parse(saved);
+    // Upgrade the selected topic once. An explicit empty list is also a user choice.
+    const legacy = this.store.taskTransaction(sql => sql.prepare(`SELECT t.id,m.value FROM bot_native_topics t
+      JOIN bot_metadata m ON m.key='topic-apps:'||t.id WHERE t.conversation_id=? AND t.acl_revision=?
+      AND NOT EXISTS(SELECT 1 FROM bot_topic_bindings b JOIN bot_lanes l ON l.conversation_id=b.conversation_id AND l.companion_id=b.companion_id
+        WHERE b.topic_id=t.id AND b.lane_epoch<>l.epoch)
+      ORDER BY t.id=COALESCE(?, '') DESC,t.updated_at DESC,t.id LIMIT 1`)
+      .get(room.id, room.revision, this.store.getMetadata('native-topic-active:' + room.id) ?? null)) as { id: string; value: string } | undefined;
+    const apps = botAppIdSchema.array().parse(JSON.parse(legacy?.value || '[]'));
+    const browser = legacy && apps.includes('browser') ? this.store.getMetadata('topic-browser:' + legacy.id) : undefined;
+    const settings = { apps, ...(browser ? { browser: browserPageContextSchema.parse(JSON.parse(browser)) } : {}) };
+    this.store.setMetadata(key, JSON.stringify(settings));
+    return settings;
+  }
+
   private topicApps(topicId?: string): BotAppId[] {
     if (!topicId) return [];
-    const parsed = botAppIdSchema.array().safeParse(JSON.parse(this.store.getMetadata('topic-apps:' + topicId) || '[]'));
-    return parsed.success ? parsed.data : [];
+    const topic = this.store.taskTransaction(sql => sql.prepare('SELECT conversation_id,acl_revision FROM bot_native_topics WHERE id=?').get(topicId)) as
+      { conversation_id: string; acl_revision: number } | undefined;
+    const room = topic && this.store.getConversation(topic.conversation_id);
+    return room && room.revision === topic!.acl_revision ? this.chatApps(room).apps : [];
   }
   private attachTopicApp(roomId: string, topicId: string | undefined, app: BotAppId, browser?: BrowserPageContext) {
     const room = this.store.getConversation(roomId);
     if (!room?.memberIds.includes('user') || room.dissolvedAt) throw Error('聊天权限已变化。');
     this.store.taskTransaction(() => {
-      const topic = topicId ? this.topics.get(topicId, roomId) : this.topics.current(roomId) ?? this.topics.newDraft(roomId, randomUUID());
-      this.store.setMetadata('topic-apps:' + topic.id, JSON.stringify([...new Set([...this.topicApps(topic.id), app])]));
-      if (browser) this.store.setMetadata('topic-browser:' + topic.id, JSON.stringify(browser));
+      const settings = this.chatApps(room);
+      if (topicId) this.topics.get(topicId, roomId);
+      else if (!this.topics.current(roomId)) this.topics.newDraft(roomId, randomUUID());
+      this.store.setMetadata(this.chatAppKey(room), JSON.stringify({ ...settings, ...(browser && { browser }), apps: [...new Set([...settings.apps, app])] }));
     });
     this.changed(roomId);
   }
@@ -459,11 +484,14 @@ export class BotService {
     } catch { signal.throwIfAborted(); }
     return undefined;
   }
+  chatAppEnabled(roomId: string, appId: BotAppId): boolean {
+    const room = this.store.getConversation(roomId);
+    return !!room && this.chatApps(room).apps.includes(appId);
+  }
   private chatRuntime(conversationId: string) {
     const runtime = this.topics.runtime(conversationId);
-    const apps = this.topicApps(runtime.topic?.id);
-    const browser = runtime.topic && apps.includes('browser') ? browserPageContextSchema.safeParse(JSON.parse(this.store.getMetadata('topic-browser:' + runtime.topic.id) || 'null')) : undefined;
-    return { ...runtime, apps, ...(browser?.success ? { browserContext: browser.data } : {}) };
+    const { apps, browser } = this.chatApps(this.store.getConversation(conversationId)!);
+    return { ...runtime, apps, ...(browser && { browserContext: browser }) };
   }
   private changed(conversationId?: string): void {
     if (this.closed) return;
@@ -565,6 +593,18 @@ export class BotService {
       this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
     }
     switch (input.type) {
+      case 'execution.workbench': {
+        const message = this.store.getMessage(input.messageId);
+        const event = message && this.store.getEvent(message.eventId);
+        const room = event && this.store.getConversation(event.conversationId);
+        if (!message || !event || !room?.memberIds.includes('user') || room.dissolvedAt || room.revision !== event.aclRevision ||
+          message.conversationId !== room.id || message.senderId !== event.companionId) throw Error('这条消息没有可查看的 DSH 会话。');
+        const laneId = this.topics.lane(event);
+        const instanceId = this.store.getMetadata('native-host:' + laneId);
+        if (!instanceId || !this.options.openSessionWorkbench) throw Error('找不到这条消息原先使用的 DSH 实例。');
+        await this.options.openSessionWorkbench(instanceId, laneId, BotDshBrain.sessionId(laneId), this.workspace(event.companionId));
+        return { ok: true };
+      }
       case 'app.browser': {
         const context = this.options.resolveBrowserContext?.(input.referenceId);
         if (!context) throw Error('请重新选择内置浏览器标签页。');
@@ -574,53 +614,70 @@ export class BotService {
       case 'app.connect': {
         const room = this.store.getConversation(input.conversationId);
         if (!room?.memberIds.includes('user')) throw new Error('不能为这个聊天连接应用。');
-        if (input.appId === 'music' || input.appId === 'video') {
-          if (input.appId === 'video' && !this.options.videoTool) throw Error('视频应用暂不可用。');
-          if (input.appId === 'music' && !this.options.musicTool) throw Error('音乐应用暂不可用。');
-          const connection = input.appId === 'video'
-            ? { id: 'video' as const, login: await this.options.videoLogin?.() ?? 'unknown' as const }
-            : { id: 'music' as const };
+        const key = room.id + ':' + input.appId;
+        this.appConnections.get(key)?.abort();
+        const controller = new AbortController();
+        this.appConnections.set(key, controller);
+        const signal = AbortSignal.any([controller.signal, this.maintenanceAbort.signal]);
+        const attach = () => {
+          signal.throwIfAborted();
+          if (this.store.getConversation(room.id)?.revision !== room.revision) throw Error('聊天权限已变化。');
           this.attachTopicApp(room.id, input.topicId, input.appId);
+        };
+        try {
+          if (input.appId === 'music' || input.appId === 'video') {
+            if (input.appId === 'video' && !this.options.videoTool) throw Error('视频应用暂不可用。');
+            if (input.appId === 'music' && !this.options.musicTool) throw Error('音乐应用暂不可用。');
+            const connection = input.appId === 'video'
+              ? { id: 'video' as const, login: await this.options.videoLogin?.() ?? 'unknown' as const }
+              : { id: 'music' as const };
+            attach();
+            return { ok: true, app: connection };
+          }
+          if (input.appId === 'cabin-world') {
+            const enabled = room.memberIds.flatMap(id => {
+              const actor = id === 'user' ? undefined : this.store.getCompanion(id);
+              return actor && actor.enabled !== false ? [actor] : [];
+            });
+            if (!enabled.length) throw Error('请先选择一个启用的伙伴。');
+            if (!this.options.cabinWorldApp) throw Error('小屋世界应用暂不可用。');
+            if (input.topicId) this.topics.get(input.topicId, room.id);
+            await this.options.cabinWorldApp.connect(signal, room.kind === 'direct' ? enabled[0] : undefined);
+            attach();
+            return { ok: true, app: { id: input.appId } };
+          }
+          if (!this.options.assetManagerApp) throw new Error('资产管理器应用尚未就绪。');
+          let connection;
+          for (const actor of room.memberIds.filter(id => id !== 'user').map(id => this.store.getCompanion(id)).filter(actor => actor && actor.enabled !== false)) {
+            connection = await this.options.assetManagerApp.connect({ companionId: actor!.id, companionName: actor!.name, conversationId: room.id }, signal);
+          }
+          if (!connection) throw new Error('请先选择一个启用的伙伴。');
+          attach();
           return { ok: true, app: connection };
+        } finally {
+          if (this.appConnections.get(key) === controller) this.appConnections.delete(key);
         }
-        if (input.appId === 'cabin-world') {
-          const enabled = room.memberIds.flatMap(id => {
-            const actor = id === 'user' ? undefined : this.store.getCompanion(id);
-            return actor && actor.enabled !== false ? [actor] : [];
-          });
-          if (!enabled.length) throw Error('请先选择一个启用的伙伴。');
-          if (!this.options.cabinWorldApp) throw Error('小屋世界应用暂不可用。');
-          if (input.topicId) this.topics.get(input.topicId, room.id);
-          await this.options.cabinWorldApp.connect(this.maintenanceAbort.signal, room.kind === 'direct' ? enabled[0] : undefined);
-          this.attachTopicApp(room.id, input.topicId, input.appId);
-          return { ok: true, app: { id: input.appId } };
-        }
-        if (!this.options.assetManagerApp) throw new Error('资产管理器应用尚未就绪。');
-        let connection;
-        for (const actor of room.memberIds.filter(id => id !== 'user').map(id => this.store.getCompanion(id)).filter(actor => actor && actor.enabled !== false)) {
-          connection = await this.options.assetManagerApp.connect({ companionId: actor!.id, companionName: actor!.name, conversationId: room.id }, this.maintenanceAbort.signal);
-        }
-        if (!connection) throw new Error('请先选择一个启用的伙伴。');
-        this.attachTopicApp(room.id, input.topicId, input.appId);
-        return { ok: true, app: connection };
       }
       case 'app.detach': {
-        this.topics.get(input.topicId, input.conversationId);
+        if (input.topicId) this.topics.get(input.topicId, input.conversationId);
         const room = this.store.getConversation(input.conversationId);
-        if (!room?.memberIds.includes('user')) throw Error('不能修改这个话题的应用。');
-        this.store.setMetadata('topic-apps:' + input.topicId, JSON.stringify(this.topicApps(input.topicId).filter(id => id !== input.appId)));
-        if (input.appId === 'video') for (const request of this.videoRequests.get(input.topicId) ?? []) request.abort();
-        if (input.appId === 'music') for (const control of this.musicControls.get(input.topicId) ?? []) control.abort();
-        if (input.appId === 'browser') this.store.setMetadata('topic-browser:' + input.topicId, '');
-        const active = this.topics.runtime(input.conversationId).running.filter(item => item.topicId === input.topicId);
+        if (!room?.memberIds.includes('user')) throw Error('不能修改这个聊天的应用。');
+        const settings = this.chatApps(room);
+        this.store.setMetadata(this.chatAppKey(room), JSON.stringify({ apps: settings.apps.filter(id => id !== input.appId),
+          ...(settings.browser && input.appId !== 'browser' && { browser: settings.browser }) }));
+        this.appConnections.get(room.id + ':' + input.appId)?.abort(new Error('应用已关闭。'));
+        const requests = this.appRequests.get(room.id + ':' + input.appId);
+        for (const request of requests ?? []) request.abort(new Error('应用已关闭，本次操作已停止。'));
+        this.changed(room.id);
+        const active = this.topics.runtime(room.id).running;
         await Promise.all(active.map(async item => {
           const event = this.store.eventForReply(item.messageId), actor = this.store.getCompanion(item.companionId);
           if (!event || !actor || !this.options.brain.revokeApplications) return;
           const stage = this.isCallTurn(room, event) ? botCallCapabilities(await this.callModel(actor.id), actor.id) : undefined;
-          const system = buildNativeBotContext({ companion: actor, event, apps: this.topicApps(input.topicId), memories: '', files: [], conversation: room, stage, companions: this.store.listCompanions() }).system;
+          const system = buildNativeBotContext({ companion: actor, event, apps: this.chatApps(room).apps, memories: '', files: [], conversation: room, stage, companions: this.store.listCompanions() }).system;
           try { await this.options.brain.revokeApplications(this.topics.lane(event), [...botAppTools[input.appId]], system); }
           catch (error) { this.options.report?.(error); } // Local authorization was already revoked; the next admission reconciles native declarations.
-        })); this.changed(input.conversationId);
+        }));
         return { ok: true };
       }
       case 'topic.list': {
@@ -630,8 +687,8 @@ export class BotService {
       }
       case 'topic.flags':{const topic=this.topics.flags(input.conversationId,input.topicId,input);this.changed(input.conversationId);return{ok:true,topic};}
       case 'topic.rename':{const topic=this.topics.rename(input.conversationId,input.topicId,input.title,input.requestId);this.maintainSafely();this.changed(input.conversationId);return{ok:true,topic};}
-      case 'topic.new': { const topic=this.topics.newDraft(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
-      case 'topic.select': { const topic=this.topics.select(input.conversationId,input.topicId);this.changed(input.conversationId);return {ok:true,topic}; }
+      case 'topic.new': { if (archivedRoom) this.chatApps(archivedRoom); const topic=this.topics.newDraft(input.conversationId,input.requestId);this.changed(input.conversationId);return {ok:true,topic}; }
+      case 'topic.select': { if (archivedRoom) this.chatApps(archivedRoom); const topic=this.topics.select(input.conversationId,input.topicId);this.changed(input.conversationId);return {ok:true,topic}; }
       case 'topic.context': return this.topicContext(input);
       case 'topic.compact': {
         const event=this.topics.topicEvent(input.topicId,input.conversationId,input.companionId);
@@ -756,27 +813,29 @@ export class BotService {
         const targetTopic = input.type === 'message.send' && !previousApps
           ? input.topicId ? this.topics.get(input.topicId, input.conversationId) : !input.newTopic && !running ? this.topics.current(input.conversationId) : undefined
           : undefined;
-        const inheritedTopic = targetTopic ?? (input.type === 'message.send' && !input.newTopic && !previousApps ? this.topics.current(input.conversationId) : undefined);
-        const storedBrowser = targetTopic && this.topicApps(targetTopic.id).includes('browser')
-          ? this.store.getMetadata('topic-browser:' + targetTopic.id) : undefined;
-        const attachedReference = input.type === 'message.send' ? input.browserContextId ??
-          (storedBrowser ? browserPageContextSchema.parse(JSON.parse(storedBrowser)).referenceId : undefined) : undefined;
-        const browserContext = previousBrowser ? browserPageContextSchema.parse(JSON.parse(previousBrowser))
+        const settings = this.chatApps(conversation);
+        const attachedReference = input.type === 'message.send' ? input.browserContextId : undefined;
+        if (!previousApps && input.type === 'message.send') {
+          if (input.apps?.some(app => !settings.apps.includes(app))) throw Error('所选应用已关闭，请在当前聊天的「应用」中重新启用。');
+          if (attachedReference && (!settings.apps.includes('browser') || attachedReference !== settings.browser?.referenceId)) {
+            throw Error('浏览器应用已关闭或网页已变更，请重新选择标签页。');
+          }
+        }
+        let browserContext = previousApps ? (previousBrowser ? browserPageContextSchema.parse(JSON.parse(previousBrowser)) : undefined)
           : attachedReference ? this.options.resolveBrowserContext?.(attachedReference) : undefined;
+        if (!previousApps && !attachedReference && input.type === 'message.send' && settings.browser) {
+          // A closed or navigated tab invalidates its snapshot, independently of the chat's browser switch.
+          try { browserContext = this.options.resolveBrowserContext?.(settings.browser.referenceId); } catch { /* no current page snapshot */ }
+        }
         if (attachedReference && !browserContext) throw Error('内置浏览器连接不可用，请重新附加网页。');
         if (previousBrowser && attachedReference && browserContext?.referenceId !== attachedReference) throw Error('同一发送请求不能更换网页上下文。');
         const inheritedApps: BotAppId[] = previousApps ? botAppIdSchema.array().parse(JSON.parse(previousApps))
-          : this.topicApps(inheritedTopic?.id).filter(id => id === 'cabin-world' || targetTopic?.id === inheritedTopic?.id);
-        const selectedApps = input.type === 'message.send' ? [...new Set([...(input.apps ?? inheritedApps), ...(browserContext ? ['browser' as const] : [])])].sort() : [];
+          : settings.apps;
+        const selectedApps = input.type === 'message.send' ? [...new Set([...inheritedApps, ...(browserContext ? ['browser' as const] : [])])].sort() : [];
         if (previousApps && previousApps !== JSON.stringify(selectedApps)) throw Error('同一发送请求不能更换已附加的应用，请重新发送。');
-        const quoteKey = 'message-quote-ingress:' + input.conversationId + ':' + input.requestId;
-        const previousQuote = this.store.getMetadata(quoteKey);
-        const quoteId = input.type === 'message.send' ? input.quoteMessageId : undefined;
-        const source = quoteId && previousQuote === undefined ? this.store.getMessage(quoteId) : undefined;
-        if (quoteId && previousQuote === undefined && (!source || source.conversationId !== input.conversationId || source.status !== 'sent' || !source.content.trim())) throw Error('引用的消息在当前会话中不可用。');
-        const quote = previousQuote === undefined ? source && { id: source.id, senderName: source.senderName, excerpt: Array.from(source.content.trim()).slice(0, 360).join('') }
-          : JSON.parse(previousQuote) as BotMessageQuote | null;
-        if (previousQuote !== undefined && (quote?.id ?? undefined) !== quoteId) throw Error('同一发送请求不能更换引用。');
+        // Preserve the original payload when retrying a message accepted by an earlier version.
+        const previousQuote = previousApps && this.store.getMetadata('message-quote-ingress:' + input.conversationId + ':' + input.requestId);
+        const quote = previousQuote ? JSON.parse(previousQuote) as BotMessageQuote | null : undefined;
         const { result, isNewIngress } = this.store.taskTransaction(()=>{
         const profileBio = this.store.getMetadata('user-profile-bio');
         const profileKey = 'message-user-bio:' + input.conversationId + ':' + input.requestId;
@@ -796,16 +855,11 @@ export class BotService {
           if (selectedApps.length) this.store.setMetadata('message-apps:' + result.message.id, JSON.stringify(selectedApps));
           if (isNew && frozenProfile !== undefined) this.store.setMetadata(profileKey, frozenProfile);
           if (isNew && origin) this.store.setMetadata('message-origin:' + result.message.id, JSON.stringify(origin));
-          if (isNew) this.store.setMetadata(quoteKey, JSON.stringify(quote ?? null));
-          if (isNew && quote) this.store.setMetadata('message-quote:' + result.message.id, JSON.stringify(quote));
         }
         if (browserContext) { this.store.setMetadata('browser-context:' + result.message.id, JSON.stringify(browserContext)); this.store.setMetadata(browserKey, JSON.stringify(browserContext)); }
         if(input.type==='message.send'&&!this.store.getMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId)){
           const topic=targetTopic ?? this.topics.create(input.conversationId,input.requestId,input.content,!running);
           this.topics.bind(result.events,topic);
-          const apps = selectedApps;
-          this.store.setMetadata('topic-apps:' + topic.id, JSON.stringify(apps));
-          this.store.setMetadata('topic-browser:' + topic.id, browserContext ? JSON.stringify(browserContext) : '');
           this.store.setMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId,topic.id);
         }
         return { result, isNewIngress: isNew };});
@@ -1411,7 +1465,12 @@ export class BotService {
       const timeout = z.number().int().min(0).max(3600000).parse(call.args.timeout_ms ?? 30000);
       return this.waitForPeerResults(event, timeout, AbortSignal.any([signal, this.maintenanceAbort.signal]));
     }
-    if (!botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), this.isCallTurn(conversation, event), this.canCaptureDesktop(conversation, event)).some(tool => tool.name === call.name)) throw new Error('主脑没有这项工具。');
+    const app = botAppIdSchema.options.find(id => (botAppTools[id] as readonly string[]).includes(call.name));
+    if (!botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), this.isCallTurn(conversation, event), this.canCaptureDesktop(conversation, event)).some(tool => tool.name === call.name)) {
+      const names = { browser: '浏览器', 'asset-manager': '资产库', 'cabin-world': '小屋世界', music: '音乐', video: '视频' };
+      if (app) throw Error(names[app] + '应用已关闭，请用户在当前聊天的「应用」中启用后重试。');
+      throw Error('主脑没有这项工具。');
+    }
     if (event.source === 'presence') return this.executeTool(event, call, signal);
     const key = `effect:${event.id}:${call.callId}`, fingerprint = digest(JSON.stringify([call.name, call.args]));
     const previous = this.store.getMetadata(key);
@@ -1421,8 +1480,21 @@ export class BotService {
       if (saved.fingerprint !== fingerprint&&saved.fingerprint!==legacy) throw new Error('工具调用标识已用于其他参数。'); return saved.result;
     }
     const running = this.toolRuns.get(key); if (running) { if (running.fingerprint !== fingerprint) throw new Error('运行中的工具调用标识对应其他参数。'); return running.promise; }
-    const operation = this.executeTool(event, call, signal).then(result => { this.store.setMetadata(key, JSON.stringify({ fingerprint, result })); return result; });
-    this.toolRuns.set(key, { fingerprint, promise: operation }); try { return await operation; } finally { this.toolRuns.delete(key); }
+    const appKey = conversation.id + ':' + app;
+    const control = app ? new AbortController() : undefined;
+    const active = this.appRequests.get(appKey) ?? new Set<AbortController>();
+    if (control) { active.add(control); this.appRequests.set(appKey, active); }
+    const live = control ? AbortSignal.any([signal, control.signal, this.maintenanceAbort.signal]) : signal;
+    const operation = this.executeTool(event, call, live).then(result => {
+      live.throwIfAborted();
+      this.store.setMetadata(key, JSON.stringify({ fingerprint, result }));
+      return result;
+    });
+    this.toolRuns.set(key, { fingerprint, promise: operation });
+    try { return await operation; } finally {
+      this.toolRuns.delete(key);
+      if (control) { active.delete(control); if (!active.size) this.appRequests.delete(appKey); }
+    }
   }
   private async recognizeToolAudio(event: BotEvent, call: BotToolCall, signal: AbortSignal) {
     const parsed = z.strictObject({ attachmentId: z.string().min(1).max(160).optional(),
@@ -1639,16 +1711,8 @@ export class BotService {
         const room = assertAllowed();
         if (!this.options.videoTool || !topicId) throw Error('视频应用暂不可用。');
         const input = videoToolSchema.parse(args);
-        const controller = new AbortController();
-        const active = this.videoRequests.get(topicId) ?? new Set<AbortController>();
-        active.add(controller);
-        this.videoRequests.set(topicId, active);
-        const live = AbortSignal.any([signal, this.maintenanceAbort.signal, controller.signal]);
-        const {result, card: detail} = await this.options.videoTool(input, live).finally(() => {
-          active.delete(controller);
-          if (!active.size) this.videoRequests.delete(topicId);
-        });
-        live.throwIfAborted();
+        const {result, card: detail} = await this.options.videoTool(input, signal);
+        signal.throwIfAborted();
         assertAllowed();
         if (input.action !== 'play' || !detail) return result;
         const id = 'video-' + digest(event.id + ':' + call.callId);
@@ -1674,47 +1738,39 @@ export class BotService {
         if (!this.options.musicTool || !topicId) throw Error('音乐应用暂不可用。');
         const parsed = (call.name === 'music' ? musicToolSchema : globalMusicToolSchema).safeParse(args);
         if (!parsed.success) return { accepted: false, reason: '音乐参数不符合当前工具声明，请按所选工具的参数重试。' };
-        const input = parsed.data, control = new AbortController();
-        const active = this.musicControls.get(topicId) ?? new Set<AbortController>();
-        active.add(control); this.musicControls.set(topicId, active);
+        const input = parsed.data;
+        const scope = this.playbackScope(room, event);
+        let share: MusicShareInput;
+        if (input.action === 'share') share = input;
+        else if (input.action === 'play' && input.target === 'inline' && (input.playlistId || input.trackId)) {
+          const playlistId = input.playlistId ?? DEFAULT_NETEASE_PLAYLIST_ID;
+          share = { action: 'share', mode: 'once', autoPlay: true, queue: input.trackId
+            ? { kind: 'tracks', tracks: [{ playlistId, trackId: input.trackId }] }
+            : { kind: 'playlist', playlistId } };
+        } else return await this.options.musicTool(scope, input, signal, assertAllowed);
+        if (!this.options.prepareMusicShare) throw Error('音乐分享暂不可用。');
+        const partId = 'music-' + digest(event.id + ':' + call.callId);
+        const queueKey = JSON.stringify(share.queue);
+        const published = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.music ? [part.music] : []);
+        const findPrior = (cards: MusicShare[]) => cards.find(card => card.id === partId || JSON.stringify(card.queue) === queueKey);
+        const receipt = (card: MusicShare) => ({ published: true, messageId: event.replyMessageId, card });
+        const prior = findPrior(published());
+        if (prior) return { ...receipt(prior), reused: true };
+        const card = await this.options.prepareMusicShare(partId, share, signal);
+        signal.throwIfAborted(); assertAllowed();
+        const cards = published();
+        const concurrent = findPrior(cards);
+        if (concurrent) return { ...receipt(concurrent), reused: true };
+        if (cards.length >= 12) throw Error('请把歌曲组合在同一个播放卡片中。');
+        const saved = this.store.appendReplyPart(event.id, { id: partId, kind: 'music', music: card, text: '分享音乐：' + card.title });
+        this.changed(event.conversationId);
+        if (!saved || !share.autoPlay) return receipt(card);
+        this.emit({ type: 'music-present', ...scope, cardId: card.id });
         try {
-          const live = AbortSignal.any([signal, control.signal, this.maintenanceAbort.signal]);
-          const scope = this.playbackScope(room, event);
-          let share: MusicShareInput;
-          if (input.action === 'share') share = input;
-          else if (input.action === 'play' && input.target === 'inline' && (input.playlistId || input.trackId)) {
-            const playlistId = input.playlistId ?? DEFAULT_NETEASE_PLAYLIST_ID;
-            share = { action: 'share', mode: 'once', autoPlay: true, queue: input.trackId
-              ? { kind: 'tracks', tracks: [{ playlistId, trackId: input.trackId }] }
-              : { kind: 'playlist', playlistId } };
-          } else return await this.options.musicTool(scope, input, live, assertAllowed);
-          if (!this.options.prepareMusicShare) throw Error('音乐分享暂不可用。');
-          const partId = 'music-' + digest(event.id + ':' + call.callId);
-          const queueKey = JSON.stringify(share.queue);
-          const published = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.music ? [part.music] : []);
-          const findPrior = (cards: MusicShare[]) => cards.find(card => card.id === partId || JSON.stringify(card.queue) === queueKey);
-          const receipt = (card: MusicShare) => ({ published: true, messageId: event.replyMessageId, card });
-          const prior = findPrior(published());
-          if (prior) return { ...receipt(prior), reused: true };
-          const card = await this.options.prepareMusicShare(partId, share, live);
-          live.throwIfAborted(); assertAllowed();
-          const cards = published();
-          const concurrent = findPrior(cards);
-          if (concurrent) return { ...receipt(concurrent), reused: true };
-          if (cards.length >= 12) throw Error('请把歌曲组合在同一个播放卡片中。');
-          const saved = this.store.appendReplyPart(event.id, { id: partId, kind: 'music', music: card, text: '分享音乐：' + card.title });
-          this.changed(event.conversationId);
-          if (!saved || !share.autoPlay) return receipt(card);
-          this.emit({ type: 'music-present', ...scope, cardId: card.id });
-          try {
-            const playback = await this.options.musicTool(scope, { action: 'present', target: 'inline', card }, live, assertAllowed);
-            return { ...receipt(card), playback };
-          } catch (cause) {
-            return { ...receipt(card), playback: { accepted: false, reason: errorText(cause) } };
-          }
-        } finally {
-          active.delete(control);
-          if (!active.size) this.musicControls.delete(topicId);
+          const playback = await this.options.musicTool(scope, { action: 'present', target: 'inline', card }, signal, assertAllowed);
+          return { ...receipt(card), playback };
+        } catch (cause) {
+          return { ...receipt(card), playback: { accepted: false, reason: errorText(cause) } };
         }
       }
       case 'cabin_world': {

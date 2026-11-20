@@ -18,8 +18,9 @@ it('binds an authenticated native browser reference to the original DSH request 
   } });
   try {
     const room = (await f.service.handle({ type: 'state' })).snapshot!.conversations[0]!, command = { type: 'message.send' as const, conversationId: room.id, content: '使用附加网页', requestId: 'browser-once', browserContextId: context.referenceId };
+    await f.service.handle({ type: 'app.browser', conversationId: room.id, referenceId: context.referenceId });
     const sent = await f.service.handle(command); await waitNative(() => f.service.store.getMessage(sent.replyMessageIds![0]!)?.status === 'sent');
-    await f.service.handle(command); expect(resolves).toBe(1); expect(f.calls).toHaveLength(1);
+    await f.service.handle(command); expect(resolves).toBe(2); expect(f.calls).toHaveLength(1);
     expect(operations).toHaveLength(2); expect(operations[0]).toMatchObject({ scope: { companionId: 'builtin-dafeiyu', conversationId: room.id }, input: { action: 'read', tabId: context.tabId } });
     const message = (await f.service.handle({ type: 'state', conversationId: room.id })).snapshot!.messages.find(message => message.id === sent.messageId)!;
     expect(message.browserContext).toEqual(context);
@@ -30,7 +31,7 @@ it('refuses stale browser references before creating a new message', async () =>
   const f = await nativeServiceFixture(async () => 'must not execute', { resolveBrowserContext: () => { throw Error('所附网页已跳转'); } });
   try {
     const room = (await f.service.handle({ type: 'state' })).snapshot!.conversations[0]!;
-    await expect(f.service.handle({ type: 'message.send', conversationId: room.id, content: '过期引用', requestId: 'stale-browser', browserContextId: randomUUID() })).rejects.toThrow('已跳转');
+    await expect(f.service.handle({ type: 'message.send', conversationId: room.id, content: '过期引用', requestId: 'stale-browser', browserContextId: randomUUID() })).rejects.toThrow('重新选择标签页');
     expect(f.calls).toHaveLength(0); expect(f.service.store.messagesPage(room.id, {}).items).toHaveLength(0);
   } finally { await f.close(); }
 });

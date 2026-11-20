@@ -248,14 +248,9 @@ details[open]>.bot-executor-trigger>.bot-icon { transform:rotate(180deg); }
 .bot-source-badge .bot-icon { width: 12px; height: 12px; flex: none; }
 .bot-source-badge:hover { color: var(--ui-content-primary); }
 .bot-message-actions { display: flex; gap: 3px; margin-top: 4px; color: var(--ui-content-tertiary); }
-.bot-message-actions button, .bot-draft-quote button { display: grid; place-items: center; width: 28px; height: 28px; color: inherit; border: 0; border-radius: 7px; background: transparent; }
-.bot-message-actions button:hover, .bot-message-actions button[aria-pressed="true"], .bot-draft-quote button:hover { color: var(--ui-content-primary); background: var(--ui-surface-hover); }
-.bot-message-actions .bot-icon, .bot-draft-quote .bot-icon { width: 15px; height: 15px; }
-.bot-message-quote { display: flex; align-items: center; gap: 8px; border-inline-start: 2px solid var(--ui-action-accent); padding: 4px 8px; margin-bottom: 4px; color: var(--ui-content-secondary); font-size: 11px; min-width: 0; }
-.bot-message-quote span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bot-message-quote strong, .bot-draft-quote button { flex: none; }
-.bot-draft-quote { margin: 0 20px 6px; background: var(--ui-surface-hover); border-radius: 5px; }
-.bot-draft-quote button { margin-inline-start: auto; }
+.bot-message-actions button { display: grid; place-items: center; width: 28px; height: 28px; color: inherit; border: 0; border-radius: 7px; background: transparent; }
+.bot-message-actions button:hover, .bot-message-actions button[aria-pressed="true"] { color: var(--ui-content-primary); background: var(--ui-surface-hover); }
+.bot-message-actions .bot-icon { width: 15px; height: 15px; }
 .bot-identity-dialog { display: grid; gap: 16px; width: min(430px, 92vw); padding: 24px; border-radius: 16px; background: var(--ui-surface-raised); box-shadow: 0 16px 48px #0003; }
 .bot-identity-dialog h2 { margin: 0; }
 .bot-identity-dialog label { display: grid; gap: 6px; }

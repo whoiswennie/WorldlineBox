@@ -69,6 +69,7 @@ it('delivers unqualified track and playlist playback as live cards and preserves
   try {
     const { service } = fixture;
     const room = (await service.handle({ type: 'state' })).snapshot!.conversations.find(item => item.kind === 'direct')!.id;
+    await service.handle({ type: 'app.connect', conversationId: room, appId: 'music' });
     const result = await service.handle({ type: 'message.send', conversationId: room, requestId: 'default-play', content: '一起听音乐', apps: ['music'] });
     const replyId = result.replyMessageIds![0]!;
     await waitNative(() => service.store.getMessage(replyId)?.status === 'sent');
@@ -107,6 +108,7 @@ it('persists one card and auto-play attempt for a retried or concurrently reques
   try {
     const { service } = fixture;
     const room = (await service.handle({ type: 'state' })).snapshot!.conversations.find(item => item.kind === 'direct')!.id;
+    await service.handle({ type: 'app.connect', conversationId: room, appId: 'music' });
     const result = await service.handle({ type: 'message.send', conversationId: room, requestId: 'share-record', content: '分享这些作品', apps: ['music'] });
     const replyId = result.replyMessageIds![0]!;
     await waitNative(() => service.store.getMessage(replyId)?.status === 'sent');

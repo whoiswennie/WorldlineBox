@@ -175,6 +175,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
+  z.strictObject({ type: z.literal('execution.workbench'), messageId: id }),
   z.strictObject({ type: z.literal('execution.continue'), messageId: id, requestId: id }),
   z.strictObject({ type: z.literal('topic.list'), conversationId: id, query: z.string().max(200).optional(), before: z.string().max(300).optional(),mode:z.enum(['recent','all','favorites']).optional() }),
   z.strictObject({type:z.literal('topic.flags'),conversationId:id,topicId:id,pinned:z.boolean().optional(),favorite:z.boolean().optional()}),
@@ -205,7 +206,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('world.event'), conversationId: id, content: z.string().trim().min(1).max(16000), requestId: id }),
   z.strictObject({ type: z.literal('world.observe'), conversationId: id, companionId: id }),
   z.strictObject({ type: z.literal('world.act'), conversationId: id, companionId: id, command: botWorldCommandSchema, effectId: id }),
-  z.strictObject({ type: z.literal('app.detach'), conversationId: id, topicId: id, appId: botAppIdSchema }),
+  z.strictObject({ type: z.literal('app.detach'), conversationId: id, topicId: id.optional(), appId: botAppIdSchema }),
   z.strictObject({ type: z.literal('app.browser'), conversationId: id, topicId: id.optional(), referenceId: z.string().uuid() }),
   z.strictObject({ type: z.literal('app.connect'), conversationId: id, appId: z.enum(['asset-manager', 'cabin-world', 'music', 'video']), topicId: id.optional() }),
 ]);
