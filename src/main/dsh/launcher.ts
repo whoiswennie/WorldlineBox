@@ -348,6 +348,11 @@ export class DshLauncher {
       }, { type: 'runtime.bundle' });
     return this.bundledOperation;
   }
+  async cancelBundledPreparation(): Promise<void> {
+    await this.initialization;
+    const id = await this.bundledOperation;
+    if (id && this.operations.runningId('runtime.bundle') === id) this.operations.cancel(id);
+  }
   private async waitForBundledInstance(instanceId?: string): Promise<void> {
     const operation = this.bundledOperation;
     if (!operation || !this.operations.runningId('runtime.bundle')) return;

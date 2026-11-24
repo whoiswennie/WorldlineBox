@@ -8596,6 +8596,9 @@ if (!hasSingleInstanceLock) {
     applicationShutdownPromise = (async (): Promise<void> => {
       await botDataCleanup?.close().catch(error => logger?.error('companion-bot.data-cleanup.shutdown', error));
       await localSpeechService?.close().catch(error => logger?.error('local-speech.shutdown', error));
+      // A fresh profile can still be unpacking DSH while companion memory waits for it.
+      // Cancel that operation before draining its waiters, leaving running Hosts available for cleanup.
+      await dshLauncher?.cancelBundledPreparation().catch(error => logger?.error('dsh.bundle.shutdown', error));
       // Fence/requeue bot events and stop its streams before closing the shared DSH Host.
       try { await (creatingBotService ? creatingBotService.then(service => service.shutdown(), () => undefined) : botService?.shutdown()); }
       catch (error) { logger?.error('companion-bot.shutdown', error); }
