@@ -18,6 +18,20 @@ import {
   type RectLike,
 } from "./canvas-scroll-anchor";
 
+/** Measure both sides of an anchor in scrollport coordinates. The canvas
+ * moves temporarily under the viewer overlay as the browse controls return.
+ */
+export function measureBrowseCardRect(canvas: HTMLElement, card: HTMLElement): RectLike {
+  const canvasRect = canvas.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  return {
+    left: cardRect.left - canvasRect.left,
+    top: cardRect.top - canvasRect.top,
+    width: cardRect.width,
+    height: cardRect.height,
+  };
+}
+
 export interface BrowseViewSnapshot {
   scrollLeft: number;
   scrollTop: number;
@@ -27,7 +41,7 @@ export interface BrowseViewSnapshot {
 
 /**
  * Captures the state to restore to when the viewer closes. `cardRect` is the
- * previewed asset's card rect (viewport coordinates) at the moment the
+ * previewed asset's card rect (scrollport coordinates) at the moment the
  * viewer opened, or `null` if the card could not be measured (still allows
  * falling back to the raw scroll position).
  */

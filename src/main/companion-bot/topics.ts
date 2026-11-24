@@ -41,15 +41,17 @@ export class BotTopics {
         saved=String(through);this.store.setMetadata(cursorKey,saved);
       }
       const rows=sql.prepare(`WITH events AS (
-        SELECT i.id,i.source_record_id,i.reply_message_id,i.companion_id,i.dsh_event_id FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=?),
+        SELECT i.id,i.source_record_id,i.reply_message_id,i.companion_id,i.dsh_event_id,i.status FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=?),
         sources(id) AS (SELECT source_record_id FROM events UNION SELECT reply_message_id FROM events
           UNION SELECT p.message_id FROM bot_publications p JOIN events e ON e.id=p.event_id
           UNION SELECT g.message_id FROM bot_guidance g JOIN events e ON e.id=g.event_id WHERE g.status='accepted')
         SELECT m.attachments_json FROM sources s JOIN bot_messages m ON m.id=s.id
-        WHERE m.conversation_id=? AND m.status='sent' AND m.sequence>? AND m.sequence<=? AND m.attachments_json<>'[]'
+        WHERE m.conversation_id=? AND m.status='sent' AND (m.sequence>? OR m.id=?) AND m.sequence<=? AND m.attachments_json<>'[]'
+        AND NOT(? AND m.id<>? AND EXISTS(SELECT 1 FROM events e WHERE e.source_record_id=m.id AND e.companion_id=? AND e.status='queued'))
         AND NOT(m.sender_id=? AND (EXISTS(SELECT 1 FROM events e WHERE e.reply_message_id=m.id AND e.companion_id=? AND e.dsh_event_id IS NOT NULL)
           OR EXISTS(SELECT 1 FROM bot_publications p JOIN events e ON e.id=p.event_id WHERE p.message_id=m.id AND e.companion_id=? AND e.dsh_event_id IS NOT NULL)))
-        ORDER BY m.sequence`).all(selected.id,event.conversationId,Number(saved),event.sourceMessageSequence,event.companionId,event.companionId,event.companionId) as Array<{attachments_json:string}>;
+        ORDER BY m.sequence`).all(selected.id,event.conversationId,Number(saved),event.sourceMessageRecordId,event.sourceMessageSequence,
+          event.payload.delivery==='interrupt'?1:0,event.sourceMessageRecordId,event.companionId,event.companionId,event.companionId,event.companionId) as Array<{attachments_json:string}>;
       return [...new Set(rows.flatMap(row=>(JSON.parse(row.attachments_json) as Array<{id:string}>).map(file=>file.id)))].filter(id=>!this.store.getMetadata(this.fileKey(event,id)));
     });
   }
@@ -285,26 +287,60 @@ export class BotTopics {
     if(selected){const bindings=this.store.taskTransaction(sql=>sql.prepare('SELECT companion_id,native_lane_id FROM bot_topic_bindings WHERE topic_id=?').all(selected.id)) as Array<{companion_id:string;native_lane_id:string}>;for(const binding of bindings){const sample=this.cachedContext(conversationId,binding.native_lane_id);if(sample)contexts[binding.companion_id]=sample;}}
     return {topic:selected,running,queued,hiddenMessageIds,...(Object.keys(contexts).length?{contexts}:{})};
   }
-  reserveGuidance(conversationId: string, messageId: string, texts: Map<string,string>): BotGuidance[] {
+  reserveGuidance(conversationId: string, messageId: string, texts: Map<string,string>, automaticTopicId?: string): BotGuidance[] {
     this.room(conversationId);
     return this.store.taskTransaction(sql => {
       const prior = sql.prepare('SELECT * FROM bot_guidance WHERE message_id=? AND conversation_id=?').all(messageId,conversationId) as BotGuidance[];
       if (prior.length) return prior;
       const events = sql.prepare("SELECT id FROM bot_inbox WHERE conversation_id=? AND source_record_id=? AND source='user'").all(conversationId,messageId) as Array<{id:string}>;
       if (!events.length) throw Error('没有这条排队消息。');
+      const reservations: Array<{ event: BotEvent; targetId: string; text: string; waiting: boolean }> = [];
       for (const row of events) {
         const event = this.store.getEvent(row.id)!;
-        if (event.status !== 'queued' || event.dshEventId) throw Error('消息已经开始执行，请向当前任务发送新的补充。');
-        const target = sql.prepare("SELECT id FROM bot_inbox WHERE conversation_id=? AND companion_id=? AND status='running' ORDER BY sequence DESC LIMIT 1").get(conversationId,event.companionId) as {id:string}|undefined;
-        if (!target || !texts.has(event.id)) throw Error('伙伴当前没有可引导的任务，排队消息已保留。');
-        sql.prepare('INSERT INTO bot_guidance VALUES(?,?,?,?,?,NULL)').run(messageId,target.id,conversationId,texts.get(event.id)!,'pending');
+        if (event.status !== 'queued' || event.dshEventId) {
+          if (automaticTopicId) return [];
+          throw Error('消息已经开始执行，请向当前任务发送新的补充。');
+        }
+        const target = (automaticTopicId
+          ? sql.prepare(`SELECT i.id, i.dsh_event_id FROM bot_inbox i JOIN bot_topic_events t ON t.event_id=i.id
+            WHERE i.conversation_id=? AND i.companion_id=? AND i.status='running'
+              AND i.source<>'presence' AND t.topic_id=? ORDER BY i.sequence DESC LIMIT 1`)
+            .get(conversationId, event.companionId, automaticTopicId)
+          : sql.prepare("SELECT id FROM bot_inbox WHERE conversation_id=? AND companion_id=? AND status='running' ORDER BY sequence DESC LIMIT 1")
+            .get(conversationId, event.companionId)) as { id: string; dsh_event_id?: string } | undefined;
+        const text = texts.get(event.id);
+        if (!target || text === undefined) {
+          if (automaticTopicId) return [];
+          throw Error('伙伴当前没有可引导的任务，排队消息已保留。');
+        }
+        reservations.push({ event, targetId: target.id, text, waiting: !!automaticTopicId && !target.dsh_event_id });
+      }
+      for (const { event, targetId, text, waiting } of reservations) {
+        sql.prepare('INSERT INTO bot_guidance VALUES(?,?,?,?,?,NULL)').run(messageId,targetId,conversationId,text,waiting ? 'waiting' : 'pending');
         sql.prepare("UPDATE bot_inbox SET status='cancelled',error='converted-to-guidance' WHERE id=?").run(event.id);
         sql.prepare("UPDATE bot_messages SET status='cancelled' WHERE id=?").run(event.replyMessageId);
       }
       return sql.prepare('SELECT * FROM bot_guidance WHERE message_id=?').all(messageId) as BotGuidance[];
     });
   }
-  pendingGuidance(): BotGuidance[] { return this.store.taskTransaction(sql => sql.prepare("SELECT * FROM bot_guidance WHERE status='pending' LIMIT 80").all()) as BotGuidance[]; }
+  pendingGuidance(eventId?: string): BotGuidance[] {
+    return this.store.taskTransaction(sql => sql.prepare(`SELECT g.* FROM bot_guidance g JOIN bot_inbox i ON i.id=g.event_id
+      WHERE (g.status='pending' OR (g.status='waiting' AND
+        (i.status='running' AND i.dsh_event_id IS NOT NULL OR i.status NOT IN ('queued','running'))))
+        AND (? IS NULL OR g.event_id=?) ORDER BY g.rowid LIMIT 80`).all(eventId ?? null,eventId ?? null)) as BotGuidance[];
+  }
+  activateWaitingGuidance(item: BotGuidance): boolean {
+    return this.store.taskTransaction(sql => {
+      const target = this.store.getEvent(item.event_id);
+      if (target?.status === 'queued' || target?.status === 'running' && !target.dshEventId) return false;
+      const sameTopic = target?.status === 'running' && sql.prepare(`SELECT 1 FROM bot_topic_events target
+        JOIN bot_topic_events source ON source.topic_id=target.topic_id JOIN bot_inbox queued ON queued.id=source.event_id
+        WHERE target.event_id=? AND queued.source_record_id=? AND queued.companion_id=?`).get(item.event_id,item.message_id,target.companionId);
+      if (!sameTopic) { this.guidanceNotAccepted(item); return false; }
+      sql.prepare("UPDATE bot_guidance SET status='pending' WHERE message_id=? AND event_id=? AND status='waiting'").run(item.message_id,item.event_id);
+      return true;
+    });
+  }
   guidanceResult(item: BotGuidance, error?: string): void { this.store.taskTransaction(sql=>{
     sql.prepare('UPDATE bot_guidance SET status=?,error=? WHERE message_id=? AND event_id=?').run(error?'pending':'accepted',error??null,item.message_id,item.event_id);
     const event=this.store.getEvent(item.event_id);if(!error&&event)for(const id of this.fileIds(item.text))this.store.setMetadata(this.fileKey(event,id),'1');
@@ -314,7 +350,7 @@ export class BotTopics {
       const target=this.store.getEvent(item.event_id);if(!target)return;
       const rows=sql.prepare("SELECT id,reply_message_id FROM bot_inbox WHERE source_record_id=? AND companion_id=? AND status='cancelled' AND error='converted-to-guidance'").all(item.message_id,target.companionId) as Array<{id:string;reply_message_id:string}>;
       for(const row of rows){sql.prepare("UPDATE bot_inbox SET status='queued',error=NULL,available_at=0 WHERE id=?").run(row.id);sql.prepare("UPDATE bot_messages SET status='queued',error=NULL WHERE id=?").run(row.reply_message_id);}
-      sql.prepare("DELETE FROM bot_guidance WHERE message_id=? AND event_id=? AND status='pending'").run(item.message_id,item.event_id);
+      sql.prepare("DELETE FROM bot_guidance WHERE message_id=? AND event_id=? AND status IN ('waiting','pending')").run(item.message_id,item.event_id);
     });
   }
   guidanceMessages(eventId: string): string[] { return this.store.taskTransaction(sql=>sql.prepare("SELECT message_id FROM bot_guidance WHERE event_id=? AND status='accepted'").all(eventId)).map(row=>(row as {message_id:string}).message_id); }

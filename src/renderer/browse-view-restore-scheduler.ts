@@ -9,6 +9,7 @@
  */
 import {
   browseRestoreExtentIsReady,
+  measureBrowseCardRect,
   resolveBrowseRestoreScroll,
   type BrowseViewSnapshot,
 } from "./view-restore";
@@ -84,7 +85,7 @@ export function scheduleBrowseViewRestore(options: {
       : null;
     const target = resolveBrowseRestoreScroll(
       snapshot,
-      restoredCard?.getBoundingClientRect() ?? null,
+      restoredCard ? measureBrowseCardRect(canvas, restoredCard) : null,
       extent,
     );
     canvas.scrollTo({ left: target.left, top: target.top });

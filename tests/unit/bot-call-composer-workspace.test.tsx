@@ -7,17 +7,16 @@ import { BotWorkspace } from '../../src/renderer/companion-bot/BotWorkspace';
 import { LocaleProvider } from '../../src/renderer/i18n';
 import type { BotRequest, BotResponse, BotSnapshot } from '../../src/shared/companion-bot';
 import type { BotMediaRef } from '../../src/shared/companion-bot-media';
+import type { BotPushToTalkTarget, useBotPushToTalk } from '../../src/renderer/companion-bot/useBotPushToTalk';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const call = vi.hoisted(() => ({
-  send: undefined as undefined | ((text: string, id: string) => Promise<boolean | { ok: boolean; replyMessageIds?: readonly string[] }>),
-  bridge: vi.fn(async (_text: string, _id: string, perform: () => Promise<{ ok: boolean }>) => (await perform()).ok),
+  target: undefined as undefined | (() => BotPushToTalkTarget | undefined),
   noop: () => undefined,
 }));
-vi.mock('../../src/renderer/companion-bot/useBotCallVoice', () => ({ useBotCallVoice: (options: { send: typeof call.send }) => {
-  call.send = options.send;
-  return { available: false, state: { phase: 'off', enabled: false, turn: 0 }, level: 0, sendAction: call.bridge,
-    stop: call.noop, start: call.noop, interrupt: call.noop, waitForPlayback: call.noop, finish: call.noop, retry: call.noop };
+vi.mock('../../src/renderer/companion-bot/useBotPushToTalk', () => ({ useBotPushToTalk: (...[, , pick]: Parameters<typeof useBotPushToTalk>) => {
+  call.target = pick;
+  return { recording: false, pending: 0 };
 } }));
 vi.mock('../../src/renderer/companion-bot/BotLive2DStage', () => ({ BotLive2DStage: () => null }));
 const at = '2026-11-05T00:00:00Z';
@@ -78,8 +77,9 @@ it('keeps private-chat drafts separate and retries a failed meeting attachment s
 it('sends the local voice transcript to the meeting and leaves typed text and attachments intact', async () => {
   await mount(); await connect(); await click('展开会面输入');
   await type('稍后再发的草稿'); await click('添加文件');
-  await act(async () => { await call.send!('语音识别内容', 'voice-receipt'); });
-  expect(sends()[0]).toMatchObject({ type: 'message.send', conversationId: 'meeting', content: '语音识别内容', requestId: 'voice-receipt' });
+  await act(async () => { await call.target!()!.send('语音识别内容', 'voice-receipt'); });
+  expect(sends()[0]).toMatchObject({ type: 'message.send', conversationId: 'meeting', content: '语音识别内容', requestId: 'voice-receipt', delivery: 'interrupt' });
+  expect(requests.some(request => request.type === 'call.interrupt')).toBe(false);
   expect(sends()[0]?.attachmentIds).toBeUndefined(); expect(input().value).toBe('稍后再发的草稿');
   expect(document.querySelector('.bot-call-composer-host')?.textContent).toContain(file.name);
 });

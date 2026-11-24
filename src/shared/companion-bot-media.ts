@@ -17,6 +17,34 @@ export function botImageNeedsConversion(mimeType: string) {
 export const BOT_MEDIA_PREVIEW_LIMITS={image:BOT_MEDIA_PREVIEW_MAX_BYTES,video:BOT_MEDIA_PREVIEW_MAX_BYTES,audio:BOT_MEDIA_PREVIEW_MAX_BYTES,text:BOT_MEDIA_PREVIEW_MAX_BYTES} as const;
 export const BOT_MEDIA_TEXT_PAGE_BYTES=64*1024;
 export const BOT_MEDIA_TEXT_PAGE_MAX_BYTES=256*1024;
+export const BOT_TEXT_EDIT_BYTES = 2 * 1024 * 1024;
+export const cropRatios = { original: 0, square: 1, landscape: 16 / 9, portrait: 3 / 4 } as const;
+const fraction = z.number().min(0).max(1);
+const cropRegion = z.strictObject({ x: fraction, y: fraction, right: fraction, bottom: fraction })
+  .refine(r => r.right > r.x && r.bottom > r.y);
+export type CropRegion = z.infer<typeof cropRegion>;
+export function imageCropArea(width: number, height: number, edit: ImageEdit) {
+  if (edit.crop === 'custom' && edit.region) {
+    const left = Math.min(width - 1, Math.round(edit.region.x * width)), top = Math.min(height - 1, Math.round(edit.region.y * height));
+    return { left, top, width: Math.max(1, Math.round(edit.region.right * width) - left), height: Math.max(1, Math.round(edit.region.bottom * height) - top) };
+  }
+  const ratio = edit.crop === 'custom' ? 0 : cropRatios[edit.crop];
+  const w = ratio ? Math.max(1, Math.min(width, Math.round(height * ratio))) : width;
+  const h = ratio ? Math.max(1, Math.min(height, Math.round(width / ratio))) : height;
+  return { left: Math.floor((width - w) / 2), top: Math.floor((height - h) / 2), width: w, height: h };
+}
+const attachmentEdit = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('image'), turns: z.number().int().min(0).max(3), mirror: z.boolean(), crop: z.enum(['original', 'square', 'landscape', 'portrait', 'custom']), region: cropRegion.optional() })
+    .refine(edit => edit.crop !== 'custom' || !!edit.region),
+  z.strictObject({ kind: z.literal('text'), content: z.string().max(BOT_TEXT_EDIT_BYTES) }),
+  z.strictObject({ kind: z.literal('clip'), start: z.number().nonnegative(), end: z.number().positive() }).refine(clip => clip.end > clip.start),
+]);
+export type AttachmentEdit = z.infer<typeof attachmentEdit>;
+export type ImageEdit = Extract<AttachmentEdit, { kind: 'image' }>;
+export function officeFormat(name: string) {
+  const ext = name.split('.').pop()?.toLowerCase();
+  return ext === 'docx' || ext === 'pptx' || ext === 'xlsx' ? ext : undefined;
+}
 export function botMediaTextFormat(input:{name?:string;mimeType:string}):'text'|'markdown'|undefined{
   const extension=input.name?.split('.').at(-1)?.toLowerCase();
   if(extension&&['md','markdown','mdown','mkd'].includes(extension))return'markdown';
@@ -126,11 +154,14 @@ export const botMediaRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type:z.literal('pack.pick'), conversationId:id }),
   z.strictObject({ type:z.literal('pack.import'), conversationId:id, directory:filePath }),
   z.strictObject({ type:z.literal('attachment.save'), conversationId:id, id }),
+  z.strictObject({ type: z.literal('attachment.export'), conversationId: id, id, edit: attachmentEdit, exportId: z.uuid() }),
+  z.strictObject({ type: z.literal('attachment.export.cancel'), conversationId: id, id, exportId: z.uuid() }),
+  z.strictObject({ type: z.literal('media.office.read'), conversationId: id, id }),
   z.strictObject({ type:z.literal('attachment.open'), conversationId:id, id }),
   z.strictObject({ type:z.literal('media.text.read'), conversationId:id, id, offset:z.number().int().min(0).max(BOT_MEDIA_PREVIEW_MAX_BYTES).optional(), limit:z.number().int().min(4).max(BOT_MEDIA_TEXT_PAGE_MAX_BYTES).optional() }),
 ]);
 export type BotMediaRequest=z.infer<typeof botMediaRequestSchema>;
-export interface BotMediaResponse { ok:boolean; error?:string; cancelled?:boolean; media?:BotMediaRef[]; packs?:BotStickerPack[]; pack?:BotStickerPack; savedPath?:string;textPage?:BotMediaTextPage; transcript?:string; durationSeconds?:number;
+export interface BotMediaResponse { ok:boolean; error?:string; cancelled?:boolean; media?:BotMediaRef[]; packs?:BotStickerPack[]; pack?:BotStickerPack; savedPath?:string;textPage?:BotMediaTextPage; officeParts?: Record<string, string>; transcript?:string; durationSeconds?:number;
   presence?: BotPresenceStatus; recordings?: BotPresenceRecording[]; recordingBytes?: Uint8Array; rounds?: BotHeartbeatRound[]; olderRounds?: boolean }
 export interface WorldlineBoxBotMediaApi {
   readonly desktopCaptureSupported?: boolean;

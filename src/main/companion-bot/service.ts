@@ -132,6 +132,7 @@ export class BotService {
   private readonly schedules: BotSchedules;
   private pollingSchedule = false;
   private readonly guidanceRuns = new Map<string, Promise<void>>();
+  private readonly guidanceTails = new Map<string, Promise<void>>();
   private readonly titleRuns=new Map<string,Promise<void>>();
   private readonly contextReads=new Map<string,Promise<BotResponse>>();
   private readonly topicReads = new Map<string, Promise<{ stale: boolean; error?: string }>>();
@@ -466,8 +467,8 @@ export class BotService {
     const observation = await this.options.cabinWorldApp?.observe(companion, signal) ?? { status: 'unavailable' as const };
     return this.topicApps(topicId).includes('cabin-world') ? observation : undefined;
   }
-  private playbackScope(room: BotConversation, event: BotEvent): Pick<MusicCommand, 'conversationId' | 'surface'> {
-    return { conversationId: room.id, surface: this.isCallTurn(room, event) ? 'call' : 'chat' };
+  private playbackScope(room: BotConversation): Pick<MusicCommand, 'conversationId' | 'surface'> {
+    return { conversationId: room.id, surface: 'chat' };
   }
   private async observeMusic(topicId: string | undefined, room: BotConversation, event: BotEvent, signal: AbortSignal) {
     const attached = () => room.memberIds.includes('user') && this.topicApps(topicId).includes('music');
@@ -477,7 +478,7 @@ export class BotService {
       if (!attached()) throw Error('音乐应用已断开。');
     };
     try {
-      const value = await this.options.musicTool(this.playbackScope(room, event), { action: 'status', target: 'global' },
+      const value = await this.options.musicTool(this.playbackScope(room), { action: 'status', target: 'global' },
         AbortSignal.any([signal, AbortSignal.timeout(1200)]), assertAllowed);
       assertAllowed();
       if (value && typeof value === 'object') return { ...value, observedAt: new Date().toISOString() };
@@ -804,14 +805,17 @@ export class BotService {
         if (!this.store.getConversation(input.conversationId)?.memberIds.includes('user')) throw Error('聊天权限已变化，已停止发送。');
         if (attachments) await this.ensureConversationBindings(input.conversationId); // File I/O may outlive a group membership or binding change.
         checkNewMessage();
-        if (input.type === 'message.send' && !this.store.ingressExists(input.conversationId, input.requestId)) for (const id of this.store.interruptGroup(input.conversationId, isGroupStop(input.content))) this.scheduler.cancel(id);
+        const stopGroup = conversation.kind === 'group' && isGroupStop(input.content);
+        const autoGuide = input.type === 'message.send' && input.delivery === 'steer' && !input.newTopic && !stopGroup;
+        const priority = input.type === 'message.send' && input.delivery === 'interrupt';
+        if (input.type === 'message.send' && !autoGuide && (!priority || stopGroup) && !this.store.ingressExists(input.conversationId, input.requestId)) for (const id of this.store.interruptGroup(input.conversationId, stopGroup)) this.scheduler.cancel(id);
         const running=input.type==='message.send'&&this.topics.runtime(input.conversationId).running.length>0;
         const browserKey = 'browser-context-ingress:' + input.conversationId + ':' + input.requestId;
         const previousBrowser = input.type === 'message.send' && this.store.ingressExists(input.conversationId, input.requestId) ? this.store.getMetadata(browserKey) : undefined;
         const appIngressKey = 'app-ingress:' + input.conversationId + ':' + input.requestId;
         const previousApps = this.store.getMetadata(appIngressKey);
         const targetTopic = input.type === 'message.send' && !previousApps
-          ? input.topicId ? this.topics.get(input.topicId, input.conversationId) : !input.newTopic && !running ? this.topics.current(input.conversationId) : undefined
+          ? input.topicId ? this.topics.get(input.topicId, input.conversationId) : !input.newTopic && (!running || autoGuide || priority) ? this.topics.current(input.conversationId) : undefined
           : undefined;
         const settings = this.chatApps(conversation);
         const attachedReference = input.type === 'message.send' ? input.browserContextId : undefined;
@@ -836,7 +840,7 @@ export class BotService {
         // Preserve the original payload when retrying a message accepted by an earlier version.
         const previousQuote = previousApps && this.store.getMetadata('message-quote-ingress:' + input.conversationId + ':' + input.requestId);
         const quote = previousQuote ? JSON.parse(previousQuote) as BotMessageQuote | null : undefined;
-        const { result, isNewIngress } = this.store.taskTransaction(()=>{
+        const { result, isNewIngress, interrupted } = this.store.taskTransaction(sql=>{
         const profileBio = this.store.getMetadata('user-profile-bio');
         const profileKey = 'message-user-bio:' + input.conversationId + ':' + input.requestId;
         const frozenProfile = input.type === 'message.send' && this.store.ingressExists(input.conversationId, input.requestId)
@@ -862,14 +866,40 @@ export class BotService {
           this.topics.bind(result.events,topic);
           this.store.setMetadata('native-topic-ingress:'+input.conversationId+':'+input.requestId,topic.id);
         }
-        return { result, isNewIngress: isNew };});
+        const interrupted: BotEvent[] = [];
+        if (priority && isNew && result.events.length) {
+          const lanes = new Set(result.events.map(event => event.laneId));
+          const active = sql.prepare(`SELECT id FROM bot_inbox WHERE conversation_id=?
+            AND status IN ('running','queued')`).all(conversation.id) as Array<{ id: string }>;
+          for (const { id } of active) {
+            const event = this.store.getEvent(id)!;
+            if (!lanes.has(event.laneId)) continue;
+            const nativeTurn = this.store.nativeTurnMayHaveBeenSent(event.id);
+            if (event.status === 'queued' && !event.dshEventId && !nativeTurn) continue;
+            if (this.isCallTurn(conversation, event)) this.store.interruptMeetingReply(event, undefined, true);
+            else if (this.store.cancelEvent(event.id) && nativeTurn) {
+              this.store.setMetadata('native-stop:' + event.id, JSON.stringify({ eventId: event.id, retryAt: 0 }));
+            }
+            interrupted.push(event);
+          }
+          this.store.setMetadata('priority-interrupted:' + result.message.id, JSON.stringify(interrupted.map(event => event.replyMessageId)));
+        }
+        return { result, isNewIngress: isNew, interrupted };});
+        for (const event of interrupted) {
+          if (this.store.getMetadata('native-stop:' + event.id)) void this.flushNativeStop(event.id);
+          this.scheduler.cancel(event.id);
+        }
         if (isNewIngress && input.type === 'message.send') for (const turn of this.presenceTurns.values()) {
           if (result.events.some(event => event.companionId === turn.companionId)) turn.yieldToUser();
         }
         if (input.type === 'message.send') for (const event of result.events) this.memoryMaintenance.userMessage(scopeFor(event), !/^(你好|谢谢|好的|嗯|hi|hello|thanks)[!！。 .]*$/iu.test(input.content.trim()));
-        if(input.type==='message.send'&&input.delivery==='steer'&&running&&this.topics.runtime(input.conversationId).running.length)
-          await this.guideQueued(input.conversationId,result.message.id);
-        this.scheduler.wake(); this.changed(input.conversationId); return { ok: true, messageId: result.message.id, replyMessageIds: result.events.map(event => event.replyMessageId) };
+        const routedTopicId = autoGuide && this.store.getMetadata('native-topic-ingress:' + input.conversationId + ':' + input.requestId);
+        const guiding = routedTopicId ? await this.guideQueued(input.conversationId, result.message.id, routedTopicId)
+          .catch(error => { this.options.report?.(error); return false; }) : false;
+        const interruption = priority ? this.store.getMetadata('priority-interrupted:' + result.message.id) : undefined;
+        this.scheduler.wake(); this.changed(input.conversationId); return { ok: true, messageId: result.message.id,
+          replyMessageIds: result.events.map(event => event.replyMessageId), ...(guiding && { guiding }),
+          ...(interruption && { interruptedReplyIds: JSON.parse(interruption) as string[] }) };
       }
       case 'world.observe': { const world = this.world.observe(input); this.deliverWorldEvents(); return { ok: true, world }; }
       case 'world.act': {
@@ -1087,7 +1117,7 @@ export class BotService {
   private responseJob(event: BotEvent, prepared: BotMemoryPrepared, text: string, completed: boolean): BotMemoryJobInput {
     return { key: `response:${event.id}`, kind: 'response', payload: { scope: scopeFor(event), prepared, text, completed } };
   }
-  private async guideQueued(conversationId:string,messageId:string):Promise<void>{
+  private async guideQueued(conversationId:string,messageId:string,automaticTopicId?:string):Promise<boolean>{
     const rows=this.store.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? AND source_record_id=?').all(conversationId,messageId)) as Array<{id:string}>;
     const texts=new Map<string,string>();
     for (const row of rows) {
@@ -1096,12 +1126,21 @@ export class BotService {
         senderType: event.senderType, recipientId: event.companionId, content: event.content }, conversationId: event.conversationId,
         browserContext: event.payload.browserContext, files: await this.verifiedAttachmentFiles(event) }));
     }
-    const commands=this.topics.reserveGuidance(conversationId,messageId,texts);
-    this.changed(conversationId);await Promise.all(commands.filter(command=>command.status!=='accepted').map(command=>this.flushGuidance(command)));
+    const commands=this.topics.reserveGuidance(conversationId,messageId,texts,automaticTopicId);
+    const delivery=Promise.all(commands.filter(command=>command.status==='pending').map(command=>this.flushGuidance(command)));
+    if (automaticTopicId) void delivery.catch(error => this.options.report?.(error));
+    else { this.changed(conversationId); await delivery; }
+    return commands.length > 0;
   }
   private flushGuidance(command:BotGuidance):Promise<void>{
     const key=command.message_id+':'+command.event_id,prior=this.guidanceRuns.get(key);if(prior)return prior;
-    const operation=(async()=>{
+    if (command.status === 'waiting' && !this.topics.activateWaitingGuidance(command)) {
+      this.scheduler.wake();
+      this.changed(command.conversation_id);
+      return Promise.resolve();
+    }
+    const operation=(this.guidanceTails.get(command.event_id) ?? Promise.resolve()).then(async()=>{
+      if (this.closed) return;
       const event=this.store.getEvent(command.event_id);if(!event)return;
       const cabinKey = 'native-guidance-cabin:' + key;
       const clearCabin = () => this.store.taskTransaction(sql => sql.prepare('DELETE FROM bot_metadata WHERE key=?').run(cabinKey));
@@ -1120,7 +1159,11 @@ export class BotService {
         if(!this.closed){this.topics.guidanceResult(command);clearCabin();}
       }catch(error){if(!this.closed){if((error as {code?:string})?.code==='BOT_GUIDANCE_NOT_ACCEPTED'){this.topics.guidanceNotAccepted(command);clearCabin();this.scheduler.wake();}else this.topics.guidanceResult(command,errorText(error));}}
       if(!this.closed)this.changed(command.conversation_id);
-    })().finally(()=>this.guidanceRuns.delete(key));this.guidanceRuns.set(key,operation);return operation;
+    }).finally(()=>{
+      this.guidanceRuns.delete(key);
+      if (this.guidanceTails.get(command.event_id) === operation) this.guidanceTails.delete(command.event_id);
+    });
+    this.guidanceRuns.set(key,operation);this.guidanceTails.set(command.event_id,operation);return operation;
   }
   private flushTitle(job:BotTopicTitleSync):Promise<void>{
     const prior=this.titleRuns.get(job.native_lane_id);if(prior)return prior;
@@ -1143,6 +1186,7 @@ export class BotService {
     const presentationText = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.presentation && part.text ? [part.text] : []).join('\n\n');
     let prepared: BotMemoryPrepared | undefined, text = '';
     let lastDraftAt = 0, firstTextRecorded = false;
+    let nativeAdmitted = !!event.dshEventId;
     let artifactProjection = Promise.resolve();
     const delivered = new Set<string>(),deliveredPaths=new Set<string>();
     const deliversToUser = this.store.hasPeerUserReplyGrant(event.id);
@@ -1252,7 +1296,11 @@ export class BotService {
             if(parsed.success&&parsed.data.sessionId===BotDshBrain.sessionId(nativeLaneId)&&this.topics.rememberContext(event.conversationId,nativeLaneId,parsed.data))this.changed(event.conversationId);
             return;
           }
-          this.store.markDispatched(event.id, claim.leaseToken, event.id);
+          const marked = this.store.markDispatched(event.id, claim.leaseToken, event.id);
+          if (marked && !nativeAdmitted) {
+            nativeAdmitted = true;
+            for (const command of this.topics.pendingGuidance(event.id)) void this.flushGuidance(command);
+          }
           if (update.type === 'artifacts' && update.artifacts?.length) projectArtifacts(update.artifacts,Number.isSafeInteger(update.nativeSequence)?{id:update.nativeSessionId===BotDshBrain.sessionId(nativeLaneId)?'native-files-'+update.nativeSequence:'child-files-'+update.nativeSessionId+'-'+update.nativeSequence,sequence:update.rootSequence??update.nativeSequence!}:undefined);
           if (meeting && ['text_stream', 'text', 'child_text'].includes(update.type)) return;
           if (['text_stream','text'].includes(update.type) && typeof update.text === 'string') {
@@ -1722,7 +1770,7 @@ export class BotService {
         const card = { ...detail, id };
         const saved = this.store.appendReplyPart(event.id, { id, kind: 'video', video: card, text: '分享视频：' + card.title });
         this.changed(room.id);
-        if (saved && input.autoPlay) this.emit({ type: 'video-present', ...this.playbackScope(room,event), cardId:id });
+        if (saved && input.autoPlay) this.emit({ type: 'video-present', ...this.playbackScope(room), cardId:id });
         return { published: true, card };
       }
       case 'music':
@@ -1739,7 +1787,7 @@ export class BotService {
         const parsed = (call.name === 'music' ? musicToolSchema : globalMusicToolSchema).safeParse(args);
         if (!parsed.success) return { accepted: false, reason: '音乐参数不符合当前工具声明，请按所选工具的参数重试。' };
         const input = parsed.data;
-        const scope = this.playbackScope(room, event);
+        const scope = this.playbackScope(room);
         let share: MusicShareInput;
         if (input.action === 'share') share = input;
         else if (input.action === 'play' && input.target === 'inline' && (input.playlistId || input.trackId)) {

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { WorldlineBoxShellApi } from '../../shared/external-url';
 
-import { DSH_BACKGROUND_MEDIA, isAnimatedTheme } from './dsh-background-media';
+import { DSH_BACKGROUND_MEDIA, isAnimatedTheme, type WallpaperClip } from './dsh-background-media';
 import { useTheme } from './ThemeProvider';
 import './animated-background.css';
 
@@ -19,8 +19,8 @@ const STALLED_PLAYBACK_CHECKS = 4;
 const HEALTHY_PLAYBACK_CHECKS = 3;
 const MAX_RECOVERY_RELOADS = 2;
 
-/** A decorative, silent video layer with an independent still-image fallback. */
-function AnimatedBackgroundSurface({ src, poster, playing = true, active = true, fit = 'cover' }: AnimatedBackgroundProps) {
+/** One decoder with an independent still-image fallback. */
+function AnimatedBackgroundSurface({ src, poster, playing = true, active = true, fit = 'cover', volume, muted, advance }: AnimatedBackgroundProps & { volume?: number; muted: boolean; advance?(failed: boolean): void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const nativeFocus = useRef<boolean | undefined>(undefined);
   const [ready, setReady] = useState(false);
@@ -34,6 +34,10 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = volume ?? 1;
+  }, [volume]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -64,7 +68,6 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
     let resumeAt: number | undefined;
 
     const playVideo = () => {
-      video.muted = true;
       void video.play().catch(() => {
         // The watchdog handles interrupted starts while playback is still requested.
       });
@@ -111,6 +114,7 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
       setReady(false);
       if (reloads >= MAX_RECOVERY_RELOADS) {
         stopPlayback();
+        advance?.(true);
         return;
       }
       reloads++;
@@ -148,7 +152,7 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
     };
 
     const resumeIfPaused = () => {
-      if (timer !== undefined && video.paused && !video.error) playVideo();
+      if (timer !== undefined && video.paused && !video.ended && !video.error) playVideo();
     };
     const onFocusChange = (event: FocusEvent) => { domFocused = event.type === 'focus'; synchronize(); };
     // DOM focus can move between WebContents inside a still-focused BrowserWindow.
@@ -173,7 +177,7 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
       video.removeEventListener('loadedmetadata', restorePosition);
       stopPlayback();
     };
-  }, [active, playing, reducedMotion]);
+  }, [active, playing, reducedMotion, advance]);
 
   return (
     <div aria-hidden="true" className="app-animated-background" style={{ '--animated-background-fit': fit } as CSSProperties}>
@@ -182,10 +186,11 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
         className="app-animated-background-video"
         data-ready={ready && !reducedMotion && active && playing}
         disablePictureInPicture
-        loop
-        muted
+        loop={!advance}
+        muted={muted}
         onEmptied={() => setReady(false)}
         onError={() => setReady(false)}
+        onEnded={advance ? () => advance(false) : undefined}
         onLoadedData={() => setReady(true)}
         onPlaying={() => setReady(true)}
         playsInline
@@ -198,8 +203,17 @@ function AnimatedBackgroundSurface({ src, poster, playing = true, active = true,
   );
 }
 
-export function AnimatedBackground(props: AnimatedBackgroundProps) {
-  return <AnimatedBackgroundSurface key={props.src} {...props} />;
+export function AnimatedBackground({ src, soundEnabled = true, ...props }: Omit<AnimatedBackgroundProps, 'src'> & { src: string | readonly [WallpaperClip, ...WallpaperClip[]]; soundEnabled?: boolean }) {
+  const [index, setIndex] = useState(0);
+  const failures = useRef(0);
+  const count = typeof src === 'string' ? 1 : src.length;
+  const advance = useCallback((failed: boolean) => {
+    failures.current = failed ? failures.current + 1 : 0;
+    // A playlist with no decodable clips stays on its poster after one pass.
+    if (failures.current < count) setIndex(previous => (previous + 1) % count);
+  }, [count]);
+  const clip: WallpaperClip = typeof src === 'string' ? { src } : src[index % count]!;
+  return <AnimatedBackgroundSurface key={clip.src} src={clip.src} volume={clip.volume} muted={!soundEnabled || clip.volume === undefined} advance={count > 1 ? advance : undefined} {...props} />;
 }
 
 /** One application-owned layer; render outside module Activity boundaries. */
@@ -219,7 +233,8 @@ export function ThemeBackground() {
           key={themeProfile.preset}
           playing={backgroundMotion}
           poster={media.poster}
-          src={media.video}
+          src={media.clips}
+          soundEnabled={backgroundPreferences.soundEnabled !== false}
         />
       )}
     </div>

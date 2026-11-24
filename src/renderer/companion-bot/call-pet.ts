@@ -26,10 +26,12 @@ function copyCallStyles(target: Document): void {
 
 const petSurfaces = [
   '.bot-call-portrait-frame', '.bot-call-portrait h2', '.bot-call-loading', '.bot-call-notice',
-  '.bot-call-bubble', '.bot-call-pet-progress', '.bot-call-review', '.bot-call-topics', '.bot-call-composer-host', '.bot-call-input-entry',
-  '.bot-call-pet-options', '.bot-call-chat:not([hidden])', '.bot-topic-picker',
+  '.bot-call-bubble', '.bot-call-pet-progress', '.bot-call-review', '.bot-call-input-entry', '.bot-push-to-talk-status',
+  // The expanded dock paints one panel across the status row and composer.
+  '.bot-call-dock:not(.is-collapsed)',
+  '.bot-call-pet-options', '.bot-call-interaction-panel', '.bot-topic-picker',
   '.bot-desktop-capture-panel', '.bot-desktop-capture-status', '.bot-presence-status', '.bot-presence-error',
-  '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel', '.bot-diagnostic-dialog[open]', '.bot-call-send-error', '.bot-apps-picker',
+  '.bot-context-panel', '.bot-expression-picker', '.bot-voice-panel', '.bot-diagnostic-dialog[open]', '.bot-call-send-error', '.bot-apps-picker', '.bot-video-login[open]',
 ].join(',');
 
 function trackPetLayout(pet: Window, name: string, host: HTMLElement, api: CallPetApi) {

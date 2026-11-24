@@ -81,7 +81,11 @@ for ($attempt = 0; $attempt -lt 60; $attempt++) {
       Remove-Item -LiteralPath $installerPath -Force -ErrorAction Stop
     }
     if (Test-Path -LiteralPath $installerDirectory) {
-      # Extraction creates exactly one installer. Never recursively delete an
+      $handoffMarker = Join-Path $installerDirectory '.installer-handoff'
+      if (Test-Path -LiteralPath $handoffMarker) {
+        Remove-Item -LiteralPath $handoffMarker -Force -ErrorAction Stop
+      }
+      # Never recursively delete an
       # unexpected child or follow a link added while the application exits.
       if (Get-ChildItem -LiteralPath $installerDirectory -Force | Select-Object -First 1) { throw 'Unexpected installer directory contents.' }
       Remove-Item -LiteralPath $installerDirectory -Force -ErrorAction Stop

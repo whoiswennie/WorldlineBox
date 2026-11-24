@@ -692,6 +692,7 @@ describe('WorldlineBox MCP jobs, idempotency and reconnect (WorldlineBox-8b5b.4)
       ok: true,
       type: 'media.jobs.listed',
       libraryId: 'library-1',
+      queuePaused: false,
       queued: 1,
       running: 0,
       succeeded: 3,

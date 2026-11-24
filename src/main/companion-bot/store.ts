@@ -1062,7 +1062,11 @@ export class BotStore {
         const r = asRow(prior); if (r.content_hash !== fingerprint) throw new Error('同一来源消息标识对应不同内容，拒绝重复投递。');
         return { message: priorMessage!, events: priorEvents! };
       }
-      if (source === 'user' && conversation.kind === 'group') this.interruptGroup(conversation.id, isGroupStop(content));
+      if (source === 'user' && conversation.kind === 'group') {
+        const stop = isGroupStop(content);
+        const delivery = input.payload?.delivery;
+        if (stop || delivery !== 'interrupt' && (delivery !== 'steer' || input.payload?.newTopic === true)) this.interruptGroup(conversation.id, stop);
+      }
       this.assertInboxCapacity(source, recipients.length);
       const stamp = nowIso(), correlationId = input.correlationId ?? randomUUID(), messageId = `message-${originKey}`;
       this.activityBudget.start(correlationId);
@@ -1197,18 +1201,20 @@ export class BotStore {
       const excluded = input.excludeLaneIds ?? [];
       const skip = (excluded.length ? ` AND i.lane_id NOT IN (${excluded.map(() => '?').join(',')})` : '')
         + (input.interactiveOnly ? " AND i.source IN ('user','task','gateway')" : '');
+      const priority = (alias: 'i' | 'older') => `CASE WHEN ${alias}.source='user' AND json_extract(${alias}.payload_json,'$.delivery')='interrupt' THEN 1 ELSE 0 END`;
       // Explicit user assignments and addressed teammate work may overlap in a
       // room: a coordinator can await its worker. Autonomous discussion stays
-      // serialized; lane FIFO and the per-companion guard still apply to both.
+      // serialized. Interruptions move ahead of ordinary queued work, with FIFO within each priority.
       const raw = this.db.prepare(`SELECT i.* FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id
         WHERE i.status='queued' AND i.available_at<=?${skip}
         AND NOT EXISTS(SELECT 1 FROM bot_metadata disabled WHERE disabled.key='companion-enabled:'||i.companion_id AND disabled.value='0')
-        AND NOT EXISTS(SELECT 1 FROM bot_inbox older WHERE older.lane_id=i.lane_id AND older.sequence<i.sequence AND older.status IN ('queued','running'))
+        AND NOT EXISTS(SELECT 1 FROM bot_inbox older WHERE older.lane_id=i.lane_id AND older.status='queued'
+          AND (${priority('older')} > ${priority('i')} OR (${priority('older')} = ${priority('i')} AND older.sequence<i.sequence)))
         AND NOT EXISTS(SELECT 1 FROM bot_inbox active WHERE active.lane_id=i.lane_id AND active.status='running')
         AND (i.source IN ('user','gateway') OR (i.source='companion' AND json_extract(i.payload_json,'$.directedPeer')=1) OR NOT EXISTS(SELECT 1 FROM bot_inbox room_active JOIN bot_conversations room ON room.id=room_active.conversation_id
           WHERE room_active.conversation_id=i.conversation_id AND room.kind IN ('group','peer') AND room_active.status='running'))
         ${input.serialCompanions ? "AND NOT EXISTS(SELECT 1 FROM bot_inbox actor WHERE actor.companion_id=i.companion_id AND actor.status='running')" : ''}
-        ORDER BY ${input.preferInteractive ? "CASE WHEN i.source IN ('user','task','gateway') THEN 0 ELSE 1 END," : ''}l.last_claimed_at,i.sequence LIMIT 1`).get(now, ...excluded);
+        ORDER BY ${priority('i')} DESC,${input.preferInteractive ? "CASE WHEN i.source IN ('user','task','gateway') THEN 0 ELSE 1 END," : ''}l.last_claimed_at,i.sequence LIMIT 1`).get(now, ...excluded);
       if (!raw) return;
       const event = this.event(raw), token = `${input.workerId}:${randomUUID()}`, leaseUntil = now + leaseMs;
       const timing = turnTiming(asRow(this.db.prepare('SELECT timing_json FROM bot_messages WHERE id=?').get(event.replyMessageId)).timing_json);

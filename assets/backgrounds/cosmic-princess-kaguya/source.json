@@ -1,0 +1,70 @@
+{
+  "theme": "超时空辉夜姬！",
+  "version": "1.3.0",
+  "author": "橘掌柜",
+  "archive": "超时空辉夜姬！-1.3.0.theme",
+  "archiveSha256": "f1d4a7b5404fe638477e7b0688566ffffe30cdc320ba3eb7e4852005d8105357",
+  "adaptation": "Original MP4 files and preview image. Playback order and per-clip volume follow theme.json.",
+  "poster": {
+    "source": "assets/preview.webp",
+    "file": "assets/backgrounds/cosmic-princess-kaguya/poster.webp",
+    "bytes": 109582,
+    "sha256": "abe231109c6767ce401297503c57539edc220486984335705a947ff95318f01c"
+  },
+  "videos": [
+    {
+      "source": "assets/mv/01-remember.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/01-remember.mp4",
+      "bytes": 13681850,
+      "sha256": "2aec18876a46a27204f7996c78d54b414a3a79f869e0fa81ca9b39df2e0ea68c"
+    },
+    {
+      "source": "assets/mv/02-hoshifuru-umi.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/02-hoshifuru-umi.mp4",
+      "bytes": 20138656,
+      "sha256": "24a550d5924f47f6e4679afc28d39a0c8c5b5d17d50dbb152cf6518082eef4be"
+    },
+    {
+      "source": "assets/mv/03-happy-synthesizer.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/03-happy-synthesizer.mp4",
+      "bytes": 13413748,
+      "sha256": "88ba796d5bf40254bb4d8056a61f3971c8b21dde6a35beaf64300497e0963cf9"
+    },
+    {
+      "source": "assets/mv/04-watashi-ga-suki.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/04-watashi-ga-suki.mp4",
+      "bytes": 24382741,
+      "sha256": "a9974cabab0b426e2b1d3dcb03b504ad7ed0ef1648dcc2075b92ed06efd2f7b6"
+    },
+    {
+      "source": "assets/mv/05-world-is-mine.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/05-world-is-mine.mp4",
+      "bytes": 14894717,
+      "sha256": "5b99a08a914d9949fd8668ca771ae5de7a2e97655b2e92d8827e52f14d04e272"
+    },
+    {
+      "source": "assets/mv/06-ex-otogibanashi.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/06-ex-otogibanashi.mp4",
+      "bytes": 23006323,
+      "sha256": "db8b0566f5a8de1b85c7a0f063144eb6d2ebcba7957a0d564384d248800f9c27"
+    },
+    {
+      "source": "assets/mv/07-shunkan-symphony.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/07-shunkan-symphony.mp4",
+      "bytes": 17289766,
+      "sha256": "dfbf31bc1f49d7204f080bd4aaf1b356882dcbe37f6c5e168c073fdd814d8047"
+    },
+    {
+      "source": "assets/mv/08-reply.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/08-reply.mp4",
+      "bytes": 18478139,
+      "sha256": "a09551b7bb4719a3e565f336f2f1b55ef1ed474ac230200f8bfd13460f6c0578"
+    },
+    {
+      "source": "assets/mv/09-ray.mp4",
+      "file": "assets/backgrounds/cosmic-princess-kaguya/09-ray.mp4",
+      "bytes": 58899842,
+      "sha256": "5ed7b81a28ff932d130542d1a72ca5c83f51aebee018347e218b9f255e6a9ec8"
+    }
+  ]
+}

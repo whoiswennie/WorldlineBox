@@ -51,8 +51,8 @@ function scrollCaption(node: HTMLElement, duration: number): (() => void) | unde
   };
 }
 
-export function BotCallDialogue({ messages, baseline, ignored, connectedAt, activeAtConnect, companionId, catalog, stage, control, modelLoading, hidden, desktopPet, progressTarget, zh, onHistory, onPresent, onPlayback, onInterrupt, onNotice, onReplay, interrupted, extra, turn, speechApi, conversationId, muted, voiceHold, speechStop: speechStopRef }: {
-  messages: readonly BotMessage[]; baseline: ReadonlySet<string>; connectedAt: number; control?: BotLive2DControls; hidden: boolean;
+export function BotCallDialogue({ messages, baseline, ignored, connectedAt, activeAtConnect, companionId, catalog, stage, control, modelLoading, hideDialogue, desktopPet, progressTarget, zh, onPresent, onPlayback, onInterrupt, onNotice, interrupted, extra, turn, speechApi, conversationId, muted, voiceHold, speechStop: speechStopRef }: {
+  messages: readonly BotMessage[]; baseline: ReadonlySet<string>; connectedAt: number; control?: BotLive2DControls; hideDialogue: boolean;
   companionId: string; activeAtConnect: ReadonlySet<string>;
   desktopPet?: boolean;
   progressTarget?: HTMLElement | null;
@@ -64,8 +64,7 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
   onPlayback(playback: BotCallPlayback): void;
   onInterrupt(): void;
   onNotice(text: string): void;
-  onReplay?(): void;
-  zh: boolean; onHistory(messageId: string): void; extra?: ReactNode;
+  zh: boolean; extra?: ReactNode;
   turn?: BotCallTurn;
   speechApi?: WorldlineBoxBotApi;
   conversationId?: string;
@@ -90,7 +89,6 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
   const [bubbleView, setBubbleView] = useState<{ reply: string; mode: 'collapsed' | 'reviewing' }>();
   const startedAt = useRef(0);
   const completedThrough = useRef(-1);
-  const previousPageCount = useRef(0);
   const bubble = useRef<HTMLElement>(null);
   const caption = useRef<HTMLParagraphElement>(null);
   if (timeline.source !== messages || timeline.ignored !== ignored) {
@@ -110,7 +108,7 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
     if (added.length) {
       // Reviewing an old reply should not strand the next reply behind the manual page controls.
       if (paused && (manual || expired) && beats.length && added[0]!.messageId !== beats.at(-1)!.messageId) {
-        setPosition(previousPageCount.current);
+        setPosition(beats.reduce((count, beat) => count + callCaptionPlaybackPages(beat.text, beat.partId).length, 0));
         setPaused(false); setManual(false); setExpired(undefined); setBubbleView(undefined);
       }
       beats = [...beats, ...added];
@@ -126,12 +124,12 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
     pages[pages.length - 1]!.hold += Math.max(0, minimum - readingTime);
     return pages;
   }), [beats, catalog]);
-  useLayoutEffect(() => { previousPageCount.current = pages.length; }, [pages.length]);
   const page = pages[position], beat = page?.beat;
   const replyKey = beat?.messageId;
   const bubbleMode = bubbleView?.reply === replyKey ? bubbleView?.mode : undefined;
   const pageKey = page && `${page.beat.id}:${page.start}`;
-  const activeBeat = hidden || voiceHold || paused && !manual || pageKey === expired ? undefined : beat;
+  // Menus may hide the dialogue, while playback keeps advancing through the reply.
+  const activeBeat = voiceHold || paused && !manual || pageKey === expired ? undefined : beat;
   const currentCue = modelLoading ? undefined : activeBeat?.cue;
   const speechIndex = page?.speechPage;
   const speechBeat = !muted && !modelLoading ? activeBeat : undefined;
@@ -173,8 +171,8 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
   }, [control, activeBeat, pending]);
   useLayoutEffect(() => () => { control?.present(); control?.presence?.('idle'); }, [control]);
   useLayoutEffect(() => {
-    if (beat?.partId && !hidden) onPresent(beat.messageId, beat.partId, beat.sequence);
-  }, [beat, hidden, onPresent]);
+    if (beat?.partId) onPresent(beat.messageId, beat.partId, beat.sequence);
+  }, [beat, onPresent]);
   useLayoutEffect(() => {
     const replies = [...new Set(beats.map(item => item.messageId))];
     if (pageKey && pageKey === expired) completedThrough.current = Math.max(completedThrough.current, position);
@@ -182,9 +180,9 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
     onPlayback({ replies, pending });
     return () => onPlayback({ replies: [], pending: [] });
   }, [beats, pages, position, pageKey, expired, onPlayback]);
-  useLayoutEffect(() => { startedAt.current = performance.now(); }, [pageKey, hidden, paused, modelLoading, replay, voiceHold]);
+  useLayoutEffect(() => { startedAt.current = performance.now(); }, [pageKey, paused, modelLoading, replay, voiceHold]);
   useEffect(() => {
-    if (!page || (paused && !manual) || hidden || modelLoading || voiceHold || pageKey === expired && (manual || position + 1 >= pages.length)) return;
+    if (!page || (paused && !manual) || modelLoading || voiceHold || pageKey === expired && (manual || position + 1 >= pages.length)) return;
     if (speakingPart === speechPlaybackKey(page.beat.messageId, page.beat.partId, page.speechPage)) return;
     const remaining = pageKey === expired ? 0 : Math.max(0, page.hold - (performance.now() - startedAt.current));
     const timer = setTimeout(() => {
@@ -195,15 +193,14 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
       else { setExpired(pageKey); setManual(false); }
     }, remaining);
     return () => clearTimeout(timer);
-  }, [page, pageKey, expired, hidden, paused, manual, modelLoading, position, pages, replay, speakingPart, voiceHold]);
+  }, [page, pageKey, expired, paused, manual, modelLoading, position, pages, replay, speakingPart, voiceHold]);
   useEffect(() => {
-    if (!completed || hidden || !replyKey || bubbleMode) return;
+    if (!completed || !replyKey || bubbleMode) return;
     const timer = setTimeout(() => setBubbleView({ reply: replyKey, mode: 'collapsed' }), CALL_CAPTION_AUTO_HIDE_MS);
     return () => clearTimeout(timer);
-  }, [completed, hidden, replyKey, bubbleMode]);
+  }, [completed, replyKey, bubbleMode]);
 
   const step = (next: number, auto = false) => {
-    onReplay?.();
     setPaused(!auto); setManual(!auto); setExpired(undefined); setBubbleView(undefined); setPosition(next); setReplay(value => value + 1);
   };
   const toggleAutoplay = () => {
@@ -215,13 +212,12 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
     } else step(0, true);
   };
   const autoLabel = paused ? (zh ? '继续自动播放' : 'Resume autoplay') : (zh ? '自动播放' : 'Autoplay');
-  const historyLabel = zh ? '完整对话' : 'Transcript';
   const interruptLabel = zh ? '打断' : 'Interrupt';
   const expandLabel = zh ? '展开对白' : 'Expand dialogue';
   const collapseLabel = zh ? '收起对白' : 'Collapse dialogue';
   const separateProgress = !!desktopPet && pending;
-  const shown = !hidden && !!(page || extra || !separateProgress && status);
-  const showProgress = separateProgress && !hidden;
+  const shown = !hideDialogue && !!(page || extra || !separateProgress && status);
+  const showProgress = separateProgress && !hideDialogue;
   const surface = useBotCallDocument();
   useLayoutEffect(() => {
     const node = bubble.current, scene = node?.closest<HTMLElement>('.bot-call-scene');
@@ -261,7 +257,6 @@ export function BotCallDialogue({ messages, baseline, ignored, connectedAt, acti
       {extra}
       {pending && !separateProgress && <BotCallProgress message={running} zh={zh} action={interrupt} />}
       {page && <footer className="bot-call-bubble-controls">
-            <button type="button" aria-label={historyLabel} title={historyLabel} onClick={() => onHistory(page.beat.messageId)}><BotIcon name="history" /></button>
             <button type="button" aria-label={zh ? '从头播放' : 'Replay from start'} title={zh ? '从头播放' : 'Replay from start'} onClick={() => step(0, true)}><BotIcon name="replay" /></button>
             <button type="button" aria-label={zh ? '上一段' : 'Previous segment'} title={zh ? '上一段' : 'Previous segment'} disabled={position === 0} onClick={() => step(position - 1)}><BotIcon name="chevron-left" /></button>
             <span>{position + 1}<i>/</i>{pages.length}</span>

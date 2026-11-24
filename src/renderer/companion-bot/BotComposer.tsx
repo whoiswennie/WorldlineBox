@@ -19,7 +19,7 @@ export function BotSpeechMuteButton({ zh, muted, onChange }: { zh: boolean; mute
     title={zh ? '伙伴语音静音（跳过语音合成）' : 'Mute companion speech and skip synthesis'} onClick={() => onChange(!muted)}>
     <BotIcon name={muted ? 'volume-off' : 'volume'} /></button>;
 }
-export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, onTypingActivity, meeting = false, showInputTools = true, compact = false, desktopCapture }: {
+export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, onTypingActivity, meeting = false, showInputTools = true, compact = false, desktopCapture, pushToTalkShortcut, voiceCaptureBusy }: {
   locale: 'zh-CN' | 'en'; draft: string; setDraft(value: string): void; disabled: boolean; busy: boolean; group: boolean; world: boolean;
   panel: 'memory' | 'history' | null; setPanel(value: 'memory' | 'history' | null): void; send(kind?: 'message' | 'world'): Promise<unknown>;
   mediaApi?: WorldlineBoxBotMediaApi; conversationId: string; attachments?: readonly BotMediaRef[]; addingFiles?: boolean;
@@ -28,6 +28,7 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
   sendVoice?(media: BotMediaRef): Promise<void>;
   extraTools?: ReactNode; status?: ReactNode; topicControls?: ReactNode;
   onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; onTypingActivity?(active: boolean): void; meeting?: boolean; showInputTools?: boolean; compact?: boolean;
+  pushToTalkShortcut?: boolean; voiceCaptureBusy?: boolean;
   desktopCapture?: { surface: 'chat' | 'pet'; companionName?: string; attach(media: BotMediaRef[]): void; statusTarget?: HTMLElement | null; controlsTarget?: HTMLElement | null; interacting?: boolean };
 }) {
   const surface = useBotCallDocument();
@@ -94,7 +95,8 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
         aria-label={locale === 'zh-CN' ? '添加文件' : 'Attach files'} onClick={() => void addFiles()}
         onContextMenu={event => { if (canTranscribeFile) { event.preventDefault(); setCaptureFileRequest(value => value + 1); } }}>
         <BotIcon name="file" /></button>}
-      <BotVoiceInput key={conversationId} conversationId={conversationId} locale={locale} disabled={disabled || busy || addingFiles} textOnly={!sendVoice} onText={text => setDraft((draft ? draft + '\n' : '') + text)} onVoice={sendVoice} onStart={onVoiceInputStart} onActivityChange={onVoiceInputActivity} />
+      <BotVoiceInput key={conversationId} conversationId={conversationId} locale={locale} disabled={disabled || busy || addingFiles || voiceCaptureBusy}
+        pushToTalkShortcut={pushToTalkShortcut} textOnly={!sendVoice} onText={text => setDraft((draft ? draft + '\n' : '') + text)} onVoice={sendVoice} onStart={onVoiceInputStart} onActivityChange={onVoiceInputActivity} />
       </>}
       {desktopCapture && mediaApi?.desktopCaptureSupported && <BotDesktopCapture key={conversationId + ':' + desktopCapture.surface} api={mediaApi} conversationId={conversationId} locale={locale} surface={desktopCapture.surface}
         statusTarget={desktopCapture.statusTarget ?? (desktopCapture.surface === 'chat' ? captureStatus : null)}

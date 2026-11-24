@@ -1,0 +1,56 @@
+/* The workspace stays inside the owning chat or call window. */
+.bot-attachment-viewer-backdrop { padding:clamp(8px,2vw,28px);grid-template-rows:minmax(0,1fr);grid-template-columns:minmax(0,1fr); }
+.bot-attachment-viewer-backdrop .bot-attachment-viewer { width:min(1320px,100%);height:min(920px,100%);max-height:100%;box-shadow:0 22px 76px #0003; }
+.bot-attachment-viewer-backdrop[data-expanded=true] { padding:0; }
+.bot-attachment-viewer-backdrop[data-expanded=true] .bot-attachment-viewer { width:100%;height:100%;border-radius:0; }
+.bot-attachment-viewer-header { min-height:58px;padding:9px 16px; }
+.bot-attachment-viewer-header .bot-attachment-viewer-icon { color:var(--ui-content-accent);background:var(--ui-action-accent-soft); }
+.bot-attachment-viewer-header h2 { font-size:14px; }
+.attachment-tools { display:flex;flex:0 0 auto;align-items:center;flex-wrap:wrap;gap:7px;padding:8px 15px;border-bottom:1px solid var(--ui-border-subtle);background:var(--ui-surface-raised);font-size:12px;color:var(--ui-content-secondary);font-variant-numeric:tabular-nums; }
+.attachment-tools i { width:1px;height:19px;margin:0 3px;background:var(--ui-border-subtle); }
+.attachment-tools label { display:inline-flex;align-items:center;gap:6px; }
+.attachment-tools select,.attachment-tools input { max-width:100%;min-height:30px;border:1px solid var(--ui-border-subtle);border-radius:6px;padding:2px 6px;background:var(--ui-surface-pane);color:var(--ui-content-primary);font:inherit; }
+.attachment-tools select { cursor:pointer; }
+.attachment-tools .bot-icon { width:15px;height:15px; }
+.attachment-tools button { min-height:30px;font-size:12px; }
+.attachment-tools button[aria-pressed=true] { background:var(--ui-action-accent-soft);color:var(--ui-content-accent);border-color:var(--ui-border-control); }
+.attachment-tools button.attachment-primary { background:var(--ui-content-primary);color:var(--ui-surface-raised);border-color:transparent; }
+.attachment-tools button.attachment-primary:hover:not(:disabled) { background:var(--ui-content-secondary); }
+.attachment-spacer { flex:1; }
+.attachment-control-group { display:inline-flex;align-items:center;border:1px solid var(--ui-border-subtle);border-radius:7px; }
+.attachment-control-group button { border:0;min-height:28px; }
+.attachment-control-group output { min-width:45px;text-align:center; }
+.attachment-image-stage { position:relative;flex:1;min-height:0;min-width:0;overflow:auto;overscroll-behavior:contain;touch-action:none;user-select:none;cursor:grab;background:#242830;scrollbar-width:thin; }
+.attachment-image-stage:active { cursor:grabbing; }
+.attachment-image-bed { position:relative;min-width:100%;min-height:100%;overflow:hidden; }
+.bot-attachment-picture.attachment-crop { position:absolute;top:50%;left:50%;display:block;overflow:hidden;flex:none;padding:0;margin:0;background:repeating-conic-gradient(#eee 0% 25%,#fff 0% 50%) 50% / 16px 16px;box-shadow:0 3px 12px #0004; }
+.bot-attachment-picture.attachment-crop>img { position:absolute;max-width:none;max-height:none;pointer-events:none; }
+.attachment-image-stage[data-selecting=true] { cursor:crosshair; }
+.attachment-crop-selection { position:absolute;border:1px solid white;box-shadow:0 0 0 100vmax #0007;pointer-events:none; }
+.attachment-image-loading { position:absolute;inset:50% 0 auto;text-align:center;color:#e1e6ed;font-size:13px; }
+.attachment-status { min-height:34px;padding-block:6px;border-top:1px solid var(--ui-border-subtle);border-bottom:0;font-size:11px; }
+.attachment-notice,.attachment-discard { padding:8px 16px;background:var(--ui-action-accent-soft);color:var(--ui-content-primary);font-size:12px;overflow-wrap:anywhere; }
+.attachment-notice { display:flex;align-items:center;justify-content:space-between;gap:12px; }
+.bot-attachment-viewer .bot-reader-toolbar { flex-wrap:wrap; }
+.bot-attachment-viewer .bot-reader-toolbar-start { flex:1; }
+.attachment-playback-stage.is-video { background:#17191e; }
+.attachment-playback-stage .bot-attachment-player { padding:0; }
+.attachment-playback-stage video { width:100%;height:100%;object-fit:contain;border-radius:0; }
+.attachment-playback-stage .bot-attachment-audio-player { gap:18px; }
+.bot-attachment-audio-player>span .bot-icon { width:44px;height:44px; }
+.attachment-clip-tools input { width:86px; }
+.attachment-text-editor { width:100%;flex:1;min-height:0;resize:none;border:none;outline:none;padding:clamp(12px,3vw,40px);background:var(--ui-surface-pane);color:var(--ui-content-primary);font:14px/1.75 var(--ui-font-mono,monospace);tab-size:4; }
+.attachment-office-stage { flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;padding:20px;background:var(--ui-surface-pane); }
+.attachment-office-stage article { max-width:820px;min-height:100%;margin:auto;padding:clamp(16px,4vw,60px);border:1px solid var(--ui-border-subtle);background:var(--ui-surface-raised);font-size:15px;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere; }
+.attachment-office-stage table { border-collapse:separate;border-spacing:0;background:var(--ui-surface-raised);font-size:13px; }
+.attachment-office-stage th,.attachment-office-stage td { min-width:48px;max-width:340px;padding:6px 10px;border-right:1px solid var(--ui-border-subtle);border-bottom:1px solid var(--ui-border-subtle);overflow-wrap:anywhere; }
+.attachment-office-stage th { background:var(--ui-surface-pane);font-weight:500; }
+.attachment-office-stage thead th { position:sticky;top:0; }
+@media(max-width:640px) {
+  .bot-attachment-viewer-backdrop { padding:4px; }
+  .bot-attachment-viewer-header { flex-wrap:wrap; }
+  .attachment-tools { gap:4px;padding:5px 8px; }
+  .attachment-tools i { display:none; }
+  .bot-attachment-viewer-header>nav { flex-wrap:wrap; }
+}
+

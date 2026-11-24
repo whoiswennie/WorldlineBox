@@ -5,6 +5,62 @@ import path from 'node:path';
 
 import { electronLaunchEnv, resolveElectronAppPath, resolveElectronExecutablePath } from './electron-test-helpers';
 
+test('the built-in Kaguya wallpaper plays all nine local clips in order and wraps to the first', async () => {
+  test.setTimeout(90_000);
+  const profile = mkdtempSync(path.join(tmpdir(), 'worldlinebox-kaguya-'));
+  const application = await electron.launch({
+    executablePath: resolveElectronExecutablePath(),
+    args: [resolveElectronAppPath()],
+    env: electronLaunchEnv({ WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN' }),
+  });
+  try {
+    const window = await application.firstWindow();
+    const native = await application.browserWindow(window);
+    await native.evaluate(win => { win.show(); win.focus(); });
+    await window.getByRole('button', { name: '设置', exact: true }).click();
+    const settings = window.getByRole('dialog', { name: '通用设置' });
+    await settings.getByRole('tab', { name: '外观', exact: true }).click();
+    await settings.getByRole('radio', { name: '超时空辉夜姬！', exact: true }).click();
+    const video = window.locator('.app-animated-background-video');
+    const sound = settings.getByRole('switch', { name: '播放壁纸原声', exact: true });
+    await settings.getByRole('button', { name: /^应用背景/ }).click();
+    await expect(sound).toBeChecked();
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => !v.muted && v.volume === 0.32 && v.currentTime > 0.1)).toBe(true);
+    await video.evaluate((v: HTMLVideoElement) => { v.currentTime = 20; });
+    await expect.poll(() => native.evaluate(win => win.webContents.isCurrentlyAudible()), { timeout: 10_000 }).toBe(true);
+    await sound.click();
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.muted && !v.paused && v.currentTime >= 20)).toBe(true);
+    await window.reload();
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.muted)).toBe(true);
+    await window.getByRole('button', { name: '设置', exact: true }).click();
+    await settings.getByRole('tab', { name: '外观', exact: true }).click();
+    if (!await sound.isVisible()) await settings.getByRole('button', { name: /^应用背景/ }).click();
+    await expect(sound).not.toBeChecked();
+    await sound.click();
+    await window.keyboard.press('Escape');
+    const order = ['01-remember', '02-hoshifuru-umi', '03-happy-synthesizer', '04-watashi-ga-suki', '05-world-is-mine', '06-ex-otogibanashi', '07-shunkan-symphony', '08-reply', '09-ray'];
+    for (const clip of order) {
+      await expect(video).toHaveCount(1);
+      await expect(video).toHaveAttribute('src', new RegExp(clip));
+      await expect.poll(async () => {
+        await native.evaluate(win => { if (!win.isFocused()) win.focus(); });
+        return video.evaluate((v: HTMLVideoElement) => v.videoWidth > 0 && !v.muted && v.volume > 0 && !v.paused && v.currentTime > 0.1);
+      }).toBe(true);
+      await video.evaluate((v: HTMLVideoElement) => { v.currentTime = v.duration - 0.25; });
+    }
+    await expect(video).toHaveAttribute('src', /01-remember/);
+    await window.reload();
+    await expect(window.locator('html')).toHaveAttribute('data-animated-background', 'cosmic-princess-kaguya');
+    await window.emulateMedia({ reducedMotion: 'reduce' });
+    await expect(video).not.toHaveAttribute('src', /.+/);
+    await expect.poll(() => window.locator('.app-animated-background-poster').evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth > 0)).toBe(true);
+  } finally {
+    await application.close();
+    if (path.dirname(profile) === path.resolve(tmpdir()) && path.basename(profile).startsWith('worldlinebox-kaguya-'))
+      rmSync(profile, { recursive: true, force: true });
+  }
+});
+
 test('global wallpapers retain playback across modules and support decoding, pause and personal images', async () => {
   test.setTimeout(120_000);
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'worldlinebox-wallpaper-'));

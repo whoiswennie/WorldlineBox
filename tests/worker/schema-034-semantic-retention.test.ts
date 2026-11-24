@@ -42,7 +42,15 @@ it('migrates a v59 library without changing the builtin 768-dimensional semantic
   const database = openConfiguredDatabase(path.join(library.libraryPath, '.worldlinebox', 'library.db'));
   try {
     removeLinkedDirectoryIndexFixture(database);
-    database.prepare('DELETE FROM schema_migrations WHERE version = 60').run();
+    database.exec(`
+      DROP TRIGGER media_pause_blocks_automatic_insert;
+      DROP TRIGGER media_pause_blocks_automatic_requeue;
+      DROP TRIGGER media_terminal_revokes_explicit_admission;
+      DROP INDEX jobs_explicit_media_queue;
+      ALTER TABLE jobs DROP COLUMN media_admission_origin;
+      ALTER TABLE library DROP COLUMN media_queue_paused;
+      DELETE FROM schema_migrations WHERE version >= 60;
+    `);
     database.pragma('user_version = 59');
   } finally {
     database.close();
@@ -56,6 +64,7 @@ it('migrates a v59 library without changing the builtin 768-dimensional semantic
   const migrated = openConfiguredDatabase(path.join(library.libraryPath, '.worldlinebox', 'library.db'));
   try {
     expect(migrated.pragma('user_version', { simple: true })).toBe(SUPPORTED_SCHEMA_VERSION);
+    expect(migrated.prepare('SELECT media_queue_paused FROM library').get()).toEqual({ media_queue_paused: 0 });
     expect(migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'linked_directory_entries'")
       .get()).toEqual({ name: 'linked_directory_entries' });
   } finally {

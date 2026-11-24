@@ -814,6 +814,7 @@ describe('createExtensionServer', () => {
 
     it('returns 202 for a valid upload and calls onSaveUpload', async () => {
       const uploads: SaveUploadRequest[] = [];
+      let stagedBytes: Buffer | undefined;
       const stagingRoot = path.join(os.tmpdir(), `worldlinebox-ext-test-${randomUUID()}`);
       await mkdir(stagingRoot, { recursive: true });
 
@@ -823,6 +824,7 @@ describe('createExtensionServer', () => {
           uploadStagingRoot: stagingRoot,
           onSaveUpload: async (upload) => {
             uploads.push(upload);
+            stagedBytes = await readFile(upload.stagedFilePath);
             return { accepted: true };
           },
         });
@@ -842,10 +844,9 @@ describe('createExtensionServer', () => {
           byteLength: payload.length,
         });
         expect(uploads[0]).not.toHaveProperty('targetCollectionId');
+        expect(stagedBytes).toEqual(payload);
 
-        const fileContent = await readFile(uploads[0]!.stagedFilePath);
-        expect(fileContent).toEqual(payload);
-        await rm(uploads[0]!.stagingDirectory, { recursive: true, force: true });
+        await expect(readFile(uploads[0]!.stagedFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
       } finally {
         await rm(stagingRoot, { recursive: true, force: true });
       }
@@ -874,7 +875,7 @@ describe('createExtensionServer', () => {
           targetFolderId: null,
           targetCollectionId: 'col/1',
         });
-        await rm(uploads[0]!.stagingDirectory, { recursive: true, force: true });
+        await expect(readFile(uploads[0]!.stagedFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
       } finally {
         await rm(stagingRoot, { recursive: true, force: true });
       }
@@ -918,7 +919,7 @@ describe('createExtensionServer', () => {
         });
         expect(uploads[0]).not.toHaveProperty('sourcePageUrl');
         expect(uploads[0]).not.toHaveProperty('mediaUrl');
-        await rm(uploads[0]!.stagingDirectory, { recursive: true, force: true });
+        await expect(readFile(uploads[0]!.stagedFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
       } finally {
         await rm(stagingRoot, { recursive: true, force: true });
       }
@@ -980,8 +981,8 @@ describe('createExtensionServer', () => {
         );
 
         expect(res.status).toBe(202);
-        expect(uploads[0]?.stagingDirectory).toContain(stagingRoot);
-        await rm(uploads[0]!.stagingDirectory, { recursive: true, force: true });
+        expect(path.dirname(path.dirname(uploads[0]!.stagedFilePath))).toBe(stagingRoot);
+        await expect(readFile(uploads[0]!.stagedFilePath)).rejects.toMatchObject({ code: 'ENOENT' });
       } finally {
         await rm(stagingRoot, { recursive: true, force: true });
       }

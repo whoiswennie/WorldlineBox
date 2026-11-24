@@ -245,7 +245,10 @@ it('interrupts and directly resumes the same reply twice without another user me
 it('does not offer continuation before the native stop is confirmed, or resume a withdrawn task', async () => {
   const f = await fixture(); let confirm!: () => void;
   f.brain.stop = () => new Promise<void>(resolve => { confirm = resolve; });
-  f.brain.execute = input => new Promise((_, reject) => input.signal!.addEventListener('abort', () => reject(input.signal!.reason), { once: true }));
+  f.brain.execute = input => {
+    input.beforeSendTurn?.();
+    return new Promise((_, reject) => input.signal!.addEventListener('abort', () => reject(input.signal!.reason), { once: true }));
+  };
   const sent = await f.send('等待原生停止回执'), messageId = sent.replyMessageIds![0]!;
   await until(() => f.brain.calls.length === 1); await f.service.handle({ type: 'reply.cancel', messageId });
   await until(() => !!confirm);

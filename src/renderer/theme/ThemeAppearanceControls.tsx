@@ -32,6 +32,7 @@ export const PROFILE_LABELS = {
   soft: 'settings.themeProfileSoft',
   'whale-fantasy': 'settings.themeProfileWhaleFantasy',
   'shuimo-danqing': 'settings.themeProfileShuimoDanqing',
+  'cosmic-princess-kaguya': 'settings.themeProfileCosmicPrincessKaguya',
   midnight: 'settings.themeProfileMidnight',
   mist: 'settings.themeProfileMist',
   sand: 'settings.themeProfileSand',
@@ -441,6 +442,13 @@ export function BackgroundSettings(): ReactNode {
               if (!setBackgroundMotion(enabled)) setError(t('settings.backgroundSaveError'));
             }}
           />
+          {DSH_BACKGROUND_MEDIA[themeProfile.preset].clips.some(clip => 'volume' in clip) && (
+            <Switch
+              checked={backgroundPreferences.soundEnabled !== false}
+              label={t('settings.backgroundSound')}
+              onCheckedChange={soundEnabled => update({ soundEnabled })}
+            />
+          )}
           {backgroundPreferences.imageDataUrl !== null ? <p className="app-settings-background-animation-note">{t('settings.backgroundPersonalImagePriority')}</p> : null}
         </div>
       ) : null}

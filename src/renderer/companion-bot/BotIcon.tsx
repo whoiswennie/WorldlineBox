@@ -53,6 +53,7 @@ const paths = {
   'pause': 'M9 5v14M15 5v14',
   'stop': 'M7 7h10v10H7z',
   'replay': 'M3 12a9 9 0 1 1 3 6.7M3 5v7h7',
+  'rotate-right': 'M21 12a9 9 0 1 0-3 6.7M21 5v7h-7',
   'frame': 'M9 3H4v5M15 3h5v5M4 16v5h5M20 16v5h-5M12 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4zM8.5 17a3.5 3.5 0 0 1 7 0',
   'portrait': 'M4 8V4h4m8 0h4v4m0 8v4h-4m-8 0H4v-4m8-8a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM7 20a5 5 0 0 1 10 0',
   'full-body': 'M4 7V3h4m8 0h4v4m0 10v4h-4m-8 0H4v-4M12 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4zm-4 3 4-1 4 1m-4-1v4m0 0-2 4m2-4 2 4',

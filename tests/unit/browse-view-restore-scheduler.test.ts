@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { scheduleBrowseViewRestore } from "../../src/renderer/browse-view-restore-scheduler";
-import { captureBrowseViewSnapshot } from "../../src/renderer/view-restore";
+import { captureBrowseViewSnapshot, measureBrowseCardRect } from "../../src/renderer/view-restore";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -109,6 +109,29 @@ describe("scheduleBrowseViewRestore (VIEWER-001 / WorldlineBox-bd481f)", () => {
 
     expect(canvas.scrollTop).toBe(2400);
     expect(onComplete).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the pixel offset while the canvas itself moves during viewer teardown", () => {
+    const frames = installAnimationFrameQueue();
+    const canvas = createScrollElement({ clientHeight: 600, scrollHeight: 8000, scrollTop: 2400 });
+    let canvasTop = 140;
+    const card = {
+      dataset: { assetId: "asset-1" },
+      getBoundingClientRect: () => ({ left: 10, top: canvasTop + 2600 - canvas.scrollTop, width: 80, height: 110 }),
+    } as unknown as HTMLElement;
+    vi.spyOn(canvas, "getBoundingClientRect").mockImplementation(() => ({
+      left: 0, top: canvasTop, width: 800, height: 600, right: 800, bottom: canvasTop + 600,
+    }) as DOMRect);
+    vi.spyOn(canvas, "querySelectorAll").mockReturnValue([card] as unknown as NodeListOf<HTMLElement>);
+    const snapshot = captureBrowseViewSnapshot("asset-1", measureBrowseCardRect(canvas, card), 0, canvas.scrollTop);
+
+    canvasTop = 60;
+    scheduleBrowseViewRestore({ canvas, snapshot, isCurrent: () => true });
+    expect(canvas.scrollTop).toBe(2400);
+    canvasTop = 140;
+    frames.flushOne();
+    frames.flushOne();
+    expect(canvas.scrollTop).toBe(2400);
   });
 
   it("does not reveal the canvas when a newer close or navigation cancels the restore", () => {

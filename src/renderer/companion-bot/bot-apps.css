@@ -16,6 +16,8 @@
 .bot-app-card>.bot-icon{width:16px;height:16px}.bot-app-card strong{font-size:11px;font-weight:500;white-space:nowrap}
 .bot-app-card button{display:flex;align-items:center;justify-content:center;width:20px;height:20px;padding:4px;border:0;background:transparent;border-radius:5px;color:inherit;cursor:pointer}.bot-app-card button:hover{background:var(--ui-surface-hover)}.bot-app-card button .bot-icon{width:12px;height:12px}
 .bot-apps-picker.is-browser{width:310px;max-width:min(310px,calc(100vw - 48px));padding:9px}
+.is-desktop-pet .bot-apps:has(>.bot-apps-picker.is-browser){position:static}
+.is-desktop-pet .bot-apps-picker.is-browser{right:6px;max-width:calc(100% - 12px)}
 .bot-browser-tab-picker>header{display:flex;align-items:center;gap:7px;margin:0 0 7px;padding:0;border:0;background:transparent}
 .bot-browser-tab-picker>header strong{flex:1;font-size:12px;font-weight:500}
 .bot-workspace .bot-browser-tab-picker>header>button,.bot-call-window .bot-browser-tab-picker>header>button{display:grid;place-items:center;width:26px;height:26px;padding:4px;border:0;border-radius:6px;background:transparent;color:var(--ui-content-secondary)}

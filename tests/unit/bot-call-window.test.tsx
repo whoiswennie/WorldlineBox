@@ -10,6 +10,7 @@ import { botCallClock, botCallProfile } from '../../src/renderer/companion-bot/c
 import type { BotMessage, BotRequest, BotSnapshot, BotEvent, BotResponse, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { BotLive2DControls } from '../../src/renderer/companion-bot/BotLive2DStage';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import type { BotPushToTalkTarget } from '../../src/renderer/companion-bot/useBotPushToTalk';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const live2d = vi.hoisted(() => ({
@@ -22,11 +23,6 @@ vi.mock('../../src/renderer/companion-bot/BotLive2DStage', async () => {
     return <div data-live2d-fixture />;
   } };
 });
-const voice = vi.hoisted(() => ({ available: false, onset: undefined as (() => void) | undefined, stop: vi.fn(), start: vi.fn(), interrupt: vi.fn(), waitForPlayback: vi.fn(), finish: vi.fn(), retry: vi.fn(), sendAction: vi.fn(async (_text: string, _id: string, perform: () => Promise<{ ok: boolean }>) => (await perform()).ok) }));
-vi.mock('../../src/renderer/companion-bot/useBotCallVoice', () => ({ useBotCallVoice: ({ onSpeechStart }: { onSpeechStart(): void }) => {
-  voice.onset = onSpeechStart;
-  return { ...voice, state: { phase: voice.available ? 'listening' : 'off', enabled: voice.available, turn: 0 }, level: 0 };
-} }));
 vi.mock('../../src/renderer/companion-bot/voice-recorder', () => ({
   speechBase64: () => '',
   VoiceRecorder: class {
@@ -40,7 +36,7 @@ let root: Root | undefined, host: HTMLDivElement;
 const companion = { id: 'gpt', name: 'GPT', persona: '', createdAt: '2026-11-05' };
 beforeEach(() => {
   vi.useFakeTimers(); sounds.length = 0;
-  voice.available = false; vi.clearAllMocks();
+  vi.clearAllMocks();
   vi.stubGlobal('Audio', class { loop = false; muted = false; volume = 0; play = vi.fn().mockResolvedValue(undefined); pause = vi.fn(); removeAttribute = vi.fn(); load = vi.fn(); constructor(readonly src: string) { sounds.push(this); } });
 });
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); root = undefined; vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
@@ -58,17 +54,18 @@ async function mount(initialDraft = '会面草稿', actor = companion, options: 
     return { ok: true };
   });
   const api = { request, ...options.speech, onEvent: (callback: (event: BotEvent) => void) => { listener = callback; return () => { listener = undefined; }; } };
+  const target: { current: (() => BotPushToTalkTarget | undefined) | undefined } = { current: undefined };
   function Harness() {
     const [draft, setDraft] = useState(initialDraft);
     const [speechMuted, setSpeechMuted] = useState(false);
-    return <BotCallWindow conversationId="direct" companion={actor} api={api} draft={draft} setDraft={setDraft} speechMuted={speechMuted} onSpeechMute={setSpeechMuted} locale="zh-CN" onHangup={hangup} onOpenUrl={() => undefined} />;
+    return <BotCallWindow conversationId="direct" companion={actor} api={api} draft={draft} setDraft={setDraft} speechMuted={speechMuted} onSpeechMute={setSpeechMuted} locale="zh-CN" onHangup={hangup} onOpenUrl={() => undefined} pushToTalkTargetRef={target} />;
   }
   await act(() => root!.render(<Harness />));
-  return { hangup, request, refresh: async (messages: BotMessage[]) => {
+  return { hangup, request, target, refresh: async (messages: BotMessage[]) => {
     snapshot.messages = messages; await act(async () => { listener?.({ type: 'changed', conversationId: 'direct' }); await vi.advanceTimersByTimeAsync(40); });
   } };
 }
-const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!;
+const button = (text: string, surface = document) => [...surface.querySelectorAll<HTMLButtonElement>('.bot-call-window button')].find(item => item.textContent?.trim() === text || item.getAttribute('aria-label') === text)!;
 it('waits for the user to connect, loops the ringtone and ends after exactly 60 seconds', async () => {
   const fixture = await mount(); expect(sounds[0]?.loop).toBe(true); expect(sounds[0]?.play).toHaveBeenCalledOnce(); expect(document.querySelector('.bot-call-ringing')).not.toBeNull();
   expect(sounds[0]?.src).toMatch(/\/companion-call\/ringtones\/phoebe\.wav$/);
@@ -108,17 +105,15 @@ it('routes the bubble composer to the shared private chat and keeps native topic
   await act(() => document.querySelector<HTMLButtonElement>('.bot-send')!.click());
   expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send', conversationId: 'direct', content: '会面草稿', surface: 'call' }));
 });
-it('stops continuous listening when one-click dictation starts, until it closes', async () => {
-  voice.available = true;
+it('offers one-click dictation without the continuous listening controls', async () => {
   vi.stubGlobal('worldlinebox', { localSpeech: { request: async () => ({ ok: true, status: { phase: 'ready' } }) } });
   await mount(); await act(() => button('接通').click());
-  const toggle = document.querySelector<HTMLButtonElement>('[aria-label="连续语音对话"]')!;
-  expect(toggle.disabled).toBe(false);
+  expect(document.querySelector('[aria-label="连续语音对话"]')).toBeNull();
   await act(() => document.querySelector<HTMLButtonElement>('[aria-label="语音转文字"]')!.click());
-  expect(voice.stop).toHaveBeenCalledOnce(); expect(toggle.disabled).toBe(true);
   expect(document.querySelector('.bot-voice-panel')?.textContent).toBe('00:00');
   expect(document.querySelector('[aria-label="语音转文字"]')?.getAttribute('aria-pressed')).toBe('true');
-  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭语音"]')!.click()); expect(toggle.disabled).toBe(false);
+  await act(() => document.querySelector<HTMLButtonElement>('[aria-label="关闭语音"]')!.click());
+  expect(document.querySelector('.bot-voice-panel')).toBeNull();
 });
 it('closes emoji then the standard composer before Escape hangs up, and leaves IME composition alone', async () => {
   const f = await mount(); await act(() => button('接通').click());
@@ -146,9 +141,7 @@ it('displays a complete published utterance while the native turn is still runni
   expect(document.querySelector('.bot-call-window')?.textContent).not.toContain(reply.content);
   const next = document.querySelector<HTMLButtonElement>('[aria-label="下一段"]')!;
   expect(next.disabled).toBe(true);
-  await act(() => button('完整对话').click());
-  expect(document.querySelector('.bot-call-transcript')?.textContent).toContain(text);
-  expect(document.querySelector('.bot-call-transcript')?.textContent).not.toContain(reply.content);
+  expect(document.querySelector('[aria-label="完整对话"], [aria-label="会面聊天记录"], .bot-call-transcript')).toBeNull();
 });
 
 it('keeps the call clock and model parameter profile', () => {
@@ -189,7 +182,7 @@ it('interrupts the live queue at its visible segment and drops late old snapshot
   expect(document.querySelector('.bot-call-bubble-text')).toBeNull();
 });
 
-const caption = () => document.querySelector('.bot-call-bubble-text')?.textContent;
+const caption = (surface = document) => surface.querySelector('.bot-call-bubble-text')?.textContent;
 const namedButton = (label: string) => document.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!;
 const stageReply = (id: string, sequence: number, parts: BotMessage['parts'], status: BotMessage['status'] = 'sent'): BotMessage => ({
   id, eventId: id, conversationId: 'meeting', senderId: companion.id, senderName: companion.name,
@@ -211,8 +204,7 @@ it('skips synthesis for incoming captions and replay when companion speech is mu
   expect(speech).not.toHaveBeenCalled();
 });
 
-it('holds each page through local audio completion and disconnects playback at voice onset', async () => {
-  voice.available = true;
+it.each(['桌宠菜单', '场景面板', '话题列表'] as const)('continues speech while %s is open and stops it for Ctrl recording', async panel => {
   const outputs: Array<{ onended?: () => void }> = [], disconnect = vi.fn();
   vi.stubGlobal('AudioContext', class {
     destination = {};
@@ -225,37 +217,59 @@ it('holds each page through local audio completion and disconnects playback at v
   });
   const speech = vi.fn<NonNullable<WorldlineBoxBotApi['speech']>>().mockResolvedValue({ ok: true });
   let emit: Parameters<NonNullable<WorldlineBoxBotApi['onSpeech']>>[0] | undefined;
-  const f = await mount('', companion, { speech: { speech, onSpeech: listener => { emit = listener; return () => { emit = undefined; }; } } });
+  const pet = panel === '桌宠菜单';
+  if (pet) vi.stubGlobal('worldlinebox', { companionCallPet: {
+    supported: true, command: vi.fn(), onClosed: () => () => undefined, onAnchorChanged: () => () => undefined,
+  } });
+  const f = await mount('草稿', companion, { speech: { speech, onSpeech: listener => { emit = listener; return () => { emit = undefined; }; } } });
   await act(() => button('接通').click());
+  let surface = document;
+  if (pet) {
+    const child = document.createElement('iframe');
+    host.append(child);
+    const open = vi.spyOn(window, 'open').mockReturnValue(child.contentWindow);
+    try { await act(() => button('切换为桌宠').click()); }
+    finally { open.mockRestore(); }
+    surface = child.contentDocument!;
+  }
   const first = '不过这个真不是一般的烂事，看完别光刷弹幕，那种人当年能被放出来就是流程出问题了。';
   const second = '这件事说完了。';
   await f.refresh([stageReply('reply', 1, [
     { id: 'cue', kind: 'text', sequence: 1, text: first, presentation: {} },
     { id: 'next-cue', kind: 'text', sequence: 2, text: second, presentation: {} },
   ], 'running')]);
-  expect(caption()).toBe(first);
+  expect(caption(surface)).toBe(first);
   const playing = speech.mock.calls[0]![0];
   expect(playing).toMatchObject({ type: 'play', partId: 'cue', pageIndex: 0 });
   await act(() => {
     emit?.({ id: playing.id, audio: new Uint8Array([0, 1]) });
     emit?.({ id: playing.id, done: true });
   });
+  if (panel === '场景面板') await act(() => button('会面菜单', surface).click());
+  const panelButton = { 桌宠菜单: '更多会面功能', 场景面板: '场景与互动', 话题列表: '选择话题' }[panel];
+  await act(() => button(panelButton, surface).click());
+  expect(caption(surface)).toBeUndefined();
   await act(() => vi.advanceTimersByTimeAsync(9000));
-  expect(caption()).toBe(first);
   expect(speech.mock.calls.filter(([request]) => request.type === 'play')).toHaveLength(1);
+  expect(speech).not.toHaveBeenCalledWith({ type: 'stop', id: playing.id });
   await act(async () => { outputs[0]!.onended!(); await vi.advanceTimersByTimeAsync(20); });
   await act(() => vi.advanceTimersByTimeAsync(20));
-  expect(caption()).toBe(second);
   const next = speech.mock.calls.at(-1)![0];
   expect(next).toMatchObject({ type: 'play', partId: 'next-cue', pageIndex: 0 });
+  expect(caption(surface)).toBeUndefined();
+  const close = { 桌宠菜单: '更多会面功能', 场景面板: '收起会面面板', 话题列表: '关闭话题列表' }[panel];
+  await act(() => surface.querySelector<HTMLButtonElement>(`[aria-label="${close}"]`)!.click());
+  expect(caption(surface)).toBe(second);
+  expect(speech.mock.calls.filter(([request]) => request.type === 'play')).toHaveLength(2);
+  expect(speech).not.toHaveBeenCalledWith({ type: 'stop', id: next.id });
   disconnect.mockClear();
   await act(() => {
-    voice.onset!();
+    f.target.current!()!.start();
     expect(disconnect).toHaveBeenCalledOnce();
   });
   expect(speech).toHaveBeenLastCalledWith({ type: 'stop', id: next.id });
   expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
-  expect(voice.interrupt).not.toHaveBeenCalled();
+  expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'message.send' }));
 });
 
 it('presents consecutive no-tool replies with the same local segment ID exactly once per message', async () => {
@@ -340,8 +354,7 @@ it('shows the submitted prompt while waiting and presents reports from a differe
   await f.refresh([old, stageReply('new', 2, [{ id: 'new-segment', sequence: 1, kind: 'text', text: '新的回应', presentation: {} }]), scheduled]);
   await act(() => vi.advanceTimersByTime(1500));
   expect(caption()).toBe(scheduled.content);
-  await act(() => button('完整对话').click());
-  expect(document.querySelector('.bot-call-transcript')?.textContent).toContain(scheduled.content);
+  expect(document.querySelector('.bot-call-transcript')).toBeNull();
 });
 
 it('keeps desktop pet progress and interruption outside the caption as the reply streams', async () => {
@@ -350,8 +363,8 @@ it('keeps desktop pet progress and interruption outside the caption as the reply
   const turn = { id: 'turn', content: '问题', replyIds: ['reply'] };
   const render = async (message: BotMessage) => {
     await act(() => root!.render(<BotCallDialogue messages={[message]} baseline={baseline} ignored={ignored} connectedAt={0}
-      turn={turn} companionId={companion.id} activeAtConnect={baseline} desktopPet zh hidden={false} modelLoading interrupted={false}
-      onInterrupt={onInterrupt} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} onHistory={() => undefined} />));
+      turn={turn} companionId={companion.id} activeAtConnect={baseline} desktopPet zh hideDialogue={false} modelLoading interrupted={false}
+      onInterrupt={onInterrupt} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} />));
   };
   const waiting = { ...stageReply('reply', 1, [], 'running'), progress: { phase: 'waiting-model' as const } };
   await render(waiting);
@@ -382,8 +395,8 @@ it('shows active desktop capture and DSH progress in the same dock row without a
   const noop = () => undefined;
   const render = (fileRequest: number) => root!.render(<>
     <BotCallDialogue messages={[waiting]} baseline={baseline} ignored={baseline} connectedAt={0}
-      companionId={companion.id} activeAtConnect={baseline} desktopPet zh hidden={false} interrupted={false} progressTarget={statusRow}
-      onInterrupt={() => undefined} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} onHistory={() => undefined} />
+      companionId={companion.id} activeAtConnect={baseline} desktopPet zh hideDialogue={false} interrupted={false} progressTarget={statusRow}
+      onInterrupt={() => undefined} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} />
     <BotDesktopCapture api={api} conversationId="direct" surface="pet" locale="zh-CN" statusTarget={statusRow}
       onAttachment={noop} onBusy={noop} fileRequest={fileRequest} />
   </>);

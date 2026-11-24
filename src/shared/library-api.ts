@@ -213,6 +213,7 @@ export interface MediaJobStatus {
   failed: number;
   paused: number;
   cancelled: number;
+  queuePaused?: boolean;
   jobs: MediaJob[];
   nextCursor?: { createdAt: string; jobId: string } | null;
   hasMore?: boolean;
@@ -241,7 +242,7 @@ export interface PluginJobStatus {
 }
 
 export interface WorldlineBoxLibraryApi {
-  create(input: { displayName: string }): Promise<LibraryApiResult<RendererLibrarySummary>>;
+  create(input: { displayName: string; selectionToken?: string }): Promise<LibraryApiResult<RendererLibrarySummary>>;
   open(input?: {
     libraryPath?: string;
     replaceExisting?: boolean;
@@ -252,6 +253,8 @@ export interface WorldlineBoxLibraryApi {
    * their loading UI only after the dialog closes.
    */
   chooseLibraryPath(): Promise<LibraryApiResult<string | null>>;
+  /** Choose a create location without opening a library; null means cancelled. */
+  chooseCreateLocation(): Promise<LibraryApiResult<string | null>>;
   /** Request cancellation of the active library open/create transition. */
   cancelOpen(): Promise<LibraryApiResult<void>>;
   /** Reveal a Main-owned recovery report without exposing its filesystem path. */
@@ -991,6 +994,7 @@ export interface WorldlineBoxLibraryApi {
     failed: number;
     paused: number;
     cancelled: number;
+    queuePaused?: boolean;
   }>>;
   pauseMediaJobs(input: { libraryId: string; jobIds?: string[] }): Promise<LibraryApiResult<{ pausedCount: number }>>;
   resumeMediaJobs(input: { libraryId: string; jobIds?: string[] }): Promise<LibraryApiResult<{ resumedCount: number }>>;

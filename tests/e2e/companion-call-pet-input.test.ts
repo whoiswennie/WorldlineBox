@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -5,9 +6,121 @@ import { _electron as electron, expect, test, type Locator } from '@playwright/t
 import * as koffi from 'koffi';
 import { BOT_MEDIA_CHANNEL, type BotPresenceStatus } from '../../src/shared/companion-bot-media';
 import type { CallPetApi } from '../../src/shared/companion-call-window';
+import type { WorldlineBoxBrowserApi } from '../../src/shared/browser';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
 import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 import { removeOwnedDirectorySync } from '../helpers/remove-owned-test-directory';
+
+// eslint-disable-next-line no-empty-pattern -- Launches an isolated real Electron application.
+test('shares the complete Apps menu and attachments between chat, video and desktop pet', async ({}) => {
+  test.skip(process.platform !== 'win32', 'Windows desktop pet');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-pet-apps-'));
+  const site = createServer((_request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end('<title>Apps sync fixture</title>'));
+  let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  try {
+    await new Promise<void>(resolve => site.listen(0, '127.0.0.1', resolve));
+    const address = site.address() as { port: number };
+    app = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+      WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
+    }) });
+    const page = await app.firstWindow();
+    await page.locator('[data-application-module="companions"]').click();
+    const bindingDialog = page.locator('.bot-binding-backdrop');
+    await expect(bindingDialog).toBeVisible();
+    await enableCallVisualFixture(app, page);
+    await expect(bindingDialog).toBeHidden();
+    await page.getByRole('tab', { name: /联系人/u }).click();
+    await page.locator('.bot-contact').filter({ has: page.getByText('GPT', { exact: true }) }).click();
+    await page.evaluate(async url => {
+      const browser = (Reflect.get(window, 'worldlinebox') as { browser: WorldlineBoxBrowserApi }).browser;
+      const result = await browser.request({ type: 'tab.new', url });
+      if (!result.ok) throw Error(result.error);
+    }, 'http://127.0.0.1:' + address.port);
+
+    const openApps = async (surface: Locator) => {
+      await surface.getByRole('button', { name: '应用', exact: true }).click();
+      const picker = surface.getByRole('dialog', { name: '连接应用', exact: true });
+      for (const name of ['内置浏览器', '资产管理器', '小屋世界', '音乐', '哔哩哔哩视频']) {
+        await expect(picker.getByRole('button', { name, exact: true })).toBeVisible();
+      }
+      return picker;
+    };
+    const chat = page.locator('.bot-main');
+    await (await openApps(chat)).getByRole('button', { name: '音乐', exact: true }).click();
+    await expect(chat.getByRole('button', { name: '移除音乐', exact: true })).toBeVisible();
+    await chat.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
+    const meeting = page.getByRole('dialog', { name: '与GPT会面' });
+    await meeting.getByRole('button', { name: '接通', exact: true }).click();
+    await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
+    const menu = await openApps(meeting);
+    await expect(menu.getByRole('button', { name: '音乐', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await menu.press('Escape');
+    await expect(menu).toBeHidden();
+    await expect(meeting.getByRole('button', { name: '应用', exact: true })).toBeVisible();
+
+    const opening = app.waitForEvent('window');
+    await meeting.getByRole('button', { name: '切换为桌宠', exact: true }).click();
+    const pet = await opening;
+    const floating = pet.getByRole('dialog', { name: '与GPT会面' });
+    const nativePet = await app.browserWindow(pet);
+    await nativePet.evaluate(win => {
+      const setShape = win.setShape.bind(win);
+      win.setShape = (rectangles: Electron.Rectangle[]) => {
+        Reflect.set(win, 'testDockShape', rectangles);
+        setShape(rectangles);
+      };
+    });
+    await floating.locator('.bot-call-status-row').evaluate(row => {
+      const progress = row.ownerDocument.createElement('div');
+      progress.className = 'bot-call-pet-progress';
+      progress.textContent = '等待模型响应';
+      row.append(progress);
+    });
+    const dock = floating.locator('.bot-call-dock');
+    const edges = await dock.evaluate(element => {
+      const { left, right, top } = element.getBoundingClientRect();
+      return { points: [left + 2, right - 2].map(x => ({ x, y: top + 18 })), width: innerWidth, height: innerHeight };
+    });
+    await expect.poll(() => nativePet.evaluate((win, { points, width, height }) => {
+      const shape = Reflect.get(win, 'testDockShape') as Electron.Rectangle[] | undefined;
+      const bounds = win.getContentBounds();
+      return points.map(point => {
+        const x = point.x * bounds.width / width;
+        const y = point.y * bounds.height / height;
+        return shape?.some(rect => x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height) ?? false;
+      });
+    }, edges)).toEqual([true, true]);
+    await dock.locator('.bot-call-pet-progress').evaluate(pill => pill.remove());
+    await floating.getByRole('button', { name: '更多会面功能', exact: true }).click();
+    await floating.getByRole('button', { name: '移除音乐', exact: true }).click();
+    await expect(chat.getByRole('button', { name: '移除音乐', exact: true })).toHaveCount(0);
+    const picker = await openApps(floating);
+    await picker.getByRole('button', { name: '内置浏览器', exact: true }).click();
+    const tab = picker.getByRole('option', { name: /Apps sync fixture/u });
+    await expect(tab).toBeVisible();
+    expect(await picker.evaluate(element => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight;
+    })).toBe(true);
+    await tab.click();
+    const removeBrowser = '移除网页上下文';
+    await expect(floating.getByRole('button', { name: removeBrowser })).toBeVisible();
+    await chat.getByRole('button', { name: removeBrowser }).click();
+    await expect(floating.getByRole('button', { name: removeBrowser })).toHaveCount(0);
+    await expect(floating.getByRole('button', { name: '会面聊天记录', exact: true })).toHaveCount(0);
+    await floating.getByRole('button', { name: '场景与互动', exact: true }).click();
+    const interactions = floating.getByRole('complementary', { name: '场景与形象互动' });
+    await expect(interactions).toBeVisible();
+    await interactions.getByRole('button', { name: '收起会面面板' }).click();
+    await expect(interactions).toBeHidden();
+  } finally {
+    await app?.close();
+    site.closeAllConnections();
+    await new Promise<void>(resolve => site.close(() => resolve()));
+    removeOwnedDirectorySync(profile);
+  }
+});
 
 // eslint-disable-next-line no-empty-pattern -- Uses the real desktop and native input.
 test('desktop pet passes clicks through empty space and keeps its own controls interactive', async ({}) => {

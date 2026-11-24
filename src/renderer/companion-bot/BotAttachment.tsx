@@ -15,7 +15,7 @@ export function AttachmentKindIcon({ kind }: { kind: BotAttachmentKind | 'bundle
   const paths = { image: 'M3 5h18v14H3zM3 15l5-5 5 5 3-3 5 5M15 9h.01', video: 'M3 5h18v14H3zM10 9l6 3-6 3z',
     audio: 'M9 18V5l12-2v13M9 8l12-2M9 18a3 3 0 1 1-3-3c2 0 3 1 3 3M21 16a3 3 0 1 1-3-3c2 0 3 1 3 3',
     text: 'M5 3h10l4 4v14H5zM14 3v5h5M8 12h8M8 16h6', file: 'M5 3h10l4 4v14H5zM14 3v5h5', bundle: 'M3 7V5h6l2 2h10v13H3zM3 10h18' };
-  return <svg className="bot-attachment-kind-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[kind]} /></svg>;
+  return <svg className="bot-attachment-kind-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[kind === 'office' || kind === 'pdf' ? 'text' : kind]} /></svg>;
 }
 export function BotAttachment({ media, api, conversationId, locale, onOpenUrl, variant = 'row' }: BotAttachmentProps) {
   const zh = locale === 'zh-CN', [preview, setPreview] = useState(false), [saving, setSaving] = useState(false), [opening, setOpening] = useState(false), [error, setError] = useState(''), [thumbnailFailed, setThumbnailFailed] = useState(false);

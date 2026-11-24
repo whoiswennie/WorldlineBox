@@ -1,10 +1,10 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { _electron as electron, expect, test, type Page } from "@playwright/test";
 
-import { resolveElectronExecutablePath } from "./electron-test-helpers";
+import { resolveElectronAppPath, resolveElectronExecutablePath } from "./electron-test-helpers";
 
 test.describe.configure({ timeout: 120_000 });
 
@@ -22,8 +22,7 @@ async function launchWithModels(modelFiles: string[]) {
   );
   const libraryName = "模型查看验收";
   const libraryPath = path.join(temporaryRoot, libraryName);
-  const applicationDirectory =
-    process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  const applicationDirectory = resolveElectronAppPath();
   const application = await electron.launch({
     args: [applicationDirectory],
     cwd: applicationDirectory,
@@ -60,7 +59,7 @@ async function launchWithModels(modelFiles: string[]) {
     .click();
   await expect(window.getByRole("button", { name: "刷新磁盘变化", exact: true }))
     .toBeEnabled({ timeout: 60_000 });
-  return { application, window };
+  return { application, window, temporaryRoot, libraryPath };
 }
 
 function fixtureModels(name: string): string {
@@ -182,8 +181,8 @@ test("opens an OBJ model with its MTL companion in the 3D viewer", async () => {
   }
 });
 
-test("opens an FBX model through the conversion pipeline", async () => {
-  const { application, window } = await launchWithModels([
+test("decodes the source FBX in the viewer without saving a converted model", async () => {
+  const { application, window, temporaryRoot, libraryPath } = await launchWithModels([
     path.join(
       process.cwd(),
       "tests",
@@ -200,18 +199,17 @@ test("opens an FBX model through the conversion pipeline", async () => {
     await assetCard.click();
     await openModelViewer(window);
 
-    // Conversion succeeded: no fallback notice and real geometry stats.
-    // Non-blocking 3D notices now go through the workspace Info stack
-    // (MODEL-004 / WorldlineBox-osr0), not a viewer-bottom hang banner.
-    const fallbackNotice = window.locator(".workspace-notice-stack");
-    if ((await fallbackNotice.count()) > 0) {
-      console.log(`[fbx-notice] ${await fallbackNotice.allInnerTexts()}`);
-    }
-    await expect(window.getByText(/兼容模式/)).toHaveCount(0);
     const stats = await revealStats(window);
     await expect(stats).toContainText("三角面");
+    await expect(stats).toContainText("12");
+    expect(readdirSync(path.join(libraryPath, ".worldlinebox", "artifacts")))
+      .not.toContainEqual(expect.stringMatching(/\.model_glb$/u));
   } finally {
-    await application.close();
+    try {
+      await application.close();
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
   }
 });
 

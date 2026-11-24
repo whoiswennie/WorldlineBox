@@ -26,7 +26,7 @@ export const THEME_PROFILE_PREF_KEY = 'worldlinebox.theme-profile.v3';
 /** v2 persisted key: four fixed presets (vscode-dark/worldlinebox-dark/worldlinebox-light/soft-light). */
 export const THEME_PROFILE_LEGACY_KEY = 'worldlinebox.theme-profile.v2';
 
-export const THEME_PROFILE_IDS = ['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing', 'midnight', 'mist', 'sand', 'forest', 'indigo', 'rose', 'ocean', 'copper', 'ink', 'lilac', 'citrus', 'paper', 'slate', 'film', 'mono', 'blush', 'olive', 'charcoal', 'silver', 'graphite', 'smoke', 'ash', 'notion', 'onedark', 'code', 'azure', 'teal', 'jade', 'amber', 'orchid', 'coral'] as const;
+export const THEME_PROFILE_IDS = ['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing', 'cosmic-princess-kaguya', 'midnight', 'mist', 'sand', 'forest', 'indigo', 'rose', 'ocean', 'copper', 'ink', 'lilac', 'citrus', 'paper', 'slate', 'film', 'mono', 'blush', 'olive', 'charcoal', 'silver', 'graphite', 'smoke', 'ash', 'notion', 'onedark', 'code', 'azure', 'teal', 'jade', 'amber', 'orchid', 'coral'] as const;
 
 export type ThemeProfileId = (typeof THEME_PROFILE_IDS)[number];
 export type ThemeProfileColorToken = CustomThemeColorToken;
@@ -3518,6 +3518,11 @@ export const THEME_PROFILE_PRESETS: Readonly<
         '--ui-action-accent-pressed': '#37634a',
       },
     },
+  },
+  'cosmic-princess-kaguya': {
+    id: 'cosmic-princess-kaguya',
+    label: '超时空辉夜姬！',
+    tokens: { dark: worldlineboxDark, light: worldlineboxLight },
   },
   midnight: {
     id: 'midnight',

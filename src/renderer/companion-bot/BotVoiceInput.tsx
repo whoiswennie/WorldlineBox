@@ -2,6 +2,7 @@ import { useBotCallDocument } from './call-pet';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import type { WorldlineBoxLocalSpeechApi } from '../../shared/local-speech';
+import { BOT_PUSH_TO_TALK_SHORTCUT } from '../../shared/companion-push-to-talk';
 import { BotIcon } from './BotIcon';
 import { speechBase64, VoiceRecorder, type VoiceRecording } from './voice-recorder';
 import './bot-voice.css';
@@ -13,8 +14,8 @@ type Mode = 'text' | 'voice';
 type Phase = 'idle' | 'starting' | 'recording' | 'converting' | 'processing' | 'ready' | 'sending';
 const emptyLevels = () => Array<number>(24).fill(0);
 
-export function BotVoiceInput({ conversationId, locale, disabled, textOnly = false, onText, onVoice, api = localSpeechApi(), onStart, onActivityChange }: {
-  conversationId: string; locale: 'zh-CN' | 'en'; disabled?: boolean; textOnly?: boolean;
+export function BotVoiceInput({ conversationId, locale, disabled, textOnly = false, onText, onVoice, api = localSpeechApi(), onStart, onActivityChange, pushToTalkShortcut }: {
+  conversationId: string; locale: 'zh-CN' | 'en'; disabled?: boolean; textOnly?: boolean; pushToTalkShortcut?: boolean;
   onText(text: string): void; onVoice?(media: BotMediaRef): Promise<void>; api?: WorldlineBoxLocalSpeechApi;
   onStart?(): void; onActivityChange?(active: boolean): void;
 }) {
@@ -169,8 +170,11 @@ export function BotVoiceInput({ conversationId, locale, disabled, textOnly = fal
     {(!textOnly ? ['voice', 'text'] as const : ['text'] as const).map(selected => {
       const label = selected === 'voice' ? zh ? '录音发语音' : 'Record voice message' : zh ? '语音转文字' : 'Dictation';
       const active = open && mode === selected;
+      const title = pushToTalkShortcut && selected === 'text'
+        ? zh ? `${label} · 按住 ${BOT_PUSH_TO_TALK_SHORTCUT} 说话，松开发送` : `${label} · Hold ${BOT_PUSH_TO_TALK_SHORTCUT} to speak and release to send`
+        : label;
       return <button key={selected} className="bot-voice-trigger" type="button" disabled={disabled && !active || busy && (!active || !['starting', 'recording'].includes(phase))}
-        aria-label={label} title={active && phase === 'recording' ? zh ? '结束录音' : 'Stop recording' : label} aria-pressed={active} aria-expanded={active} onClick={() => choose(selected)}><BotIcon name={selected === 'voice' ? 'microphone' : 'dictation'} /></button>;
+        aria-label={label} title={active && phase === 'recording' ? zh ? '结束录音' : 'Stop recording' : title} aria-pressed={active} aria-expanded={active} onClick={() => choose(selected)}><BotIcon name={selected === 'voice' ? 'microphone' : 'dictation'} /></button>;
     })}
     {open && <div className={`bot-voice-panel is-${phase}`} role="region" aria-label={zh ? '本地语音' : 'Local speech'} aria-busy={phase === 'processing' || phase === 'converting' || phase === 'sending'}>
       <div className="bot-voice-meter-row">

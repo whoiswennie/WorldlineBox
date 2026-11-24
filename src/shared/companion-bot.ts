@@ -12,6 +12,7 @@ import { botMemoryMaintenanceSchemas } from './companion-bot-maintenance';
 import type { BotBrainContextSummary } from './companion-bot-context';
 import type { BotChatRuntime, BotNativeTopic } from './companion-bot-topics';
 import type { BotCallCue, BotCallModel, BotCallStage } from './companion-call';
+import type { BotPushToTalkEvent } from './companion-push-to-talk';
 export type { BotBrainContextSummary, BotBrainRequestMetrics } from './companion-bot-context';
 
 export const BOT_CHANNEL = 'companion-bot:request';
@@ -171,7 +172,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
     expectedUpdatedAt: z.string().datetime().nullable().optional() }),
   z.strictObject({ type: z.literal('conversation.policy'), conversationId: id, participationMode: z.enum(['automatic', 'all', 'mentions']) }),
   z.strictObject({ type: z.literal('conversation.pin'), conversationId: id, pinned: z.boolean() }),
-  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(botAppIdSchema.options.length).optional(), surface: z.literal('call').optional() })
+  z.strictObject({ type: z.literal('message.send'), conversationId: id, content: z.string().trim().max(64000), requestId: id, quoteMessageId: id.optional(), attachmentIds: z.array(id).max(16).optional(), topicId: id.optional(), newTopic: z.boolean().optional(), delivery: z.enum(['queue','steer','interrupt']).optional(), browserContextId: z.string().uuid().optional(), apps: z.array(botAppIdSchema).max(botAppIdSchema.options.length).optional(), surface: z.literal('call').optional() })
     .refine(input => !!input.content || !!input.attachmentIds?.length, { message: '消息需要文字或真实附件。' }),
   z.strictObject({ type: z.literal('reply.cancel'), messageId: id }),
   z.strictObject({ type: z.literal('execution.answer'), messageId: id, questionId: id, text: z.string().trim().min(1).max(12000) }),
@@ -222,6 +223,7 @@ export type BotEvent = { type: 'changed'; conversationId?: string }
 export const BOT_INBOX_CHANNEL = 'companion-bot:message-inbox';
 export interface BotInboxEvent { counts: Record<string, number>; openRoom?: string }
 export interface WorldlineBoxBotApi {
+  onPushToTalk?(listener: (event: BotPushToTalkEvent) => void): () => void;
   inbox?(readRoom?: string, through?: number): Promise<Record<string, number>>;
   onInbox?(listener: (event: BotInboxEvent) => void): () => void;
   request(input: BotRequest): Promise<BotResponse>;
@@ -235,4 +237,4 @@ export const botSpeechRequest = z.discriminatedUnion('type', [
 ]);
 export type BotSpeechRequest = z.infer<typeof botSpeechRequest>;
 export type BotSpeechEvent = { id: string; audio?: Uint8Array; done?: boolean; error?: string };
-export interface BotResponse { userBio?: string; legacyCallConversationId?: string }
+export interface BotResponse { userBio?: string; legacyCallConversationId?: string; guiding?: boolean }

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test } from '@playwright/test';
 import type { BotReplyPart, BotRequest, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
+import { BOT_PUSH_TO_TALK_CHANNEL } from '../../src/shared/companion-push-to-talk';
 import type { DshRuntime, WorldlineBoxDshLauncherApi } from '../../src/shared/dsh-launcher';
 import type { WorldlineBoxLlmApi } from '../../src/shared/llm';
 import { electronLaunchEnv, resolveElectronLaunchOptions } from './electron-test-helpers';
@@ -209,8 +210,7 @@ test('reports a one-minute companion schedule in chat, video and desktop pet aft
     const petClosed = pet.waitForEvent('close');
     await floating.getByRole('button', { name: '返回会面场景', exact: true }).click().catch(error => { if (!pet.isClosed()) throw error; });
     await petClosed;
-    await video.getByRole('button', { name: '会面聊天记录', exact: true }).click();
-    await expect(video.locator(`[data-call-message="${report[0]!.id}"]`)).toContainText(scheduleReport);
+    await expect(video.getByRole('button', { name: '会面聊天记录', exact: true })).toHaveCount(0);
   } finally {
     await app.close();
     await model.close();
@@ -225,7 +225,7 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
   const runtimes = JSON.parse(await readFile(path.join(manager, 'runtimes.json'), 'utf8').catch(() => '[]')) as DshRuntime[];
   const runtime = selectNativeRuntime(runtimes, ['0.2.2-rc.3', '0.2.2-rc.2', '0.2.2-rc.1']);
   const wave = path.resolve('tests/fixtures/media/sensevoice-zh.wav');
-  test.skip(!runtime || !existsSync(wave) || !existsSync(path.resolve('resources/speech-models/model.int8.onnx')), 'Requires a sealed DSH runtime and local SenseVoice test assets.');
+  test.skip(process.platform !== 'win32' || !runtime || !existsSync(wave) || !existsSync(path.resolve('resources/speech-models/model.int8.onnx')), 'Requires Windows, a sealed DSH runtime and local SenseVoice test assets.');
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-call-voice-'));
   const launch = resolveElectronLaunchOptions();
   await seedNativeRuntime(manager, runtime!, profile); await stageCallMemory(launch.cwd);
@@ -241,21 +241,6 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
       window.on('show', () => window.hide()); window.hide(); window.setMinimumSize(0, 0); window.setSize(1440, 940);
       window.webContents.setAudioMuted(true); window.webContents.setBackgroundThrottling(false);
     }, profile);
-    await page.evaluate(() => {
-      const devices = navigator.mediaDevices;
-      const capture = devices.getUserMedia.bind(devices);
-      let utterancePlayed = false;
-      devices.getUserMedia = async constraints => {
-        const stream = await capture(constraints);
-        const tracks = stream.getAudioTracks();
-        if (tracks.length) {
-          // Keep the second listen window open without replaying the recorded utterance.
-          if (utterancePlayed) for (const track of tracks) track.enabled = false;
-          utterancePlayed = true;
-        }
-        return stream;
-      };
-    });
     const capture = async (name: string) => {
       const bytes = await app.evaluate(async ({ BrowserWindow }) => (await BrowserWindow.getAllWindows()[0]!.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG().toString('base64'));
       const file = testInfo.outputPath(name + '.png'); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, Buffer.from(bytes, 'base64')); await testInfo.attach(name, { path: file, contentType: 'image/png' });
@@ -303,12 +288,13 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await meeting.getByRole('button', { name: '展开会面输入', exact: true }).click();
     expect(await framing()).toEqual(originalFraming);
 
-    const voice = meeting.getByRole('button', { name: '连续语音对话', exact: true });
-    await voice.click();
-    await expect(meeting.locator('.bot-call-voice.is-listening')).toBeVisible({ timeout: 90_000 });
-    const done = meeting.getByRole('button', { name: '说完了', exact: true });
-    await page.waitForTimeout(2_500);
-    if (await done.isVisible()) await done.click();
+    const hotkey = (action: 'press' | 'release') => app.evaluate(({ BrowserWindow }, { channel, action }) => {
+      BrowserWindow.getAllWindows()[0]!.webContents.send(channel, action);
+    }, { channel: BOT_PUSH_TO_TALK_CHANNEL, action });
+    await hotkey('press');
+    await expect(meeting.getByText('正在录音，松开发送')).toBeVisible();
+    await page.waitForTimeout(5_500);
+    await hotkey('release');
     const state = async () => (await request({ type: 'state', conversationId: callId })).snapshot!;
     const bubble = meeting.locator('.bot-call-bubble-text');
     await expect(bubble).toHaveText(firstLine, { timeout: 150_000 });
@@ -364,8 +350,6 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     await meeting.getByRole('button', { name: '自动播放', exact: true }).click();
     model.unblock();
     await expect.poll(async () => (await state()).messages.find(item => item.parts?.some(part => part.text === firstLine))?.status).toBe('sent');
-    await expect(meeting.locator('.bot-call-voice.is-listening')).toBeVisible();
-    await voice.click();
     await expect(bubble).toHaveText(firstLine);
     const next = meeting.getByRole('button', { name: '下一段', exact: true });
     let joined = '';
@@ -405,13 +389,13 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
       await closed;
       await expect(bubble).toHaveText(firstLine);
     } else await review.click();
-    await meeting.getByRole('button', { name: '完整对话', exact: true }).click();
-    const history = meeting.locator('.bot-call-transcript');
+    const history = page.locator('.bot-main .bot-transcript');
     await expect(history).toContainText(longLine);
     await expect(history).not.toContainText(hiddenBody);
     await expect(history).not.toContainText('这段无效的表演不应发布。');
     await expect(history).toContainText('普通聊天基线');
-    await meeting.getByRole('button', { name: '收起会面面板', exact: true }).click();
+    await expect(meeting).not.toContainText('普通聊天基线');
+    await expect(meeting.getByRole('button', { name: '完整对话', exact: true })).toHaveCount(0);
     await meeting.getByRole('button', { name: /^上下文(?:已用|待统计)/u }).click();
     await expect(meeting.getByRole('dialog', { name: 'DSH 上下文' })).toBeVisible();
     await meeting.getByRole('button', { name: '关闭上下文详情' }).click();
@@ -455,11 +439,13 @@ test('video meeting presents DSH tool segments live after voice input and keeps 
     expect(stopped?.status).toBe('cancelled');
     expect(stopped?.parts?.filter(part => part.presentation).map(part => part.text)).toEqual([interruptedLine, discardedLine]);
     expect((await request({ type: 'state', conversationId: direct })).snapshot?.messages.some(item => item.content === voiceText)).toBe(true);
+    await expect.poll(async () => (await state()).messages.some(item => item.status === 'sent' && item.content === '好，我们换个话题聊。')).toBe(true);
     await meeting.getByRole('button', { name: '挂断', exact: true }).click();
     await expect(meeting).toHaveCount(0);
     await page.getByRole('button', { name: '拨打伙伴电话', exact: true }).click();
     await meeting.getByRole('button', { name: '接通', exact: true }).click();
-    await meeting.getByRole('button', { name: '会面聊天记录', exact: true }).click();
+    await expect(meeting.getByRole('button', { name: '会面聊天记录', exact: true })).toHaveCount(0);
+    await expect(meeting.locator('.bot-call-bubble-text')).toHaveCount(0);
     await expect(history).toContainText(finalLine);
     await expect(history).toContainText('接续已经存在的话题');
     await expect(history).toContainText(discardedLine);

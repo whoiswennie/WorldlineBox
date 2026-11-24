@@ -683,9 +683,48 @@ describe('WorldlineBox app update release contract', () => {
 
       const result = await service.downloadAndInstall();
       expect(result).toEqual({ ok: false, status: 'error', code: 'download-failed' });
-      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+      await expect(readdir(path.join(root, 'Downloads'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect((await readdir(root)).filter((entry) => entry.startsWith('worldlinebox-installer-')))
         .toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['download', 'extraction'] as const)('cleans installed-update staging when %s runs out of space', async phase => {
+    const archive = new AdmZip();
+    archive.addFile('WorldlineBoxSetup.exe', Buffer.from('offline installer'));
+    const bytes = archive.toBuffer();
+    const checksum = createHash('sha256').update(bytes).digest('hex');
+    const root = await mkdtemp(path.join(tmpdir(), 'worldlinebox-app-update-space-'));
+    const assetName = 'WorldlineBox-win-x86-64-0.1.3-setup.zip';
+    const assetUrl = `https://github.com/whoiswennie/WorldlineBox/releases/download/v0.1.3/${assetName}`;
+    const downloads: string[] = [];
+    try {
+      const service = createAppUpdateService({
+        currentVersion: '0.1.1',
+        isPackaged: true,
+        platform: 'win32',
+        arch: 'x64',
+        executablePath: path.join(root, 'WorldlineBox.exe'),
+        tempDirectory: root,
+        downloadsDirectory: path.join(root, 'Downloads'),
+        environment: { WORLDLINEBOX_DISTRIBUTION: 'installed' },
+        probeFreeBytes: async directory => phase === 'download' || directory !== root ? 0 : bytes.length,
+        fetchImpl: async url => {
+          if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(releasePayload({
+            assets: [{
+              name: assetName, browser_download_url: assetUrl, size: bytes.byteLength, digest: `sha256:${checksum}`,
+            }],
+          })));
+          downloads.push(url);
+          return new Response(bytes as unknown as BodyInit);
+        },
+      });
+
+      expect(await service.downloadAndInstall()).toEqual({ ok: false, status: 'error', code: 'insufficient-space' });
+      expect(downloads).toEqual(phase === 'download' ? [] : [assetUrl]);
+      expect(await readdir(root)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -743,7 +782,7 @@ describe('WorldlineBox app update release contract', () => {
       expect(launched).toHaveLength(1);
       expect(path.basename(launched[0]!)).toBe('WorldlineBoxSetup.exe');
       expect(launchedBytes).toEqual(installerBytes);
-      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+      await expect(readdir(path.join(root, 'Downloads'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(launched[0]!)).toEqual(installerBytes);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -803,7 +842,7 @@ describe('WorldlineBox app update release contract', () => {
       expect(opened).toHaveLength(1);
       expect(path.basename(opened[0]!)).toBe('WorldlineBoxSetup.exe');
       expect(openedBytes).toEqual(installerBytes);
-      expect((await readdir(path.join(root, 'Downloads')))).toEqual([]);
+      await expect(readdir(path.join(root, 'Downloads'))).rejects.toMatchObject({ code: 'ENOENT' });
       expect(await readFile(opened[0]!)).toEqual(installerBytes);
     } finally {
       await rm(root, { recursive: true, force: true });

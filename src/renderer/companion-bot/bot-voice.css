@@ -39,6 +39,9 @@
 .bot-voice-message.is-transcript-only{width:100%;max-width:100%;align-items:stretch}
 .is-transcript-only .bot-voice-actions{justify-content:space-between}
 .bot-voice-message-error{align-self:stretch;color:var(--ui-status-danger-content,#d55);font-size:11px;line-height:1.5;overflow-wrap:anywhere;text-align:left}
+.bot-push-to-talk-status{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;padding:5px 9px;border:1px solid var(--ui-border-subtle);border-radius:8px;background:var(--ui-surface-raised);color:var(--ui-content-primary);font-size:12px;overflow-wrap:anywhere}
+.bot-push-to-talk-status [role=alert]{color:var(--ui-status-danger-content)}
+.bot-push-to-talk-status button{padding:3px 6px}
 @keyframes bot-voice-spin{to{transform:rotate(360deg)}}
 @keyframes bot-voice-wave{to{transform:scaleY(.35)}}
 @media(prefers-reduced-motion:reduce){.bot-voice-live-wave>i{transition:none}.bot-voice-spinner,.bot-voice-bubble.is-playing .bot-voice-wave i{animation:none}}

@@ -71,6 +71,9 @@ test('video attachment offers built-in login once and reuses the browser account
       const actor = state.companions.find(item=>conversation.memberIds.includes(item.id))!;
       return {id:conversation.id, actorId:actor.id, name:actor.name};
     });
+    await page.getByRole('button',{name:'拨打伙伴电话'}).click();
+    const meeting = page.locator('.bot-call-window');
+    await meeting.getByRole('button',{name:'接通',exact:true}).click();
     await app.evaluate(({app,BrowserWindow}, {room,channel}) => {
       const {DatabaseSync} = process.getBuiltinModule('node:sqlite');
       const {join} = process.getBuiltinModule('node:path');
@@ -88,14 +91,17 @@ test('video attachment offers built-in login once and reuses the browser account
       owner.webContents.send(channel,{type:'changed',conversationId:room.id});
       owner.webContents.send(channel,{type:'video-present',conversationId:room.id,cardId:card.id,surface:'chat'});
     },{room,channel:BOT_EVENT_CHANNEL});
-    const card = page.locator('[data-video-card="video-e2e"]');
+    const card = page.locator('.bot-main [data-video-card="video-e2e"]');
     await expect(card.locator('webview')).toBeVisible();
+    await expect(meeting.locator('[data-video-card]')).toHaveCount(0);
     await expect.poll(() => app.evaluate(({session,webContents}, partition) =>
       webContents.getAllWebContents().some(wc => wc.getType()==='webview' && wc.getTitle()==='Bilibili player fixture' && wc.session===session.fromPartition(partition)),
     BROWSER_PARTITION)).toBe(true);
     const owner = await app.browserWindow(page);
     const previousBounds = await owner.evaluate(win => win.getBounds());
     const guestId = await card.locator('webview').evaluate(node => (node as Electron.WebviewTag).getWebContentsId());
+    await meeting.getByRole('button',{name:'结束并关闭会面',exact:true}).click();
+    expect(await card.locator('webview').evaluate(node => (node as Electron.WebviewTag).getWebContentsId())).toBe(guestId);
     const playerControl = () => app.evaluate(({webContents}, id) =>
       webContents.fromId(id)!.executeJavaScript('document.querySelector("button").textContent'), guestId);
     const fullscreen = card.getByRole('button',{name:'全屏',exact:true});

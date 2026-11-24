@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { nativeCallback, nativeServiceFixture, waitNative } from '../fixtures/bot-native-service';
 import type { MusicExecution, MusicShare, MusicShareInput } from '../../src/shared/music';
 
-it('grants music only to the connected topic, routes the source surface, and cancels on detach', async () => {
+it('routes music controls from a call to its chat and cancels them on detach', async () => {
   const results: Awaited<ReturnType<typeof nativeCallback>>[] = [];
   let pausedControl: AbortSignal | undefined;
   let trackName = '雨后的窗';
@@ -39,7 +39,7 @@ it('grants music only to the connected topic, routes the source surface, and can
     await waitNative(() => !!pausedControl);
     expect(calls[1]?.workerTools?.filter(tool => tool.name.startsWith('music')).map(tool => tool.name)).toEqual(['music', 'music_global_player']);
     expect(JSON.parse(calls[1]!.prompt).musicPlayer).toMatchObject({ trackName: '雨后的窗', playlistName: '幻酱的作品集', observedAt: expect.any(String) });
-    expect(execute.mock.calls[0]?.[0]).toEqual({ conversationId: room, surface: 'call' });
+    expect(execute.mock.calls.map(([scope]) => scope)).toEqual(Array(3).fill({ conversationId: room, surface: 'chat' }));
     expect(execute.mock.calls.map(call => call[1])).toEqual([
       { action: 'status', target: 'global' }, { action: 'status', target: 'global' }, { action: 'pause', target: 'inline' },
     ]);
@@ -109,7 +109,7 @@ it('persists one card and auto-play attempt for a retried or concurrently reques
     const { service } = fixture;
     const room = (await service.handle({ type: 'state' })).snapshot!.conversations.find(item => item.kind === 'direct')!.id;
     await service.handle({ type: 'app.connect', conversationId: room, appId: 'music' });
-    const result = await service.handle({ type: 'message.send', conversationId: room, requestId: 'share-record', content: '分享这些作品', apps: ['music'] });
+    const result = await service.handle({ type: 'message.send', conversationId: room, requestId: 'share-record', content: '分享这些作品', apps: ['music'], surface: 'call' });
     const replyId = result.replyMessageIds![0]!;
     await waitNative(() => service.store.getMessage(replyId)?.status === 'sent');
     for (const share of shares) expect(share).toMatchObject({ ok: true, result: { published: true, messageId: replyId } });

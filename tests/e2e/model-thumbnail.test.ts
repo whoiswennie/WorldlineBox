@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { _electron as electron, expect, test } from "@playwright/test";
 import sharp from "sharp";
 
-import { resolveElectronExecutablePath } from "./electron-test-helpers";
+import { resolveElectronAppPath, resolveElectronExecutablePath } from "./electron-test-helpers";
 
 test.describe.configure({ timeout: 120_000 });
 
@@ -85,7 +85,7 @@ async function assertDecodedModelThumbnail(input: {
   } = input;
   const libraryPath = path.join(temporaryRoot, libraryName);
   const applicationDirectory =
-    process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+    resolveElectronAppPath();
   const showWindowInactive = process.env.WORLDLINEBOX_E2E_SHOW_INACTIVE === "1";
   let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
   try {
@@ -168,6 +168,10 @@ async function assertDecodedModelThumbnail(input: {
         thumbnail.evaluate((element) => (element as HTMLImageElement).naturalWidth > 0),
       )
       .toBe(true);
+    if (/\.fbx$/iu.test(assetName)) {
+      expect(readdirSync(path.join(libraryPath, ".worldlinebox", "artifacts")))
+        .not.toContainEqual(expect.stringMatching(/\.model_glb$/u));
+    }
     const computerUseHoldMs = Number(
       process.env.WORLDLINEBOX_E2E_COMPUTER_USE_HOLD_MS ?? 0,
     );

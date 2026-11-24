@@ -5,7 +5,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { resolveElectronExecutablePath } from "./electron-test-helpers";
+import { resolveElectronAppPath, resolveElectronExecutablePath } from "./electron-test-helpers";
 
 // ---------------------------------------------------------------------------
 // WorldlineBox-565785: a restored scroll offset must be in place in the FIRST frame
@@ -18,7 +18,7 @@ import { resolveElectronExecutablePath } from "./electron-test-helpers";
 test.describe.configure({ timeout: 120_000 });
 
 function launchApp(temporaryRoot: string, libraryPath: string, importFiles: string) {
-  const applicationDirectory = process.env.WORLDLINEBOX_E2E_APP_DIRECTORY ?? process.cwd();
+  const applicationDirectory = resolveElectronAppPath();
   return electron.launch({
     args: [applicationDirectory],
     cwd: applicationDirectory,
@@ -54,12 +54,12 @@ async function createFolderViaApi(window: Page, name: string) {
 function folderRow(window: Page, name: string) {
   const escaped = name.replace(/"/g, '\\"');
   return window.locator(
-    `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][title="${escaped}"]`,
+    `.navigation-pane button.nav-row[data-nav-folder-kind="managed"][data-hover-tip="${escaped}"]`,
   );
 }
 
 async function waitForNavigation(window: Page) {
-  await expect(window.locator(".workspace-canvas-host")).toHaveAttribute("aria-busy", "false");
+  await expect(window.locator(".workspace-canvas-host")).toHaveAttribute("aria-busy", "false", { timeout: 15_000 });
 }
 
 /** Records scrollTop/extent on every animation frame for `ms` milliseconds. */
@@ -105,6 +105,7 @@ test("a restored scroll offset is painted in the first content frame", async () 
   const application = await launchApp(temporaryRoot, libraryPath, sources.join(path.delimiter));
   try {
     const window = await application.firstWindow();
+    await window.locator('[data-application-module="assets"]').click();
     await window.getByRole("button", { name: "创建资源库" }).click();
     await window.getByRole("textbox", { name: "名称" }).fill(libraryName);
     await window.getByRole("button", { name: "创建", exact: true }).click();
@@ -129,7 +130,7 @@ test("a restored scroll offset is painted in the first content frame", async () 
     // --- Back restore ---
     await folderRow(window, "空文件夹").click();
     await waitForNavigation(window);
-    await startFrameProbe(window, 1_500);
+    await startFrameProbe(window, 20_000);
     await window.getByRole("button", { name: "后退" }).click();
     await waitForNavigation(window);
     await window.waitForTimeout(1_200);
@@ -151,7 +152,7 @@ test("a restored scroll offset is painted in the first content frame", async () 
       const extent = el.scrollHeight - el.clientHeight;
       el.scrollTop = extent * 0.3;
     });
-    await startFrameProbe(window, 1_500);
+    await startFrameProbe(window, 20_000);
     await tabs.first().click();
     await waitForNavigation(window);
     await window.waitForTimeout(1_200);
@@ -159,6 +160,31 @@ test("a restored scroll offset is painted in the first content frame", async () 
     expect(tab.contentFrames).toBeGreaterThan(0);
     expect(tab.topFrames).toBe(0);
     expect(tab.first[0]?.[0]).toBeGreaterThan(0);
+
+    const visibleId = await canvas.evaluate(el => {
+      const viewport = el.getBoundingClientRect();
+      return [...el.querySelectorAll<HTMLElement>(".asset-card[data-asset-id]")].find(card => {
+        const rect = card.getBoundingClientRect();
+        return rect.top >= viewport.top && rect.bottom <= viewport.bottom;
+      })?.dataset.assetId;
+    });
+    expect(visibleId).toBeTruthy();
+    const card = canvas.locator(`.asset-card[data-asset-id="${visibleId}"]`);
+    await card.click();
+    const browseView = () => canvas.evaluate((el, id) => {
+      const rect = el.querySelector(`.asset-card[data-asset-id="${id}"]`)?.getBoundingClientRect();
+      return { scrollTop: el.scrollTop, scrollLeft: el.scrollLeft, top: rect?.top, left: rect?.left };
+    }, visibleId);
+    const beforePreview = await browseView();
+    await window.keyboard.press("Enter");
+    const viewer = window.locator(".workspace-viewer");
+    await expect(viewer.getByRole("textbox", { name: "文本内容" })).toHaveValue(/asset \d+/);
+    await viewer.focus();
+    await window.keyboard.press("Enter");
+    await expect(viewer).toHaveCount(0);
+    await expect(window.locator(".workspace-canvas-host")).not.toHaveClass(/is-restoring/);
+    await expect.poll(browseView).toEqual(beforePreview);
+    await expect(card).toHaveAttribute("aria-pressed", "true");
   } finally {
     await application.close();
     await rm(temporaryRoot, { recursive: true, force: true });

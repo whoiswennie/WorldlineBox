@@ -21,3 +21,11 @@ it('confirms non-admission when the original task ended and prevents ID reuse wi
   const f=await fixture();f.record.status='succeeded';expect(await f.send()).toEqual({accepted:false});expect(f.record.agent.steer).not.toHaveBeenCalled();
   f.record.status='running';await f.send();f.input.text='不同内容';await expect(f.send()).rejects.toThrow('different content');
 });
+it('rejects a supplement if the task finishes while its prepared receipt is written', async () => {
+  const f = await fixture(), write = f.effects.write;
+  f.effects.write = async receipt => { await write(receipt); f.record.status = 'succeeded'; };
+  expect(await f.send()).toEqual({ accepted: false });
+  expect(await f.send()).toEqual({ accepted: false });
+  expect(f.record.agent.steer).not.toHaveBeenCalled();
+  expect([...f.receipts.values()]).toMatchObject([{ status: 'not-admitted' }]);
+});

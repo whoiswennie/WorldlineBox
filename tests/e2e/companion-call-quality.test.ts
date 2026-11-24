@@ -90,8 +90,7 @@ test('renders the Windows desktop pet at physical display resolution and measure
     const composer = pet.getByRole('button', { name: '展开会面输入', exact: true });
     if (await composer.isVisible()) await composer.click();
     await pet.getByRole('button', { name: '更多会面功能', exact: true }).click();
-    await pet.getByRole('button', { name: '会面聊天记录', exact: true }).click();
-    await pet.getByRole('tab', { name: '操作', exact: true }).click();
+    await pet.getByRole('button', { name: '场景与互动', exact: true }).click();
     await pet.getByText('表情与动作', { exact: true }).click();
     await pet.getByLabel('选择模型动作', { exact: true }).selectOption({ label: '默认手切举手' });
     const motion = pet.getByRole('button', { name: '播放动作', exact: true });
@@ -117,8 +116,7 @@ test('renders the Windows desktop pet at physical display resolution and measure
     await expect(recording.locator('.capture-recording-status')).toHaveClass(/is-recording/u, { timeout: 20000 });
     const loaded = sampleSource(8000);
     await pet.getByRole('button', { name: '更多会面功能', exact: true }).click();
-    await pet.getByRole('button', { name: '会面聊天记录', exact: true }).click();
-    await pet.getByRole('tab', { name: '操作', exact: true }).click();
+    await pet.getByRole('button', { name: '场景与互动', exact: true }).click();
     const loadedMotion = pet.getByRole('button', { name: '播放动作', exact: true });
     await pet.getByText('表情与动作', { exact: true }).click();
     for (const label of ['脸红', '屑屑眼', '流泪']) {

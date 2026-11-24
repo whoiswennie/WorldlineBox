@@ -1,12 +1,12 @@
-import { botImageNeedsConversion, botMediaPreviewPolicy, normalizeBotMediaMime, type BotMediaRef } from '../../shared/companion-bot-media';
+import { botImageNeedsConversion, botMediaPreviewPolicy, normalizeBotMediaMime, officeFormat, type BotMediaRef } from '../../shared/companion-bot-media';
 
-export type BotAttachmentKind = 'image' | 'video' | 'audio' | 'text' | 'file';
+export type BotAttachmentKind = 'image' | 'video' | 'audio' | 'text' | 'pdf' | 'office' | 'file';
 export type BotAttachmentCategory = 'image' | 'video' | 'audio' | 'document';
 export function botAttachmentDetails(media: BotMediaRef, hasApi = false) {
   const name = media.originalName ?? media.name, mimeType = normalizeBotMediaMime(name, media.mimeType), policy = botMediaPreviewPolicy({ name, mimeType, size: media.size });
-  const kind: BotAttachmentKind = policy.previewEligibility === 'text' ? 'text' : mimeType.startsWith('image/') ? 'image' : mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('audio/') ? 'audio' : 'file';
-  const canPreview = policy.previewEligibility === 'inline' && kind !== 'file' || policy.previewEligibility === 'text' && hasApi;
-  return { name, mimeType, kind, category: (kind === 'file' || kind === 'text' ? 'document' : kind) as BotAttachmentCategory, canPreview, policy,
+  const kind: BotAttachmentKind = policy.previewEligibility === 'text' ? 'text' : mimeType.startsWith('image/') ? 'image' : mimeType.startsWith('video/') ? 'video' : mimeType.startsWith('audio/') ? 'audio' : officeFormat(name) ? 'office' : /\.pdf$/i.test(name) || mimeType === 'application/pdf' ? 'pdf' : 'file';
+  const canPreview = policy.previewEligibility !== 'external-only' && (kind === 'text' || kind === 'office' ? hasApi : kind !== 'file');
+  return { name, mimeType, kind, category: (kind === 'audio' || kind === 'video' || kind === 'image' ? kind : 'document') as BotAttachmentCategory, canPreview, policy,
     extension: name.includes('.') ? name.split('.').at(-1)!.slice(0, 6).toUpperCase() : 'FILE',
     imageUrl: botImageNeedsConversion(mimeType) ? media.url + '/display' : media.url };
 }

@@ -102,7 +102,7 @@ it('closes tracks and the optional meter when AudioContext.resume fails', async 
 it('handles a recorder error while resume is pending without an unhandled finished rejection or leaked tracks', async () => {
   const f = meteredFixture({ pendingResume: true }), recorder = new VoiceRecorder(), starting = recorder.start(vi.fn(), { onLevel() {} });
   await Promise.resolve(); await Promise.resolve(); f.state.native!.onerror!(); f.state.resume!();
-  await expect(starting).rejects.toThrow('麦克风录音中断'); expect(f.track.stop).toHaveBeenCalled(); expect(f.state.contexts[0]!.close).toHaveBeenCalledOnce();
+  await expect(starting).rejects.toThrow('录音中断'); expect(f.track.stop).toHaveBeenCalled(); expect(f.state.contexts[0]!.close).toHaveBeenCalledOnce();
 });
 it.each(['sample', 'view'])('stops the microphone and preserves the finished error after an optional %s failure', async kind => {
   const f = meteredFixture(), recorder = new VoiceRecorder();

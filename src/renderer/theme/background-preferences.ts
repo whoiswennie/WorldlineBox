@@ -133,6 +133,8 @@ export const backgroundPreferencesSchema = z.strictObject({
   imageOpacity: z.number().finite().min(0).max(1),
   /** Built-in illustrated skins keep a separate choice from personal images. */
   themeOpacity: z.number().finite().min(0).max(1).optional(),
+  /** Existing profiles play a wallpaper's soundtrack until explicitly muted. */
+  soundEnabled: z.boolean().optional(),
   /** Also paint the wallpaper behind the centre (main) panel. Default off. */
   showInMainPanel: z.boolean().default(false),
   /** Distinguish upgraded wallpaper defaults from subsequent explicit choices. */
@@ -223,6 +225,7 @@ export function normalizeBackgroundPreferences(
       record.overlayOpacity,
     ),
     themeOpacity: normalizeBackgroundImageOpacity(record.themeOpacity),
+    ...(typeof record.soundEnabled === 'boolean' ? { soundEnabled: record.soundEnabled } : {}),
     showInMainPanel: record.showInMainPanel === true,
     ...(record.panelVisibilityVersion === 1 ? { panelVisibilityVersion: 1 as const } : {}),
     // Records from before the toggle existed: on (the image was showing).

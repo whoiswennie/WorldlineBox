@@ -256,19 +256,18 @@ if (existsSync(path.join(resourcesPath, 'vcp-memory-host'))) throw new Error('Re
 await verifyBotMemory({ packageRoot: path.join(resourcesPath, 'vcp-memory'), projectRoot,
   nodePath: await resolveBotMemoryNode(projectRoot) });
 await verifyBotStickers(path.join(resourcesPath,'bot-stickers'));
+const normalizedAsarFiles = new Set(
+  asarFiles.map(entry => entry.replaceAll('\\', '/').replace(/^\/?(?:\.\/)?/u, '')),
+);
 const requiredAsarEntries = [
-  'plugin_standard_host.js',
-  'plugin_trusted_host.js',
-  'script_runtime_utility.js',
-  'browser-capture.js',
+  '.vite/build/plugin_standard_host.js',
+  '.vite/build/plugin_trusted_host.js',
+  '.vite/build/script_runtime_utility.js',
+  '.vite/build/browser-capture.js',
+  'node_modules/typescript/lib/typescript.js',
+  'node_modules/quickjs-emscripten/package.json',
 ];
-const missingAsarEntries = requiredAsarEntries.filter((entry) => {
-  const normalized = entry.replaceAll('\\', '/');
-  return !asarFiles.some((candidate) => {
-    const file = String(candidate).replaceAll('\\', '/').replace(/^\.\//u, '');
-    return file === normalized || file.endsWith(`/${normalized}`);
-  });
-});
+const missingAsarEntries = requiredAsarEntries.filter(entry => !normalizedAsarFiles.has(entry));
 if (missingAsarEntries.length > 0) {
   throw new Error(
     `Package ASAR is missing required runtime bundles:\n${missingAsarEntries.join('\n')}`,

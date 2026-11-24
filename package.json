@@ -138,6 +138,7 @@
     "ssh2": "1.17.0",
     "three": "^0.185.1",
     "triviumdb": "0.8.5",
+    "typescript": "6.0.3",
     "ws": "8.22.1",
     "yaml": "2.8.2",
     "yauzl": "3.4.0",
@@ -168,7 +169,6 @@
     "globals": "17.7.0",
     "happy-dom": "^20.0.11",
     "to-ico": "^1.1.5",
-    "typescript": "6.0.3",
     "typescript-eslint": "8.63.0",
     "vite": "8.1.4",
     "vitest": "4.1.10"

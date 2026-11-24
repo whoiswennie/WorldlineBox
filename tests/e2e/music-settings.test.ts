@@ -146,9 +146,12 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
       '!!document.querySelector(\'button[aria-label="拨打伙伴电话"]\')', false))).toBe(true);
     const initialChat = await native.evaluate(win => win.webContents.executeJavaScript(`
       (async () => {
-        const { snapshot } = await window.worldlinebox.companionBot.request({ type: 'state' });
+        const api = window.worldlinebox.companionBot;
+        const { snapshot } = await api.request({ type: 'state' });
         const room = snapshot.conversations.find(item => item.kind === 'direct');
         const { id, name } = snapshot.companions.find(item => room.memberIds.includes(item.id));
+        const connected = await api.request({ type: 'app.connect', conversationId: room.id, appId: 'music' });
+        if (!connected.ok) throw Error(connected.error);
         return { room: room.id, sender: { id, name } };
       })();
     `, false)) as { room: string; sender: { id: string; name: string } };
@@ -158,6 +161,8 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
       control: { action: 'status', target: 'global' } });
     expect(coldStatus).toMatchObject({ ok: true, value: { playlistName: '幻酱的作品集', playing: false } });
     await publishMusicFixture(application, initialChat.room, initialChat.sender, autoCard);
+    await expect.poll(() => native.evaluate(win => win.webContents.executeJavaScript(
+      '!!document.querySelector(\'button[aria-label="播放 初次播放"]\')', false))).toBe(true);
     const autoPlayback = await companionCommand(application, { conversationId: initialChat.room, surface: 'chat',
       control: { action: 'present', target: 'inline', card: autoCard } });
     expect(autoPlayback, autoPlayback.error).toMatchObject({ ok: true, value: { trackId: '103' } });
@@ -387,7 +392,8 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     expect(new Set(rows).size).toBe(5);
     expect((await apps.boundingBox())!.width).toBeLessThan(180);
     await apps.screenshot({ path: test.info().outputPath('apps-menu.png') });
-    await apps.getByRole('button', { name: '音乐', exact: true }).click();
+    await expect(apps.getByRole('button', { name: '音乐', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await apps.press('Escape');
     await expect(page.getByRole('button', { name: '打开对话播放器' })).toHaveCount(0);
     expect(await control({ action:'play', target:'global', trackId:'102' })).toMatchObject({ ok:true, value:{ trackId:'102' } });
     await expect.poll(() => page.locator('[data-global-music-audio]').evaluate((node:HTMLAudioElement) => ({ file:node.src.split('/').at(-1), paused:node.paused }))).toEqual({ file:'102.wav', paused:false });
@@ -438,13 +444,14 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
     const meeting = page.locator('.bot-call-window');
     await meeting.getByRole('button', { name:'接通', exact:true }).click();
     await expect(meeting).toHaveClass(/is-connected/u);
-    const controlCall = (control: MusicCommand['control']) => companionCommand(application!, { conversationId: room, surface: 'call', control });
     const callCard: MusicShare = { ...single, id:'meeting-work', title:'远处的山', preview:['远处的山'],
       queue:{ kind:'tracks', tracks:[{ playlistId:'18322613388', trackId:'102' }] } };
     await publishMusicFixture(application, room, sender, callCard);
-    const callPlayback = await controlCall({ action:'present', target:'inline', card:callCard });
+    const callPlayback = await control({ action:'present', target:'inline', card:callCard });
     expect(callPlayback, callPlayback.error).toMatchObject({ ok:true, value:{ trackId:'102' } });
-    await expect(meeting.locator('.bot-message-bubble [data-music-card="meeting-work"]').getByRole('region', { name:'对话音乐播放器' })).toContainText('远处的山');
+    const callPlayer = page.locator('.bot-main [data-music-card="meeting-work"]').getByRole('region', { name:'对话音乐播放器' });
+    await expect(callPlayer).toContainText('远处的山');
+    await expect(meeting.locator('[data-music-card]')).toHaveCount(0);
     const lyricsOpening = application.waitForEvent('window');
     expect(await control({ action:'lyrics', target:'global', visible:true })).toMatchObject({ ok:true });
     const commandOverlay = await lyricsOpening;
@@ -452,9 +459,8 @@ test('music keeps real audio across tabs, renders desktop lyrics, and manages na
       const petOpening = application.waitForEvent('window');
       await meeting.getByRole('button', { name:'切换为桌宠' }).click();
       const petPage = await petOpening;
-      const petPlayer = petPage.locator('.bot-message-bubble [data-music-card="meeting-work"]').getByRole('region', { name:'对话音乐播放器' });
-      await expect(petPlayer).toContainText('远处的山');
-      await petPlayer.getByRole('button', { name:'暂停', exact:true }).click();
+      await expect(petPage.locator('[data-music-card]')).toHaveCount(0);
+      await callPlayer.getByRole('button', { name:'暂停', exact:true }).click();
       await expect.poll(readTrack).toEqual({ file:'102.wav', paused:true });
     }
     await expect.poll(() => application!.evaluate(({ BrowserWindow }) =>

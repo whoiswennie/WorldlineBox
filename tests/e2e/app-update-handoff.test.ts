@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { ChildProcess } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -77,6 +77,7 @@ test('Windows installed update hands off without a terminal and completes hidden
   const packageVersion = (JSON.parse(readFileSync(path.join(appPath, 'package.json'), 'utf8')) as { version: string }).version;
   const temporaryRoot = mkdtempSync(path.join(tmpdir(), 'worldlinebox-update-handoff-e2e-'));
   const profilePath = path.join(temporaryRoot, 'profile');
+  const updateStagingPath = path.join(profilePath, 'update-staging');
   const downloadsPath = path.join(temporaryRoot, 'downloads');
   const tempPath = path.join(temporaryRoot, 'temp');
   const archivePath = path.join(temporaryRoot, 'setup.zip');
@@ -90,6 +91,14 @@ test('Windows installed update hands off without a terminal and completes hidden
   const archiveBytes = installerArchive.toBuffer();
   const sha256 = createHash('sha256').update(archiveBytes).digest('hex');
   mkdirSync(profilePath);
+  const abandoned = path.join(updateStagingPath, 'worldlinebox-installer-AbCd12');
+  const recent = path.join(updateStagingPath, 'worldlinebox-installer-CdEf34');
+  const interrupted = path.join(updateStagingPath, 'worldlinebox-installer-EfGh56');
+  for (const directory of [abandoned, recent, interrupted]) mkdirSync(directory, { recursive: true });
+  for (const directory of [abandoned, recent]) writeFileSync(path.join(directory, '.installer-handoff'), '');
+  writeFileSync(path.join(interrupted, 'unfinished.zip'), 'partial');
+  const stale = new Date(Date.now() - 48 * 60 * 60_000);
+  utimesSync(abandoned, stale, stale);
   mkdirSync(downloadsPath);
   mkdirSync(tempPath);
   writeFileSync(archivePath, archiveBytes);
@@ -109,7 +118,7 @@ test('Windows installed update hands off without a terminal and completes hidden
     const paths = records.flatMap((record) => record.installerPath ? [record.installerPath] : []);
     for (const installerPath of paths) {
       const directory = path.win32.dirname(path.win32.resolve(installerPath));
-      expect(path.win32.dirname(directory).toLowerCase()).toBe(path.win32.resolve(tempPath).toLowerCase());
+      expect(path.win32.dirname(directory).toLowerCase()).toBe(path.win32.resolve(updateStagingPath).toLowerCase());
       expect(path.win32.basename(directory)).toMatch(/^worldlinebox-installer-[A-Za-z0-9]+$/u);
       expect(path.win32.basename(installerPath).toLowerCase()).toBe('worldlineboxsetup.exe');
     }
@@ -117,7 +126,7 @@ test('Windows installed update hands off without a terminal and completes hidden
     // This also runs after a failed test, once its own application has exited.
     await expect.poll(() => ({
       installers: paths.filter(existsSync),
-      directories: installerDirectories(tempPath),
+      directories: installerDirectories(updateStagingPath).filter(directory => directory !== recent),
     }), { timeout: 35_000, message: `The native cleanup helper must finish before fixture removal: ${temporaryRoot}` })
       .toEqual({ installers: [], directories: [] });
   };
@@ -144,6 +153,9 @@ test('Windows installed update hands off without a terminal and completes hidden
       'A packaged executable must never enable the inert update fixture.');
     const window = await application.firstWindow();
     await window.waitForLoadState('load');
+    expect(existsSync(abandoned)).toBe(false);
+    expect(existsSync(interrupted)).toBe(false);
+    expect(existsSync(recent)).toBe(true);
     const check = await window.evaluate(async () => {
       const appUpdate = (globalThis as unknown as { worldlinebox?: { appUpdate?: WorldlineBoxAppUpdateApi } }).worldlinebox?.appUpdate;
       return appUpdate?.checkForUpdates();
@@ -160,7 +172,7 @@ test('Windows installed update hands off without a terminal and completes hidden
       await expect.poll(() => childProcess.exitCode, { timeout: 30_000 }).toBe(0);
     } catch (error) {
       const updateEvents = diagnosticEvents(profilePath).filter((entry) => String(entry.scope ?? '').startsWith('app-update'));
-      const installerEntries = installerDirectories(tempPath).flatMap((directory) => {
+      const installerEntries = installerDirectories(updateStagingPath).flatMap((directory) => {
         try { return readdirSync(directory); } catch { return []; }
       });
       throw new Error(`${error instanceof Error ? error.message : String(error)}; `

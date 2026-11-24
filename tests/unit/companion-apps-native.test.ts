@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain } from '../../src/main/companion-bot/dsh-brain';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import { botAppTools } from '../../src/shared/companion-apps';
 import { createBotNativeHost } from '../fixtures/bot-native-host';
 import { NativeServiceMemory } from '../fixtures/bot-native-service';
 import { createCompanionAssetApp } from '../fixtures/companion-asset-app';
@@ -16,6 +17,7 @@ const wireText = (message: Wire) => typeof message.content === 'string' ? messag
 it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('changes app tools in the same real DSH Session and removes future context and execution access when detached', async () => {
   let releaseModel!: () => void; const modelGate = new Promise<void>(resolve => { releaseModel = resolve; }); let appCalls = 0;
   const observations: Array<{ latest: string; tools: string[]; system: string; envelope: Record<string, unknown> }> = [], errors: string[] = [];
+  const revocationErrors: unknown[] = [];
   const server = createServer(async (request, response) => {
     try {
       const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
@@ -37,17 +39,32 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('changes app tools in the s
   const assets = await createCompanionAssetApp(path.join(root, 'assets-mcp'));
   const client = await native.instances.ensureHost(native.instance.id), brain = new BotDshBrain({ getHost: async () => ({ client }) });
   const browserContext = { referenceId: randomUUID(), tabId: 'owned-tab', url: 'http://127.0.0.1/owned', title: 'Owned tab', selection: '', capturedAt: new Date().toISOString() };
-  const service = new BotService({ root, brain, memory: new NativeServiceMemory(path.join(root, 'memory')), onEvent() {}, report(error) { process.stderr.write(String(error) + '\n'); }, assetManagerApp: { connect: (...args) => assets.app.connect(...args), execute: (...args) => { appCalls++; return assets.app.execute(...args); } },
+  const service = new BotService({ root, brain, memory: new NativeServiceMemory(path.join(root, 'memory')), onEvent() {}, report(error) {
+    if (String(error).includes('/bot/app-revoke')) revocationErrors.push(error);
+    process.stderr.write(String(error) + '\n');
+  }, assetManagerApp: { connect: (...args) => assets.app.connect(...args), execute: (...args) => { appCalls++; return assets.app.execute(...args); } },
     resolveBrowserContext: () => browserContext, browserTool: async () => ({ value: { tabs: [{ id: 'owned-tab' }] } }),
+    videoTool: async () => ({ result: [] }), musicTool: async () => ({}),
     model: () => ({ apiFormat: 'openai_chat', model: 'apps-native-fixture', baseUrl: `http://127.0.0.1:${address.port}`, apiKey: 'fixture', contextWindow: 32768, maxTokens: 2048 }) });
   try {
     const initial = (await service.handle({ type: 'state' })).snapshot!, room = initial.conversations.find(room => room.memberIds.includes(DEFAULT_BOT_COMPANION_ID))!;
-    const send = async (content: string, apps: Array<'browser' | 'asset-manager'> = [], browserContextId?: string) => {
-      const sent = await service.handle({ type: 'message.send', conversationId: room.id, requestId: randomUUID(), content, apps, browserContextId }); expect(sent.ok, sent.error).toBe(true);
+    const send = async (content: string, apps: Array<'browser' | 'asset-manager'> = [], browserContextId?: string, surface?: 'call') => {
+      const sent = await service.handle({ type: 'message.send', conversationId: room.id, requestId: randomUUID(), content, apps, browserContextId, surface }); expect(sent.ok, sent.error).toBe(true);
       await expect.poll(() => { const reply = service.store.getMessage(sent.replyMessageIds![0]!); if (reply?.status === 'failed') throw Error(reply.error); return reply?.status; }, { timeout: 40000 }).toBe('sent');
       return (await service.handle({ type: 'state', conversationId: room.id })).snapshot!;
     };
     const plain = await send('plain'); const session = plain.messages.at(-1)!.execution!.sessionId;
+    const latest = (name: string) => observations.findLast(item => item.latest === name)!;
+    for (const [appId, surface] of [['video', undefined], ['music', 'call']] as const) {
+      expect((await service.handle({ type: 'app.connect', conversationId: room.id, appId })).ok).toBe(true);
+      const enabled = await send(appId + '-enabled', [], undefined, surface);
+      expect(enabled.messages.at(-1)!.execution!.sessionId).toBe(session);
+      expect(latest(appId + '-enabled').tools).toEqual(expect.arrayContaining([...botAppTools[appId]]));
+      expect((await service.handle({ type: 'app.detach', conversationId: room.id, appId })).ok).toBe(true);
+      const disabled = await send(appId + '-disabled', [], undefined, surface);
+      expect(disabled.messages.at(-1)!.execution!.sessionId).toBe(session);
+      for (const name of botAppTools[appId]) expect(latest(appId + '-disabled').tools).not.toContain(name);
+    }
     expect((await service.handle({ type: 'app.connect', conversationId: room.id, appId: 'asset-manager' })).ok).toBe(true);
     const attached = await send('asset-task', ['asset-manager']); expect(attached.messages.at(-1)!.execution!.sessionId).toBe(session);
     const topicId = attached.chatRuntime!.topic!.id;
@@ -59,12 +76,15 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('changes app tools in the s
     await service.handle({ type: 'app.detach', conversationId: room.id, topicId, appId: 'browser' });
     await send('browser-removed');
     const beforeRevoked = appCalls;
-    await service.handle({ type: 'app.connect', conversationId: room.id, appId: 'asset-manager' });
+    const activeApps = ['asset-manager', 'video', 'music'] as const;
+    for (const appId of activeApps) expect((await service.handle({ type: 'app.connect', conversationId: room.id, appId })).ok).toBe(true);
     const revoking = send('active-revoke', ['asset-manager']);
     await expect.poll(() => observations.some(item => item.latest === 'active-revoke'), { timeout: 40000 }).toBe(true);
-    await service.handle({ type: 'app.detach', conversationId: room.id, topicId, appId: 'asset-manager' }); releaseModel(); await revoking;
+    for (const appId of activeApps) expect((await service.handle({ type: 'app.detach', conversationId: room.id, topicId, appId })).ok).toBe(true);
+    releaseModel(); await revoking;
+    expect(revocationErrors).toEqual([]);
+    for (const appId of activeApps) for (const name of botAppTools[appId]) expect(latest('active-revoke').tools).not.toContain(name);
     expect(appCalls).toBe(beforeRevoked);
-    const latest = (name: string) => observations.findLast(item => item.latest === name)!;
     for (const name of ['plain', 'removed', 'browser-removed', 'active-revoke']) { expect(latest(name).tools).not.toContain('asset_manager'); expect(latest(name).tools).not.toContain('browser'); if (name !== 'active-revoke') expect(latest(name).envelope).not.toHaveProperty('apps'); expect(latest(name).envelope).not.toHaveProperty('browserContext'); expect(latest(name).system).not.toContain('MCP'); }
     expect(latest('asset-task').tools).toContain('asset_manager'); expect(latest('asset-task').tools).not.toContain('browser');
     expect(latest('browser-task').tools).toContain('browser'); expect(latest('browser-task').tools).not.toContain('asset_manager'); expect(latest('browser-task').envelope.browserContext).toEqual(browserContext);

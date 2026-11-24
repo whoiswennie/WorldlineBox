@@ -23,6 +23,10 @@ const peerWaitNoticeKind = 'worldlinebox-bot-peer-results';
 const scopedWorkerTools = ['read', 'read_image', 'write', 'edit', 'present', 'working_directory', 'web_search', 'web_fetch', 'ask_user_question'];
 const meetingTool = name => name === 'call_stage' || name === 'call_present';
 const rootOnlyTool = name => meetingTool(name) || name === 'companion_desktop_capture';
+// The bridge ships independently. Keep these names aligned with botAppTools in src/shared/companion-apps.ts.
+const applicationToolNames = new Set(['browser', 'asset_manager', 'cabin_world', 'bilibili_video', 'music', 'music_global_player']);
+const fixedWorkerTools = tools => (tools ?? []).filter(({ name }) =>
+  !rootOnlyTool(name) && !applicationToolNames.has(name) && !['chat_list_files', 'companion_recognize_audio'].includes(name));
 /** One coherent observation per native model attempt. Frames are transport
  * fragments, not Agent Loop phases; publish cumulative snapshots at a UI rate. */
 export function observeAssistantStream(record, nativeSessionId, frame, publish, now = Date.now()) {
@@ -214,13 +218,21 @@ export async function deliverBotGuidance(record,input,{read,write,flush,freezeMe
   if(prior?.fingerprint&&prior.fingerprint!==fingerprint)throw Error('Task guidance ID has different content.');
   if(prior?.mode&&prior.mode!==input.mode)throw Error('Task guidance ID has different delivery mode.');
   if(prior?.status==='accepted')return {accepted:true};
+  if(prior?.status==='not-admitted')return {accepted:false};
   const id='worldlinebox-bot:'+key;
   const already=prior&&(record.agent.session.snapshotEvents().some(event=>event.type==='user/message'&&event.data.id===id)
     ||[...record.agent.inbox.nextTurn,...record.agent.inbox.nextStep].some(message=>message.id===id));
   if(!already){
-    if(record.bot.eventId!==input.eventId||record.status!=='running')return {accepted:false};
+    const running = () => record.bot.eventId === input.eventId && record.status === 'running' && record.agent.status !== 'idle';
+    const receipt = {eventId:key,sessionId:record.id,fingerprint,mode:input.mode,messageId:id};
+    if (!running()) {
+      if (prior?.status === 'prepared') await write({...receipt,status:'not-admitted'});
+      return {accepted:false};
+    }
     const message=freezeMessage({id,role:'user',content:[{type:'text',text:input.text}],source:{kind:'worldlinebox-bot-guidance',form:'relay',...(record.bot.audience?{worldlineboxAudience:record.bot.audience}:{})}});
-    await write({eventId:key,sessionId:record.id,status:'prepared',fingerprint,mode:input.mode,messageId:id});
+    await write({...receipt,status:'prepared'});
+    // A final model step can finish while the prepared receipt is being written.
+    if (!running()) { await write({...receipt,status:'not-admitted'}); return {accepted:false}; }
     if(input.mode==='steer')record.agent.steer(message);else record.agent.followup(message);
     record.revision++;
   }
@@ -1052,6 +1064,7 @@ export async function apply(ctx) {
         const receipt=await botReadReceipt(input,input.eventId+':guidance:'+input.messageId);
         if(receipt?.fingerprint&&receipt.fingerprint!==createHash('sha256').update(input.text).digest('hex')||receipt?.sessionId&&receipt.sessionId!==input.sessionId)throw Error('Guidance receipt identity differs.');
         if(receipt?.status==='accepted'){json(response,{accepted:true});return;}
+        if(receipt?.status==='not-admitted'){json(response,{accepted:false});return;}
         const event=await botReadReceipt(input,input.eventId);
         if(!receipt&&event?.status==='complete'&&event.result?.sessionId===input.sessionId){json(response,{accepted:false});return;}
         json(response,{unknown:true});return;
@@ -1166,8 +1179,7 @@ export async function apply(ctx) {
           if (nativeSessionBusy(ctx, record.agent)) throw new Error('Companion lane is busy.');
           // The same topic can move between text and video. Stage tools are
           // refreshed at the idle boundary alongside the attached apps.
-          const fixedTools = tools => (tools ?? []).filter(tool => !rootOnlyTool(tool.name) && !['browser', 'asset_manager', 'cabin_world', 'chat_list_files', 'companion_recognize_audio'].includes(tool.name));
-          if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(fixedTools(record.bot.workerTools)) !== JSON.stringify(fixedTools(input.workerTools))) throw new Error('Companion tool selection changed; create a new lane epoch.');
+          if (JSON.stringify(record.bot.tools) !== JSON.stringify(input.tools) || JSON.stringify(fixedWorkerTools(record.bot.workerTools)) !== JSON.stringify(fixedWorkerTools(input.workerTools))) throw new Error('Companion tool selection changed; create a new lane epoch.');
           // Newer native loops freeze model identity before agent/request.
           // A cold suspend may have attached with the inert cancel-only model;
           // select the real model before resuming that same native Session.
@@ -1193,7 +1205,7 @@ export async function apply(ctx) {
       if (request.method === 'POST' && url.pathname === '/bot/app-revoke') {
         const input = await body(request);
         if (typeof input.laneId !== 'string' || input.sessionId !== 'wlb-bot-' + createHash('sha256').update(input.laneId).digest('hex')
-          || !Array.isArray(input.names) || input.names.length > 3 || input.names.some(name => !['browser', 'asset_manager', 'cabin_world'].includes(name))
+          || !Array.isArray(input.names) || input.names.length > applicationToolNames.size || input.names.some(name => !applicationToolNames.has(name))
           || typeof input.system !== 'string' || input.system.length > 96000) throw new Error('Invalid application revocation.');
         const record = sessions.get(input.sessionId);
         if (record?.bot) {

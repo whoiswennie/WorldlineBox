@@ -428,6 +428,18 @@ export class BotMediaService {
       await rename(temporary,destination);}
     finally{await rm(temporary,{force:true});}
   }
+  async assertEditDestination(destination: string) {
+    await assertBotMediaPhysicalPath(path.dirname(destination));
+    for (const root of [this.root, this.builtinRoot]) {
+      const relative = path.relative(path.resolve(root), path.resolve(destination));
+      if (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative))
+        throw Error('请选择附件存储目录以外的位置保存副本。');
+    }
+    try {
+      await assertBotMediaPhysicalPath(destination);
+      if (!(await stat(destination)).isFile()) throw Error('保存位置不是普通文件。');
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
   private displayImage(request: Request, home: string, item: StoredMedia): Promise<Response> {
     if (!botImageNeedsConversion(item.mimeType) || item.storage === 'external' || item.size > 64 * 1024 * 1024)
       return Promise.resolve(new Response(null, { status: 415 }));

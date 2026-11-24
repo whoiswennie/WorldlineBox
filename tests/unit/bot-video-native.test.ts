@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest';
 import { nativeCallback, nativeServiceFixture, waitNative } from '../fixtures/bot-native-service';
 import type { BotEvent } from '../../src/shared/companion-bot';
 
-it('checks the browser account on connect and persists a retried video with one live presentation', async () => {
+it('checks the browser account and presents a retried call video once in the main chat', async () => {
   const onEvent=vi.fn<(event:BotEvent)=>void>();
   const login=vi.fn(async ():Promise<'guest'|'signed-in'> => 'guest');
   const fixture=await nativeServiceFixture(async run => {
@@ -22,7 +22,7 @@ it('checks the browser account on connect and persists a retried video with one 
     login.mockResolvedValue('signed-in');
     expect((await connect()).app).toEqual({id:'video',login:'signed-in'});
     const send=async (id:string) => {
-      const reply=await service.handle({type:'message.send',conversationId:room,topicId:topic.id,requestId:id,content:'播放视频'});
+      const reply=await service.handle({type:'message.send',conversationId:room,topicId:topic.id,requestId:id,content:'播放视频',surface:'call'});
       const messageId=reply.replyMessageIds![0]!;
       await waitNative(()=>service.store.getMessage(messageId)?.status==='sent');
       return messageId;
@@ -30,7 +30,9 @@ it('checks the browser account on connect and persists a retried video with one 
     const id=await send('with-video');
     expect(service.store.replyParts(id).filter(part=>part.video)).toHaveLength(2);
     await service.handle({type:'state',conversationId:room});
-    expect(onEvent.mock.calls.filter(([event])=>event.type==='video-present')).toHaveLength(1);
+    expect(onEvent.mock.calls.filter(([event])=>event.type==='video-present')).toEqual([
+      [{type:'video-present',conversationId:room,surface:'chat',cardId:expect.any(String)}],
+    ]);
     expect(login).toHaveBeenCalledTimes(2);
     await service.handle({type:'app.detach',conversationId:room,topicId:topic.id,appId:'video'});
     await send('without-video');

@@ -1,27 +1,24 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ChangeEvent, type KeyboardEvent, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import startupLogo from '../../../assets/icons/startup-logo.png';
 import type { BotCompanion, BotMessage, BotRequest, BotResponse, BotSnapshot, WorldlineBoxBotApi } from '../../shared/companion-bot';
 import type { WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
+import type { WorldlineBoxBrowserApi } from '../../shared/browser';
 import type { BotCallModel, BotCallStage } from '../../shared/companion-call';
 import { callBeatKey } from '../../shared/companion-call-captions';
 import { DEFAULT_BOT_COMPANION_ID } from '../../shared/builtin-bot-companions';
 import { BotAvatar, botAssetUrl } from './BotAvatar';
 import { BotIcon } from './BotIcon';
 import { BotErrorNotice } from './BotErrorNotice';
-import { BotMessageBody } from './BotMessageBody';
+import { BotExecutionDetails } from './BotExecutionDetails';
 import { BotLive2DStage, type BotLive2DControls } from './BotLive2DStage';
 import { BOT_CALL_TIMEOUT_MS, botCallClock } from './call-presentation';
-import { useBotCallVoice, type BotCallSend } from './useBotCallVoice';
-import { BotCallVoiceControls } from './BotCallVoiceControls';
+import type { BotPushToTalkTarget } from './useBotPushToTalk';
 import { BotCallDialogue, isLiveCallReply, type BotCallPlayback, type BotCallTurn } from './BotCallDialogue';
 import { BotComposer, BotSpeechMuteButton } from './BotComposer';
-import { BotApps, BotTopicAppCard } from './BotApps';
-import { useBotTopicApp } from './useBotTopicApp';
-import { VideoLoginDialog } from './VideoLoginDialog';
-import { useVideoSurface } from './BotVideoCard';
-import { useInlineMusicSurface } from '../music/MusicProvider';
+import { BotAppAttachments, BotApps } from './BotApps';
+import { useBotChatApps } from './useBotChatApps';
 import { BotTopicBar } from './BotTopicBar';
 import { isBotFilePaste } from './clipboard-paste';
 import { BOT_CALL_PAN_LIMIT, BOT_CALL_ZOOM, defaultBotCallFraming, readBotCallFraming, readBotCallPreferences, saveBotCallFraming, saveBotCallPreferences, usesAutomaticBotCallFraming, type BotCallFraming } from './call-preferences';
@@ -35,13 +32,16 @@ const poseFields = [
   ['bodyX', '身体左右', 'Body', -1, 1, 0], ['gazeX', '视线左右', 'Look sideways', -1, 1, 0], ['gazeY', '视线上下', 'Look up/down', -1, 1, 0],
   ['mouthOpen', '张嘴', 'Mouth open', 0, 1, 0], ['mouthSmile', '嘴角', 'Smile', -1, 1, 0], ['eyeOpen', '睁眼', 'Eyes open', 0, 1.2, 1],
 ] as const;
-export function BotCallWindow({ conversationId: directId, sessionId, companion, api, mediaApi, locale, onHangup, onOpenUrl, draft, setDraft, onDesktopPetChange, chatInteracting, speechMuted, onSpeechMute }: {
+export function BotCallWindow({ conversationId: directId, sessionId, companion, api, mediaApi, browserApi, locale, onHangup, onOpenUrl, onOpenBrowserContext, draft, setDraft, onDesktopPetChange, chatInteracting, speechMuted, onSpeechMute, pushToTalkTargetRef, pushToTalkStatus, pushToTalkBusy }: {
   conversationId: string; sessionId?: string; companion: BotCompanion; api: WorldlineBoxBotApi;
-  mediaApi?: WorldlineBoxBotMediaApi; locale: 'zh-CN' | 'en'; onHangup(): void; onOpenUrl(url: string): void;
+  mediaApi?: WorldlineBoxBotMediaApi; browserApi?: WorldlineBoxBrowserApi; locale: 'zh-CN' | 'en'; onHangup(): void; onOpenUrl(url: string): void; onOpenBrowserContext?(id: string): void;
   draft: string; setDraft(text: string): void;
   onDesktopPetChange?(active: boolean, returning?: boolean): void;
   chatInteracting?: boolean;
   speechMuted: boolean; onSpeechMute(muted: boolean): void;
+  pushToTalkTargetRef?: RefObject<(() => BotPushToTalkTarget | undefined) | undefined>;
+  pushToTalkStatus?: ReactNode;
+  pushToTalkBusy?: boolean;
 }) {
   const zh = locale === 'zh-CN', [phase, setPhase] = useState<'ringing' | 'connected'>('ringing'), [openedAt] = useState(Date.now), [connectedAt, setConnectedAt] = useState(0), [now, setNow] = useState(Date.now);
   const [muted, setMuted] = useState(false), [audioBlocked, setAudioBlocked] = useState(false), audio = useRef<HTMLAudioElement>(undefined);
@@ -49,7 +49,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   const [preferences] = useState(() => readBotCallPreferences(companion.id));
   const [scene, setScene] = useState(preferences.scene), [voiceInputActive, setVoiceInputActive] = useState(false);
   const [composerExpanded, setComposerExpanded] = useState(!!draft), [hudMenu, setHudMenu] = useState(false);
-  const [control, setControl] = useState<BotLive2DControls>(), [modelError, setModelError] = useState(''), [interactions, setInteractions] = useState(false), [historyOpen, setHistoryOpen] = useState(false);
+  const [control, setControl] = useState<BotLive2DControls>(), [modelError, setModelError] = useState(''), [interactions, setInteractions] = useState(false);
   const [expression, setExpression] = useState(''), [motion, setMotion] = useState(''), [notice, setNotice] = useState('');
   const [framing, setFraming] = useState(() => defaultBotCallFraming());
   const { scale, x: frameX, y: frameY, fullBody } = framing;
@@ -64,10 +64,9 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     setTopicPanelOpen(open);
     if (open) setHudMenu(false);
   }, []);
-  const [historyFocus, setHistoryFocus] = useState<string>();
   const [pose, setPose] = useState<Record<string, number>>({}), [gazeEnabled, setGazeEnabled] = useState(preferences.gazeEnabled), [idleEnabled, setIdleEnabled] = useState(preferences.idleEnabled);
   const [bodyShape, setBodyShape] = useState(0);
-  const [meeting, setMeeting] = useState<{ id: string; model?: BotCallModel; stage?: BotCallStage; baseline: Set<string>; activeAtConnect: Set<string>; legacyId?: string }>();
+  const [meeting, setMeeting] = useState<{ id: string; model?: BotCallModel; stage?: BotCallStage; baseline: Set<string>; activeAtConnect: Set<string> }>();
   const hasLiveModel = !!meeting?.model && !modelError;
   const compactPet = desktop.pet && (compactPetMode || !hasLiveModel);
   const compactMeeting = !desktop.pet && compactMeetingMode;
@@ -76,8 +75,6 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   const compactInputLabel = composerExpanded ? (zh ? '收起桌宠输入' : 'Collapse desktop pet input') : (zh ? '展开会面输入' : 'Expand meeting input');
   const [snapshot, setSnapshot] = useState<BotSnapshot>();
   const [turn, setTurn] = useState<BotCallTurn>();
-  const [older, setOlder] = useState<{ items: BotMessage[]; more: boolean }>();
-  const [legacy, setLegacy] = useState<{ items: BotMessage[]; more: boolean }>();
   const [stage, setStage] = useState({ generation: 0, ignored: new Set<string>(), interrupted: false });
   const stageState = useRef(stage);
   const playback = useRef<BotCallPlayback>({ replies: [], pending: [] });
@@ -87,11 +84,6 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   const interrupting = useRef<Promise<BotResponse>>(undefined);
   const [connecting, setConnecting] = useState(false), [sendError, setSendError] = useState('');
   const stopReplySpeech = useRef<() => void>(undefined);
-  const [replyAudioInterrupted, setReplyAudioInterrupted] = useState(false);
-  const silenceReply = useCallback(() => {
-    stopReplySpeech.current?.();
-    setReplyAudioInterrupted(true);
-  }, []);
   const [files, setFiles] = useState<BotMediaRef[]>([]), [importing, setImporting] = useState(false), [sending, setSending] = useState(false);
   const live = useRef(false), sendLock = useRef(false), importLock = useRef(false);
   const publicationCursor = useRef<number>(undefined);
@@ -100,16 +92,8 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   useLayoutEffect(() => { latestDraft.current = draft; }, [draft]);
   const attempts = useRef(new Map<string, Extract<BotRequest, { type: 'message.send' }>>());
   const textAttempt = useRef<string>(undefined);
-  const box = useRef<HTMLElement>(null), transcript = useRef<HTMLDivElement>(null), dock = useRef<HTMLDivElement>(null);
-  const historyFollowing = useRef(true);
+  const box = useRef<HTMLElement>(null), dock = useRef<HTMLDivElement>(null);
   const conversationId = meeting?.id ?? '';
-  const revealMusic = useCallback(() => {
-    historyFollowing.current = true;
-    setHistoryFocus(undefined);
-    setInteractions(false);
-    setHistoryOpen(true);
-  }, []);
-  useInlineMusicSurface(legacy?.items[0]?.conversationId ?? conversationId, 'call', phase === 'connected' && !!snapshot?.chatRuntime?.apps?.includes('music'), revealMusic);
   const messages = snapshot?.messages ?? emptyMessages;
   const latestMessages = useRef(messages);
   useLayoutEffect(() => { latestMessages.current = messages; }, [messages]);
@@ -154,9 +138,8 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
       } while (refreshAgain.current && live.current);
     } finally { refreshing.current = false; }
   }, [conversationId, meeting, request]);
-  const video = useBotTopicApp('video', conversationId, runtime, request, refresh);
-  const videoSurface = useVideoSurface(api, conversationId, 'call', phase === 'connected' && video.attached && !desktop.pet, revealMusic, !legacy);
-  const music = useBotTopicApp('music', conversationId, runtime, request, refresh);
+  const chatApps = useBotChatApps(conversationId, runtime, request, refresh, locale);
+  const { attachingBrowser, browserAttachmentPending } = chatApps;
   useEffect(() => {
     if (snapshot?.callDelivery?.more) void refresh();
   }, [snapshot?.callDelivery, refresh]);
@@ -191,7 +174,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
       if (prior) recordPresentation(message.id, prior.id, prior.sequence);
     }
     setFraming(readBotCallFraming(companion.id, result.callModel));
-    setMeeting({ id: result.conversationId, model: result.callModel, stage: result.callStage, baseline, activeAtConnect, legacyId: result.legacyCallConversationId });
+    setMeeting({ id: result.conversationId, model: result.callModel, stage: result.callStage, baseline, activeAtConnect });
     setSnapshot(result.snapshot); setConnectedAt(Date.now()); setPhase('connected');
   };
   const interrupt = (requestId: string = crypto.randomUUID(), replyIds?: readonly string[]): Promise<BotResponse> => {
@@ -218,31 +201,33 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     interrupting.current = operation;
     return operation;
   };
-  const dispatch = async (content: string, requestId: string, attachmentIds?: string[]) => {
-    if (!conversationId || sendLock.current) return { ok: false };
+  const dispatch = async (content: string, requestId: string, attachmentIds?: string[], prioritize = false): Promise<BotResponse> => {
+    if (!live.current || !conversationId || sendLock.current || browserAttachmentPending.current) return { ok: false };
     sendLock.current = true; setSending(true); setSendError('');
     try {
       let input = attempts.current.get(requestId);
       const ownPending = turn?.replyIds?.filter(id => !stageState.current.ignored.has(id)
         && (!messages.some(message => message.id === id) || messages.some(message => message.id === id && ['queued', 'running'].includes(message.status))));
-      const stopped = !input && ownPending?.length ? interrupt('send-' + requestId, ownPending) : undefined;
-      if (!input && !stopped) {
+      const stopped = !prioritize && !input && ownPending?.length ? interrupt('send-' + requestId, ownPending) : undefined;
+      if (!prioritize && !input && !stopped) {
         dismissReplies(playback.current.replies.filter(id => !playback.current.pending.includes(id) || turn?.replyIds?.includes(id)));
       }
       setTurn({ id: requestId, content: content.trim() });
-      setReplyAudioInterrupted(false);
       if (!input) {
         if (stopped) {
           const result = await stopped;
           if (!result.ok || !live.current) return { ok: false };
         }
         if (stageState.current.interrupted) updateStage({ ...stageState.current, interrupted: false });
-        input = { type: 'message.send', conversationId, content, requestId, topicId, attachmentIds, surface: 'call' };
+        input = { type: 'message.send', conversationId, content, requestId, topicId, attachmentIds, surface: 'call',
+          ...(prioritize && { delivery: 'interrupt' }) };
         attempts.current.set(requestId, input);
       }
       const result = await request(input);
       if (result.ok) {
-        setTurn(current => current?.id === requestId ? { ...current, replyIds: result.replyMessageIds ?? [] } : current);
+        const replyIds = result.replyMessageIds ?? [];
+        if (prioritize) dismissReplies([...playback.current.replies, ...(result.interruptedReplyIds ?? [])].filter(id => !replyIds.includes(id)));
+        setTurn(current => current?.id === requestId ? { ...current, replyIds } : current);
         attempts.current.delete(requestId);
         void refresh();
       }
@@ -256,38 +241,37 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     }
   };
   const hangup = onHangup;
-  const send: BotCallSend = (text, requestId) => dispatch(text, requestId);
-  const voice = useBotCallVoice({ connected: phase === 'connected', conversationId, companionId: companion.id, messages, send, onSpeechStart: silenceReply });
-  const voiceActive = voice.state.enabled && voice.state.phase !== 'error';
-  const voiceHold = voiceActive && (replyAudioInterrupted || ['preparing', 'waiting', 'recognizing'].includes(voice.state.phase));
-  if (!voiceActive && replyAudioInterrupted) setReplyAudioInterrupted(false);
-  const stopVoice = voice.stop;
+  useLayoutEffect(() => {
+    if (!pushToTalkTargetRef || phase !== 'connected') return;
+    pushToTalkTargetRef.current = () => !voiceInputActive && !browserAttachmentPending.current ? {
+      start() { stopReplySpeech.current?.(); },
+      send: (text, requestId) => dispatch(text, requestId, undefined, true),
+    } : undefined;
+    return () => { pushToTalkTargetRef.current = undefined; };
+  });
   const topicRequest = useCallback(async (input: BotRequest) => {
     if (input.type !== 'topic.context' && input.type !== 'topic.list') setSendError('');
     const result = await request(input);
     if (result.ok && (input.type === 'topic.new' || input.type === 'topic.select') && result.topic?.id !== topicId) {
       dismissReplies(playback.current.replies.filter(id => latestMessages.current.some(message => message.id === id && message.topic?.id === topicId && message.status === 'sent')));
-      stopVoice(); setReplyAudioInterrupted(false); setTurn(undefined); setHistoryFocus(undefined); setLegacy(undefined); historyFollowing.current = true;
+      setTurn(undefined);
       textAttempt.current = undefined;
     }
     return result;
-  }, [dismissReplies, request, stopVoice, topicId]);
+  }, [dismissReplies, request, topicId]);
   const submit = async (sticker?: BotMediaRef) => {
     const text = sticker ? '' : draft;
     const attachments = sticker ? [sticker] : files;
-    if (sendLock.current || importLock.current || (!text.trim() && !attachments.length) || attachments.length > 16) return;
+    if (sendLock.current || importLock.current || browserAttachmentPending.current || (!text.trim() && !attachments.length) || attachments.length > 16) return;
     const ids = attachments.map(file => file.id), prior = textAttempt.current && attempts.current.get(textAttempt.current);
     const requestId = prior && prior.topicId === topicId && prior.content === text && JSON.stringify(prior.attachmentIds) === JSON.stringify(ids)
       ? prior.requestId : crypto.randomUUID();
     if (!sticker) textAttempt.current = requestId;
-    await voice.sendAction(text, requestId, async () => {
-      const result = await dispatch(text, requestId, ids);
-      if (live.current && result.ok && !sticker) {
-        if (latestDraft.current === text) setDraft('');
-        setFiles(current => current.filter(file => !ids.includes(file.id))); textAttempt.current = undefined;
-      }
-      return result;
-    });
+    const result = await dispatch(text, requestId, ids);
+    if (live.current && result.ok && !sticker) {
+      if (latestDraft.current === text) setDraft('');
+      setFiles(current => current.filter(file => !ids.includes(file.id))); textAttempt.current = undefined;
+    }
   };
   const addFiles = async (paths?: string[], paste = false) => {
     if (!mediaApi || !conversationId || importLock.current) return;
@@ -300,28 +284,6 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     finally { importLock.current = false; if (live.current) setImporting(false); }
   };
   const attachFiles = (items: BotMediaRef[]) => setFiles(current => [...new Map([...current, ...items].map(file => [file.id, file])).values()]);
-  const chat = legacy?.items ?? [...new Map([...(older?.items ?? []), ...messages].map(item => [item.id, item])).values()];
-  const more = legacy?.more ?? older?.more ?? snapshot?.hasMore;
-  const loadEarlier = async () => {
-    if (!chat[0]) return;
-    const result = await request({ type: 'state', conversationId: legacy ? meeting?.legacyId : conversationId, before: chat[0].sequence, surface: 'call' });
-    if (!live.current || !result.snapshot) return;
-    const page = result.snapshot;
-    historyFollowing.current = false;
-    const merge = (current?: typeof older) => ({ items: [...new Map([...page.messages, ...(current?.items ?? [])].map(item => [item.id, item])).values()], more: page.hasMore });
-    if (legacy) setLegacy(current => current && merge(current)); else setOlder(merge);
-  };
-  const openHistory = () => { historyFollowing.current = true; setLegacy(undefined); setHistoryFocus(undefined); setInteractions(false); setHistoryOpen(true); };
-  const openLegacy = async () => {
-    if (!meeting?.legacyId) return;
-    const result = await request({ type: 'state', conversationId: meeting.legacyId, surface: 'call' });
-    if (live.current && result.snapshot) {
-      historyFollowing.current = true;
-      setHistoryFocus(undefined);
-      setLegacy({ items: result.snapshot.messages, more: result.snapshot.hasMore });
-    }
-  };
-  const toggleInteractions = () => { setHistoryOpen(false); setInteractions(value => !value); };
   const ready = useCallback((controls: BotLive2DControls) => { setControl(controls); setModelError(''); }, []);
   const failed = useCallback((message: string) => { setControl(undefined); setModelError(message); }, []);
   useEffect(() => { control?.gaze(gazeEnabled); }, [control, gazeEnabled]);
@@ -364,11 +326,6 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     return () => { ringtoneRetry.current = undefined; audio.current = undefined; sound.pause(); sound.removeAttribute('src'); sound.load(); };
   }, [companion.id, phase]);
   useEffect(() => { if (audio.current) audio.current.muted = muted; }, [muted, phase]);
-  useEffect(() => {
-    if (!transcript.current) return;
-    const target = historyOpen && historyFocus && transcript.current.querySelector(`[data-call-message="${CSS.escape(historyFocus)}"]`);
-    if (target) target.scrollIntoView?.({ block: 'center' }); else if (historyFollowing.current) transcript.current.scrollTop = transcript.current.scrollHeight;
-  }, [messages, phase, historyOpen, historyFocus, legacy]);
   const changeScene = (value: string) => { setScene(value); if (!saveBotCallPreferences(companion.id, { scene: value })) setNotice(zh ? '背景已用于本次会面，存储空间不足，未保存。' : 'Background applied for this visit; storage is full.'); };
   const chooseImage = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = ''; if (!file) return;
@@ -379,11 +336,11 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
     if (event.key === 'Escape') {
       if (topicPanelOpen) return;
-      if (box.current?.querySelector('.bot-expression-picker,.bot-voice-panel')) return;
+      if (box.current?.querySelector('.bot-expression-picker,.bot-voice-panel,.bot-apps-picker,.bot-video-login[open]')) return;
       if (hudMenu && desktop.pet) { event.preventDefault(); event.stopPropagation(); setHudMenu(false); return; }
       if (composerExpanded) { event.preventDefault(); event.stopPropagation(); setComposerExpanded(false); return; }
       if (hudMenu) { event.preventDefault(); event.stopPropagation(); setHudMenu(false); return; }
-      if (historyOpen || interactions) { event.preventDefault(); event.stopPropagation(); setHistoryOpen(false); setInteractions(false); return; }
+      if (interactions) { event.preventDefault(); event.stopPropagation(); setInteractions(false); return; }
       event.preventDefault(); event.stopPropagation(); if (desktop.pet) desktop.toggle(); else hangup(); return;
     }
     if (event.key !== 'Tab') return;
@@ -414,7 +371,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   };
   const frameModel = (upper: boolean) => changeFraming(defaultBotCallFraming(meeting?.model, !upper));
   const zoomModel = (delta: number) => changeFraming({ scale: Math.min(BOT_CALL_ZOOM.max, Math.max(BOT_CALL_ZOOM.min, scale + delta)) });
-  const interactionsPanel = interactions && <aside className="bot-call-interactions" aria-label={zh ? '场景与形象互动' : 'Scene and character controls'}><header><strong>{zh ? '场景与互动' : 'Scene & interactions'}</strong><button onClick={() => setInteractions(false)} aria-label={zh ? '收起互动设置' : 'Close interactions'}>×</button></header>
+  const interactionsPanel = interactions && <aside className="bot-call-interactions" aria-label={zh ? '场景与形象互动' : 'Scene and character controls'}><header><strong>{zh ? '场景与互动' : 'Scene & interactions'}</strong><button type="button" onClick={() => setInteractions(false)} aria-label={zh ? '收起会面面板' : 'Close meeting panel'}><BotIcon name="close" /></button></header>
         {!desktop.pet && <><label>{zh ? '背景场景' : 'Background'}<select value={scene.startsWith('data:') ? 'custom' : scene} onChange={event => { if (event.target.value !== 'custom') changeScene(event.target.value); }}><option value="evening">{zh ? '暮色书房' : 'Evening studio'}</option><option value="plain">{zh ? '静谧留白' : 'Quiet space'}</option>{scene.startsWith('data:') && <option value="custom">{zh ? '自选图片' : 'Your image'}</option>}</select></label>
         <label className="bot-call-upload"><BotIcon name="image" />{zh ? '更换背景图片' : 'Choose a background'}<input type="file" accept="image/png,image/jpeg,image/webp,image/avif" onChange={event => void chooseImage(event)} /></label></>}
         {control && <>
@@ -444,27 +401,21 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
           <button onClick={() => { control.reset(); setPose({}); setBodyShape(0); setExpression(''); setMotion(''); }}>{zh ? '恢复默认姿态' : 'Reset pose'}</button>
           <small className="bot-call-credits">{control.catalog.credits}</small></div></details></>}
       </aside>;
-  const editVoice = (text: string) => { setDraft(draft ? draft + '\n' + text : text); setComposerExpanded(true); };
-  const composerTools = <BotCallVoiceControls mode="toolbar" inputActive={voiceInputActive} voice={voice} zh={zh} onStart={voice.start} onEdit={editVoice} />;
   const composerStatus = <div className="bot-call-composer-status">
     {modelError && <p className="bot-call-model-error" role="status">{modelError}</p>}
-    <BotCallVoiceControls voice={voice} zh={zh} onStart={voice.start} onEdit={editVoice}
-      onInterrupt={() => { silenceReply(); voice.interrupt(); void interrupt(); }} />
     {sendError && <div className="bot-call-send-error" role="alert"><BotErrorNotice message={sendError} zh={zh} /></div>}
   </div>;
   const hangupButton = <button type="button" className="bot-call-hangup" aria-label={zh ? '挂断' : 'End call'} title={zh ? '挂断' : 'End call'} onClick={hangup}><BotIcon name="hangup" /></button>;
   const meetingControls = <>
     {desktop.supported && <button type="button" className="bot-call-pet-toggle" aria-label={petLabel} title={petLabel} onClick={() => toggleDesktop()}><BotIcon name={desktop.pet ? 'return-scene' : 'desktop-pet'} /></button>}
     {desktop.supported && !desktop.pet && hasLiveModel && <button type="button" className="bot-call-pet-toggle" aria-label={compactPetLabel} title={compactPetLabel} onClick={() => toggleDesktop(true)}><BotIcon name="portrait" /></button>}
-    <button type="button" className="bot-call-history-toggle" aria-label={zh ? '会面聊天记录' : 'Meeting chat history'} title={zh ? '会面聊天记录' : 'Meeting chat history'} aria-expanded={historyOpen} aria-controls="bot-call-history"
-      onClick={() => { historyFollowing.current = true; setHistoryFocus(undefined); setHudMenu(false); setInteractions(false); setHistoryOpen(value => !value); }}><BotIcon name="history" /></button>
     {!desktop.pet && <button type="button" className="bot-call-menu-toggle" aria-label={zh ? '会面菜单' : 'Meeting menu'} title={zh ? '会面菜单' : 'Meeting menu'} aria-expanded={hudMenu} onClick={() => setHudMenu(value => !value)}><BotIcon name="settings" /></button>}
     <time className="bot-call-duration">{botCallClock(now - connectedAt)}</time>
   </>;
   const meetingMenu = <aside className="bot-call-hud-menu" aria-label={zh ? '会面工具' : 'Meeting tools'}>
     {hasLiveModel && <button type="button" className="bot-call-tool-tile bot-call-compact-toggle" aria-pressed={hideLiveModel}
       onClick={toggleCompact}><BotIcon name="portrait" />{zh ? '简洁模式' : 'Compact mode'}</button>}
-    <button type="button" className="bot-call-tool-tile" aria-pressed={interactions} onClick={() => { setHudMenu(false); toggleInteractions(); }}><BotIcon name="frame" />{zh ? '场景与互动' : 'Scene & interactions'}</button>
+    <button type="button" className="bot-call-tool-tile" aria-pressed={interactions} onClick={() => { setHudMenu(false); setInteractions(value => !value); }}><BotIcon name="frame" />{zh ? '场景与互动' : 'Scene & interactions'}</button>
     {control && <>
       <button type="button" className="bot-call-tool-tile" onClick={() => frameModel(fullBody)}><BotIcon name={fullBody ? 'portrait' : 'full-body'} />{fullBody ? zh ? '半身取景' : 'Portrait view' : zh ? '全身取景' : 'Full body view'}</button>
       <div className="bot-call-framing-tools" role="group" aria-label={zh ? '快捷取景' : 'Quick framing'}>
@@ -477,7 +428,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   const inputActions = <>
     <BotSpeechMuteButton zh={zh} muted={speechMuted} onChange={muted => { if (muted) stopReplySpeech.current?.(); onSpeechMute(muted); }} />
     {desktop.pet && <button type="button" className="bot-call-pet-more" aria-label={zh ? '更多会面功能' : 'More meeting controls'} title={zh ? '更多会面功能' : 'More meeting controls'} aria-expanded={hudMenu} aria-controls={hudMenu ? petOptionsId : undefined}
-      onClick={() => { setHistoryOpen(false); setInteractions(false); setHudMenu(value => !value); }}><BotIcon name="more" /></button>}
+      onClick={() => { setInteractions(false); setHudMenu(value => !value); }}><BotIcon name="more" /></button>}
     <button type="button" aria-label={zh ? '收起会面输入' : 'Collapse meeting input'} title={zh ? '收起会面输入' : 'Collapse meeting input'} disabled={voiceInputActive}
       onClick={() => { if (desktop.pet) setHudMenu(false); setComposerExpanded(false); }}><BotIcon name="chevron-down" /></button>
     {hangupButton}
@@ -508,42 +459,15 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
       {meeting && <BotCallDialogue key={stage.generation} turn={turn} messages={messages} baseline={meeting.baseline} ignored={stage.ignored} connectedAt={connectedAt}
         progressTarget={desktop.pet ? petStatusRow : undefined}
         companionId={companion.id} activeAtConnect={meeting.activeAtConnect}
-        speechApi={api} conversationId={conversationId} muted={speechMuted} voiceHold={voiceHold} speechStop={stopReplySpeech}
+        speechApi={api} conversationId={conversationId} muted={speechMuted} voiceHold={pushToTalkBusy} speechStop={stopReplySpeech}
         catalog={meeting.model?.assets} stage={meeting.stage} control={control} modelLoading={!hideLiveModel && hasLiveModel && !control}
-        hidden={historyOpen || interactions || topicPanelOpen || desktop.pet && hudMenu} desktopPet={desktop.pet} zh={zh}
+        hideDialogue={interactions || topicPanelOpen || desktop.pet && hudMenu} desktopPet={desktop.pet} zh={zh}
         interrupted={stage.interrupted} onPresent={recordPresentation} onPlayback={recordPlayback} onInterrupt={() => { void interrupt(); }} onNotice={setNotice}
-        onReplay={() => { if (!voice.state.enabled || voice.state.phase === 'error') setReplyAudioInterrupted(false); }}
-        onHistory={messageId => { openHistory(); setHistoryFocus(messageId); }}
-        extra={question && <BotMessageBody message={{ ...question, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(question.id, id, text)} />} />}
+        extra={question?.execution && <div className="bot-message-progress"><BotExecutionDetails execution={question.execution}
+          locale={locale} onAnswer={(id, text) => answer(question.id, id, text)} /></div>} />}
       {!desktop.pet && hudMenu && meetingMenu}
       {notice && <button className="bot-call-notice" role="status" onClick={() => setNotice('')}>{notice} ×</button>}
-    </div><section id="bot-call-history" className="bot-call-chat" hidden={!historyOpen && !interactions} aria-label={zh ? '会面聊天' : 'Conversation'}>
-      <header>
-        <nav role="tablist" aria-label={zh ? '会面面板' : 'Meeting panel'}>
-          <button type="button" role="tab" aria-selected={!interactions} onClick={openHistory}>{desktop.pet && <BotIcon name="history" />}{zh ? '对话' : 'Chat'}</button>
-          <button type="button" role="tab" aria-selected={interactions} onClick={() => { setHistoryOpen(false); setInteractions(true); }}>{desktop.pet && <BotIcon name="settings" />}{zh ? '操作' : 'Interact'}</button>
-        </nav>
-        <button type="button" className="bot-call-panel-close" aria-label={zh ? '收起会面面板' : 'Close meeting panel'} onClick={() => { setHistoryOpen(false); setInteractions(false); }}><BotIcon name="close" /></button>
-      </header>
-      {interactionsPanel}<div hidden={interactions} className="bot-call-transcript" ref={transcript} role="log" aria-live="polite"
-        onScroll={event => { const node = event.currentTarget; historyFollowing.current = node.scrollHeight - node.scrollTop - node.clientHeight < 40; }}>
-      {meeting?.legacyId && <button type="button" onClick={() => legacy ? openHistory() : void openLegacy()}>
-        {legacy ? (zh ? '返回当前对话' : 'Back to conversation') : (zh ? '旧版会面记录' : 'Previous meeting history')}
-      </button>}
-      {more && <button type="button" onClick={() => void loadEarlier()}>{zh ? '更早的对话' : 'Earlier messages'}</button>}
-      {!chat.length && <div className="bot-call-chat-welcome">{desktop.pet && <BotIcon name="history" />}{zh ? '还没有消息。' : 'No messages yet.'}</div>}
-      {chat.map(message => {
-        const captions = message.parts?.some(part => part.music || part.video) ? undefined : message.parts?.filter(part => part.presentation && part.text);
-        return <article key={message.id} className={message.senderId === 'user' ? 'is-user' : ''} data-call-message={message.id}>
-          <small>{message.senderId === 'user' ? (zh ? '我' : 'You') : message.senderName}</small>
-          {captions?.map(part => <p className="bot-call-log-bubble" key={part.id}>{part.text}</p>)}
-          <BotMessageBody message={{ ...message, execution: undefined, ...(captions?.length ? { parts: message.parts?.filter(part => part.music || part.video), content: '' } : {}) }}
-            statusText={message.status === 'failed' ? (zh ? '回复失败。' : 'Reply failed.') : ''} surface="call" videoPlayback={videoSurface} apps={runtime?.apps} musicEnabled={phase === 'connected'} locale={locale} mediaApi={mediaApi} onOpenUrl={onOpenUrl} />
-          {message.error && <BotErrorNotice message={message.error} zh={zh} />}
-          {!legacy && message.execution?.question && <BotMessageBody message={{ ...message, parts: undefined, content: '', attachments: undefined }} statusText="" locale={locale} onAnswer={(id, text) => answer(message.id, id, text)} />}
-        </article>;
-      })}
-    </div></section></div>
+    </div>{interactionsPanel && <div className="bot-call-interaction-panel">{interactionsPanel}</div>}</div>
     {compactPet && <button type="button" className="bot-call-input-entry bot-call-compact-anchor" data-pet-drag=""
       aria-expanded={composerExpanded} aria-label={compactInputLabel} title={`${companion.name} · ${compactInputLabel}`}
       aria-disabled={composerExpanded && voiceInputActive || undefined}
@@ -552,7 +476,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     </button>}
     <div className={`bot-call-dock${composerExpanded ? '' : ' is-collapsed'}`} ref={dock}>
       {mediaApi?.desktopCaptureSupported && <div className="bot-capture-controls-row" ref={setPetCaptureControls} />}
-      {(desktop.pet || mediaApi?.desktopCaptureSupported) && <div className="bot-call-status-row" ref={setPetStatusRow} />}
+      {(desktop.pet || mediaApi?.desktopCaptureSupported || pushToTalkStatus) && <div className="bot-call-status-row" ref={setPetStatusRow}>{pushToTalkStatus}</div>}
       {(composerExpanded || mediaApi?.desktopCaptureSupported) && <div className="bot-call-input-group" hidden={!composerExpanded}>
       {desktop.pet && hudMenu && <div className="bot-call-pet-options" id={petOptionsId}>
           <div className="bot-call-pet-toolbar">
@@ -562,16 +486,16 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
           {meetingMenu}
         </div>}
       {topics}
-      {video.loginPrompt && <VideoLoginDialog state={video.loginPrompt} zh={zh} dismiss={video.dismissLogin} openUrl={onOpenUrl} />}
-      {video.attached && <BotTopicAppCard appId="video" locale={locale} connected onOpen={() => onOpenUrl?.('https://www.bilibili.com/')} onRemove={() => void video.detach().catch(cause => setSendError(String(cause)))} />}
-      {music.attached && <BotTopicAppCard appId="music" locale={locale} connected onRemove={() => void music.detach().catch(cause => setSendError(String(cause)))} />}
     <div className="bot-call-composer-host">
-      <BotComposer meeting locale={locale} draft={draft} setDraft={setDraft} onTypingActivity={setTyping} disabled={!conversationId} busy={sending} group={false} world={false} conversationId={conversationId}
+      <BotComposer meeting locale={locale} draft={draft} setDraft={setDraft} onTypingActivity={setTyping} disabled={!conversationId} busy={sending || attachingBrowser} group={false} world={false} conversationId={conversationId}
+        pushToTalkShortcut={!!api.onPushToTalk} voiceCaptureBusy={pushToTalkBusy}
         panel={null} setPanel={() => undefined} send={() => submit()} mediaApi={mediaApi} attachments={files} addingFiles={importing}
         desktopCapture={{ surface: desktop.pet ? 'pet' : 'chat', companionName: companion.name, attach: attachFiles, statusTarget: petStatusRow, controlsTarget: petCaptureControls,
-          interacting: chatInteracting || typing || sending || presenting || voiceInputActive || voiceHold }}
+          interacting: chatInteracting || typing || sending || presenting || voiceInputActive || pushToTalkBusy }}
         addFiles={() => addFiles()} removeFile={id => setFiles(current => current.filter(file => file.id !== id))} sendSticker={media => submit(media)}
-        extraTools={<>{composerTools}<BotApps locale={locale} disabled={sending || !conversationId} videoAttached={video.attached} onVideo={video.connect} musicAttached={music.attached} onMusic={music.connect} />{inputActions}</>} showInputTools={!desktop.pet || hudMenu || voiceInputActive} compact status={composerStatus} onVoiceInputStart={voice.stop} onVoiceInputActivity={setVoiceInputActive} />
+        topicControls={<BotAppAttachments locale={locale} chatApps={chatApps} onOpenUrl={onOpenUrl} onOpenBrowserContext={onOpenBrowserContext} onError={setSendError} />}
+        extraTools={<><BotApps locale={locale} disabled={sending || attachingBrowser || !conversationId} browserApi={browserApi} chatApps={chatApps} />{inputActions}</>}
+        showInputTools={!desktop.pet || hudMenu || voiceInputActive} compact status={composerStatus} onVoiceInputActivity={setVoiceInputActive} />
     </div></div>}{!compactPet && !composerExpanded && <button type="button" className="bot-call-input-entry" data-pet-drag={desktop.pet ? '' : undefined} aria-expanded="false"
       aria-label={zh ? '展开会面输入' : 'Expand meeting input'} title={zh ? '展开会面输入' : 'Expand meeting input'}
       onClick={() => { setHudMenu(false); setComposerExpanded(true); }}><img src={startupLogo} alt="" draggable={false} /></button>}

@@ -1,11 +1,12 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { BotService } from '../../src/main/companion-bot/service';
 import { BotDshBrain, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotCabinWorldApp } from '../../src/main/companion-bot/cabin-world-app';
+import { BotMediaService } from '../../src/main/companion-bot/media-service';
 import { PresenceArchive } from '../../src/main/companion-bot/presence-archive';
 import type { BotEvent } from '../../src/shared/companion-bot';
 
@@ -43,15 +44,16 @@ async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, re
     override async archive() {}
   }({ getHost: host });
   const events: BotEvent[] = [];
-  const service = new BotService({ root, brain, memory, model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
+  const media = new BotMediaService({ root: path.join(root, 'media'), builtinRoot: path.resolve('resources/bot-stickers') });
+  const service = new BotService({ root, brain, memory, media, model: () => ({ model: 'controlled-local', apiKey: 'never-used-fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }),
     cabinWorldApp, assertMessageReady, onEvent: event => { events.push(event); }, report: error => { reported.push(error); } });
   const initial = (await service.handle({ type: 'state' })).snapshot!, conversationId = initial.conversations[0]!.id;
-  cleanups.push(async () => { preparation.resolve(); completion.resolve(); await service.shutdown(); await rm(root, { recursive: true, force: true }); });
+  cleanups.push(async () => { preparation.resolve(); completion.resolve(); await service.shutdown(); await media.close(); await rm(root, { recursive: true, force: true }); });
   const send = (content = '你好', room = conversationId) => service.handle({ type: 'message.send', conversationId: room, content, requestId: 'controlled' });
   const reply = async (room = conversationId, surface?: 'call') => (await service.handle({ type: 'state', conversationId: room, surface })).snapshot!.messages.find(message => message.senderId !== 'user');
   let sequence = 0;
   const emit = (type: string, text?: string, toolName?: string) => run!.onEvent?.({ type, text, toolName, nativeStep: 4, sequence: ++sequence, receivedAt: new Date().toISOString() });
-  return { service, preparation, completion, reported, host, send, reply, emit, conversationId, steer, events, get run() { return run; }, get prepares() { return prepares; } };
+  return { service, brain, media, root, preparation, completion, reported, host, send, reply, emit, conversationId, steer, events, get run() { return run; }, get prepares() { return prepares; } };
 }
 
 it('rejects new desktop, call, mobile and world messages before queueing and allows an explicit resend after startup', async () => {
@@ -94,6 +96,48 @@ it('can immediately stop a prepared reply before its native turn was sent', asyn
   expect(f.host).not.toHaveBeenCalled();
 });
 
+it.each([undefined, 'call' as const])('interrupts the current reply after speech is accepted and prioritizes the new question (%s)', async surface => {
+  const f = await fixture();
+  const stop = vi.spyOn(f.brain, 'cancelDurable').mockImplementation(async input => ({
+    accepted: true, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId),
+  }));
+  f.preparation.resolve();
+  const send = (content: string, requestId: string, options: { topicId?: string; delivery?: 'interrupt'; attachmentIds?: string[] } = {}) =>
+    f.service.handle({ type: 'message.send', conversationId: f.conversationId, content, requestId, surface, ...options });
+  const first = await send('旧问题', 'first');
+  const active = await until(() => f.run);
+  active.beforeSendTurn?.();
+  f.emit('status');
+  const state = () => f.service.handle({ type: 'state', conversationId: f.conversationId });
+  const topicId = (await state()).snapshot!.chatRuntime!.topic!.id;
+  const attachment = path.join(f.root, '稍后处理.txt');
+  await writeFile(attachment, '这属于普通排队消息。');
+  const [file] = await f.media.importFiles({ conversationId: f.conversationId, paths: [attachment] });
+  const queued = await send('已经排队的消息', 'older-queued', { topicId, attachmentIds: [file!.id] });
+  await expect(send('无法投递的问题', 'rejected', { delivery: 'interrupt', topicId: 'unknown-topic' })).rejects.toThrow();
+  expect(active.signal?.aborted).toBe(false);
+
+  const receipt = await send('先回答这个问题', 'priority', { delivery: 'interrupt', topicId });
+  expect(receipt.interruptedReplyIds).toEqual(first.replyMessageIds);
+  expect(active.signal?.aborted).toBe(true);
+  await until(() => stop.mock.calls[0]);
+  expect(stop).toHaveBeenCalledWith(expect.objectContaining({ eventId: active.eventId, laneId: active.laneId }), false);
+  expect(f.service.store.getMessage(first.replyMessageIds![0]!)?.status).toBe('cancelled');
+  expect(f.service.store.getMessage(queued.replyMessageIds![0]!)?.status).toBe('queued');
+  const next = await until(() => f.run?.eventId !== active.eventId ? f.run : undefined);
+  expect(next.laneId).toBe(active.laneId);
+  expect(JSON.parse(next.prompt).message.content).toBe('先回答这个问题');
+  expect(JSON.parse(next.prompt).files ?? []).toHaveLength(0);
+  expect(await send('先回答这个问题', 'priority', { delivery: 'interrupt', topicId })).toEqual(receipt);
+  expect(next.signal?.aborted).toBe(false);
+  expect(f.steer).not.toHaveBeenCalled();
+
+  f.completion.resolve();
+  const last = await until(() => f.run?.eventId !== next.eventId ? f.run : undefined);
+  expect(JSON.parse(last.prompt).message.content).toMatch(/^已经排队的消息/u);
+  expect(JSON.parse(last.prompt).files).toMatchObject([{ id: file!.id }]);
+});
+
 it('automatically observes each started or steered task, keeping the same evidence on delivery retry', async () => {
   let place = '小屋', reads = 0;
   const cabin = new BotCabinWorldApp({ open: async () => undefined, async request(route, _signal, body) {
@@ -115,9 +159,12 @@ it('automatically observes each started or steered task, keeping the same eviden
   expect(reads).toBe(1);
 
   place = '公园';
+  f.emit('text_stream', '收到');
   f.steer.mockRejectedValueOnce(Error('acknowledgement lost'));
   const guided = await send('再补一句', 'steer');
-  const initial = f.steer.mock.calls[0]![1].text;
+  const initial = (await until(() => f.steer.mock.calls[0]))[1].text;
+  await until(async () => (await f.service.handle({ type: 'state', conversationId })).snapshot?.chatRuntime?.queued
+    .find(item => item.messageId === guided.messageId && item.state === 'attention'));
   expect(JSON.parse(initial).cabinWorld).toMatchObject({ place: '公园' });
   expect(reads).toBe(2);
 
@@ -132,6 +179,50 @@ it('automatically observes each started or steered task, keeping the same eviden
   const queued = await until(() => f.run && f.run.eventId !== first.eventId ? f.run : undefined);
   expect(JSON.parse(queued.prompt).cabinWorld).toMatchObject({ place: '小卖部' });
   expect(reads).toBe(3);
+});
+it('automatically delivers speech captured during preparation to the same native turn in order', async () => {
+  const f = await fixture();
+  const first = await f.send();
+  const state = () => f.service.handle({ type: 'state', conversationId: f.conversationId });
+  const running = await until(async () => (await state()).snapshot?.chatRuntime?.running[0]);
+  const input = { type: 'message.send' as const, conversationId: f.conversationId, delivery: 'steer' as const, surface: 'call' as const };
+  const firstAddition = { ...input, content: '补充第一点', requestId: 'speech-1' };
+  const supplement = await f.service.handle(firstAddition);
+  expect(supplement).toMatchObject({ ok: true, guiding: true });
+  expect(await f.service.handle(firstAddition)).toMatchObject({ messageId: supplement.messageId, guiding: true });
+  await f.service.handle({ ...input, content: '补充第二点', requestId: 'speech-2' });
+  const another = await f.service.handle({ type: 'topic.new', conversationId: f.conversationId, requestId: 'a-distinct-topic' });
+  expect(another.topic?.id).not.toBe(running.topicId);
+  const queued = await f.service.handle({ ...input, topicId: another.topic!.id, content: '另一个话题', requestId: 'speech-other-topic' });
+  expect(queued.guiding).toBeUndefined();
+  expect(f.steer).not.toHaveBeenCalled();
+
+  f.preparation.resolve();
+  const run = await until(() => f.run);
+  f.emit('status');
+  await until(() => f.steer.mock.calls[1]);
+  expect(f.steer.mock.calls.map(([lane, item]) => [lane, item.eventId, JSON.parse(item.text).message.content]))
+    .toEqual([[run.laneId, run.eventId, '补充第一点'], [run.laneId, run.eventId, '补充第二点']]);
+  expect((await state()).snapshot?.chatRuntime?.hiddenMessageIds).toContain(supplement.replyMessageIds![0]);
+  expect((await state()).snapshot?.messages.find(message => message.id === first.replyMessageIds![0])?.status).toBe('running');
+});
+
+it('runs a speech supplement in the same topic if the native turn rejects it as already finished', async () => {
+  const f = await fixture();
+  f.preparation.resolve();
+  await f.send();
+  const first = await until(() => f.run);
+  f.emit('status');
+  f.steer.mockRejectedValueOnce(Object.assign(Error('Turn finished'), { code: 'BOT_GUIDANCE_NOT_ACCEPTED' }));
+  const result = await f.service.handle({ type: 'message.send', conversationId: f.conversationId,
+    content: '补充一个要求', delivery: 'steer', requestId: 'speech-late' });
+  expect(result.guiding).toBe(true);
+  const state = () => f.service.handle({ type: 'state', conversationId: f.conversationId });
+  await until(async () => (await state()).snapshot?.chatRuntime?.queued.find(item => item.messageId === result.messageId && item.state === 'queued'));
+  f.completion.resolve();
+  const next = await until(() => f.run?.eventId !== first.eventId ? f.run : undefined);
+  expect(next.laneId).toBe(first.laneId);
+  expect(JSON.parse(next.prompt).message.content).toBe('补充一个要求');
 });
 it('projects actual memory/model/compaction/tool phases, retaining text across tools and returning to generation without token-wide snapshots', async () => {
   const f = await fixture(); await f.send();

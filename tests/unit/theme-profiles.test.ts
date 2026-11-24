@@ -67,7 +67,7 @@ afterEach(() => {
 
 describe('theme profile contract v3', () => {
   it('exposes theme presets, each with complete dark and light tone variants', () => {
-    expect(THEME_PROFILE_IDS).toEqual(['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing', 'midnight', 'mist', 'sand', 'forest', 'indigo', 'rose', 'ocean', 'copper', 'ink', 'lilac', 'citrus', 'paper', 'slate', 'film', 'mono', 'blush', 'olive', 'charcoal', 'silver', 'graphite', 'smoke', 'ash', 'notion', 'onedark', 'code', 'azure', 'teal', 'jade', 'amber', 'orchid', 'coral']);
+    expect(THEME_PROFILE_IDS).toEqual(['worldlinebox', 'vscode', 'soft', 'whale-fantasy', 'shuimo-danqing', 'cosmic-princess-kaguya', 'midnight', 'mist', 'sand', 'forest', 'indigo', 'rose', 'ocean', 'copper', 'ink', 'lilac', 'citrus', 'paper', 'slate', 'film', 'mono', 'blush', 'olive', 'charcoal', 'silver', 'graphite', 'smoke', 'ash', 'notion', 'onedark', 'code', 'azure', 'teal', 'jade', 'amber', 'orchid', 'coral']);
 
     for (const id of THEME_PROFILE_IDS) {
       const preset = THEME_PROFILE_PRESETS[id];

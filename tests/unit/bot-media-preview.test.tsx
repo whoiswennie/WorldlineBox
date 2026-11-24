@@ -74,7 +74,8 @@ it('provides a focused keyboard dialog with Escape and restores focus after clos
   const previous = document.createElement('button'); previous.dataset.previewTestFocus = ''; document.body.append(previous); previous.focus();
   const f = await mount({ kind: 'image', imageUrl: media.url }); const close = document.querySelector<HTMLButtonElement>('[aria-label="关闭预览"]')!;
   expect(document.activeElement).toBe(close); expect(document.querySelector('[role=dialog]')?.getAttribute('aria-modal')).toBe('true');
-  const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }); await act(() => close.dispatchEvent(tab)); expect(tab.defaultPrevented).toBe(true); expect(document.activeElement).toBe(close);
+  const canvas = document.querySelector<HTMLElement>('.attachment-image-stage')!; canvas.focus();
+  const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }); await act(() => canvas.dispatchEvent(tab)); expect(tab.defaultPrevented).toBe(true); expect(document.activeElement?.getAttribute('aria-label')).toBe('最大化预览');
   const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }); await act(() => close.dispatchEvent(escape)); expect(f.onClose).toHaveBeenCalledOnce(); expect(escape.defaultPrevented).toBe(true);
   await act(() => root!.unmount()); root = undefined; expect(document.activeElement).toBe(previous);
 });
@@ -122,9 +123,9 @@ it('coordinates only attachment playback, pauses the inline source on enlargemen
   await click('关闭预览');expect(viewerPause).toHaveBeenCalled();expect(document.querySelector('[role=dialog]')).toBeNull();
   expect(host!.querySelectorAll('[data-bot-attachment-player]')).toHaveLength(2);
 });
-it('never creates an in-app dialog or assigns a media source for Office and over-limit attachments', async () => {
+it('opens legacy Office and over-limit attachments externally without assigning a media source', async () => {
   const f = boundary(async () => ({ ok: true }));
-  for (const item of [{ ...media, name: '资料.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, { ...media, name: '大图.png', mimeType: 'image/png', size: 200 * 1024 * 1024 + 1, storage: 'external' as const }]) {
+  for (const item of [{ ...media, name: '资料.doc', mimeType: 'application/msword' }, { ...media, name: '大图.png', mimeType: 'image/png', size: 200 * 1024 * 1024 + 1, storage: 'external' as const }]) {
     await render(<BotAttachment media={item} api={f.api} conversationId="room-a" locale="zh-CN" />);
     expect(document.querySelector('img,video,audio,[role=dialog]')).toBeNull(); await act(() => host!.querySelector<HTMLButtonElement>('.bot-attachment-main')!.click());
     expect(document.querySelector('[role=dialog]')).toBeNull(); expect(f.request.mock.calls.at(-1)?.[0]).toEqual({ type: 'attachment.open', conversationId: 'room-a', id: item.id });
