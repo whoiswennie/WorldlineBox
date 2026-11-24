@@ -28,7 +28,10 @@ OutputDir=..\..\out\make\inno
 OutputBaseFilename=WorldlineBoxInstall
 DiskSpanning=yes
 DiskSliceSize=max
-Compression=lzma
+Compression=lzma2/ultra64
+; Keep the offline installer within the release host's single-file limit.
+LZMAUseSeparateProcess=yes
+LZMADictionarySize=262144
 SolidCompression=yes
 SetupIconFile=..\..\assets\icons\app.ico
 UninstallDisplayIcon={app}\{#AppExeName}
