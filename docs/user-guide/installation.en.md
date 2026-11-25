@@ -26,8 +26,8 @@ To uninstall, move the app to the Trash. Libraries live where you created them a
 
 ## Windows
 
-1. Download the Windows installer package `WorldlineBox-win-x86-64-<version>-setup.zip` (extract and run the setup wizard), or download the portable build `WorldlineBox-win-x86-64-<version>-portable.zip` (extract and run directly from any local directory).
-2. Run the installer and follow the wizard to choose install path, language, and shortcut preferences.
+1. Download `WorldlineBoxSetup.exe` from the Windows release page. If you use a separately provided portable ZIP, extract it to a local folder before running it.
+2. Double-click the installer, approve the Windows permission prompt if shown, and choose the installation folder and shortcuts. On first install, the wizard selects English or Simplified Chinese automatically.
 
 Unsigned development builds may trigger SmartScreen. Verify the source, then choose **More info → Run anyway**. Uninstall from **Settings → Apps**; the uninstaller will cleanly remove application files.
 

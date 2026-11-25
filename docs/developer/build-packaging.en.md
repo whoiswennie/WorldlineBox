@@ -144,7 +144,7 @@ This upgrade was developed on Windows without a usable Docker, bash or WSL Linux
 
 ### Windows installer (Inno Setup)
 
-`03-Build-Installer.bat` produces the offline installer `out/make/inno/WorldlineBoxSetup.exe` and its SHA-256 file. It uses **Inno Setup 6** for the wizard and data, and the Windows .NET Framework C# compiler for the launcher. Open the EXE directly. The launcher validates and prepares the embedded data before opening the wizard. The temporary directory needs free space for those compressed files during setup.
+`03-Build-Installer.bat` produces the offline installer `out/make/inno/WorldlineBoxSetup.exe` and its SHA-256 file. **Inno Setup 6** compiles the wizard and compressed data into one executable. Opening the EXE starts the native installer, which reads its embedded data during installation.
 
 #### 1. Install Inno Setup compiler dependency (ISCC.exe)
 
@@ -165,7 +165,7 @@ npm run package
 npm run make:inno
 ```
 
-- Multilingual: language selection dialog on launch (defaults to system language), English + Simplified Chinese
+- A fresh install uses the system language and an upgrade reuses the previous installer language. Use `/LANG=english` or `/LANG=chinesesimplified` to override it.
 - Wizard with install-path selection (default `C:\Program Files\WorldlineBox`), Start Menu / desktop shortcuts
 - Per-machine install (UAC elevation), automatic uninstaller `unins000.exe` and Apps & Features entry
 

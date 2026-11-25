@@ -128,7 +128,7 @@ npm run release:make            # 规范命名 WorldlineBox-linux-x86-64-<版本
 
 ### Windows 安装器（Inno Setup）
 
-Windows 离线安装程序输出为 `out/make/inno/WorldlineBoxSetup.exe`，同目录提供 SHA-256 文件。构建使用 **Inno Setup 6** 生成安装向导和安装数据，由 Windows 自带的 .NET Framework C# 编译器编译的启动程序将它们作为单个 EXE 交付。双击 EXE 后自动校验并准备数据，再打开安装向导。安装期间临时目录需要额外容纳内嵌的压缩数据。
+Windows 离线安装程序输出为 `out/make/inno/WorldlineBoxSetup.exe`，同目录提供 SHA-256 文件。**Inno Setup 6** 将向导和压缩数据编译为单个 EXE。双击即可进入原生安装流程，向导在安装时直接从该 EXE 读取内置数据。
 
 Windows 用户可双击根目录的 `01-Setup-Environment.bat` 准备环境、`02-Start-Development.bat` 启动开发模式、`03-Build-Installer.bat` 生成安装包。仅 `01` 安装 Node.js（版本来自 `.nvmrc`）、npm 依赖、Electron 原生模块、校验过的媒体组件及 Inno Setup 6.7.3，工具保存在 `.tools/` 中。`02` 不安装依赖、不重编译原生模块，缺环境或依赖锁变化时提示先运行 `01`；正常启动仍会编译当前源码。`03` 检查已有环境、打包并验证应用，然后生成安装 EXE。原生修复用 `--only better-sqlite3`，保留 `node-pty` 自带的 NAPI 预编译模块。正常开发启动和安装版共享当前用户 `%APPDATA%\WorldlineBox`，DSH 下载缓存、运行版本与实例放在其 `dsh` 下，不放项目 `.tools`。
 
@@ -167,7 +167,7 @@ npm run package
 npm run make:inno
 ```
 
-- 多语言：安装启动时显示语言选择（默认跟随系统语言），中英双语
+- 初次安装跟随系统语言，升级沿用此前的安装语言。可用 `/LANG=english` 或 `/LANG=chinesesimplified` 指定向导语言。
 - 安装向导：安装路径选择（默认 `C:\Program Files\WorldlineBox`）、开始菜单/桌面快捷方式
 - per-machine 安装（UAC 提权）、自动生成卸载器 `unins000.exe` 与应用和功能条目
 

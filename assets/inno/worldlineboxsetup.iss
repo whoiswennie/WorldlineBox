@@ -1,5 +1,5 @@
 ; WorldlineBox Windows 安装器（Inno Setup，参考 VS Code build/win32/code.iss）。
-; WorldlineBoxSetup.exe 负责启动反馈，Inno 向导负责语言选择和全用户安装。
+; 单文件原生向导负责全用户安装。
 ; 构建：ISCC.exe assets\inno\worldlineboxsetup.iss（SourceDir 指向打包产物父目录）
 
 #define AppName "WorldlineBox"
@@ -25,9 +25,8 @@ DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
 OutputDir=..\..\out\make\inno
-OutputBaseFilename=WorldlineBoxInstall
-DiskSpanning=yes
-DiskSliceSize=max
+OutputBaseFilename=WorldlineBoxSetup
+DiskSpanning=no
 Compression=lzma2/ultra64
 ; Keep the offline installer within the release host's single-file limit.
 LZMAUseSeparateProcess=yes
@@ -38,8 +37,8 @@ UninstallDisplayIcon={app}\{#AppExeName}
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; 语言选择：yes = 安装启动时始终显示语言选择对话框（默认选中系统语言）
-ShowLanguageDialog=yes
+; 语言选择框早于 InitializeSetup。同一时间多次启动时直接进入同一个向导。
+ShowLanguageDialog=no
 WizardStyle=modern
 ; per-machine：安装到 Program Files，UAC 提权（产品要求"一开始提示"）
 PrivilegesRequired=admin
@@ -63,32 +62,68 @@ Name: "{group}\世界线盒子"; Filename: "{app}\{#AppExeName}"; IconFilename: 
 Name: "{autodesktop}\世界线盒子"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon; IconFilename: "{app}\{#AppExeName}"; IconIndex: 0; AppUserModelID: "com.worldlinebox.app"; AppUserModelToastActivatorCLSID: "24BC5C0E-9196-41EA-90D5-8037889B7B7D"
 
 [Code]
-function OpenEvent(DesiredAccess: Cardinal; InheritHandle: Boolean; Name: String): THandle;
-  external 'OpenEventW@kernel32.dll stdcall';
-function SetEvent(Event: THandle): Boolean;
-  external 'SetEvent@kernel32.dll stdcall';
+const
+  InstallerMutex = 'Local\WorldlineBox.NativeSetup';
+  WizardProperty = 'WorldlineBox.NativeSetup.Wizard';
+  ErrorAlreadyExists = 183;
+
+var
+  InstanceHandle: THandle;
+
+function CreateMutex(Attributes: LongWord; InitialOwner: Boolean; Name: String): THandle;
+  external 'CreateMutexW@kernel32.dll stdcall setuponly';
 function CloseHandle(Handle: THandle): Boolean;
-  external 'CloseHandle@kernel32.dll stdcall';
+  external 'CloseHandle@kernel32.dll stdcall setuponly';
+function FindNextWizard(Parent, Previous: HWND; ClassName: String; Title: LongWord): HWND;
+  external 'FindWindowExW@user32.dll stdcall setuponly';
+function SetProp(Window: HWND; Name: String; Value: THandle): Boolean;
+  external 'SetPropW@user32.dll stdcall setuponly';
+function GetProp(Window: HWND; Name: String): THandle;
+  external 'GetPropW@user32.dll stdcall setuponly';
+function IsIconic(Window: HWND): Boolean;
+  external 'IsIconic@user32.dll stdcall setuponly';
+function ShowWindow(Window: HWND; Command: Integer): Boolean;
+  external 'ShowWindow@user32.dll stdcall setuponly';
+function GetLastActivePopup(Window: HWND): HWND;
+  external 'GetLastActivePopup@user32.dll stdcall setuponly';
+function SetForegroundWindow(Window: HWND): Boolean;
+  external 'SetForegroundWindow@user32.dll stdcall setuponly';
 
+procedure ActivateExistingWizard;
 var
-  LauncherNotified: Boolean;
-
-procedure CurPageChanged(CurPageID: Integer);
-var
-  ReadyToken: String;
-  Event: THandle;
+  Window: HWND;
 begin
-  if LauncherNotified then
-    Exit;
-  ReadyToken := ExpandConstant('{param:WLBREADY|}');
-  if Length(ReadyToken) <> 32 then
-    Exit;
-  Event := OpenEvent($0002, False, 'Local\WorldlineBox.SetupReady.' + ReadyToken);
-  if Event <> 0 then
-  begin
-    LauncherNotified := SetEvent(Event);
-    CloseHandle(Event);
+  Window := FindNextWizard(0, 0, 'TWizardForm', 0);
+  while Window <> 0 do begin
+    if GetProp(Window, WizardProperty) <> 0 then begin
+      if IsIconic(Window) then ShowWindow(Window, 9);  { SW_RESTORE }
+      SetForegroundWindow(GetLastActivePopup(Window));
+      Exit;
+    end;
+    Window := FindNextWizard(0, Window, 'TWizardForm', 0);
   end;
+end;
+
+function InitializeSetup: Boolean;
+begin
+  { Claim the instance atomically, including while the first wizard is starting. }
+  InstanceHandle := CreateMutex(0, False, InstallerMutex);
+  Result := (InstanceHandle = 0) or (DLLGetLastError <> ErrorAlreadyExists);
+  if not Result then begin
+    CloseHandle(InstanceHandle);
+    InstanceHandle := 0;
+    if not WizardSilent then ActivateExistingWizard;
+  end;
+end;
+
+procedure InitializeWizard;
+begin
+  SetProp(WizardForm.Handle, WizardProperty, 1);
+end;
+
+procedure DeinitializeSetup;
+begin
+  if InstanceHandle <> 0 then CloseHandle(InstanceHandle);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
