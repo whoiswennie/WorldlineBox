@@ -183,7 +183,7 @@ export async function startMobileGateway(options: Options) {
       responses.set(res, device);
       res.once('close', () => responses.delete(res));
     }
-    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, computerName: hostname(), chatApps: true, topicApps: true, inbox: true, downloadOriginal: true, remoteHost: device ? await options.access?.advertisedRemote(device) : options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
+    if (method === 'GET' && url.pathname === '/mobile/v1/health') return json(res, 200, { ok: true, protocol: 1, computerName: options.access?.hostName ?? hostname(), chatApps: true, topicApps: true, inbox: true, downloadOriginal: true, attachmentThumbnails: true, remoteHost: device ? await options.access?.advertisedRemote(device) : options.access?.remoteHost(), maxUploadBytes: MOBILE_UPLOAD_MAX_BYTES, uploadChunkBytes: MOBILE_UPLOAD_CHUNK_BYTES, pagedSpeech: !!options.speech });
     if (device && options.access && url.pathname === '/mobile/v1/profile') {
       if (method === 'DELETE') {
         await options.access.releaseDevice(device);
@@ -516,7 +516,10 @@ export async function startMobileGateway(options: Options) {
       const headers = new Headers();
       if (req.headers.range) headers.set('range', req.headers.range);
       const media = await options.media();
-      const response = await media.response(new Request(attachment.url, { method, headers, signal: signal.signal }), true);
+      const thumbnail = url.searchParams.get('thumbnail') === '1';
+      if (thumbnail && !attachment.previewUrl) throw new RequestError(404, '此附件没有缩略图。');
+      const resource = thumbnail ? attachment.url + '/preview' : attachment.url;
+      const response = await media.response(new Request(resource, { method, headers, signal: signal.signal }), !thumbnail);
       requireRoom(roomId.data);
       res.writeHead(response.status, Object.fromEntries(response.headers));
       if (response.body) await pipeline(Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]), res);

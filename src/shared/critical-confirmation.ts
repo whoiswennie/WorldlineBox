@@ -5,6 +5,7 @@ export const criticalConfirmationPayloadSchema = z.strictObject({
   heading: z.string().min(1).max(200),
   message: z.string().min(1).max(500),
   detail: z.string().min(1).max(2_000),
+  pairingCode: z.string().regex(/^[0-9A-F]{10}$/u).optional(),
   cancelLabel: z.string().min(1).max(80),
   confirmLabel: z.string().min(1).max(80),
 });

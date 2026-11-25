@@ -240,7 +240,7 @@ it('pairs a device once, disconnects its live stream, resumes it, and revokes it
   const health = () => fetch(`${base}/health`, { headers });
   try {
     await settings.initialize();
-    expect((await settings.request({ type: 'service', enabled: true })).state?.running).toBe(true);
+    expect((await settings.request({ type: 'state' })).state?.running).toBe(true);
     const details = JSON.parse((await pair()).pairing!.image);
     const redeem = (deviceToken = token) => fetch(`${base}/pair`, { method: 'POST', body: JSON.stringify({ code: details.code, token: deviceToken, name: '测试手机' }) });
     expect((await health()).status).toBe(401);
@@ -342,7 +342,35 @@ it('accepts QR and device SSH credentials and limits forwarding to the companion
   }
 });
 
-it('restores a failed fixed endpoint with the saved device, and stops retrying when disabled', async () => {
+it('starts LAN for a previously disabled profile and persists only approved phones and the display name', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-nearby-'));
+  const rename = vi.fn();
+  const start = async () => ({ host: '127.0.0.1', sshPort: 47832, fingerprint: 'fixture',
+    close() {}, connected: () => false, disconnect() {}, rename });
+  let access = new MobileAccessSettings(root, start);
+  const token = 'f'.repeat(64);
+  try {
+    await writeFile(path.join(root, 'mobile-devices.json'), JSON.stringify({ enabled: false, devices: [] }));
+    await access.initialize();
+    expect((await access.request({ type: 'state' })).state).toMatchObject({ running: true, remoteEnabled: false });
+    await access.request({ type: 'host.rename', name: '客厅电脑' });
+    expect(rename).toHaveBeenCalledWith('客厅电脑');
+    expect(await access.enrollApprovedPhone(token, '测试手机', AbortSignal.abort())).toBe(false);
+    expect(access.authenticate('Bearer ' + token)).toBeUndefined();
+    expect(await access.enrollApprovedPhone(token, '测试手机', new AbortController().signal)).toBe(true);
+    access.close();
+    access = new MobileAccessSettings(root, start);
+    await access.initialize();
+    expect((await access.request({ type: 'state' })).state).toMatchObject({ hostName: '客厅电脑', devices: [{ name: '测试手机' }] });
+    expect(access.authenticate('Bearer ' + token)).toBeTruthy();
+    await access.request({ type: 'state' });
+  } finally {
+    access.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('restores a failed fixed endpoint with the saved device, and keeps LAN access when remote is disabled', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-mobile-fixed-'));
   const token = 'b'.repeat(64);
   const endpoint = { host: 'mobile.example.com', sshPort: 443, fingerprint: `SHA256:${'A'.repeat(43)}`,
@@ -382,10 +410,10 @@ it('restores a failed fixed endpoint with the saved device, and stops retrying w
     await settings.request({ type: 'state' });
     expect(start).toHaveBeenCalledTimes(4);
     expect(settings.authenticate(`Bearer ${token}`)).toBe(deviceId);
-    await settings.request({ type: 'service', enabled: false });
+    await settings.request({ type: 'remote', enabled: false });
     await vi.advanceTimersByTimeAsync(120_000);
     expect(start).toHaveBeenCalledTimes(4);
-    expect(settings.authenticate(`Bearer ${token}`)).toBeUndefined();
+    expect(settings.authenticate(`Bearer ${token}`)).toBe(deviceId);
   } finally {
     settings.close();
     vi.useRealTimers();

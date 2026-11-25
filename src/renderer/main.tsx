@@ -4,6 +4,8 @@ import { lazy, StrictMode, Suspense } from 'react';
 import { RendererReady, StartupBoundary } from './StartupScreen';
 import { createRoot, type Root } from 'react-dom/client';
 
+import { installAgentDesktopRecorder } from './companion-bot/agent-desktop-recording';
+import type { WorldlineBoxBotMediaApi } from '../shared/companion-bot-media';
 import { installImeCompositionGuard } from './ime-safe-dismiss';
 import { ElevationProvider } from './ElevationProvider';
 import { FontSizeProvider } from './FontSizeProvider';
@@ -51,6 +53,12 @@ const root = document.getElementById('root');
 const App = lazy(() => import('./Application').then(module => ({ default: module.App })));
 const CaptureWindow = lazy(() => import('./capture-tools/CaptureToolsWindow').then(module => ({ default: module.CaptureToolsWindow })));
 const captureWindow = new URLSearchParams(window.location.search).get('window') === 'capture-tools';
+
+const media = (window as Window & { worldlinebox?: { companionBotMedia?: WorldlineBoxBotMediaApi } }).worldlinebox?.companionBotMedia;
+if (!captureWindow && media?.desktopCaptureSupported) {
+  const dispose = installAgentDesktopRecorder(media);
+  import.meta.hot?.dispose(dispose);
+}
 
 if (!root) {
   throw new Error('Renderer root element is missing.');

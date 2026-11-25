@@ -18,8 +18,9 @@ test('shows one usable pairing code when the remote tunnel is unavailable', asyn
     await dialog.getByRole('tab', { name: '手机连接' }).click();
     await dialog.getByRole('button', { name: '显示配对二维码' }).click();
     await expect(dialog.getByRole('img', { name: '手机配对二维码' })).toBeVisible();
+    await dialog.getByRole('button', { name: '启用远程入口' }).click();
     await expect(dialog.getByText('远程 · 暂不可用')).toBeVisible();
-    await dialog.getByRole('button', { name: '关闭服务' }).click();
+    await dialog.getByRole('button', { name: '收起二维码' }).click();
     await expect(dialog.getByRole('img', { name: '手机配对二维码' })).toHaveCount(0);
   } finally {
     await app.close();

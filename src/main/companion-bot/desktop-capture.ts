@@ -3,7 +3,7 @@ import { mkdtemp, open, readFile, rm, rmdir } from 'node:fs/promises';
 import path from 'node:path';
 import { app, desktopCapturer, dialog, screen, type BrowserWindow, type Display } from 'electron';
 import sharp from 'sharp';
-import { BOT_DESKTOP_AGENT_EVENT, BOT_DESKTOP_AUDIO_SECONDS, BOT_PRESENCE_ACTIVITY_CHANNEL, BOT_PRESENCE_CAPTURE_EDGE, type BotDesktopAgentCommand, type BotDesktopCaptureScope, type BotDesktopCaptureToolArguments, type BotMediaRequest, type BotMediaResponse, type BotPresenceActivity, type BotPresenceEnergy } from '../../shared/companion-bot-media';
+import { BOT_DESKTOP_HOST_EVENT, BOT_DESKTOP_AGENT_EVENT, BOT_DESKTOP_AUDIO_SECONDS, BOT_PRESENCE_ACTIVITY_CHANNEL, BOT_PRESENCE_CAPTURE_EDGE, type BotDesktopAgentCommand, type BotDesktopCaptureScope, type BotDesktopCaptureToolArguments, type BotMediaRequest, type BotMediaResponse, type BotPresenceActivity, type BotPresenceEnergy } from '../../shared/companion-bot-media';
 import { validateSpeechWave } from '../../shared/local-speech';
 import type { LocalSpeechService } from '../local-speech-service';
 import { callPetFor } from './call-pet-window';
@@ -20,7 +20,7 @@ type CaptureScope = BotDesktopCaptureScope;
 type Recording = { scope: CaptureScope; target: BrowserWindow; granted: boolean; active?: boolean; expires: number; seconds: number; kind: 'listen' | 'watch';
   timer?: ReturnType<typeof setTimeout>; video?: Promise<Awaited<ReturnType<typeof startDesktopVideo>>>; finishing?: boolean; bytes: number };
 export type BotDesktopAgentResult = Pick<BotMediaResponse, 'ok' | 'error' | 'cancelled' | 'durationSeconds' | 'transcript'> & { image?: Uint8Array };
-type AgentJob = { command: CaptureScope & BotDesktopCaptureToolArguments; complete(result: BotDesktopAgentResult): void;
+type AgentJob = { standalone: boolean; command: CaptureScope & BotDesktopCaptureToolArguments; complete(result: BotDesktopAgentResult): void;
   reject(error: unknown): void; handshake: ReturnType<typeof setTimeout> };
 const formats = ['wav', 'mp3', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'aif', 'aiff', 'wma', 'amr', 'ape',
   'mp4', 'm4v', 'mov', 'mkv', 'webm', 'avi', 'mpeg', 'mpg', 'ts', 'm2ts', 'wmv', 'flv'];
@@ -121,7 +121,7 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
         callback({}); return;
       }
       grant.granted = true;
-      const display = screen.getDisplayMatching(grant.target.getBounds());
+      const display = recording === grant && agent?.standalone ? screen.getPrimaryDisplay() : screen.getDisplayMatching(grant.target.getBounds());
       void displaySource(display, { width: 0, height: 0 }).then(source => {
         if (recording !== grant && presence !== grant || grant.target.isDestroyed() || Date.now() >= grant.expires) { callback({}); return; }
         callback({ video: source, audio: 'loopback' });
@@ -155,30 +155,56 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
     publishActivity();
   }
 
-  function dispatch(target: BrowserWindow, command: BotDesktopAgentCommand) {
-    return target.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent(${JSON.stringify(BOT_DESKTOP_AGENT_EVENT)}, { detail: ${JSON.stringify(command)} }));`, command.operation !== 'cancel');
+  async function screenshot(display: Display, request: CaptureScope, active: () => boolean): Promise<BotDesktopAgentResult> {
+    const width = Math.round(display.size.width * display.scaleFactor);
+    const height = Math.round(display.size.height * display.scaleFactor);
+    const scale = Math.min(1, 2560 / Math.max(width, height));
+    clearTimeout(receiptTimer);
+    manualScreen = { ...request, activity: 'screenshot' };
+    publishActivity();
+    try {
+      const source = await displaySource(display, { width: Math.round(width * scale), height: Math.round(height * scale) });
+      if (!active() || !manualScreen || !sameCapture(manualScreen, request)) return { ok: true, cancelled: true };
+      if (source.thumbnail.isEmpty()) throw Error('未取得屏幕画面，请检查系统的屏幕共享权限。');
+      const image = source.thumbnail.toPNG();
+      manualScreen.activity = 'captured';
+      receiptTimer = setTimeout(() => { manualScreen = undefined; publishActivity(); }, 3000);
+      receiptTimer.unref();
+      return { ok: true, image };
+    } finally {
+      if (manualScreen?.activity === 'screenshot' && sameCapture(manualScreen, request)) manualScreen = undefined;
+      publishActivity();
+    }
+  }
+
+  function dispatch(target: BrowserWindow, command: BotDesktopAgentCommand, standalone: boolean) {
+    return target.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent(${JSON.stringify(standalone ? BOT_DESKTOP_HOST_EVENT : BOT_DESKTOP_AGENT_EVENT)}, { detail: ${JSON.stringify(command)} }));`, command.operation !== 'cancel');
   }
 
   return {
     cancel,
     endMeeting(room: string) { if (presence?.scope.conversationId === room) cancel(presence.scope); },
     stopPresence() { clearTimeout(receiptTimer); manualScreen = undefined; if (presence) cancel(presence.scope); archive.close(); publishActivity(); },
-    async runForAgent(owner: BrowserWindow, conversationId: string, preferPet: boolean, input: BotDesktopCaptureToolArguments, signal: AbortSignal) {
+    async runForAgent(owner: BrowserWindow | undefined, conversationId: string, preferPet: boolean, input: BotDesktopCaptureToolArguments, signal: AbortSignal) {
       const surfaces = preferPet ? ['pet', 'chat'] as const : ['chat', 'pet'] as const;
       const allowed = surfaces.find(surface => {
+        if (!owner || owner.isDestroyed()) return false;
         const target = surface === 'pet' ? callPetFor(owner) : owner;
         const grant = surfacesReady.get(surface);
         return grant?.scope.conversationId === conversationId && target === grant.target && !target.isDestroyed()
           && target.webContents.mainFrame === grant.frame && target.isVisible() && !target.isMinimized();
       });
-      if (!allowed) return { ok: false, error: '当前聊天或桌宠窗口暂时不可用，无法采集桌面。' } satisfies BotMediaResponse;
-      if (agent || recording || processing || file) return { ok: false, error: '已有桌面采集任务正在运行。' } satisfies BotMediaResponse;
+      if (agent || recording || processing || file || manualScreen?.activity === 'screenshot') return { ok: false, error: '已有桌面采集任务正在运行。' } satisfies BotMediaResponse;
       signal.throwIfAborted();
-      const command = { ...input, conversationId, surface: allowed, requestId: randomUUID() };
+      const command = { ...input, conversationId, surface: allowed ?? 'chat' as const, requestId: randomUUID() };
+      if (!allowed && input.operation === 'screen') {
+        return screenshot(screen.getPrimaryDisplay(), command, () => !signal.aborted);
+      }
+      if (!owner || owner.isDestroyed()) return { ok: false, error: '应用的音视频采集组件尚未就绪。' };
       const target = targetFor(owner, command)!;
       const result = new Promise<BotDesktopAgentResult>((complete, reject) => {
-        const handshake = setTimeout(() => complete({ ok: false, error: '当前聊天窗口未接收采集请求，请确认桌面采集入口可用。' }), 10_000);
-        agent = { command, complete, reject, handshake };
+        const handshake = setTimeout(() => complete({ ok: false, error: '桌面采集组件没有响应，请重试。' }), 10_000);
+        agent = { standalone: !allowed, command, complete, reject, handshake };
       });
       const job = agent!;
       const timeout = setTimeout(() => job.complete({ ok: false, error: '伙伴桌面采集超时。' }), 210_000);
@@ -186,7 +212,7 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
       const close = () => job.complete({ ok: true, cancelled: true });
       signal.addEventListener('abort', abort, { once: true });
       target.once('closed', close);
-      void dispatch(target, command).catch(job.reject);
+      void dispatch(target, command, job.standalone).catch(job.reject);
       let completed = false;
       try {
         const response = await result;
@@ -198,7 +224,7 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
         clearTimeout(job.handshake); clearTimeout(timeout);
         signal.removeEventListener('abort', abort); target.removeListener('closed', close);
         cancel(command);
-        if (!completed && !target.isDestroyed()) void dispatch(target, { ...command, operation: 'cancel' }).catch(() => undefined);
+        if (!completed && !target.isDestroyed()) void dispatch(target, { ...command, operation: 'cancel' }, job.standalone).catch(() => undefined);
       }
     },
     async capture(owner: BrowserWindow, request: Exclude<CaptureRequest, { type: 'desktop.cancel' }>, media: BotMediaService, presenceTarget: () => PresenceTarget): Promise<BotMediaResponse> {
@@ -219,12 +245,16 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
           surfacesReady.set(request.surface, { scope: request, target, frame: target.webContents.mainFrame });
         } else if (current && sameCapture(current.scope, request)) {
           surfacesReady.delete(request.surface);
-          if (agent?.command.surface === request.surface && agent.command.conversationId === request.conversationId) cancel(agent.command);
+          if (agent && !agent.standalone && agent.command.surface === request.surface && agent.command.conversationId === request.conversationId) cancel(agent.command);
         }
         return { ok: true };
       }
       if (process.platform !== 'win32' || !target || target.isDestroyed()) throw Error('当前窗口无法使用桌面采集。');
       const tool = agent && sameCapture(agent.command, request) ? agent : undefined;
+      if (request.type === 'desktop.failed') {
+        tool?.complete({ ok: false, error: request.error });
+        return { ok: !!tool };
+      }
       if (!tool && (request.type === 'desktop.screen' || request.type.startsWith('desktop.audio.') || request.type.startsWith('desktop.video.')))
         throw Error('桌面截图、录屏和录音由当前伙伴按需采集。');
       if (tool) {
@@ -320,25 +350,7 @@ export function createBotDesktopCapture(speech: () => LocalSpeechService, ffmpeg
         }
         case 'desktop.screen': {
           const display = screen.getDisplayMatching(target.getBounds());
-          const width = Math.round(display.size.width * display.scaleFactor);
-          const height = Math.round(display.size.height * display.scaleFactor);
-          const scale = Math.min(1, 2560 / Math.max(width, height));
-          clearTimeout(receiptTimer);
-          manualScreen = { ...request, activity: 'screenshot' };
-          publishActivity();
-          try {
-            const source = await displaySource(display, { width: Math.round(width * scale), height: Math.round(height * scale) });
-            if (!active() || tool && agent !== tool || !manualScreen || !sameCapture(manualScreen, request)) return complete({ ok: true, cancelled: true });
-            if (source.thumbnail.isEmpty()) throw Error('未取得屏幕画面，请检查系统的屏幕共享权限。');
-            const image = source.thumbnail.toPNG();
-            manualScreen.activity = 'captured';
-            receiptTimer = setTimeout(() => { manualScreen = undefined; publishActivity(); }, 3000);
-            receiptTimer.unref();
-            return complete({ ok: true, image });
-          } finally {
-            if (manualScreen?.activity === 'screenshot' && sameCapture(manualScreen, request)) manualScreen = undefined;
-            publishActivity();
-          }
+          return complete(await screenshot(display, request, () => active() && agent === tool));
         }
         case 'desktop.audio.activity': case 'desktop.video.activity': {
           if (recording?.granted && recording.target === target && sameCapture(recording.scope, request)) {

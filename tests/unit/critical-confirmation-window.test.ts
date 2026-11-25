@@ -167,6 +167,22 @@ describe('Critical confirmation window', () => {
     await expect(pending).resolves.toBe(true);
   });
 
+  it('dismisses disconnected phones and discards queued requests on expiry', async () => {
+    const { manager, ipcMain, windows } = managerFixture();
+    const first = new AbortController(), queued = new AbortController();
+    const pairing = { ...payload, pairingCode: 'A1B2C3D4E5' };
+    const active = manager.request(pairing, first.signal);
+    const waiting = manager.request(pairing, queued.signal);
+    queued.abort();
+    await expect(waiting).resolves.toBe(false);
+    first.abort();
+    await expect(active).resolves.toBe(false);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]!.destroyed).toBe(true);
+    await expect(ipcMain.invoke('worldlinebox:critical-confirmation:decide', windows[0]!, 'confirm')).resolves.toBe(false);
+    manager.dispose();
+  });
+
   it('cancels on child/parent close and serializes queued critical requests', async () => {
     const { manager, parent, windows } = managerFixture();
     const first = manager.request(payload);

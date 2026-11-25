@@ -4,13 +4,12 @@ import { BOT_DESKTOP_AGENT_EVENT, BOT_DESKTOP_AUDIO_SECONDS, type BotDesktopAgen
 import { BotIcon } from './BotIcon';
 import { BotCompanionPresence } from './BotCompanionPresence';
 import { useBotCallDocument } from './call-pet';
-import { recordDesktopVideo } from './desktop-video-recorder';
-import { speechBase64, VoiceRecorder } from './voice-recorder';
+import { recordForAgent, type DesktopRecordingJob } from './agent-desktop-recording';
 import './bot-desktop-capture.css';
 
 type Operation = 'screen' | 'watch' | 'listen' | 'transcribe';
 type Phase = Operation | 'starting' | 'video-processing' | 'audio-to-text';
-type Job = { scope: BotDesktopCaptureScope; release?: () => void; display?: MediaStream };
+type Job = DesktopRecordingJob;
 
 export function BotDesktopCapture({ api, conversationId, surface, companionName, locale, onAttachment, onBusy, statusTarget, controlsTarget, meeting = false, allowPresence = false, fileRequest = 0, interacting = false }: {
   api: WorldlineBoxBotMediaApi; conversationId: string; surface: 'chat' | 'pet'; locale: 'zh-CN' | 'en';
@@ -68,48 +67,10 @@ export function BotDesktopCapture({ api, conversationId, surface, companionName,
       let input: BotMediaRequest;
       if (recording) {
         const duration = seconds ?? BOT_DESKTOP_AUDIO_SECONDS;
-        const devices = doc.defaultView?.navigator.mediaDevices;
-        if (!devices?.getDisplayMedia) throw Error(zh ? '当前窗口无法录制桌面。' : 'Desktop recording is unavailable in this window.');
-        const ready = await api.request({ type: operation === 'watch' ? 'desktop.video.begin' : 'desktop.audio.begin', seconds: duration, ...scope });
-        if (!ready.ok) throw Error(ready.error);
-        if (current.current !== job) { void api.request({ type: 'desktop.cancel', ...scope }).catch(() => undefined); return; }
-        if (ready.cancelled) return;
-        const video = operation === 'watch'
-          ? { frameRate: { ideal: 12, max: 15 }, width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 } }
-          : { frameRate: { max: 1 }, width: { ideal: 32 }, height: { ideal: 32 } };
-        job.display = await devices.getDisplayMedia({ video, audio: true });
-        if (current.current !== job) return;
-        const tracks = job.display.getAudioTracks();
-        if (!tracks.length) throw Error(zh ? '未取得系统音轨。' : 'No system audio track was returned.');
-        if (operation === 'watch') {
-          if (!job.display.getVideoTracks().length) throw Error(zh ? '未取得屏幕画面。' : 'No screen track was returned.');
-          const videoRecording = recordDesktopVideo(job.display, duration, async (sequence, bytes) => {
-            const response = await api.request({ type: 'desktop.video.chunk', ...scope, sequence, bytes });
-            if (!response.ok) throw Error(response.error);
-          }, active => {
-            if (current.current !== job) return;
-            setPhase(active ? 'watch' : 'video-processing');
-            void api.request({ type: 'desktop.video.activity', ...scope, active }).catch(() => undefined);
-          });
-          job.release = videoRecording.cancel;
-          if (!await videoRecording.finished || current.current !== job) return;
-          setPhase('video-processing');
-          input = { type: 'desktop.video.finish', ...scope };
-        } else {
-          job.display.getVideoTracks().forEach(track => track.stop());
-          const recorder = new VoiceRecorder();
-          job.release = () => recorder.cancel();
-          const audioRecording = await recorder.start(() => undefined, { stream: new MediaStream(tracks), maxSeconds: duration });
-          if (!audioRecording || current.current !== job) return;
-          setPhase('listen');
-          void api.request({ type: 'desktop.audio.activity', ...scope, active: true }).catch(() => undefined);
-          const sound = await audioRecording.finished;
-          void api.request({ type: 'desktop.audio.activity', ...scope, active: false }).catch(() => undefined);
-          if (!sound || current.current !== job) return;
-          job.display.getTracks().forEach(track => track.stop());
-          setPhase('audio-to-text');
-          input = { type: 'desktop.audio.finish', audio: speechBase64(sound.wave), ...scope };
-        }
+        const recorded = await recordForAgent(api, job, operation, duration, doc.defaultView?.navigator.mediaDevices,
+          () => current.current === job, setPhase, zh);
+        if (!recorded) return;
+        input = recorded;
       } else input = { type: operation === 'screen' ? 'desktop.screen' : 'desktop.transcribe', ...scope };
       const result = await api.request(input);
       if (current.current !== job) return;

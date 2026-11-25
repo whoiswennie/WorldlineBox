@@ -24,12 +24,13 @@ export function isLocalPeer(ip: string) {
 }
 
 // Discovery provides a location hint. SSH verifies the full pinned host key.
-export function advertiseMobileSsh(fingerprint: string, port: number) {
+export function advertiseMobileSsh(fingerprint: string, port: number, name: string) {
   const responder = getResponder();
   const id = createHash('sha256').update(fingerprint).digest('hex').slice(0, 24);
-  const service = responder.createService({ name: 'wlb-' + id, type: 'worldlinebox', port, disabledIpv6: true });
+  const service = responder.createService({ name: 'wlb-' + id, type: 'worldlinebox', port, txt: { fingerprint, name }, disabledIpv6: true });
   void service.advertise().catch(() => undefined);
-  return () => { void service.destroy().finally(() => responder.shutdown()).catch(() => undefined); };
+  return { rename(name: string) { service.updateTxt({ fingerprint, name }); },
+    close() { void service.destroy().finally(() => responder.shutdown()).catch(() => undefined); } };
 }
 
 // Keep a failing or restarting public tunnel independent of the LAN listener.

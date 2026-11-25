@@ -78,6 +78,7 @@ export const BOT_DESKTOP_AUDIO_SECONDS = 10;
 export const BOT_DESKTOP_MIN_SECONDS = 3;
 export const BOT_DESKTOP_MAX_SECONDS = SPEECH_RECORDING_SECONDS;
 export const BOT_DESKTOP_VIDEO_CHUNK_BYTES = 2 * 1024 * 1024;
+export const BOT_DESKTOP_HOST_EVENT = 'worldlinebox:agent-desktop-recording';
 export const BOT_DESKTOP_AGENT_EVENT = 'worldlinebox:companion-desktop-capture';
 export const botPresenceEnergy = z.enum(['low', 'balanced', 'active']);
 export type BotPresenceEnergy = z.infer<typeof botPresenceEnergy>;
@@ -120,6 +121,7 @@ export type BotDesktopCaptureToolArguments = z.infer<typeof botDesktopCaptureToo
 export type BotDesktopAgentCommand = BotDesktopCaptureScope & (BotDesktopCaptureToolArguments | { operation: 'cancel' });
 const desktopWave = z.string().min(60).max(Math.ceil(SPEECH_MAX_WAV_BYTES / 3) * 4).regex(/^[A-Za-z0-9+/]+={0,2}$/u);
 export const botMediaRequestSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type:z.literal('desktop.failed'), ...captureRequest, error: z.string().min(1).max(500) }),
   z.strictObject({ type:z.literal('desktop.screen'), ...captureRequest }),
   z.strictObject({ type:z.literal('desktop.audio.begin'), ...captureRequest, seconds:botDesktopCaptureDuration.default(BOT_DESKTOP_AUDIO_SECONDS) }),
   z.strictObject({ type:z.literal('desktop.audio.finish'), ...captureRequest, audio:desktopWave }),

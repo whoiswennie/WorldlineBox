@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { Server, utils, type Connection } from 'ssh2';
-import { MOBILE_ACCESS_PORT, MOBILE_SSH_PORT } from '../../shared/mobile-access';
+import { MOBILE_ACCESS_PORT, MOBILE_SSH_PORT, mobileDeviceName, mobileToken } from '../../shared/mobile-access';
 import type { MobileAccessSettings } from './mobile-access-settings';
 import { isLocalPeer } from './mobile-routes';
 
@@ -17,7 +17,7 @@ async function hostKey(root: string): Promise<string> {
   return key;
 }
 
-export async function startMobileSsh(root: string, access: MobileAccessSettings, options?: { port?: number; targetPort?: number; lan?: boolean }) {
+export async function startMobileSsh(root: string, access: MobileAccessSettings, options?: { port?: number; targetPort?: number; lan?: boolean; approve?(name: string, code: string, signal: AbortSignal): Promise<boolean> }) {
   const host = '127.0.0.1';
   const port = options?.port ?? MOBILE_SSH_PORT;
   const targetPort = options?.targetPort ?? MOBILE_ACCESS_PORT;
@@ -26,6 +26,8 @@ export async function startMobileSsh(root: string, access: MobileAccessSettings,
   if (parsed instanceof Error || Array.isArray(parsed)) throw new Error('无法读取移动服务的主机密钥。');
   const fingerprint = 'SHA256:' + createHash('sha256').update(parsed.getPublicSSH()).digest('base64').replace(/=+$/u, '');
   const clients = new Map<Connection, { device?: string; channels: number; authorized?: () => boolean }>();
+  let prompting = false;
+  let lastPrompt = 0;
   const server = new Server({ hostKeys: [privateKey], algorithms: { serverHostKey: ['ssh-ed25519'] } }, (client, peer) => {
     client.on('error', () => undefined);
     if (clients.size >= 20 || (options?.lan && !isLocalPeer(peer.ip))) { client.end(); return; }
@@ -37,6 +39,33 @@ export async function startMobileSsh(root: string, access: MobileAccessSettings,
     client.on('authentication', context => {
       if (context.method !== 'password') { context.reject(['password']); return; }
       const password = context.password;
+      // The public tunnel reaches SSH over loopback. Only an on-link peer can request enrollment.
+      if (context.username.startsWith('nearby:') && options?.lan && options.approve && peer.ip !== host) {
+        const name = mobileDeviceName.safeParse(context.username.slice(7));
+        if (prompting || Date.now() - lastPrompt < 3000 || !name.success || !mobileToken.safeParse(password).success) {
+          context.reject(); return;
+        }
+        prompting = true;
+        lastPrompt = Date.now();
+        clearTimeout(handshake);
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        const expiry = setTimeout(abort, 60_000);
+        context.once('abort', abort);
+        client.once('close', abort);
+        const code = createHash('sha256').update(fingerprint + password).digest('hex').slice(0, 10).toUpperCase();
+        void options.approve(name.data, code, controller.signal).then(async approved => {
+          if (!approved || !await access.enrollApprovedPhone(password, name.data, controller.signal)) { client.end(); return; }
+          unpairedProof = true; // Approval connection has no forwarding rights.
+          context.accept();
+        }).catch(() => client.end()).finally(() => {
+          clearTimeout(expiry);
+          context.off('abort', abort);
+          client.off('close', abort);
+          prompting = false;
+        });
+        return;
+      }
       if (context.username === 'check-removed' && access.confirmsUnpaired(password)) {
         unpairedProof = true;
         context.accept();

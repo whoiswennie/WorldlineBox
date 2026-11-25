@@ -44,12 +44,30 @@ button:disabled { cursor: default; opacity: .65; }
   .detail { color: #59616c; }
   button { border-color: #c7cbd1; color: #1d2024; background: #fff; }
 }
+[hidden] { display: none !important; }
+.pairing main { padding: 24px 28px; }
+.pairing h1 { letter-spacing: -.02em; overflow-wrap: anywhere; margin: 10px 0 5px; }
+.pairing .message { opacity: .8; }
+.pairing .detail { font-size: 13px; }
+.device { display: inline-flex; align-items: center; gap: 8px; color: #798fff; font-size: 13px; font-weight: 600; }
+.code { border: 1px solid #8183aa38; border-radius: 12px; background: #8086c30e; margin: 6px 0 14px; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; }
+.code span { font-size: 13px; }
+.code output { font: 600 22px/1.3 Consolas, monospace; letter-spacing: .12em; }
+.pairing button { border-radius: 9px; }
+.pairing .confirm { border-color: transparent; background: #435cc5; color: white; }
+.pairing .confirm:hover { background: #354cae; }
+@media (prefers-color-scheme: light) {
+  .pairing { background: white; }
+  .device { color: #475dc5; }
+}
 </style>
 </head>
 <body>
 <main aria-labelledby="critical-heading" role="dialog" aria-modal="true">
+  <div id="device" class="device" hidden><svg width="17" height="20" viewBox="0 0 20 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="4" y="2" width="12" height="20" rx="3"/><path d="M8 18h4"/></svg>手机连接</div>
   <h1 id="critical-heading">正在加载…</h1>
   <p class="message" id="critical-message"></p>
+  <div class="code" id="code-panel" hidden><span>连接码</span><output id="pairing-code"></output></div>
   <p class="detail" id="critical-detail"></p>
   <div class="actions">
     <button id="critical-cancel" type="button">取消</button>
@@ -68,6 +86,12 @@ button:disabled { cursor: default; opacity: .65; }
   try {
     const request = await api.getRequest();
     document.title = request.title;
+    if (request.pairingCode) {
+      document.body.classList.add('pairing');
+      document.getElementById('device').hidden = false;
+      document.getElementById('code-panel').hidden = false;
+      document.getElementById('pairing-code').textContent = request.pairingCode;
+    }
     heading.textContent = request.heading;
     message.textContent = request.message;
     detail.textContent = request.detail;
@@ -170,6 +194,7 @@ export function criticalConfirmationWindowOptions(input: {
     maxWidth: 760,
     maxHeight: CRITICAL_CONFIRMATION_MAX_HEIGHT,
     show: false,
+    autoHideMenuBar: true,
     modal: true,
     parent: input.parent as unknown as BrowserWindowConstructorOptions['parent'],
     resizable: false,
@@ -220,9 +245,9 @@ export class CriticalConfirmationWindowManager {
     });
   }
 
-  public request(payload: CriticalConfirmationPayload): Promise<boolean> {
+  public request(payload: CriticalConfirmationPayload, signal?: AbortSignal): Promise<boolean> {
     const parsed = criticalConfirmationPayloadSchema.safeParse(payload);
-    if (!parsed.success || this.#disposed) return Promise.resolve(false);
+    if (!parsed.success || this.#disposed || signal?.aborted) return Promise.resolve(false);
     const parent = this.#options.getParentWindow();
     if (parent === null || parent.isDestroyed()) return Promise.resolve(false);
     this.#options.logger?.info?.(
@@ -231,7 +256,20 @@ export class CriticalConfirmationWindowManager {
       { title: parsed.data.title },
     );
     return new Promise((resolve) => {
-      this.#queue.push({ payload: parsed.data, parent, resolve });
+      const pending: PendingRequest = { payload: parsed.data, parent, resolve: decision => {
+        signal?.removeEventListener('abort', abort);
+        resolve(decision && !signal?.aborted);
+      } };
+      const abort = () => {
+        if (this.#active?.payload === pending.payload) this.#finish(this.#active, false);
+        else {
+          const index = this.#queue.indexOf(pending);
+          if (index >= 0) this.#queue.splice(index, 1);
+          pending.resolve(false);
+        }
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      this.#queue.push(pending);
       this.#startNext();
     });
   }

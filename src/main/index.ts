@@ -5411,8 +5411,7 @@ async function startApplication(): Promise<void> {
         },
         desktopCapture: process.platform === 'win32' ? async (conversationId, preferPet, input, signal) => {
           const owner = mainWindow;
-          if (!owner || owner.isDestroyed()) return { ok: false, error: '请先打开当前聊天或桌宠。' };
-          return desktopCapture.runForAgent(owner, conversationId, preferPet, input, signal);
+          return desktopCapture.runForAgent(owner ?? undefined, conversationId, preferPet, input, signal);
         } : undefined,
         recognizeAudio: async (source, id, signal) => {
           signal.throwIfAborted();
@@ -5511,14 +5510,28 @@ async function startApplication(): Promise<void> {
     const gateway = await startMobileGateway({ ...mobileOptions, access, ...(usePublicMobileEndpoint ? { port: 0 } : {}) });
     if (!gateway) throw new Error('Mobile listener failed to start.');
     let ssh: Awaited<ReturnType<typeof startMobileSsh>> | undefined;
-    let stopDiscovery: (() => void) | undefined;
+    let discovery: ReturnType<typeof advertiseMobileSsh> | undefined;
     try {
-      const listener = ssh = await startMobileSsh(mobileOptions.root, access, { targetPort: gateway.port, lan: usePublicMobileEndpoint });
-      if (usePublicMobileEndpoint) stopDiscovery = advertiseMobileSsh(listener.fingerprint, listener.sshPort);
-      const remote = usePublicMobileEndpoint ? maintainPublicTunnel(signal =>
-        startMobilePublicTunnel(app.getAppPath(), mobileOptions.root, listener.sshPort, signal)) : undefined;
+      const listener = ssh = await startMobileSsh(mobileOptions.root, access, { targetPort: gateway.port, lan: usePublicMobileEndpoint,
+        async approve(name, code, signal) {
+          if (!mainWindow || mainWindow.isDestroyed() || applicationClosing || signal.aborted) return false;
+          return criticalConfirmationWindowManager?.request({
+            title: '手机连接', heading: name + ' 请求连接', pairingCode: code,
+            message: '请核对这部手机上显示的连接码。',
+            detail: '同意后，手机可以查看和发送伙伴消息及附件，下次回到此局域网会自动连接。',
+            cancelLabel: '拒绝', confirmLabel: '同意连接',
+          }, signal) ?? false;
+        } });
+      if (usePublicMobileEndpoint) discovery = advertiseMobileSsh(listener.fingerprint, listener.sshPort, access.hostName);
+      let remote: ReturnType<typeof maintainPublicTunnel> | undefined;
+      function setRemote(enabled: boolean) {
+        if (enabled && usePublicMobileEndpoint) remote ??= maintainPublicTunnel(signal =>
+          startMobilePublicTunnel(app.getAppPath(), mobileOptions.root, listener.sshPort, signal));
+        else { remote?.close(); remote = undefined; }
+      }
+      setRemote(access.remoteEnabled);
       mobileGateway = gateway;
-      return { ...listener,
+      return { ...listener, setRemote, rename(name: string) { discovery?.rename(name); },
         get host() { return remote?.current?.host ?? (usePublicMobileEndpoint ? localAddresses()[0] : undefined) ?? listener.host; },
         get sshPort() { return remote?.current ? 443 : listener.sshPort; },
         get transport() { return remote?.current ? 'wss' as const : undefined; },
@@ -5528,8 +5541,8 @@ async function startApplication(): Promise<void> {
         connected: gateway.connected, supportsPush: gateway.supportsPush, pushChanged: gateway.pushChanged,
         publicationHead: async () => (await ensureBotService()).store.publicationHead(),
         disconnect(id: string) { gateway.disconnect(id); listener.disconnect(id); },
-        close() { remote?.close(); stopDiscovery?.(); listener.close(); gateway.close(); if (mobileGateway === gateway) mobileGateway = undefined; } };
-    } catch (error) { stopDiscovery?.(); ssh?.close(); gateway.close(); throw error; }
+        close() { remote?.close(); discovery?.close(); listener.close(); gateway.close(); if (mobileGateway === gateway) mobileGateway = undefined; } };
+    } catch (error) { discovery?.close(); ssh?.close(); gateway.close(); throw error; }
   }, undefined, usePublicMobileEndpoint && hasFixedMobilePublicEndpoint());
   const mobileSettingsReady = mobileSettings.initialize().catch(error => logger?.error('companion-bot.mobile.start', error));
   ipcMain.handle(MOBILE_ACCESS_CHANNEL, async (event, input: unknown) => {

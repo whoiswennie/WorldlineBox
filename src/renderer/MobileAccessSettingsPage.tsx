@@ -7,6 +7,7 @@ import './mobile-access-settings.css';
 export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAccessApi }) {
   const zh = useLocale().locale === 'zh-CN';
   const [state, setState] = useState<MobileSettingsState>();
+  const [draftName, setDraftName] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [pairing, setPairing] = useState<MobileSettingsResult['pairing']>();
@@ -32,7 +33,7 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
       if (!result.ok) throw new Error(result.error);
       if (result.state) setState(result.state);
       setPairing(result.pairing);
-      if (input.type === 'pair.cancel' || input.type === 'service' && !input.enabled) setPairing(undefined);
+      if (input.type === 'pair.cancel') setPairing(undefined);
       if (input.type === 'device.cleanup') setNotice(zh ? `已清理 ${result.cleaned ?? 0} 条失效记录。` : `Cleared ${result.cleaned ?? 0} expired records.`);
       if (input.type === 'device.remove') setRemoveId(undefined);
     } catch (failure) {
@@ -45,14 +46,21 @@ export function MobileAccessSettingsPage({ api }: { api?: WorldlineBoxMobileAcce
       <div className="mobile-access-row">
         <div className="mobile-access-heading"><span className="mobile-access-symbol"><Icon name="link" size={22} /></span>
           <div><h3>{zh ? '手机连接' : 'Phone connection'}</h3>
-          <p>{zh ? '同一局域网自动直连，外出时使用远程地址。' : 'Connect directly at home or use the remote address when away.'}</p></div></div>
-        <button type="button" disabled={!api || !state || busy} onClick={() => void request({ type: 'service', enabled: !state?.enabled })}>
-          {state?.enabled ? zh ? '关闭服务' : 'Stop service' : zh ? '开启服务' : 'Start service'}
-        </button>
+          <p>{zh ? '手机可在同一局域网发现这台电脑。首次连接时，请在电脑上批准。' : 'Nearby phones can discover this computer. Approve the first connection here.'}</p></div></div>
       </div>
+      {state && <form className="mobile-access-actions" onSubmit={event => {
+        event.preventDefault();
+        if (draftName?.trim()) void request({ type: 'host.rename', name: draftName.trim() });
+      }}>
+        <label>{zh ? '附近手机看到的电脑名称' : 'Name shown to nearby phones'} <input value={draftName ?? state.hostName ?? ''} maxLength={80} onChange={event => setDraftName(event.target.value)} /></label>
+        <button type="submit" disabled={busy || !draftName?.trim() || draftName.trim() === state.hostName}>{zh ? '保存名称' : 'Save name'}</button>
+      </form>}
       {state?.enabled && <div className="mobile-access-routes">
         <span data-ready={!!state.lanReady}>{zh ? '局域网' : 'Local network'} · {state.lanReady ? zh ? '可连接' : 'Ready' : zh ? '等待网络' : 'Waiting for network'}</span>
-        <span data-ready={state.remoteStatus === 'ready'}>{zh ? '远程' : 'Remote'} · {state.remoteStatus === 'ready' ? zh ? '可连接' : 'Ready' : state.remoteStatus === 'connecting' ? zh ? '连接中' : 'Connecting' : zh ? '暂不可用' : 'Unavailable'}</span>
+        <span data-ready={state.remoteStatus === 'ready'}>{zh ? '远程' : 'Remote'} · {!state.remoteEnabled ? zh ? '未启用' : 'Off' : state.remoteStatus === 'ready' ? zh ? '可连接' : 'Ready' : state.remoteStatus === 'connecting' ? zh ? '连接中' : 'Connecting' : zh ? '暂不可用' : 'Unavailable'}</span>
+        <button type="button" disabled={busy} onClick={() => void request({ type: 'remote', enabled: !state.remoteEnabled })}>
+          {state.remoteEnabled ? zh ? '关闭远程入口' : 'Disable remote access' : zh ? '启用远程入口' : 'Enable remote access'}
+        </button>
       </div>}
       {(error || state?.error) && <p role="alert" className="mobile-access-error">{error || state?.error}</p>}
       <div className="mobile-access-actions"><button className="mobile-access-scan" disabled={!state || busy} type="button" onClick={() => void request({ type: 'pair' })}>

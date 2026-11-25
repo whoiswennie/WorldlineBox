@@ -8,7 +8,7 @@
 
 Windows x64 · Electron / React / TypeScript / Three.js · 本地数据存储 · MIT
 
-[English](README.en.md) · [Windows 下载](https://github.com/whoiswennie/WorldlineBox/releases/latest) · [Android 0.1.5 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.5) · [使用手册](docs/user-guide/README.md)
+[English](README.en.md) · [Windows 下载](https://github.com/whoiswennie/WorldlineBox/releases/latest) · [Android 0.1.6 下载](https://github.com/whoiswennie/WorldlineBoxMobile/releases/tag/0.1.6) · [使用手册](docs/user-guide/README.md)
 
 </div>
 
@@ -26,12 +26,12 @@ WorldlineBox 是一个本地优先的桌面应用，结合**虚拟伙伴、持�
 ### 首次使用和扫码连接
 
 1. 在 Windows 10 / 11 x64 上打开 `WorldlineBoxSetup.exe` 安装。在「启动器 → DeepSeek Harness」安装官方运行版本，创建或选择共享执行实例。在「设置 → 全局模型」配置兼容 OpenAI Chat Completions 的模型，先在「伙伴」发送一条消息验证。
-2. 在 Android 上安装 `WorldlineBoxMobile.apk`。电脑打开「设置 → 手机连接 → 显示配对二维码」，用手机 App 扫码。配对后优先局域网直连，电脑和手机重启或内网 IP 改变时会自动重连。电脑可暂停或删除设备授权。
+2. 在 Android 上安装 `WorldlineBoxMobile.apk`。两端连接同一局域网后，在手机「附近的电脑」点选主机，核对连接码并在电脑同意。主机名称可在「设置 → 手机连接」修改。也可以显示配对二维码并扫码。配对后优先局域网直连，电脑和手机重启或内网 IP 改变时会自动重连。电脑可暂停或删除设备授权。
 3. 在手机选择现有伙伴，发送消息或附件。回到桌面可按消息来源筛选。需要朗读或流式通话语音时，在桌面保存 DeepSeek 官方 API 凭据，合成音色为 Stella。
 
 在「手机连接 → 已配对设备」可以查看手机在线状态、上次在线时间和设备编号。手机在线时开启该设备的「信息推送」，并在 Android 允许通知。点击系统通知可回到对应会话。Windows 的伙伴列表和导航会显示未读数。开启桌宠时，当前伙伴的回复会在桌宠中呈现。关闭桌宠后，主窗口处于后台时会弹出「世界线盒子」系统通知。
 
-默认的 Cloudflare 临时入口适合个人试用。外出时若隧道已换址，在手机「我的电脑 → 扫码更新地址」扫描同一台电脑的新码，保留原设备授权。两端的详细教程与可选的固定入口配置见 [WorldlineBox Mobile 源码仓库](https://github.com/whoiswennie/WorldlineBoxMobile)。
+新安装默认只开启局域网服务。在「设置 → 手机连接」启用远程入口后，可使用 Cloudflare 临时隧道。外出时若隧道已换址，在手机「我的电脑 → 扫码更新地址」扫描同一台电脑的新码，保留原设备授权。两端的详细教程与可选的固定入口配置见 [WorldlineBox Mobile 源码仓库](https://github.com/whoiswennie/WorldlineBoxMobile)。
 
 ## 四个主要入口
 
