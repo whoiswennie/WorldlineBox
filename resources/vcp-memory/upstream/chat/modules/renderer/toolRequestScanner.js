@@ -1,7 +1,7 @@
 import {
     TOOL_RESULT_START_MARKER,
     TOOL_RESULT_END_MARKER,
-    collectToolResultRanges,
+    collectToolDataRanges as collectToolResultRanges,
     collectCodeDomainsOutsideToolResults,
     findToolResultRangeAt,
 } from './toolResultRegions.js';
@@ -362,13 +362,27 @@ function findEarliestUnclosedToolBlock(text) {
         .sort((a, b) => a.startIndex - b.startIndex)[0] || null;
 }
 
-function replaceToolRequestBlocks(text, replacer) {
+function replaceToolRequestBlocks(text, replacer, options = {}) {
     if (typeof text !== 'string' || !text.includes(TOOL_REQUEST_START_MARKER)) {
         return text;
     }
 
-    const toolResultRanges = collectToolResultRanges(text);
-    const codeRanges = collectProtocolLiteralCodeRanges(text, toolResultRanges);
+    const sourceIndex = options.sourceIndex;
+    if (sourceIndex && sourceIndex.source !== text) {
+        throw new TypeError('Tool request index belongs to a different source version');
+    }
+    const indexedTools = sourceIndex?.toolData();
+    const toolResultRanges = options.toolResultRanges ?? indexedTools ?? collectToolResultRanges(text);
+    // An explicit caller mask remains authoritative. Reuse code ranges only when
+    // that mask is equivalent to the source index's data-domain mask.
+    const sameMask = indexedTools && (toolResultRanges === indexedTools
+        || (toolResultRanges.length === indexedTools.length && toolResultRanges.every((range, i) =>
+            range.start === indexedTools[i].start && range.end === indexedTools[i].end)));
+    // Protocol policy intentionally rejects multiline inline spans. Do not consume
+    // the document partition here: it has different HTML/thought precedence.
+    const codeRanges = sameMask
+        ? sourceIndex.codes('protocol')
+        : collectProtocolLiteralCodeRanges(text, toolResultRanges);
     let result = '';
     let cursor = 0;
 
@@ -387,7 +401,9 @@ function replaceToolRequestBlocks(text, replacer) {
         }
 
         const contentStart = startIndex + TOOL_REQUEST_START_MARKER.length;
-        const scan = scanToolRequestEnd(text, contentStart);
+        const scan = sourceIndex
+            ? sourceIndex.requestEnd(contentStart)
+            : scanToolRequestEnd(text, contentStart);
         if (scan.status !== 'complete') {
             result += text.slice(cursor);
             break;

@@ -14,7 +14,7 @@ const job = (id = 'job-1', patch: Partial<BotMaintenanceJob> = {}): BotMaintenan
 const candidate = (id = 'candidate-1', patch: Partial<BotMaintenanceCandidateSummary> = {}): BotMaintenanceCandidateSummary => ({ id, jobId: 'job-1', type: 'archive', title: '归档重复的旧安排', status: 'pending', revision, sourceCount: 1, uncertaintyCount: 1, updatedAt: at, ...patch });
 const detail = (patch: Partial<BotMaintenanceCandidateDetail> = {}): BotMaintenanceCandidateDetail => ({ ...candidate(), content: '旧安排已明确更正，这份原件仅退出召回，不撤回其他同源事实。', tags: ['已更正'], reason: '新安排明确替代旧时间，原始来源保留。', uncertainties: ['出发状态尚无新回执'],
   sources: [{ id: 'source-1', checksum, createdAt: at, tags: ['原安排'] }], quotes: [{ sourceId: 'source-1', text: '改为周六三点在南门见。' }], ...patch });
-const settings = (patch: Partial<BotMaintenanceSettings> = {}): BotMaintenanceSettings => ({ enabled: false, kind: 'organize', intervalHours: 24, idleMinutes: 30, minNotes: 4, autoApply: 'never', nextEligibleAt: at, lastActivityAt: at, ...patch });
+const settings = (patch: Partial<BotMaintenanceSettings> = {}): BotMaintenanceSettings => ({ enabled: false, nextEligibleAt: at, lastActivityAt: at, ...patch });
 let root: Root | undefined, host: HTMLDivElement, api: WorldlineBoxBotApi, requests: BotMemoryWorkspaceRequest[], handler: ((request: BotMemoryWorkspaceRequest) => Promise<BotResponse> | undefined) | undefined;
 let listeners: Set<(event: BotEvent) => void>;
 afterEach(async () => { await act(() => root?.unmount()); root = undefined; host?.remove(); vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -42,8 +42,29 @@ async function render(owner = 'alice', conversationId = 'private-a') { await act
 async function click(label: string, parent: ParentNode = host) { const target = [...parent.querySelectorAll<HTMLElement>('button,summary')].find(item => item.textContent?.trim() === label || item.getAttribute('aria-label') === label)!; expect(target, label).toBeDefined(); await act(() => target.click()); }
 async function openJob(index = 0) { await act(() => host.querySelectorAll<HTMLButtonElement>('[data-maintenance-job]')[index]!.click()); }
 async function openCandidate(index = 0) { await act(() => host.querySelectorAll<HTMLButtonElement>('.bot-maintenance-candidate-open')[index]!.click()); }
-async function fill(label: string, value: string) { const input = host.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!; await act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); }
 const maintenanceRequests = <T extends BotMemoryWorkspaceRequest['type']>(type: T) => requests.filter((request): request is Extract<BotMemoryWorkspaceRequest, { type: T }> => request.type === type);
+it('exposes all four modes and requires the user to start a scoped deep clean before showing its background page chain', async () => {
+  await mount(request => {
+    if (request.type === 'memory.maintenance.run') return Promise.resolve({ ok: true, memory: job('survey', { mode: 'deepclean', narrative: '本批复查了重复记录。', survey: { rootId: 'survey', page: 1, nextJobId: 'survey-2' } }) });
+    if (request.type === 'memory.maintenance.get' && request.jobId === 'survey-2') return Promise.resolve({ ok: true, memory: job('survey-2', { mode: 'deepclean', survey: { rootId: 'survey', page: 2 }, narrative: '已复查末批。' }) });
+  });
+  const mode = host.querySelector<HTMLSelectElement>('.bot-maintenance-mode select')!;
+  expect([...mode.options].map(option => option.value).sort()).toEqual(['deepclean','organize','scan','track']);
+  const [topic, period] = host.querySelectorAll<HTMLInputElement>('.bot-maintenance-brief input');
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  for (const [field, value] of [[topic!, '复查潮汐计划'], [period!, '最近三个月']] as const) {
+    await act(() => { setter.call(field, value); field.dispatchEvent(new Event('input', { bubbles: true })); });
+  }
+  await act(() => { mode.value = 'deepclean'; mode.dispatchEvent(new Event('change', { bubbles: true })); });
+  await click('开始深度清理');
+  expect(maintenanceRequests('memory.maintenance.run')).toHaveLength(0);
+  await click('确认深度清理');
+  expect(maintenanceRequests('memory.maintenance.run')).toEqual([expect.objectContaining({ kind: 'organize', mode: 'deepclean', brief: { topic: '复查潮汐计划', period: '最近三个月' } })]);
+  expect(host.textContent).toContain('本批复查了重复记录。');
+  await click('查看下一批进度');
+  expect(host.textContent).toContain('已复查末批。');
+  expect(maintenanceRequests('memory.maintenance.run')).toHaveLength(1);
+});
 it('distinguishes new diary versions from related historical context in incremental tasks', async () => {
   await mount(request => request.type === 'memory.maintenance.get' ? Promise.resolve({ ok: true, memory: job('job-1', { metrics: { examined: 2, selected: 5, deferred: 0, candidates: 1, applied: 0, rejected: 0, incremental: true, context: 3 } }) }) : undefined);
   await openJob(); const facts = host.querySelector('.bot-maintenance-facts')!.textContent;
@@ -54,7 +75,7 @@ it('saves the automatic review switch immediately and shows per-candidate model 
   await mount(request => request.type === 'memory.maintenance.settings.get' ? Promise.resolve({ ok: true, memory: settings({ autoReview: enabled }) })
     : request.type === 'memory.maintenance.settings.update' ? Promise.resolve({ ok: true, memory: settings({ autoReview: enabled = !!request.settings.autoReview }) })
       : request.type === 'memory.maintenance.reviews' ? Promise.resolve({ ok: true, memory: { items: [{ id: 'review-1', jobId: 'job-1', candidateId: 'candidate-1', candidateRevision: revision, actor: 'model', model: 'global-model', promptVersion: 'worldlinebox-memory-review-v1', decision: 'manual', reason: '归档覆盖证据不足，需要人工核对。', checks: [{ criterion: 'evidence', passed: false, reason: '缺少原文证据。' }], createdAt: at }] } }) : undefined);
-  const toggle = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="自动审阅"]')!;
+  const toggle = host.querySelector<HTMLButtonElement>('[role="switch"][aria-label="整理方案的模型审阅"]')!;
   expect(toggle.getAttribute('aria-checked')).toBe('false'); await act(() => toggle.click());
   expect(maintenanceRequests('memory.maintenance.settings.update')[0]).toMatchObject({ settings: { autoReview: true } });
   expect(toggle.getAttribute('aria-checked')).toBe('true');
@@ -88,6 +109,20 @@ it('approves one candidate with an explicit single action and never maps archivi
   expect(host.querySelector('.bot-review-reader-footer')?.textContent).toContain('保留并可恢复');
   await click('批准并应用'); expect(maintenanceRequests('memory.maintenance.review')[0]).toMatchObject({ candidateId: 'candidate-1', jobId: 'job-1', revision, decision: 'approve' });
   expect(requests.some(request => request.type === 'memory.forget')).toBe(false); expect(host.querySelector('.bot-maintenance-candidate-detail')?.textContent).toContain('已应用');
+});
+
+it('shows both approved volumes and their tags before submitting one candidate decision', async () => {
+  const proposal = detail({ type: 'organize', content: '先做采样，再比较两次结果。', tags: ['蓝鸟','记录'],
+    crystal: { content: '使用同一量表才能比较两次测量。', tags: ['蓝鸟','方法'] } });
+  await mount(request => request.type === 'memory.maintenance.candidate' ? Promise.resolve({ ok: true, memory: proposal }) : undefined);
+  await openJob(); await openCandidate();
+  const draft = host.querySelector('.bot-review-draft')!;
+  expect([...draft.querySelectorAll('.bot-maintenance-proposed')].map(element => element.textContent)).toEqual([proposal.content,proposal.crystal!.content]);
+  expect(draft.textContent).toContain('蓝鸟 · 方法');
+  expect(draft.textContent).toContain('一次批准会保存这两卷');
+  expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0);
+  await click('批准并应用');
+  expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(1);
 });
 
 it('keeps human approval visible for an unknown execution and offers per-candidate verification', async () => {
@@ -236,14 +271,35 @@ it('fences late task details and late approval receipts across selection and sco
   expect(requests.at(-1)).toMatchObject({ companionId: 'bob', conversationId: 'private-b' });
 });
 
-it('keeps schedule changes local, preserves an edited draft during refresh, and saves the actual constrained settings', async () => {
-  vi.useFakeTimers(); let reads = 0;
-  await mount(request => request.type === 'memory.maintenance.settings.get' ? Promise.resolve({ ok: true, memory: settings({ enabled: ++reads > 1, blockedReason: reads > 1 ? '等待空闲' : undefined }) }) : undefined);
-  await fill('最短间隔（小时）', '48'); expect(maintenanceRequests('memory.maintenance.settings.update')).toHaveLength(0);
-  await act(() => { for (const listener of listeners) listener({ type: 'changed', conversationId: 'private-a' }); }); await act(async () => { await vi.advanceTimersByTimeAsync(600); });
-  expect(host.querySelector<HTMLInputElement>('[aria-label="最短间隔（小时）"]')?.value).toBe('48'); expect(host.textContent).toContain('等待空闲');
-  await click('保存后台设置'); expect(maintenanceRequests('memory.maintenance.settings.update')[0]).toMatchObject({ settings: { enabled: false, intervalHours: 48, autoApply: 'never', minNotes: 4, idleMinutes: 30 } });
-  expect(host.textContent).toContain('后台设置已保存'); expect(host.textContent).toContain('下次启动并空闲后补跑'); expect(host.textContent).toContain('不设每日次数或累计用量额度');
+it('shows native nightly and desktop idle planning for the selected audience', async () => {
+  vi.useFakeTimers(); let enabled = false;
+  await mount(request => request.type === 'memory.maintenance.settings.get' ? Promise.resolve({ ok: true, memory: settings({ enabled }) })
+    : request.type === 'memory.maintenance.settings.update' ? Promise.resolve({ ok: true, memory: settings({ enabled: enabled = !!request.settings.enabled }) }) : undefined);
+  const schedule = host.querySelector('.bot-maintenance-settings')!;
+  expect(schedule.textContent).toContain('01:00–06:00'); expect(schedule.textContent).toContain('15 分钟');
+  expect(schedule.textContent).toContain('60%'); expect(schedule.textContent).toContain('8 小时'); expect(schedule.textContent).toContain('由你逐项批准');
+  expect(schedule.textContent).toContain('约 2 分钟'); expect(schedule.textContent).toContain('多晚积累的新日记合并处理一次');
+  expect(schedule.querySelectorAll('select,input[type=number]')).toHaveLength(0);
+  const toggle = schedule.querySelector<HTMLInputElement>('[aria-label="启用自动记忆整理"]')!;
+  expect(toggle.checked).toBe(false); await act(() => toggle.click());
+  expect(maintenanceRequests('memory.maintenance.settings.update')).toEqual([{ type: 'memory.maintenance.settings.update', companionId: 'alice', conversationId: 'private-a', settings: { enabled: true } }]);
+  expect(toggle.checked).toBe(true); expect(schedule.textContent).toContain('下次检查');
+  enabled = false; await act(() => { for (const listener of listeners) listener({ type: 'changed', conversationId: 'private-a' }); });
+  await act(async () => vi.advanceTimersByTimeAsync(600)); expect(toggle.checked).toBe(false);
+  expect(host.querySelector('[aria-label="整理方案的模型审阅"]')?.getAttribute('aria-checked')).toBe('false');
+});
+
+it.each(['organize','dream'] as const)('distinguishes idle %s from nightly dreams in the list and detail', async kind => {
+  const idle = job('idle-dream', { kind, trigger: 'idle', automatic: true, status: 'running' });
+  const night = job('night-dream', { kind: 'dream', trigger: 'night', automatic: true, status: 'queued' });
+  await mount(request => request.type === 'memory.maintenance.list' ? Promise.resolve({ ok: true, memory: { items: [idle, night] } })
+    : request.type === 'memory.maintenance.get' ? Promise.resolve({ ok: true, memory: idle }) : undefined);
+  const idleButton = host.querySelector<HTMLButtonElement>('[data-maintenance-job="idle-dream"]')!;
+  const label = kind === 'dream' ? '闲时梦境' : '闲时整理';
+  expect(idleButton.textContent).toContain(label);
+  expect(host.querySelector('[data-maintenance-job="night-dream"]')?.textContent).toContain('夜间梦境');
+  await act(() => idleButton.click());
+  expect(host.querySelector('.bot-maintenance-detail-heading h3')?.textContent).toContain(label);
 });
 
 it('queues manual work with a stable request ID and provides real cancel and retry actions', async () => {
@@ -256,7 +312,7 @@ it('queues manual work with a stable request ID and provides real cancel and ret
 
 it('starts a separately approved next batch with the actual server cursor rather than claiming the whole library completed', async () => {
   await mount(request => request.type === 'memory.maintenance.get' ? Promise.resolve({ ok: true, memory: job(request.jobId, { nextCursor: 'real-library-next' }) }) : undefined);
-  await openJob(); expect(host.textContent).toContain('每批最多检查24篇'); await click('继续下一批');
+  await openJob(); expect(host.textContent).toContain('每批最多检查20篇'); await click('继续下一批');
   expect(maintenanceRequests('memory.maintenance.run')[0]).toMatchObject({ cursor: 'real-library-next', kind: 'organize' });
   expect(maintenanceRequests('memory.maintenance.review')).toHaveLength(0); expect(host.textContent).not.toContain('已整理全部记忆');
 });

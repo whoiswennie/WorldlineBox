@@ -40,7 +40,7 @@ async function crashFixture() {
     const bot=new(require('./lib/bot-host.cjs').BotHost)(home),original=runtime.callTool.bind(runtime);
     runtime.callTool=async(...args)=>{const receipt=await original(...args);if(receipt.status!=='success')throw new Error(JSON.stringify(receipt));
       process.stdout.write('CREATE_OCCURRED_BEFORE_LEDGER_ACK\\n',()=>process.exit(73));await new Promise(()=>{});};
-    bot.remember(runtime,payload).catch(error=>{console.error(error);process.exit(1);});
+    bot.remember(runtime,payload,'[值班]北辰').catch(error=>{console.error(error);process.exit(1);});
   `, home, JSON.stringify(config), JSON.stringify(payload)], { cwd: packageRoot, encoding: 'utf8', windowsHide: true, timeout: 20000 });
   if (crash.status !== 73 || !crash.stdout.includes('CREATE_OCCURRED_BEFORE_LEDGER_ACK')) throw new Error('Crash boundary was not reached: ' + crash.stderr.slice(-3000));
   const id = createHash('sha256').update(payload.sourceEventId).digest('hex');
@@ -49,7 +49,11 @@ async function crashFixture() {
   // Index the actual surviving file through the original runtime, deliberately
   // without running the managed repair that would fill in the missing ledger path.
   const client = createRequire(path.join(packageRoot, 'package.json'))('./lib/client.cjs');
-  const diagnostics: string[] = [], raw = client.createSession({ home, nodePath, onLog: (line: string) => diagnostics.push(line) });
+  const diagnostics: string[] = [], raw = client.createSession({ home, nodePath, env: {
+    WORLDLINEBOX_VCP_MANAGED: '1', EMBEDDING_API_URL: config.EMBEDDING_API_URL,
+    EMBEDDING_QUERY_API_URL: config.EMBEDDING_QUERY_API_URL, EMBEDDING_API_KEY: config.EMBEDDING_API_KEY,
+    EMBEDDING_MODEL: config.WhitelistEmbeddingModel, EmbeddingModelSig: config.EmbeddingModelSig,
+  }, onLog: (line: string) => diagnostics.push(line) });
   try {
     await raw.request('sync', {}, { timeoutMs: 60000 });
     const indexed = await raw.request('search', { query: '木樨方舟识别码', options: { folder: 'Companion', sync: false } }, { timeoutMs: 60000 });

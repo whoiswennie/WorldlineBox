@@ -62,7 +62,7 @@ class MemoryBoundary extends BotMemoryService {
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]) {
     this.preparations.push(input);
     const result: BotMemoryPrepared = { requestId: input.requestId, inputHash: 'test-boundary', scope: input.scope,
-      messages: input.messages, metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 };
+      messages: input.messages, metadata: {}, events: [], nativeContext: '', status: 'ready' };
     this.prepared.set(input.requestId, result); return result;
   }
   override async resumePrepared(input: Parameters<BotMemoryService['resumePrepared']>[0]) { return this.prepared.get(input.requestId)!; }

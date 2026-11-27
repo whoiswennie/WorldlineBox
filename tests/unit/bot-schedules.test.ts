@@ -4,8 +4,42 @@ import path from 'node:path';
 import { expect, it } from 'vitest';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotTopics } from '../../src/main/companion-bot/topics';
-import { BotSchedules, hasActiveSchedules, nextScheduleTime } from '../../src/main/companion-bot/schedules';
+import { BotMaintenanceStore } from '../../src/main/companion-bot/memory-maintenance-store';
+import { BotSchedules, hasCompanionBackgroundWork, nextScheduleTime } from '../../src/main/companion-bot/schedules';
 import type { ScheduleDraft } from '../../src/shared/companion-schedule';
+
+it('wakes the desktop service from durable diary work without opening a companion or launching a model', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'wlb-companion-wake-'));
+  const db = path.join(root, 'bot.sqlite');
+  expect(hasCompanionBackgroundWork(db)).toBe(false);
+  const store = new BotStore(db);
+  try {
+    const journal = new BotMaintenanceStore(store);
+    store.createCompanion({ id: 'alice', name: 'Alice', persona: 'test' });
+    const room = store.openDirect('alice'), scope = { conversationId: room.id, companionId: 'alice', securityDomainId: room.securityDomainId };
+    journal.settings(scope);
+    expect(hasCompanionBackgroundWork(db)).toBe(false);
+    journal.activity(scope, 'native-indexed-note');
+    expect(hasCompanionBackgroundWork(db)).toBe(true);
+    journal.updateSettings(scope, { enabled: false });
+    expect(hasCompanionBackgroundWork(db)).toBe(false);
+    journal.updateSettings(scope, { enabled: true });
+    store.taskTransaction(sql => sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=dirty').run());
+    expect(hasCompanionBackgroundWork(db)).toBe(true);
+    store.taskTransaction(sql => sql.prepare('DELETE FROM bot_maintenance_maturity').run());
+    expect(hasCompanionBackgroundWork(db)).toBe(false);
+    // A prior release has no dream watermark until the service actually opens.
+    store.taskTransaction(sql => {
+      sql.prepare('ALTER TABLE bot_maintenance_settings RENAME TO previous_settings').run();
+      sql.prepare('DROP TABLE bot_maintenance_maturity').run();
+      sql.prepare('CREATE TABLE bot_maintenance_settings AS SELECT settings_json,dirty FROM previous_settings').run();
+    });
+    expect(hasCompanionBackgroundWork(db)).toBe(true);
+    store.taskTransaction(sql => sql.prepare('UPDATE bot_maintenance_settings SET dirty=0').run());
+    store.enqueueMemoryJob({ kind: 'mutation', key: 'pending-note', payload: { scope, operation: 'remember' } });
+    expect(hasCompanionBackgroundWork(db)).toBe(true);
+  } finally { store.close(); rmSync(root, { recursive: true, force: true }); }
+});
 
 it('advances daily schedules at local clock time and intervals from the dispatch time', () => {
   const day = new Date(2026, 10, 13, 19, 59, 59).getTime();
@@ -28,11 +62,11 @@ it('persists schedules, catches up once, preserves the active topic and scopes e
     let schedules = new BotSchedules(store, new BotTopics(store));
     const draft: ScheduleDraft = { title: '喂鱼', prompt: '用小屋世界喂鱼', enabled: true, recurrence: { kind: 'interval', minutes: 1 } };
     const entry = schedules.manage('schedule-owner', { operation: 'save', draft }, 1000).items.find(item => item.title === draft.title)!;
-    expect(hasActiveSchedules(db)).toBe(false);
+    expect(hasCompanionBackgroundWork(db)).toBe(false);
     expect(schedules.tick(90000)).toBeUndefined();
     expect(() => schedules.manage('other-owner', { operation: 'delete', id: entry!.id })).toThrow();
     schedules.manage('schedule-owner', { operation: 'settings', enabled: true }, 1000);
-    expect(hasActiveSchedules(db)).toBe(true);
+    expect(hasCompanionBackgroundWork(db)).toBe(true);
     store.close();
     store = new BotStore(db);
     const topics = new BotTopics(store);

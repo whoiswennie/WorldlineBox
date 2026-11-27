@@ -2,6 +2,12 @@
 .bot-maintenance-body{display:grid;grid-template-columns:var(--bot-maintenance-sidebar) minmax(0,1fr);flex:1;min-height:0;overflow:hidden}
 .bot-maintenance-jobs{display:flex;flex-direction:column;min-height:0;overflow:hidden;border-right:1px solid var(--ui-border-subtle);background:var(--ui-surface-pane)}.bot-maintenance-left-scroll{flex:1;min-height:0;overflow:auto;scrollbar-width:thin}
 .bot-maintenance-list-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:17px 15px 12px;font-size:12px;font-weight:600}
+.bot-maintenance-mode{display:grid;gap:5px;margin:0 15px 8px;color:var(--ui-content-secondary)}
+.bot-maintenance-mode select{width:100%;min-height:29px;padding:3px 7px;color:var(--ui-content-primary);background:var(--ui-surface-raised);border:1px solid var(--ui-border-subtle);border-radius:5px;font:inherit}
+.bot-maintenance-brief{margin:0 15px 10px;color:var(--ui-content-secondary)}
+.bot-maintenance-brief summary{cursor:pointer}
+.bot-maintenance-brief label{display:grid;gap:4px;margin-top:8px}
+.bot-maintenance-brief input{box-sizing:border-box;width:100%;min-width:0;padding:4px 7px;border:1px solid var(--ui-border-subtle);border-radius:5px;background:var(--ui-surface-raised);color:var(--ui-content-primary);font:inherit}
 .bot-workspace .bot-memory-maintenance button{min-height:32px;padding:6px 10px;font-size:11px;line-height:1.5;background:var(--ui-surface-raised);color:var(--ui-content-primary)}.bot-workspace .bot-memory-maintenance button:hover:not(:disabled){background:var(--ui-surface-hover)}.bot-workspace .bot-memory-maintenance button:disabled{opacity:1;color:var(--ui-content-secondary);cursor:not-allowed}
 .bot-workspace .bot-maintenance-list-heading button{min-height:25px;padding:3px 5px;border:0;background:transparent;color:var(--ui-content-secondary);font-weight:400}
 .bot-maintenance-toolbar-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:0 12px 12px}.bot-workspace .bot-maintenance-toolbar-actions button{min-width:0;white-space:normal;overflow-wrap:anywhere}
@@ -35,6 +41,7 @@
 .bot-maintenance-detail{display:flex;flex-direction:column;overflow:hidden;padding:18px 20px 0}
 .bot-maintenance-detail-heading,.bot-maintenance-facts,.bot-maintenance-detail-tabs,.bot-maintenance-guidance{flex-shrink:0}
 .bot-maintenance-plan{display:flex;flex-direction:column;min-height:0;flex:1}
+.bot-maintenance-dream-narrative{min-height:0;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.85;padding:4px 12px 16px 0}
 .bot-maintenance-diagnostics-scroll{min-height:0;overflow:auto}
 .bot-maintenance-review-workbench{display:flex;flex-direction:column;min-height:0;flex:1;border-top:1px solid var(--ui-border-subtle);margin:0 -20px}
 .bot-review-candidate-list{display:flex;flex-direction:column;flex:1;min-height:0;background:var(--ui-surface-raised)}

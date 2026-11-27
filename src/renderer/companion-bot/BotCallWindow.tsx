@@ -16,7 +16,7 @@ import { BotLive2DStage, type BotLive2DControls } from './BotLive2DStage';
 import { BOT_CALL_TIMEOUT_MS, botCallClock } from './call-presentation';
 import type { BotPushToTalkTarget } from './useBotPushToTalk';
 import { BotCallDialogue, isLiveCallReply, type BotCallPlayback, type BotCallTurn } from './BotCallDialogue';
-import { BotComposer, BotSpeechMuteButton } from './BotComposer';
+import { BotComposer, BotSpeechMuteButton, useBotInputActivity } from './BotComposer';
 import { BotAppAttachments, BotApps } from './BotApps';
 import { useBotChatApps } from './useBotChatApps';
 import { BotTopicBar } from './BotTopicBar';
@@ -26,6 +26,16 @@ import { BotCallDocument, BotMeetingSession, useCallPet } from './call-pet';
 import './bot-call.css';
 
 const emptyMessages: readonly BotMessage[] = [];
+function settleCallReplies(turn: BotCallTurn | undefined, messages: readonly BotMessage[], checked: readonly string[] = []) {
+  const receipt = turn?.receipt;
+  if (!turn || !receipt?.pending.length) return turn;
+  const pending = receipt.pending.filter(id => {
+    const reply = messages.find(message => message.id === id);
+    return reply ? reply.status === 'queued' || reply.status === 'running' : !checked.includes(id);
+  });
+  return pending.length === receipt.pending.length ? turn : { ...turn, receipt: { ...receipt, pending } };
+}
+
 const fallbackRingtone = 'ringtone.wav';
 const poseFields = [
   ['headX', '左右转头', 'Turn head', -1, 1, 0], ['headY', '抬头低头', 'Tilt head', -1, 1, 0], ['headZ', '歪头', 'Lean head', -1, 1, 0],
@@ -75,6 +85,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   const compactInputLabel = composerExpanded ? (zh ? '收起桌宠输入' : 'Collapse desktop pet input') : (zh ? '展开会面输入' : 'Expand meeting input');
   const [snapshot, setSnapshot] = useState<BotSnapshot>();
   const [turn, setTurn] = useState<BotCallTurn>();
+  const pendingReplyIds = useRef<readonly string[]>([]);
   const [stage, setStage] = useState({ generation: 0, ignored: new Set<string>(), interrupted: false });
   const stageState = useRef(stage);
   const playback = useRef<BotCallPlayback>({ replies: [], pending: [] });
@@ -90,11 +101,13 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   const refreshing = useRef(false), refreshAgain = useRef(false);
   const latestDraft = useRef(draft);
   useLayoutEffect(() => { latestDraft.current = draft; }, [draft]);
-  const attempts = useRef(new Map<string, Extract<BotRequest, { type: 'message.send' }>>());
+  const attempts = useRef(new Map<'composer' | 'voice', Extract<BotRequest, { type: 'message.send' }>>());
   const textAttempt = useRef<string>(undefined);
   const box = useRef<HTMLElement>(null), dock = useRef<HTMLDivElement>(null);
   const conversationId = meeting?.id ?? '';
+  const inputActivity = useBotInputActivity(api, conversationId);
   const messages = snapshot?.messages ?? emptyMessages;
+  useLayoutEffect(() => { pendingReplyIds.current = turn?.receipt?.pending ?? []; }, [turn]);
   const latestMessages = useRef(messages);
   useLayoutEffect(() => { latestMessages.current = messages; }, [messages]);
   const runtime = snapshot?.chatRuntime, topicId = runtime?.topic?.id;
@@ -127,17 +140,29 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     try {
       do {
         refreshAgain.current = false;
-        const result = await request({ type: 'state', conversationId, surface: 'call', callAfter: publicationCursor.current });
-        if (!live.current || !result.snapshot) return;
-        const delivery = result.snapshot.callDelivery;
+        const tracked = pendingReplyIds.current;
+        const result = await request({ type: 'state', conversationId, surface: 'call', callAfter: publicationCursor.current,
+          ...(tracked.length > 0 && { callReplyIds: [...tracked] }) });
+        const next = result.snapshot;
+        if (!live.current || !next) return;
+        const delivery = next.callDelivery;
+        const visibleIds = new Set(next.messages.map(message => message.id));
         if (delivery) {
           publicationCursor.current = delivery.cursor;
+          for (const id of meeting.activeAtConnect) if (!visibleIds.has(id)) meeting.activeAtConnect.delete(id);
           for (const id of delivery.messageIds) meeting.activeAtConnect.add(id);
         }
-        setSnapshot(result.snapshot);
+        const running = next.chatRuntime?.running.map(reply => reply.messageId) ?? [];
+        const retained = new Set([...visibleIds, ...running, ...playback.current.replies, ...pendingReplyIds.current]);
+        for (const id of presented.current.keys()) if (!retained.has(id)) presented.current.delete(id);
+        const current = stageState.current;
+        const ignored = new Set([...current.ignored].filter(id => retained.has(id)));
+        if (ignored.size !== current.ignored.size) updateStage({ ...current, ignored });
+        setTurn(current => settleCallReplies(current, next.messages, delivery ? tracked : []));
+        setSnapshot(next);
       } while (refreshAgain.current && live.current);
     } finally { refreshing.current = false; }
-  }, [conversationId, meeting, request]);
+  }, [conversationId, meeting, request, updateStage]);
   const chatApps = useBotChatApps(conversationId, runtime, request, refresh, locale);
   const { attachingBrowser, browserAttachmentPending } = chatApps;
   useEffect(() => {
@@ -205,12 +230,13 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     if (!live.current || !conversationId || sendLock.current || browserAttachmentPending.current) return { ok: false };
     sendLock.current = true; setSending(true); setSendError('');
     try {
-      let input = attempts.current.get(requestId);
-      const ownPending = turn?.replyIds?.filter(id => !stageState.current.ignored.has(id)
-        && (!messages.some(message => message.id === id) || messages.some(message => message.id === id && ['queued', 'running'].includes(message.status))));
+      const channel = prioritize ? 'voice' : 'composer';
+      const previous = attempts.current.get(channel);
+      let input = previous?.requestId === requestId ? previous : undefined;
+      const ownPending = turn?.receipt?.pending.filter(id => !stageState.current.ignored.has(id));
       const stopped = !prioritize && !input && ownPending?.length ? interrupt('send-' + requestId, ownPending) : undefined;
       if (!prioritize && !input && !stopped) {
-        dismissReplies(playback.current.replies.filter(id => !playback.current.pending.includes(id) || turn?.replyIds?.includes(id)));
+        dismissReplies(playback.current.replies.filter(id => !playback.current.pending.includes(id) || turn?.receipt?.replyIds.includes(id)));
       }
       setTurn({ id: requestId, content: content.trim() });
       if (!input) {
@@ -221,21 +247,23 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
         if (stageState.current.interrupted) updateStage({ ...stageState.current, interrupted: false });
         input = { type: 'message.send', conversationId, content, requestId, topicId, attachmentIds, surface: 'call',
           ...(prioritize && { delivery: 'interrupt' }) };
-        attempts.current.set(requestId, input);
+        attempts.current.set(channel, input);
       }
       const result = await request(input);
       if (result.ok) {
         const replyIds = result.replyMessageIds ?? [];
         if (prioritize) dismissReplies([...playback.current.replies, ...(result.interruptedReplyIds ?? [])].filter(id => !replyIds.includes(id)));
-        setTurn(current => current?.id === requestId ? { ...current, replyIds } : current);
-        attempts.current.delete(requestId);
+        const messagesAtReceipt = latestMessages.current;
+        setTurn(current => current?.id === requestId
+          ? settleCallReplies({ ...current, receipt: { replyIds, pending: replyIds } }, messagesAtReceipt) : current);
+        attempts.current.delete(channel);
         void refresh();
       }
       return result;
     } finally {
       sendLock.current = false;
       if (live.current) {
-        setTurn(current => current?.id === requestId && !current.replyIds ? { ...current, failed: true } : current);
+        setTurn(current => current?.id === requestId && !current.receipt ? { ...current, failed: true } : current);
         setSending(false);
       }
     }
@@ -244,7 +272,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
   useLayoutEffect(() => {
     if (!pushToTalkTargetRef || phase !== 'connected') return;
     pushToTalkTargetRef.current = () => !voiceInputActive && !browserAttachmentPending.current ? {
-      start() { stopReplySpeech.current?.(); },
+      start() { inputActivity(); stopReplySpeech.current?.(); },
       send: (text, requestId) => dispatch(text, requestId, undefined, true),
     } : undefined;
     return () => { pushToTalkTargetRef.current = undefined; };
@@ -263,8 +291,8 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
     const text = sticker ? '' : draft;
     const attachments = sticker ? [sticker] : files;
     if (sendLock.current || importLock.current || browserAttachmentPending.current || (!text.trim() && !attachments.length) || attachments.length > 16) return;
-    const ids = attachments.map(file => file.id), prior = textAttempt.current && attempts.current.get(textAttempt.current);
-    const requestId = prior && prior.topicId === topicId && prior.content === text && JSON.stringify(prior.attachmentIds) === JSON.stringify(ids)
+    const ids = attachments.map(file => file.id), prior = attempts.current.get('composer');
+    const requestId = prior && prior.requestId === textAttempt.current && prior.topicId === topicId && prior.content === text && JSON.stringify(prior.attachmentIds) === JSON.stringify(ids)
       ? prior.requestId : crypto.randomUUID();
     if (!sticker) textAttempt.current = requestId;
     const result = await dispatch(text, requestId, ids);
@@ -487,7 +515,7 @@ export function BotCallWindow({ conversationId: directId, sessionId, companion, 
         </div>}
       {topics}
     <div className="bot-call-composer-host">
-      <BotComposer meeting locale={locale} draft={draft} setDraft={setDraft} onTypingActivity={setTyping} disabled={!conversationId} busy={sending || attachingBrowser} group={false} world={false} conversationId={conversationId}
+      <BotComposer meeting locale={locale} draft={draft} setDraft={setDraft} onUserActivity={inputActivity} onTypingActivity={setTyping} disabled={!conversationId} busy={sending || attachingBrowser} group={false} world={false} conversationId={conversationId}
         pushToTalkShortcut={!!api.onPushToTalk} voiceCaptureBusy={pushToTalkBusy}
         panel={null} setPanel={() => undefined} send={() => submit()} mediaApi={mediaApi} attachments={files} addingFiles={importing}
         desktopCapture={{ surface: desktop.pet ? 'pet' : 'chat', companionName: companion.name, attach: attachFiles, statusTarget: petStatusRow, controlsTarget: petCaptureControls,

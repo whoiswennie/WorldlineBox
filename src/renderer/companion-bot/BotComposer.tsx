@@ -1,10 +1,10 @@
 import { useBotCallDocument } from './call-pet';
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { BotIcon } from './BotIcon';
 import type { BotMediaRef, WorldlineBoxBotMediaApi } from '../../shared/companion-bot-media';
 import { BotStickerPicker } from './BotStickerPicker';
 import { BotDraftAttachments } from './BotDraftAttachments';
-import type { BotCompanion } from '../../shared/companion-bot';
+import type { BotCompanion, WorldlineBoxBotApi } from '../../shared/companion-bot';
 import { BotMentionPicker } from './BotMentionPicker';
 import { botMentionOptions, botMentionQuery, insertBotMention, type BotMentionOption } from './bot-mentions';
 import { BotVoiceInput } from './BotVoiceInput';
@@ -14,12 +14,22 @@ const copy = {
   'zh-CN': { emoji: '表情', emojiTitle: '常用表情', memory: '记忆', history: '聊天记录', message: '发送消息…', send: '发送 ↑', keyboard: 'Enter 发送，Shift + Enter 换行', world: '发布世界事件' },
   en: { emoji: 'Emoji', emojiTitle: 'Common emoji', memory: 'Memory', history: 'Chat history', message: 'Write a message…', send: 'Send ↑', keyboard: 'Enter to send, Shift + Enter for a new line', world: 'Publish world event' },
 };
+export function useBotInputActivity(api: WorldlineBoxBotApi | undefined, conversationId: string) {
+  const last = useRef<{ room: string; at: number }>(undefined);
+  return useCallback(() => {
+    if (!api || !conversationId) return;
+    const now = performance.now();
+    if (last.current?.room === conversationId && now - last.current.at < 5000) return;
+    last.current = { room: conversationId, at: now };
+    void api.request({ type: 'chat.activity', conversationId }).catch(() => undefined);
+  }, [api, conversationId]);
+}
 export function BotSpeechMuteButton({ zh, muted, onChange }: { zh: boolean; muted: boolean; onChange(value: boolean): void }) {
   return <button type="button" aria-label={zh ? '伙伴语音静音' : 'Mute companion speech'} aria-pressed={muted}
     title={zh ? '伙伴语音静音（跳过语音合成）' : 'Mute companion speech and skip synthesis'} onClick={() => onChange(!muted)}>
     <BotIcon name={muted ? 'volume-off' : 'volume'} /></button>;
 }
-export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, onTypingActivity, meeting = false, showInputTools = true, compact = false, desktopCapture, pushToTalkShortcut, voiceCaptureBusy }: {
+export function BotComposer({ locale, draft, setDraft, disabled, busy, group, world, mentionMembers = [], panel, setPanel, send, mediaApi, conversationId, attachments = [], addingFiles = false, addFiles, removeFile, sendSticker, sendVoice, extraTools, status, topicControls, onVoiceInputStart, onVoiceInputActivity, onTypingActivity, onUserActivity, meeting = false, showInputTools = true, compact = false, desktopCapture, pushToTalkShortcut, voiceCaptureBusy }: {
   locale: 'zh-CN' | 'en'; draft: string; setDraft(value: string): void; disabled: boolean; busy: boolean; group: boolean; world: boolean;
   panel: 'memory' | 'history' | null; setPanel(value: 'memory' | 'history' | null): void; send(kind?: 'message' | 'world'): Promise<unknown>;
   mediaApi?: WorldlineBoxBotMediaApi; conversationId: string; attachments?: readonly BotMediaRef[]; addingFiles?: boolean;
@@ -29,6 +39,7 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
   extraTools?: ReactNode; status?: ReactNode; topicControls?: ReactNode;
   onVoiceInputStart?(): void; onVoiceInputActivity?(active: boolean): void; onTypingActivity?(active: boolean): void; meeting?: boolean; showInputTools?: boolean; compact?: boolean;
   pushToTalkShortcut?: boolean; voiceCaptureBusy?: boolean;
+  onUserActivity?(): void;
   desktopCapture?: { surface: 'chat' | 'pet'; companionName?: string; attach(media: BotMediaRef[]): void; statusTarget?: HTMLElement | null; controlsTarget?: HTMLElement | null; interacting?: boolean };
 }) {
   const surface = useBotCallDocument();
@@ -96,7 +107,7 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
         onContextMenu={event => { if (canTranscribeFile) { event.preventDefault(); setCaptureFileRequest(value => value + 1); } }}>
         <BotIcon name="file" /></button>}
       <BotVoiceInput key={conversationId} conversationId={conversationId} locale={locale} disabled={disabled || busy || addingFiles || voiceCaptureBusy}
-        pushToTalkShortcut={pushToTalkShortcut} textOnly={!sendVoice} onText={text => setDraft((draft ? draft + '\n' : '') + text)} onVoice={sendVoice} onStart={onVoiceInputStart} onActivityChange={onVoiceInputActivity} />
+        pushToTalkShortcut={pushToTalkShortcut} textOnly={!sendVoice} onText={text => setDraft((draft ? draft + '\n' : '') + text)} onVoice={sendVoice} onStart={() => { onUserActivity?.(); onVoiceInputStart?.(); }} onActivityChange={onVoiceInputActivity} />
       </>}
       {desktopCapture && mediaApi?.desktopCaptureSupported && <BotDesktopCapture key={conversationId + ':' + desktopCapture.surface} api={mediaApi} conversationId={conversationId} locale={locale} surface={desktopCapture.surface}
         statusTarget={desktopCapture.statusTarget ?? (desktopCapture.surface === 'chat' ? captureStatus : null)}
@@ -121,8 +132,8 @@ export function BotComposer({ locale, draft, setDraft, disabled, busy, group, wo
       aria-controls={mentionOpen ? mentionId : undefined} aria-activedescendant={mentionOpen && mentions.length ? `${mentionId}-${selectedMention}` : undefined}
       onFocus={event => { setFocused(true); readSelection(event.currentTarget); }} onBlur={() => setFocused(false)}
       onSelect={event => readSelection(event.currentTarget)} onClick={event => readSelection(event.currentTarget)} onKeyUp={event => readSelection(event.currentTarget)}
-      onCompositionStart={() => { composing.current = true; setComposition(true); markTyping(true); }} onCompositionEnd={event => { composing.current = false; setComposition(false); readSelection(event.currentTarget); }}
-      onChange={event => { setDraft(event.target.value); markTyping(!!event.target.value); readSelection(event.currentTarget); setDismissed(''); }}
+      onCompositionStart={() => { onUserActivity?.(); composing.current = true; setComposition(true); markTyping(true); }} onCompositionUpdate={onUserActivity} onCompositionEnd={event => { onUserActivity?.(); composing.current = false; setComposition(false); readSelection(event.currentTarget); }}
+      onChange={event => { onUserActivity?.(); setDraft(event.target.value); markTyping(!!event.target.value); readSelection(event.currentTarget); setDismissed(''); }}
       onKeyDown={event => {
         if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
         if (mentionOpen && ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key) && !event.shiftKey) {

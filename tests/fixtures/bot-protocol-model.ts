@@ -16,7 +16,7 @@ function jsonEnvelope(text: string, marker: string): Record<string, unknown> | u
 /** Deterministic wire fixture for integration only. Its replies are not model
  * quality evidence. Real DSH executes every returned tool call. */
 export async function startBotProtocolModel() {
-  const counters = { requests: 0, toolCalls: 0, captures: 0, capturedPreference: 0, summaries: 0 };
+  const counters = { requests: 0, toolCalls: 0, diaryWrites: 0, summaries: 0 };
   const server = createServer(async (request, response) => {
     try {
       const chunks: Buffer[] = []; for await (const chunk of request) chunks.push(chunk);
@@ -43,14 +43,6 @@ export async function startBotProtocolModel() {
       if (system.includes('把历史资料归纳') || messages.some(message => plain(message.content).includes('You are now acting as a compaction engine'))) {
         counters.summaries++;
         content = '## Primary Request and Intent\n- Continue the companion validation conversation.\n## Key Technical Concepts\n- Native sessions, VCP recall and delegated task receipts.\n## Files and Code\n- cedar-proof.txt is the task artifact; inspect task status before claiming completion.\n## Errors and Fixes\n- None.\n## Pending Jobs\n- Use durable task records for current progress.\n## Current Work\n- Verify test project code through memory.\n## Next Step\n- Respond to the latest user message.\n## Critical Context\n- Test project code 青榆舟. Evening preference 麦茶; morning coffee remains allowed.';
-      } else if (system.includes('最多6条') && system.includes('notes')) {
-        counters.captures++;
-        // Encoder jobs have separate Sessions. Locate this job's source
-        // envelope even if the native preset appends another user notice.
-        const envelope = messages.filter(message => message.role === 'user').map(message => plain(message.content))
-          .find(value => jsonEnvelope(value, '{"sourceEventId":')?.sourceMessages) ?? current;
-        if (envelope.includes('晚上喝麦茶')) counters.capturedPreference++;
-        content = JSON.stringify({ notes: envelope.includes('晚上喝麦茶') ? [{ content: '开发验收偏好：从此次更新起，晚上喝麦茶，上午仍喝咖啡；不表示全天不喝咖啡。', tags: ['验收', '偏好'] }] : [] });
       } else if (system.includes('DSH执行器')) {
         if (priorTools === 0) call = { name: 'write', args: { file_path: 'cedar-proof.txt', content: 'WLB_SUPER_AGENT_OK' } };
         else if (priorTools === 1) call = { name: 'read', args: { file_path: 'cedar-proof.txt' } };
@@ -59,6 +51,14 @@ export async function startBotProtocolModel() {
       } else if (current.includes('请实际调用 dsh_task')) {
         if (!have('dsh_task') && priorTools === 0) call = { name: 'dsh_task', args: { title: '验收文件', goal: '在本任务工作区创建 cedar-proof.txt，内容为 WLB_SUPER_AGENT_OK，再读取文件核验。' } };
         else content = '任务已提交，等待实际任务回执。';
+      } else if ((current.includes('观鸟在青鹭湾北岸集合') || current.includes('晚上喝麦茶')) && priorTools === 0 && data.tools?.some((tool: { function?: { name: string } }) => tool.function?.name === 'memory_write')) {
+        counters.diaryWrites++;
+        call = { name: 'memory_write', args: current.includes('晚上喝麦茶')
+          ? { content: '从这次更新起，晚上喝麦茶，上午仍喝咖啡。', tags: ['麦茶', '时段偏好'] }
+          : { content: '周六观鸟在青鹭湾北岸集合，六点出发。', tags: ['青鹭湾', '观鸟', '集合地点'] } };
+      } else if (current.includes('周六看鸟在哪里集合')) {
+        const match = messages.map(message => plain(message.content)).join('\n').match(/观鸟在([^，。]{1,20})集合/u);
+        content = match ? match[1]! + '集合。' : '没有找到集合地点。';
       } else if (current.includes('请先调用 memory_search')) {
         if (priorTools === 0) call = { name: 'memory_search', args: { query: '测试项目代号' } };
         else content = '根据本次检索资料，测试项目代号是青榆舟。';

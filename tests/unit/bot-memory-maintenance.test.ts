@@ -12,19 +12,55 @@ function proposal(type: BotMemoryMaintenanceCandidate['type'] = 'organize') {
 function fixture(output = proposal()) {
   let revision = '0', snapshot: BotMemoryMaintenanceSnapshot | undefined;
   const notes = ids.map((id, index) => ({ id, checksum: String(index + 1).repeat(32), content: ['用户：计划周六去湖边，尚未出发。', '用户：下雨，改为博物馆，尚未订票。', '伙伴：这是推测，尚未验证。'][index]!,
-    tags: ['计划'], createdAt: '2026-11-03T10:00:00Z', sourceMessageIds: [`message-${index}`], sourceEventId: `event-${index}`, indexState: 'indexed' }));
+    tags: ['计划'], createdAt: '2025-11-03T10:00:00Z', sourceMessageIds: [`message-${index}`], sourceEventId: `event-${index}`, indexState: 'indexed' }));
   const memory = { catalog: vi.fn(async () => ({ items: notes.map(note => ({ ...note, content: '短预览' })), nextCursor: 'next-page' })),
     readNote: vi.fn(async (_scope, input) => notes.find(note => note.id === input.id)), withdrawnSources: vi.fn(async () => ({ revision, sourceEventIds: [], sourceMessageIds: [] })),
-    tool: vi.fn(async () => ({ results: [{ score: 0.73, text: '真实边界的替身结果' }] })), dreamRecall: vi.fn(async () => ({ engine: 'DreamWaveEngine', groups: { 'recent.seeds': [{ id: ids[0], checksum: '1'.repeat(32) }] } })),
+    associateDiaries: vi.fn<BotMemoryMaintenanceOptions['memory']['associateDiaries']>(async () => ({ engine: 'DailyNoteManager.Associate', sourceRevision: revision, items: [], queries: [] })), dreamRecall: vi.fn(async () => ({ engine: 'DreamWaveEngine', sourceRevision: revision, dreamPrompt: '入梦时间：深夜。最近片段在此。', sources: notes.map((note,index) => ({ id: note.id, checksum: note.checksum, role: index ? 'context' : 'seed' })), groups: { 'recent.seeds': [{ id: ids[0], checksum: '1'.repeat(32) }] } })),
     update: vi.fn<BotMemoryMaintenanceOptions['memory']['update']>(async () => ({ state: 'indexed', indexed: true })), organize: vi.fn<BotMemoryMaintenanceOptions['memory']['organize']>(async () => ({ state: 'indexed', indexed: true, archived: ids.slice(0, 2) })),
     maintenanceInsight: vi.fn(async () => ({ state: 'indexed', indexed: true })), maintenanceArchive: vi.fn(async () => ({ state: 'archived', retained: true })), operationReceipt: vi.fn(async () => ({})) };
   const brain = { run: vi.fn<BotMemoryMaintenanceOptions['brain']['run']>(async () => ({ text: JSON.stringify(output), sessionId: 'app-maintenance', eventId: 'maintenance', status: 'succeeded' as const })), archive: vi.fn(async () => undefined) };
-  const options = { brain, memory, cwd: () => 'C:/owned-test/maintenance', callback: async () => ({ url: 'http://127.0.0.1/callback', token: 'test' }),
+  const options = { brain, memory, dreamer: () => ({ name: '阿蓝', persona: '你是喜欢山林的伙伴。' }), cwd: () => 'C:/owned-test/maintenance', callback: async () => ({ url: 'http://127.0.0.1/callback', token: 'test' }),
     model: () => ({ model: 'fixture', apiFormat: 'openai_chat' as const, baseUrl: 'http://127.0.0.1', apiKey: 'never-log-this-fixture-secret' }) } satisfies BotMemoryMaintenanceOptions;
   const core = new BotMemoryMaintenance(options);
   const input: BotMemoryMaintenancePrepareInput = { scope, kind: 'organize', operationId: 'job-1', contextEpoch: 1, onSnapshot: async value => { snapshot = value; } };
   return { core, input, brain, memory, notes, getSnapshot: () => snapshot!, revision: (value: string) => { revision = value; } };
 }
+
+it('generates a read-only health report despite model-proposed changes and scans only the current indexed catalog', async () => {
+  const f = fixture(proposal('archive'));
+  const plan = await f.core.preparePlan({ ...f.input, mode: 'scan' });
+  expect(f.memory.catalog).toHaveBeenCalledWith(scope, { cursor: undefined, limit: 20, indexedOnly: true }, undefined);
+  expect(plan).toMatchObject({ mode: 'scan', candidates: [], narrative: proposal().narrative });
+  expect(f.brain.run.mock.calls[0]![0].system).toContain('扫描报告 (Scan)');
+  expect(f.brain.run.mock.calls[0]![0].tools).toEqual([]);
+  expect(f.memory.update).not.toHaveBeenCalled(); expect(f.memory.maintenanceArchive).not.toHaveBeenCalled();
+});
+
+it('tracks a superseded event through both sources and only appends the approved annotation', async () => {
+  const f = fixture();
+  const [older, newer] = f.notes;
+  const content = '[⚠️ 过时标注 by 记忆大师V2 @ 2026-01-05] 原计划已被博物馆安排替代。';
+  f.brain.run.mockResolvedValue({ text: JSON.stringify({ narrative: '已过时：原去湖边的计划被后续安排替代。', candidates: [{
+    ...proposal('update').candidates[0], eventState: 'superseded', sourceIds: [older!.id, newer!.id], content: older!.content + '\n' + content,
+    quotes: [{ sourceId: older!.id, text: '计划周六去湖边' }, { sourceId: newer!.id, text: '改为博物馆' }],
+  }] }), sessionId: 'track', eventId: 'track', status: 'succeeded' });
+  const plan = await f.core.preparePlan({ ...f.input, mode: 'track' });
+  const item = plan.candidates[0]!;
+  expect(item.content).toBe(older!.content + '\n\n' + content + '\n依据：' + newer!.id);
+  const apply = { scope, plan, candidateId: item.id, contextEpoch: plan.contextEpoch, approval: 'review' as const };
+  await f.core.applyCandidate(apply); await f.core.applyCandidate({ ...apply, inspectOnly: true });
+  const write = f.memory.update.mock.calls[0]![1];
+  expect(write).toMatchObject({ id: older!.id, expectedChecksum: older!.checksum, content: item.content, evidenceSources: [{ id: newer!.id, expectedChecksum: newer!.checksum }] });
+  expect(f.memory.operationReceipt).toHaveBeenCalledWith(scope, 'update', write, undefined);
+  expect(f.brain.run.mock.calls[0]![0].system).toContain('## 五、事件追踪系统');
+  expect(f.memory.organize).not.toHaveBeenCalled();
+});
+
+it('keeps conflicting event evidence in the tracking report with no executable action', async () => {
+  const f = fixture(proposal('archive'));
+  const proposalPlan = await f.core.preparePlan({ ...f.input, mode: 'track' });
+  expect(proposalPlan.candidates).toEqual([]); expect(proposalPlan.validationIssues).toHaveLength(1);
+});
 
 describe('scoped memory maintenance planning', () => {
   it('keeps long narrative and candidate bodies whole without imposing a candidate-count quota', async () => {
@@ -52,15 +88,58 @@ describe('scoped memory maintenance planning', () => {
     const f = fixture(); f.brain.run.mockImplementationOnce(async () => { expect(f.getSnapshot().sources[0]!.content).toContain('尚未出发'); return { text: JSON.stringify(proposal()), sessionId: 'app', eventId: 'e', status: 'succeeded' }; });
     const diagnostic = vi.fn(async () => undefined), plan = await f.core.preparePlan({ ...f.input, onDiagnostic: diagnostic });
     expect(plan.candidates).toHaveLength(1); expect(plan.scan).toMatchObject({ examined: 3, selected: 3, nextCursor: 'next-page' });
-    expect(f.memory.catalog).toHaveBeenCalledWith(scope, { cursor: undefined, limit: 24 });
+    expect(f.memory.catalog).toHaveBeenCalledWith(scope, { cursor: undefined, limit: 20 }, undefined);
+    expect(f.memory.associateDiaries).toHaveBeenCalledWith(scope, { sources: f.notes.map(({ id, checksum }) => ({ id, checksum })), expectedSourceRevision: '0' }, undefined);
     expect(f.brain.run).toHaveBeenCalledWith(expect.objectContaining({ role: 'brain', laneId: expect.stringMatching(/^memory-maintenance-/u), tools: [], prompt: expect.stringContaining('尚未出发') }));
     expect(f.brain.archive).toHaveBeenCalledOnce(); expect(f.memory.organize).not.toHaveBeenCalled(); expect(f.memory.maintenanceInsight).not.toHaveBeenCalled();
     expect(JSON.stringify(diagnostic.mock.calls)).not.toContain('never-log-this-fixture-secret');
   });
+  it('uses the pinned MemoMaster rules, preserves exempt sources and records the reason', async () => {
+    const f = fixture();
+    f.notes[0]!.createdAt = new Date().toISOString();
+    f.notes[1]!.tags = ['里程碑'];
+    const plan = await f.core.preparePlan(f.input);
+    expect(f.brain.run.mock.calls[0]![0].system).toContain('### 4.4 长事件链分卷策略');
+    expect(plan.retrieval.engine).toBe('DailyNoteManager.Associate');
+    expect(plan.candidates).toEqual([]);
+    expect(plan.exemptions).toEqual([{ id: ids[0], reason: expect.stringContaining('30 天') }, { id: ids[1], reason: expect.stringContaining('豁免') }]);
+    expect(f.memory.organize).not.toHaveBeenCalled();
+  });
+  it('requires one shared event tag and proof of both volumes before confirming an approved two-volume plan', async () => {
+    const output = proposal(), crystal = { content: '活动改期时应记录是否已经订票。', tags: ['计划'] };
+    Object.assign(output.candidates[0]!, { crystal });
+    const f = fixture(output), plan = await f.core.preparePlan(f.input);
+    const approval = { scope, plan, candidateId: plan.candidates[0]!.id, contextEpoch: 1, approval: 'review' as const };
+    expect((await f.core.applyCandidate(approval)).status).toBe('unknown');
+    expect(f.memory.organize.mock.calls[0]![1]).toMatchObject({ crystal });
+    f.memory.organize.mockResolvedValueOnce({ state: 'indexed', crystal: { indexed: true, id: ids[2], checksum: 'a'.repeat(32) } });
+    expect((await f.core.applyCandidate(approval)).status).toBe('indexed');
+    crystal.tags = ['无关标签'];
+    await expect(f.core.preparePlan(f.input)).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_INVALID_PLAN' });
+  });
   it('uses the real DreamWave RPC contract for dream association, preserving original scores without LightMemo renaming', async () => {
     const f = fixture(proposal('insight')); const plan = await f.core.preparePlan({ ...f.input, kind: 'dream' });
-    expect(f.memory.dreamRecall).toHaveBeenCalledWith(scope, { sources: f.notes.map(note => ({ id: note.id, expectedChecksum: note.checksum })), expectedSourceRevision: '0' }, undefined);
-    expect(f.memory.tool).not.toHaveBeenCalled(); expect(plan.retrieval.engine).toBe('DreamWaveEngine'); expect(plan.candidates[0]!.type).toBe('insight');
+    const request = f.brain.run.mock.calls[0]![0];
+    expect(request.system).toContain('你是喜欢山林的伙伴。');
+    expect(request.system).not.toContain('VCP 记忆宫殿的全职管家');
+    expect(JSON.parse(request.prompt).retrieval.result.dreamPrompt).toBe('入梦时间：深夜。最近片段在此。');
+    expect(f.memory.dreamRecall).toHaveBeenCalledWith(scope, { expectedSourceRevision: '0' }, undefined);
+    expect(f.memory.catalog).not.toHaveBeenCalled(); expect(plan.sources.map(source => source.role)).toEqual(['seed', 'context', 'context']);
+    expect(f.memory.associateDiaries).not.toHaveBeenCalled(); expect(plan.retrieval.engine).toBe('DreamWaveEngine'); expect(plan.candidates[0]!.type).toBe('insight');
+  });
+  it('does not admit a retired LightMemo snapshot or a dream that lost its native template', async () => {
+    const f = fixture();
+    await f.core.preparePlan(f.input);
+    const frozen = f.getSnapshot();
+    const old = { ...frozen, format: 'worldlinebox-memory-maintenance-snapshot-v1', retrieval: { engine: 'LightMemo', result: {} } } as unknown as BotMemoryMaintenanceSnapshot;
+    await expect(f.core.preparePlan({ ...f.input, snapshot: old })).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_RETIRED' });
+    const wave = await f.memory.dreamRecall();
+    f.memory.dreamRecall.mockResolvedValue({ ...wave, dreamPrompt: '' });
+    await expect(f.core.preparePlan({ ...f.input, kind: 'dream' })).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_INVALID' });
+    expect(f.brain.run).toHaveBeenCalledTimes(1);
+    expect(f.brain.run.mock.calls[0]![0].system).toContain('你是「记忆大师」，VCP 记忆宫殿的全职管家');
+    expect(f.brain.run.mock.calls[0]![0].system).toContain('## 七、');
+    expect(f.brain.run.mock.calls[0]![0].system).not.toContain('已拍照而未上传');
   });
   it('uses a new version as the seed and reads only explicitly associated old notes as complete context', async () => {
     const f = fixture(), associate = vi.fn(async () => [{ id: ids[1]!, checksum: '2'.repeat(32) }]);
@@ -99,7 +178,7 @@ describe('scoped memory maintenance planning', () => {
     const f = fixture(); f.notes[0]!.indexState = 'archived'; f.notes[1]!.indexState = 'forgotten'; f.notes[2]!.indexState = 'withdrawing';
     const plan = await f.core.preparePlan(f.input);
     expect(plan.scan).toMatchObject({ examined: 3, selected: 0, deferred: [], nextCursor: 'next-page' });
-    expect(f.brain.run).not.toHaveBeenCalled(); expect(f.memory.tool).not.toHaveBeenCalled();
+    expect(f.brain.run).not.toHaveBeenCalled(); expect(f.memory.associateDiaries).not.toHaveBeenCalled();
   });
   it('revisits pending and temporarily unreadable notes instead of treating their page as covered', async () => {
     const f = fixture({ narrative: '', candidates: [] }); f.notes[0]!.indexState = 'pending';
@@ -155,7 +234,7 @@ describe('reviewed maintenance application', () => {
     expect(f.memory.organize.mock.calls[0]![1].content).toBe(output.candidates[0]!.content);
   });
   async function ready(type: BotMemoryMaintenanceCandidate['type'] = 'organize') { const f = fixture(proposal(type)); const plan = await f.core.preparePlan({ ...f.input, kind: type === 'insight' ? 'dream' : 'organize' }); return { ...f, plan }; }
-  const apply = (plan: BotMemoryMaintenancePlan, approval: 'review' | 'lossless' = 'review') => ({ scope, plan, candidateId: plan.candidates[0]!.id, contextEpoch: 1, approval });
+  const apply = (plan: BotMemoryMaintenancePlan) => ({ scope, plan, candidateId: plan.candidates[0]!.id, contextEpoch: 1, approval: 'review' as const });
   it('uses source CAS/revision and a stable operation ID, and keeps pending receipts visibly pending', async () => {
     const f = await ready(); f.memory.organize.mockResolvedValueOnce({ state: 'pending', indexed: false, archived: [] });
     const pending = await f.core.applyCandidate(apply(f.plan)), done = await f.core.applyCandidate(apply(f.plan));
@@ -163,14 +242,12 @@ describe('reviewed maintenance application', () => {
     expect(f.memory.organize.mock.calls[0]![1]).toMatchObject({ expectedSourceRevision: '0', sources: f.notes.slice(0, 2).map(note => ({ id: note.id, expectedChecksum: note.checksum })), sourceMessageIds: [] });
     expect(f.memory.organize.mock.calls[0]).toEqual(f.memory.organize.mock.calls[1]);
   });
-  it('lossless automation copies complete originals and source times instead of writing a model paraphrase', async () => {
-    const f = await ready(); await f.core.applyCandidate(apply(f.plan, 'lossless'));
-    const payload = f.memory.organize.mock.calls[0]![1]; expect(payload.content).toContain(f.notes[0]!.content); expect(payload.content).toContain(f.notes[1]!.content); expect(payload.content).toContain(f.notes[0]!.createdAt);
-    expect(payload.content).not.toBe(f.plan.candidates[0]!.content);
-  });
-  it.each(['update', 'insight', 'archive'] as const)('requires individual user approval for %s', async type => {
-    const f = await ready(type); await expect(f.core.applyCandidate(apply(f.plan, 'lossless'))).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_REVIEW_REQUIRED' });
-    expect(f.memory.update).not.toHaveBeenCalled(); expect(f.memory.maintenanceInsight).not.toHaveBeenCalled(); expect(f.memory.maintenanceArchive).not.toHaveBeenCalled();
+  it.each(['organize', 'update', 'insight', 'archive'] as const)('rejects the retired rule-based approval for %s before mutation', async type => {
+    const f = await ready(type);
+    const legacy = { ...apply(f.plan), approval: 'lossless' } as unknown as ReturnType<typeof apply>;
+    await expect(f.core.applyCandidate(legacy)).rejects.toMatchObject({ code: 'MEMORY_MAINTENANCE_REVIEW_REQUIRED' });
+    expect(f.memory.organize).not.toHaveBeenCalled(); expect(f.memory.update).not.toHaveBeenCalled();
+    expect(f.memory.maintenanceInsight).not.toHaveBeenCalled(); expect(f.memory.maintenanceArchive).not.toHaveBeenCalled();
   });
   it('archives a redundant note without calling source forgetting and accepts only retained/archived confirmation', async () => {
     const f = await ready('archive'); expect((await f.core.applyCandidate(apply(f.plan))).status).toBe('archived');

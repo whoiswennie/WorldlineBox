@@ -21,7 +21,7 @@ it('bounds a thousand-member automatic group before starting any brain or memory
   expect(store.messagesPage(room.id).items.filter(message => message.senderId !== 'user')).toEqual([]);
   const actor = store.getCompanion(first.events[0]!.companionId)!;
   const context = JSON.parse(buildNativeBotContext({ companion: actor, event: first.events[0]!, conversation: room,
-    companions: store.listCompanions(), memories: '', files: [] }).prompt);
+    companions: store.listCompanions(), files: [] }).prompt);
   expect(context.room.members.length).toBeLessThanOrEqual(64); expect(context.room.memberCount).toBe(1001);
   expect(context.room.members.includes(actor.id)).toBe(true);
   expect(context.companionDirectory.length).toBeLessThanOrEqual(64);
@@ -34,7 +34,7 @@ it('allows distinct native group lanes to run concurrently and retains replies f
   const second = store.claim({ workerId: 'second' })!;expect(second.event.companionId).not.toBe(first.event.companionId);
   store.settle({ eventId: first.event.id, leaseToken: first.leaseToken, status: 'done', content: '第一位已经交付的作文' });
   const context = buildNativeBotContext({ companion: store.getCompanion(second.event.companionId)!, conversation: room, event: second.event,
-    companions: store.listCompanions(), memories: '', files: [] });
+    companions: store.listCompanions(), files: [] });
   expect(context.prompt).not.toContain('第一位已经交付的作文');
   expect(store.recentPublishedMessages(room.id, { throughSourceSequence: store.publishedWatermark(room.id) }).some(message => message.id === first.event.replyMessageId && message.content === '第一位已经交付的作文')).toBe(true);
   expect(store.observeGroupReply(first.event.id)).toEqual([]);

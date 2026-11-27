@@ -5,7 +5,13 @@ const path = require('node:path');
 // package's dependencies on the worker's search path so a Windows junction
 // cannot become the only route to them during an upgrade or relocation.
 function workerEnvironment(env) {
-  return { ...process.env, ...env, NODE_PATH: path.join(__dirname, '..', 'node_modules') };
+  const inherited = { ...process.env };
+  if (env.WORLDLINEBOX_VCP_MANAGED === '1') {
+    for (const key of Object.keys(inherited)) {
+      if (/^(API_|CHAT_|EMBEDDING_|AIMemo|Rerank|Jev|WhitelistEmbeddingModel|EmbeddingModelSig|LOCAL_EMBEDDING_|MEMORY_CHAT_)/i.test(key)) delete inherited[key];
+    }
+  }
+  return { ...inherited, ...env, NODE_PATH: path.join(__dirname, '..', 'node_modules') };
 }
 /** Each one-shot request runs in an isolated process because upstream uses env-bound singletons. */
 function request(operation, payload = {}, { home, env = {}, onLog, withTelemetry = false } = {}) {

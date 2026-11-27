@@ -4,6 +4,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { isBotParticipantRequest } from './participant-request';
 import { BotPeerReturns } from './peer-returns';
+import { legacyEvidenceRetirementKey, retireLegacyMemorySessions } from './memory-session-migration';
 import type { BotMediaRef } from '../../shared/companion-bot-media';
 import { BOT_PERSONA_TEMPLATE_LIMIT, BOT_WORKER_CONCURRENCY_DEFAULT, botWorkerConcurrencySchema, type BotReplyPart, type BotConversationActivity, type BotHistoryFilter, type BotReplyTiming, type BotCompanionPresence, type BotPersonaTemplate, type BotPersonaTemplateList, type BotPersonaTemplateSummary } from '../../shared/companion-bot';
 import { builtinBotPersonaTemplates } from '../../shared/builtin-bot-personas';
@@ -90,7 +91,17 @@ const historyHasLink = (value: unknown): number => {
   }
   return 0;
 };
-export interface BotHistoryProjectionRow { projectionSequence: number; timestamp: number; message: BotMessage;suppressed?:boolean }
+export interface BotHistoryProjectionRow { projectionSequence: number; timestamp: number; message: BotMessage; suppressed?: boolean; awaitingTopic?: boolean; topicId?: string; topicTitle?: string }
+interface RecentHistoryOptions { throughSourceSequence: number; limit?: number; maxChars?: number; companionId?: string; publicOnly?: boolean; topicId?: string }
+// Accepted steering belongs to the event that received it. In a group the
+// same user message can be routed separately for each companion.
+const messageTopicEventSql = `(SELECT i.id FROM (
+  SELECT id,1 AS priority FROM bot_inbox WHERE source_record_id=m.id
+  UNION ALL SELECT id,1 FROM bot_inbox WHERE reply_message_id=m.id
+  UNION ALL SELECT event_id,1 FROM bot_publications WHERE message_id=m.id
+  UNION ALL SELECT event_id,0 FROM bot_guidance WHERE message_id=m.id AND status='accepted'
+) candidate JOIN bot_inbox i ON i.id=candidate.id JOIN bot_topic_events t ON t.event_id=i.id
+WHERE t.conversation_id=m.conversation_id ORDER BY (i.companion_id IS ?) DESC,candidate.priority,i.sequence LIMIT 1)`;
 export interface BotGroupAdminChange { conversation:BotConversation; eventIds:string[] }
 export interface BotDevelopmentDefaultCleanup {
   phase: 'retiring' | 'sql-deleted' | 'complete'; conversationIds: string[]; laneIds: string[];
@@ -103,6 +114,7 @@ const developmentDefault = 'default-companion', defaultCleanupKey = 'development
 export class BotStore {
   readonly peerReturns = new BotPeerReturns(this);
   private readonly db: Connection;
+  private readonly retiredByCompanion = new Map<string, string[]>();
   private readonly activityBudget: BotActivityBudget;
   constructor(readonly filename: string, options: { activityBudget?: Partial<BotActivityBudgetPolicy> } = {}) {
     if (filename !== ':memory:') mkdirSync(path.dirname(path.resolve(filename)), { recursive: true });
@@ -112,7 +124,7 @@ export class BotStore {
     try { this.activityBudget = new BotActivityBudget(this, options.activityBudget); } catch (error) { this.db.close(); throw error; }
     this.db.pragma('journal_mode = WAL'); this.db.pragma('foreign_keys = ON'); this.db.pragma('busy_timeout = 5000');
     const version = Number(this.db.pragma('user_version', { simple: true }));
-    if (version > 21) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
+    if (version > 23) { this.db.close(); throw new Error('伙伴数据库来自更高版本，拒绝降级打开。'); }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bot_companions(id TEXT PRIMARY KEY,name TEXT NOT NULL,persona TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bot_conversations(id TEXT PRIMARY KEY,title TEXT NOT NULL,kind TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 1,created_at TEXT NOT NULL,direct_key TEXT UNIQUE);
@@ -123,6 +135,7 @@ export class BotStore {
       CREATE TABLE IF NOT EXISTS bot_lanes(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),companion_id TEXT NOT NULL REFERENCES bot_companions(id),session_id TEXT,acl_revision INTEGER NOT NULL,epoch INTEGER NOT NULL DEFAULT 1,last_claimed_at INTEGER NOT NULL DEFAULT 0,UNIQUE(conversation_id,companion_id));
       CREATE TABLE IF NOT EXISTS bot_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,lane_id TEXT NOT NULL REFERENCES bot_lanes(id),conversation_id TEXT NOT NULL,companion_id TEXT NOT NULL,source TEXT NOT NULL,source_instance_id TEXT NOT NULL,source_message_id TEXT NOT NULL,sender_id TEXT NOT NULL,sender_type TEXT NOT NULL,sender_name TEXT NOT NULL,scope_id TEXT NOT NULL,domain_id TEXT NOT NULL,acl_revision INTEGER NOT NULL,kind TEXT NOT NULL,content TEXT NOT NULL,payload_json TEXT NOT NULL,correlation_id TEXT NOT NULL,causation_id TEXT,source_record_id TEXT NOT NULL,reply_message_id TEXT NOT NULL,status TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,occurred_at TEXT NOT NULL,received_at TEXT NOT NULL,lease_token TEXT,lease_until INTEGER,available_at INTEGER NOT NULL DEFAULT 0,dsh_event_id TEXT,error TEXT);
       CREATE INDEX IF NOT EXISTS bot_inbox_claim ON bot_inbox(status,available_at,sequence);
+      CREATE INDEX IF NOT EXISTS bot_foreground_companion ON bot_inbox(companion_id) WHERE status IN ('queued','running') AND source IN ('user','gateway','group','companion');
       CREATE INDEX IF NOT EXISTS bot_inbox_lane ON bot_inbox(lane_id,status,sequence);
       CREATE TABLE IF NOT EXISTS bot_native_topics(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),acl_revision INTEGER NOT NULL,title TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS bot_native_topics_page ON bot_native_topics(conversation_id,updated_at DESC,id DESC);
@@ -156,6 +169,7 @@ export class BotStore {
       CREATE INDEX IF NOT EXISTS bot_memory_inspections_recent ON bot_memory_inspections(owner_key,created_at DESC,id);
       CREATE INDEX IF NOT EXISTS bot_memory_jobs_claim ON bot_memory_jobs(status,available_at,sequence);
       CREATE INDEX IF NOT EXISTS bot_memory_jobs_domain ON bot_memory_jobs(domain_key,status);
+      CREATE INDEX IF NOT EXISTS bot_memory_response_order ON bot_memory_jobs(domain_key,sequence) WHERE kind='response' AND status='queued';
       CREATE TABLE IF NOT EXISTS bot_withdrawn_sources(domain_key TEXT NOT NULL,source_id TEXT NOT NULL,PRIMARY KEY(domain_key,source_id));
       CREATE TABLE IF NOT EXISTS bot_private_notice_exclusions(domain_key TEXT NOT NULL,source_id TEXT NOT NULL,PRIMARY KEY(domain_key,source_id));
       CREATE TABLE IF NOT EXISTS bot_history_projection(sequence INTEGER PRIMARY KEY AUTOINCREMENT,message_id TEXT NOT NULL UNIQUE REFERENCES bot_messages(id),conversation_id TEXT NOT NULL REFERENCES bot_conversations(id),timestamp INTEGER NOT NULL);
@@ -347,13 +361,48 @@ export class BotStore {
       this.db.exec('CREATE INDEX IF NOT EXISTS bot_topics_recent ON bot_native_topics(conversation_id,acl_revision,pinned DESC,activity_at DESC,id DESC);CREATE INDEX IF NOT EXISTS bot_topics_favorites ON bot_native_topics(conversation_id,acl_revision,favorite,pinned DESC,activity_at DESC,id DESC)');
       this.db.pragma('user_version = 21');
     }).immediate();
+    if (version < 22) this.db.transaction(() => {
+      // Prepared prompts, queue receipts and dream proposals belong to the
+      // retired VCP index. Chat history and withdrawal authority remain valid.
+      for (const table of ['bot_maintenance_reviews', 'bot_maintenance_candidates', 'bot_maintenance_diagnostics',
+        'bot_maintenance_maturity', 'bot_maintenance_dream_clock', 'bot_maintenance_jobs', 'bot_maintenance_changes', 'bot_maintenance_requests', 'bot_maintenance_tool_receipts',
+        'bot_maintenance_settings', 'bot_memory_inspections', 'bot_memory_jobs']) {
+        if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) this.db.exec(`DELETE FROM ${table}`);
+      }
+      this.db.exec(`DELETE FROM bot_metadata WHERE key GLOB 'maintenance-*' OR key GLOB 'memory-capture-*'
+        OR key GLOB 'history-projection:*' OR key GLOB 'native-memory-*'`);
+      this.db.pragma('user_version = 22');
+    }).immediate();
+    if (version < 23 || !this.getMetadata(legacyEvidenceRetirementKey)) this.db.transaction(() => {
+      if (version < 23 || !this.getMetadata(legacyEvidenceRetirementKey)) retireLegacyMemorySessions(this.db);
+      this.db.pragma('user_version = 23');
+    }).immediate();
   }
 
   close(): void { this.db.close(); }
   nativeLaneCompanion(nativeLaneId:string):string|undefined{
     if(nativeLaneId.startsWith('turn-'))return this.getEvent(nativeLaneId.slice(5))?.companionId;
     const binding=this.db.prepare('SELECT companion_id FROM bot_topic_bindings WHERE native_lane_id=?').get(nativeLaneId) as {companion_id:string}|undefined;
-    return binding?.companion_id??this.getLane(nativeLaneId)?.companionId;
+    if(binding)return binding.companion_id;
+    const prior=this.db.prepare('SELECT companion_id FROM bot_retired_memory_lanes WHERE native_lane_id=?').get(nativeLaneId) as {companion_id:string}|undefined;
+    return prior?.companion_id??this.getLane(nativeLaneId)?.companionId;
+  }
+  retiredNativeLane(eventId:string):string|undefined {
+    return (this.db.prepare('SELECT native_lane_id FROM bot_retired_memory_events WHERE event_id=?').get(eventId) as {native_lane_id:string}|undefined)?.native_lane_id;
+  }
+  retiredMemoryLanes(companionId: string): string[] {
+    const previous = this.retiredByCompanion.get(companionId);
+    if (previous) return previous;
+    const rows = this.db.prepare(`SELECT native_lane_id FROM bot_retired_memory_lanes WHERE companion_id=?
+      UNION SELECT b.native_lane_id FROM bot_lanes l JOIN bot_topic_bindings b ON b.conversation_id=l.conversation_id AND b.companion_id=l.companion_id AND b.lane_epoch<l.epoch
+        WHERE l.companion_id=? AND l.epoch>1
+      UNION SELECT 'turn-'||i.id FROM bot_lanes l JOIN bot_inbox i ON i.lane_id=l.id
+        LEFT JOIN bot_metadata m ON m.key='event-native-epoch:'||i.id
+        WHERE l.companion_id=? AND l.epoch>1 AND i.dsh_event_id IS NOT NULL AND COALESCE(CAST(m.value AS INTEGER),1)<l.epoch
+        AND NOT EXISTS(SELECT 1 FROM bot_topic_events t WHERE t.event_id=i.id)`).all(companionId, companionId, companionId);
+    const lanes = rows.map(row => String(asRow(row).native_lane_id));
+    this.retiredByCompanion.set(companionId, lanes);
+    return lanes;
   }
   /** Shared SQL transaction; callbacks must be synchronous and perform no native/network I/O. */
   taskTransaction<T>(operation: (sql: BotTaskSql) => T): T { return this.db.transaction(() => operation(this.db)).immediate(); }
@@ -1001,10 +1050,16 @@ export class BotStore {
       AND (i.status='running' OR (i.status='queued' AND i.dsh_event_id IS NOT NULL))`)
       .all(companionId, securityDomainId).map(raw => this.event(raw));
   }
+  hasForegroundWork(companionId: string): boolean {
+    return !!this.db.prepare(`SELECT 1 FROM bot_inbox i WHERE i.companion_id=? AND i.status IN ('queued','running')
+      AND i.source IN ('user','gateway','group','companion') AND (i.source<>'companion' OR EXISTS
+      (SELECT 1 FROM bot_members m WHERE m.conversation_id=i.conversation_id AND m.member_id='user')) LIMIT 1`).get(companionId);
+  }
   rotateDomain(companionId: string, securityDomainId: string): void {
     this.db.transaction(() => this.rotateDomainState(companionId, securityDomainId)).immediate();
   }
   private rotateDomainState(companionId: string, securityDomainId: string): void {
+    this.retiredByCompanion.delete(companionId);
     this.db.prepare('UPDATE bot_lanes SET epoch=epoch+1,session_id=NULL WHERE companion_id=? AND conversation_id IN(SELECT id FROM bot_conversations WHERE domain_id=?)').run(companionId, securityDomainId);
   }
   getEventNativeEpoch(eventId: string): number | undefined {
@@ -1363,7 +1418,8 @@ export class BotStore {
   }
   nativeTurnMayHaveBeenSent(eventId: string): boolean {
     // Older durable turns lack the dispatch marker and still require native reconciliation.
-    return !!this.getMetadata('native-input:' + eventId) && this.getMetadata('native-dispatch:' + eventId) !== 'unsent';
+    return !!this.getMetadata('native-input:' + eventId)
+      && (this.getMetadata('native-dispatch:' + eventId) !== 'unsent' || !!this.getEvent(eventId)?.dshEventId);
   }
   interruptNativeReply(eventId: string): boolean {
     return this.db.transaction(() => {
@@ -1566,22 +1622,67 @@ export class BotStore {
   }
   /** UI placeholders receive their sequence before completion. Hot model
    * history follows actual publication, while the trigger bounds future input. */
-  recentPublishedMessages(conversationId: string, options: { throughSourceSequence: number; limit?: number; maxChars?: number; companionId?: string; publicOnly?: boolean }): BotMessage[] {
-    const rows = this.db.prepare(`SELECT m.* FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id
+  recentPublishedMessages(conversationId: string, options: RecentHistoryOptions, window?: { first: number; last: number } | { events: string[] }): BotMessage[] {
+    // A small or newly reopened topic can select its own published message
+    // IDs directly, even if years of unrelated discussion followed it.
+    const small = window && 'events' in window ? window.events : undefined;
+    const range = window && 'first' in window ? window : undefined;
+    const candidates = small ? `WITH event(id) AS (SELECT value FROM json_each(?)), candidate(id) AS (
+      SELECT i.source_record_id FROM event e JOIN bot_inbox i ON i.id=e.id UNION
+      SELECT i.reply_message_id FROM event e JOIN bot_inbox i ON i.id=e.id UNION
+      SELECT p.message_id FROM event e JOIN bot_publications p ON p.event_id=e.id UNION
+      SELECT g.message_id FROM event e JOIN bot_guidance g ON g.event_id=e.id WHERE g.status='accepted')` : '';
+    const rows = this.db.prepare(`${candidates} SELECT m.* FROM ${small ? 'candidate c CROSS JOIN bot_history_projection p ON p.message_id=c.id' : 'bot_history_projection p'} JOIN bot_messages m ON m.id=p.message_id
       WHERE p.conversation_id=? AND m.sequence<=? AND m.status='sent' AND (length(m.content)>0 OR m.attachments_json<>'[]')
+      ${range ? 'AND p.sequence BETWEEN ? AND ?' : ''}
       AND NOT EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id)
       ${options.publicOnly ? `AND NOT ${internalTaskMessageSql}` : ''}
+      ${options.topicId ? `AND (SELECT topic_id FROM bot_topic_events WHERE event_id=${messageTopicEventSql})=?` : ''}
       ${options.companionId ? `AND ${companionMessageVisibilitySql}` : ''} ORDER BY p.sequence DESC LIMIT ?`)
-      .all(conversationId, options.throughSourceSequence, ...(options.companionId ? [options.companionId, options.companionId, options.companionId] : []), bounded(options.limit, 80, 200)).map(raw => this.message(raw));
+      .all(...(small ? [JSON.stringify(small)] : []), conversationId, options.throughSourceSequence, ...(range ? [range.first, range.last] : []), ...(options.topicId ? [options.companionId ?? null, options.topicId] : []), ...(options.companionId ? [options.companionId, options.companionId, options.companionId] : []), bounded(options.limit, 80, 200)).map(raw => this.message(raw));
     const selected: BotMessage[] = [], maxChars = bounded(options.maxChars, 24000, 256000); let size = 0;
     for (const message of rows) { const chars = botMessageEvidence(message).length; if (selected.length && size + chars > maxChars) break; selected.push(message); size += chars; }
     return selected.reverse();
   }
-  historyProjectionPage(conversationId: string, options: { after: number; through: number; limit?: number }): BotHistoryProjectionRow[] {
-    return this.db.prepare(`SELECT m.*,p.sequence AS projection_sequence,p.timestamp AS projection_timestamp,EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id) AS suppressed FROM bot_history_projection p
-      JOIN bot_messages m ON m.id=p.message_id WHERE p.conversation_id=? AND p.sequence>? AND p.sequence<=? ORDER BY p.sequence LIMIT ?`)
-      .all(conversationId, options.after, options.through, bounded(options.limit, 32, 100)).map(raw => ({ projectionSequence: Number(asRow(raw).projection_sequence),
-        timestamp: Number(asRow(raw).projection_timestamp), message: this.message(raw),suppressed:!!asRow(raw).suppressed }));
+  async recentMemoryMessages(conversationId: string, options: RecentHistoryOptions, signal: AbortSignal): Promise<BotMessage[]> {
+    signal.throwIfAborted();
+    if (options.topicId) {
+      const events = this.db.prepare('SELECT event_id FROM bot_topic_events WHERE topic_id=? LIMIT 33').all(options.topicId);
+      if (events.length < 33) return this.recentPublishedMessages(conversationId, options, { events: events.map(row => String(asRow(row).event_id)) });
+    }
+    const page = this.db.prepare('SELECT sequence FROM bot_history_projection WHERE conversation_id=? AND sequence<? ORDER BY sequence DESC LIMIT 48');
+    const limit = bounded(options.limit, 80, 200), maxChars = bounded(options.maxChars, 24000, 256000);
+    const deadline = performance.now() + 200, selected: BotMessage[] = [];
+    let before = Number.MAX_SAFE_INTEGER, chars = 0;
+    // DSH retains the native topic. The short live VCP query can use partial
+    // recent history under load; DeepMemo and TopicMemo keep the full archive.
+    while (selected.length < limit) {
+      signal.throwIfAborted();
+      const sequences = page.all(conversationId, before);
+      if (!sequences.length) break;
+      const first = Number(asRow(sequences.at(-1)).sequence);
+      const rows = this.recentPublishedMessages(conversationId, { ...options, limit: limit - selected.length }, { first, last: before - 1 });
+      for (const message of rows.reverse()) {
+        const size = botMessageEvidence(message).length;
+        if (selected.length && chars + size > maxChars) return selected.reverse();
+        selected.push(message); chars += size;
+      }
+      if (sequences.length < 48 || chars >= maxChars || performance.now() >= deadline) break;
+      before = first;
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    return selected.reverse();
+  }
+  historyProjectionPage(conversationId: string, options: { after: number; through: number; limit?: number; companionId?: string }): BotHistoryProjectionRow[] {
+    return this.db.prepare(`SELECT m.*,topic.id AS memory_topic_id,topic.title AS memory_topic_title,p.sequence AS projection_sequence,p.timestamp AS projection_timestamp,
+      origin.source='user' AND origin.source_record_id=m.id AND (origin.status='queued' OR origin.error='converted-to-guidance') AS awaiting_topic,
+      EXISTS(SELECT 1 FROM bot_reply_parts grouped WHERE grouped.publication_id=m.id) AS suppressed FROM bot_history_projection p
+      JOIN bot_messages m ON m.id=p.message_id LEFT JOIN bot_inbox origin ON origin.id=${messageTopicEventSql}
+      LEFT JOIN bot_topic_events t ON t.event_id=origin.id LEFT JOIN bot_native_topics topic ON topic.id=t.topic_id
+      WHERE p.conversation_id=? AND p.sequence>? AND p.sequence<=? ORDER BY p.sequence LIMIT ?`)
+      .all(options.companionId ?? null, conversationId, options.after, options.through, bounded(options.limit, 32, 100)).map(raw => ({ projectionSequence: Number(asRow(raw).projection_sequence),
+        timestamp: Number(asRow(raw).projection_timestamp), message: this.message(raw),suppressed:!!asRow(raw).suppressed,awaitingTopic:!!asRow(raw).awaiting_topic,
+        ...(asRow(raw).memory_topic_id ? { topicId: String(asRow(raw).memory_topic_id), topicTitle: String(asRow(raw).memory_topic_title) } : {}) }));
   }
   messagesPage(conversationId: string, options: { limit?: number; before?: number; topicId?: string } = {}): BotMessagePage {
     const limit = bounded(options.limit, 100, 200);
@@ -1686,53 +1787,8 @@ export class BotStore {
       COALESCE(SUM(CASE WHEN p.sequence>? THEN 1 ELSE 0 END),0) AS pending
       FROM bot_history_projection p JOIN bot_messages m ON m.id=p.message_id WHERE p.conversation_id=? AND m.status='sent'
       AND NOT EXISTS(SELECT 1 FROM blocked b WHERE b.id=m.id)`).get(domainKey, scope.companionId, cursor, cursor, scope.conversationId));
-    const capture = asRow(this.db.prepare(`${memoryBlockedCte} SELECT
-      COALESCE(SUM(j.status='queued'),0) AS queued,COALESCE(SUM(j.status='running'),0) AS running,COALESCE(SUM(j.status='failed'),0) AS failed,
-      COALESCE(SUM(j.status='done' AND json_type(r.value,'$.notes')='integer' AND json_extract(r.value,'$.notes')=0),0) AS empty,
-      COALESCE(SUM(j.status='done' AND json_type(r.value,'$.notes')='integer' AND json_extract(r.value,'$.notes')>0),0) AS with_notes,
-      COALESCE(SUM(j.status='done' AND (r.value IS NULL OR json_type(r.value,'$.notes') IS NOT 'integer' OR json_extract(r.value,'$.notes')<0)),0) AS unknown_done
-      FROM bot_memory_jobs j JOIN bot_inbox e ON e.id=json_extract(j.payload_json,'$.sourceEventId')
-      LEFT JOIN bot_metadata r ON r.key='memory-capture-result:'||j.id AND json_valid(r.value)
-      WHERE j.domain_key=? AND j.kind='capture' AND e.companion_id=? AND e.conversation_id=? AND e.domain_id=? AND e.source IN ('user','companion','group','gateway') AND e.status='done'
-      AND (COALESCE(json_extract(j.payload_json,'$.policyVersion'),1)>=2 OR NOT EXISTS(
-        SELECT 1 FROM bot_memory_jobs upgraded WHERE upgraded.domain_key=j.domain_key AND upgraded.kind='capture'
-        AND json_extract(upgraded.payload_json,'$.sourceEventId')=e.id AND json_extract(upgraded.payload_json,'$.policyVersion')>=2))
-      AND NOT EXISTS(SELECT 1 FROM blocked b WHERE b.id IN(e.id,e.source_record_id,e.reply_message_id))`)
-      .get(domainKey, scope.companionId, domainKey, scope.companionId, scope.conversationId, scope.securityDomainId));
-    return { originals: { archived: Number(originals.archived), pending: Number(originals.pending) }, capture: { queued: Number(capture.queued), running: Number(capture.running),
-      failed: Number(capture.failed), empty: Number(capture.empty), withNotes: Number(capture.with_notes), unknownDone: Number(capture.unknown_done) } };
+    return { originals: { archived: Number(originals.archived), pending: Number(originals.pending) } };
   }
-  /** A bounded policy upgrade, never replay of the original chat or DSH work.
-   * Progress and new idempotent jobs commit together. Existing v2 jobs remain
-   * terminal/failed when appropriate; opening the page never resets attempts. */
-  enqueueLegacyCaptureBackfill(scope: Pick<BotEvent, 'companionId' | 'conversationId' | 'securityDomainId'>, policyVersion: 2): { scanned: number; queued: number } {
-    const conversation = this.getConversation(scope.conversationId);
-    if (!conversation || conversation.securityDomainId !== scope.securityDomainId || !conversation.memberIds.includes(scope.companionId)) throw new Error('记忆补充范围无效。');
-    const domainKey = hash([scope.companionId, scope.securityDomainId]), cursorKey = `memory-capture-backfill:v${policyVersion}:` + hash([scope.companionId, scope.conversationId, scope.securityDomainId]);
-    return this.db.transaction(() => {
-      if (this.getMetadata(`memory-capture-backfill-v2-suppressed:${domainKey}`)) return { scanned: 0, queued: 0 };
-      if (this.db.prepare("SELECT 1 FROM bot_memory_jobs WHERE domain_key=? AND kind='capture' AND status IN ('queued','running') LIMIT 1").get(domainKey)) return { scanned: 0, queued: 0 };
-      const cursor = Number(this.getMetadata(cursorKey) ?? 0);
-      if (!Number.isSafeInteger(cursor) || cursor < 0) throw new Error('记忆提炼升级游标无效。');
-      const rows = this.db.prepare("SELECT * FROM bot_memory_jobs WHERE domain_key=? AND kind='capture' AND status='done' AND sequence>? AND COALESCE(json_extract(payload_json,'$.policyVersion'),1)=1 ORDER BY sequence LIMIT 24").all(domainKey, cursor);
-      let queued = 0;
-      for (const raw of rows) {
-        const job = this.memoryJob(raw), payload = job.payload, source = typeof payload.sourceEventId === 'string' ? this.getEvent(payload.sourceEventId) : undefined;
-        const messages = Array.isArray(payload.messages) ? payload.messages : undefined;
-        if (source?.source === 'user' && source.status === 'done' && source.companionId === scope.companionId && source.conversationId === scope.conversationId
-          && source.securityDomainId === scope.securityDomainId && source.aclRevision === conversation.revision && messages && typeof payload.answer === 'string') {
-          const sourceIds = [source.id, source.sourceMessageRecordId, source.replyMessageId, ...messages.flatMap(message => message && typeof message === 'object' && 'id' in message && typeof message.id === 'string' ? [message.id] : [])];
-          if (!this.withdrawnIn(scope.companionId, scope.securityDomainId, sourceIds).size) {
-            const key = `capture:v${policyVersion}:${source.id}`, id = `memory-${hash(['capture', key])}`;
-            if (!this.getMemoryJob(id)) { this.enqueueMemoryJob({ key, kind: 'capture', payload: { ...payload, scope, policyVersion } }); queued++; }
-          }
-        }
-        this.setMetadata(cursorKey, String(asRow(raw).sequence));
-      }
-      return { scanned: rows.length, queued };
-    }).immediate();
-  }
-
   /** Jobs retain exact per-request preprocessing metadata, independently of chat completion. */
   enqueueMemoryJob(input: BotMemoryJobInput): BotMemoryJob {
     const wire = JSON.stringify(input.payload);
@@ -1769,9 +1825,11 @@ export class BotStore {
     return this.db.transaction(() => {
       this.db.prepare("UPDATE bot_memory_jobs SET status='queued',lease_token=NULL,lease_until=NULL WHERE status='running' AND lease_until<=?").run(now);
       const slot = Number(this.getMetadata('memory-job-fair-slot') ?? 0) % 4;
-      const preferred = ['response', 'projection', 'response', 'capture'][slot]!;
+      const preferred = ['response', 'projection', 'response', 'mutation'][slot]!;
       const raw = this.db.prepare(`SELECT j.* FROM bot_memory_jobs j WHERE j.status='queued' AND j.available_at<=?
         AND NOT EXISTS(SELECT 1 FROM bot_memory_jobs active WHERE active.domain_key=j.domain_key AND active.status='running')
+        AND (j.kind<>'response' OR NOT EXISTS(SELECT 1 FROM bot_memory_jobs earlier WHERE earlier.domain_key=j.domain_key
+          AND earlier.kind='response' AND earlier.status='queued' AND earlier.sequence<j.sequence))
         ORDER BY CASE WHEN j.kind=? OR (?='response' AND j.kind='prepare') THEN 0 ELSE 1 END,
           CASE WHEN j.kind='maintenance' AND json_extract(j.payload_json,'$.operation')='apply' THEN -1
             WHEN j.kind='maintenance' AND json_extract(j.payload_json,'$.operation')='plan' THEN 1 ELSE 0 END,

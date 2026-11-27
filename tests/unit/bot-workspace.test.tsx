@@ -10,7 +10,8 @@ import type { WorldlineBoxBrowserApi } from '../../src/shared/browser';
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const at = '2026-11-02T10:00:00Z';
-let root: Root | undefined, host: HTMLDivElement, listener: ((event: BotEvent) => void) | undefined;
+let root: Root | undefined, host: HTMLDivElement;
+const listeners = new Set<(event: BotEvent) => void>();
 let snapshots: Record<string, BotSnapshot>, requests: BotRequest[], override: ((request: BotRequest) => Promise<BotResponse> | undefined) | undefined;
 let personas: Map<string, BotPersonaTemplate>;
 const message = (id: string, conversationId: string, sequence: number, content: string, status: BotMessage['status'] = 'sent'): BotMessage => ({
@@ -26,7 +27,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   snapshots = { a: snapshot([message('reply-a', 'a', 1, '甲的原文', 'running')]), b: snapshot([message('reply-b', 'b', 2, '乙的原文')]) };
   personas = new Map(snapshots.a!.companions.map(companion => [companion.id, { id: 'default', name: '默认人格', prompt: companion.persona, builtin: false, isDefault: true, modified: false, charCount: companion.persona.length, updatedAt: at }]));
-  requests = []; override = undefined; listener = undefined;
+  requests = []; override = undefined; listeners.clear();
 });
 afterEach(async () => { await act(() => root?.unmount()); host?.remove(); root = undefined; vi.useRealTimers(); });
 function boundLauncherState(): DshLauncherState {
@@ -50,7 +51,7 @@ async function mount(launcherApi: WorldlineBoxDshLauncherApi = { request: async 
       }
       return { ok: true };
     },
-    onEvent(fn) { listener = fn; return () => { listener = undefined; }; },
+    onEvent(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; },
   };
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await act(() => root!.render(<LocaleProvider initialPreference="zh-CN"><BotWorkspace api={api} launcherApi={launcherApi} browserApi={browserApi} onOpenSettings={() => undefined} /></LocaleProvider>));
@@ -184,7 +185,7 @@ async function click(label: string) {
   expect(target, `button ${label}`).toBeDefined(); await act(() => target.click());
 }
 async function closeEditor() { await act(() => host.querySelector<HTMLButtonElement>('.bot-editor-close')!.click()); }
-async function emit(event: BotEvent) { await act(() => { listener!(event); }); }
+async function emit(event: BotEvent) { await act(() => { listeners.forEach(listener => listener(event)); }); }
 async function changed(conversationId = 'a') { await emit({ type: 'changed', conversationId }); await act(() => vi.advanceTimersByTime(110)); }
 const sends = () => requests.filter((request): request is Extract<BotRequest, { type: 'message.send' }> => request.type === 'message.send');
 const rows = (first: number, last: number) => Array.from({ length: last - first + 1 }, (_, index) => {
@@ -552,6 +553,54 @@ it('opens the standalone memory workspace and closes it before changing audience
   expect(host.querySelector('.bot-detail')).toBeNull();
   expect(requests.find(request => request.type === 'memory.catalog')).toMatchObject({ conversationId: 'a', companionId: 'alice', limit: 24 });
   await select('私聊乙'); expect(host.querySelector('.bot-memory-workspace')).toBeNull();
+});
+
+it.each([['dream','night'], ['organize','idle']] as const)('accepts consecutive questions while a running background %s refresh is outstanding', async (kind, trigger) => {
+  const pending = deferred<BotResponse>();
+  const job = { id: 'background-memory', kind, trigger, status: 'running', phase: 'planning', automatic: true, createdAt: at, updatedAt: at, elapsedMs: 1200 };
+  let reads = 0;
+  override = request => {
+    if (request.type === 'memory.maintenance.list') return ++reads === 1 ? Promise.resolve({ ok: true, memory: { items: [job] } }) : pending.promise;
+    if (request.type === 'memory.catalog') return Promise.resolve({ ok: true, memory: { items: [], tags: [] } });
+    if (request.type === 'memory.maintenance.settings.get') return Promise.resolve({ ok: true, memory: { enabled: true, nextEligibleAt: at, lastActivityAt: at } });
+  };
+  await mount();
+  await input(composer(), '周末');
+  await click('记忆'); await click('整理与梦境');
+  expect(host.querySelector('[data-maintenance-job="background-memory"] [data-state="running"]')).not.toBeNull();
+  expect(host.querySelector('[data-maintenance-job="background-memory"] strong')?.textContent).toBe(trigger === 'idle' ? '闲时整理' : '夜间梦境');
+  await emit({ type: 'changed', conversationId: 'a' });
+  await act(() => vi.advanceTimersByTimeAsync(550));
+  expect(reads).toBe(2);
+  await act(() => host.querySelector<HTMLButtonElement>('[aria-label="关闭记忆工作台"]')!.click());
+  expect(composer().value).toBe('周末');
+  for (const question of ['周末几点见面？', '我们在哪里集合？']) {
+    await input(composer(), question); await changed('a');
+    expect(composer().value).toBe(question);
+    expect(composer().disabled).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>('.bot-send')!.disabled).toBe(false);
+    await click('发送 ↑');
+    expect(composer().value).toBe('');
+  }
+  expect(sends().map(send => [send.conversationId, send.content])).toEqual([['a', '周末几点见面？'], ['a', '我们在哪里集合？']]);
+  expect(new Set(sends().map(send => send.requestId)).size).toBe(2);
+  await act(() => pending.resolve({ ok: true, memory: { items: [job] } }));
+});
+
+it('only signals active chat input, throttles edits and sends no draft content', async () => {
+  await mount(); await changed('a');
+  const pulses = () => requests.filter(request => request.type === 'chat.activity');
+  expect(pulses()).toEqual([]);
+  await act(() => composer().dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+  await input(composer(), '我的私人草稿'); await input(composer(), '我的私人草稿一');
+  await act(() => composer().dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+  await changed('a');
+  expect(pulses()).toEqual([{ type: 'chat.activity', conversationId: 'a' }]);
+  await select('私聊乙'); await changed('b');
+  expect(pulses()).toHaveLength(1);
+  await input(composer(), '另一场对话');
+  expect(pulses().at(-1)).toEqual({ type: 'chat.activity', conversationId: 'b' });
+  expect(sends()).toHaveLength(0);
 });
 
 it('creates groups with the explicitly selected participation policy', async () => {

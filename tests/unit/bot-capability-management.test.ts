@@ -10,7 +10,7 @@ import { botRequestSchema } from '../../src/shared/companion-bot';
 class Memory extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw new Error('unused'); }, embedding: async () => { throw new Error('unused'); } }); }
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-    return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'fixture', status: 'ready', evidence: '', metadata: {}, events: [], omittedChars: 0 };
+    return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'fixture', status: 'ready', nativeContext: '', metadata: {}, events: [] };
   }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
   override async finishTurn() { return { recorded: true }; }

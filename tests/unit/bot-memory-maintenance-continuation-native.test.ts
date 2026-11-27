@@ -29,7 +29,7 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('finishes a structured main
   let snapshot: BotMemoryMaintenanceSnapshot | undefined;
   const core = new BotMemoryMaintenance({ brain,
     memory: { catalog: async () => ({ items: notes }), readNote: async (_scope: unknown, input: { id: string }) => notes.find(note => note.id === input.id),
-      withdrawnSources: async () => ({ revision: '0', sourceEventIds: [], sourceMessageIds: [] }), tool: async () => ({ results: [] }) },
+      withdrawnSources: async () => ({ revision: '0', sourceEventIds: [], sourceMessageIds: [] }), associateDiaries: async () => ({ engine: 'DailyNoteManager.Associate', sourceRevision: '0', items: [], queries: [] }) },
     cwd: () => path.join(native.root, 'maintenance-work'), callback: async () => ({ url: `http://127.0.0.1:${address.port}/bot/tool`, token: 'c'.repeat(64) }),
     model: () => ({ apiFormat: 'openai_chat', model: 'fixture', apiKey: 'localhost-fixture', baseUrl: `http://127.0.0.1:${address.port}`, contextWindow: 1048576, maxTokens: 4096, maxOutputTokens: 32768 }),
   } as unknown as BotMemoryMaintenanceOptions);
@@ -38,6 +38,10 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('finishes a structured main
       onSnapshot: async value => { snapshot = value; } });
     expect(plan.narrative).toBe('方案通过真实原生宿主自动续接完成。'); expect(requests).toHaveLength(3); expect(JSON.stringify(snapshot).length).toBeGreaterThan(100000);
     expect(requests[0]!.max_tokens).toBe(32768);
+    const wireSystem = JSON.stringify(requests[0]!.messages.filter(message => message.role === 'system'));
+    expect(wireSystem).toContain('你是「记忆大师」，VCP 记忆宫殿的全职管家');
+    expect(wireSystem).toContain('## 七、');
+    expect(wireSystem).not.toContain('已拍照而未上传');
     const textOf = (content: unknown) => typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part?.text ?? '').join('') : '';
     for (const request of requests) expect(request.messages.filter(message => message.role === 'user' && textOf(message.content) === JSON.stringify(snapshot))).toHaveLength(1);
     expect(requests[1]!.messages.some(message => JSON.stringify(message.content).includes('剩余字符'))).toBe(true);
@@ -63,11 +67,11 @@ it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('reviews an individual cand
   const scope = { companionId: 'native', conversationId: 'native-review', securityDomainId: 'native-review' };
   try {
     const candidate = { id: 'review-candidate', jobId: 'native-review', type: 'update', status: 'pending', revision: 'b'.repeat(64), content: note.content, sources: [note], tags: [], quotes: [{ sourceId: note.id, text: note.content }], uncertainties: [], reason: '保留计划更正。' } as unknown as BotMaintenanceCandidateDetail;
-    const plan: BotMemoryMaintenancePlan = { format: 'worldlinebox-memory-maintenance-v1', id: 'native-review', operationId: 'native-review', scope, kind: 'organize', contextEpoch: 1, createdAt: note.createdAt, sourceRevision: '0', sources: [note], scan: { examined: 1, selected: 1, deferred: [] }, retrieval: { engine: 'LightMemo', result: {} }, narrative: '', candidates: [] };
+    const plan: BotMemoryMaintenancePlan = { format: 'worldlinebox-memory-maintenance-v2', id: 'native-review', operationId: 'native-review', scope, kind: 'organize', contextEpoch: 1, createdAt: note.createdAt, sourceRevision: '0', sources: [note], scan: { examined: 1, selected: 1, deferred: [] }, retrieval: { engine: 'DailyNoteManager.Associate', result: {} }, narrative: '', candidates: [] };
     const result = await reviewer.review({ scope, plan, candidate, operationId: 'native-review', signal: new AbortController().signal,
       model: { apiFormat: 'openai_chat', model: 'configured-global-model', apiKey: 'localhost-fixture', baseUrl: `http://127.0.0.1:${address.port}`, contextWindow: 1048576, maxTokens: 4096, maxOutputTokens: 32768 }, saveContinuation: () => undefined, diagnostic: () => undefined });
     expect(result).toMatchObject({ decision: 'approve', model: 'configured-global-model', evidence: [{ sourceId: note.id, quote: note.content }] }); expect(result.checks).toHaveLength(8); expect(requests).toHaveLength(2);
     expect(requests.every(request => request.model === 'configured-global-model' && request.max_tokens === 32768)).toBe(true);
-    expect(JSON.stringify(requests[0]!.messages)).toContain('独立的长期记忆质量审查员'); expect(JSON.stringify(requests[1]!.messages)).toContain('剩余字符');
+    expect(JSON.stringify(requests[0]!.messages)).toContain('VCP 记忆宫殿的全职管家'); expect(JSON.stringify(requests[1]!.messages)).toContain('剩余字符');
   } finally { await brain.close(); await native.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 }, 120000);

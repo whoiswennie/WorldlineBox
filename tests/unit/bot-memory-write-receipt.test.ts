@@ -11,7 +11,7 @@ class DurableMemory extends BotMemoryService {
   private saved = new Map<string, Record<string, unknown>>();
   constructor(root: string) { super({ root, runtime: async () => { throw Error('No native startup in this protocol fixture'); }, embedding: async () => { throw Error('No network embeddings'); } }); }
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-    return { requestId: input.requestId, scope: input.scope, inputHash: 'fixture', messages: input.messages, metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 };
+    return { requestId: input.requestId, scope: input.scope, inputHash: 'fixture', messages: input.messages, metadata: {}, events: [], nativeContext: '', status: 'ready' };
   }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
   override async appendHistory() { return { archived: true }; }
@@ -39,7 +39,7 @@ it.each([false, true])('recovers a lost durable write through the native HTTP ca
   vi.spyOn(brain, 'run').mockImplementation(async input => {
     if (input.prompt.includes('请记住我喜欢麦茶')) {
       const call = () => fetch(input.callback!.url, { method: 'POST', headers: { authorization: `Bearer ${input.callback!.token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'memory-save', name: 'memory_write', args: { content: '用户明确偏好麦茶。' } }) });
+        body: JSON.stringify({ laneId: input.laneId, eventId: input.eventId, callId: 'memory-save', name: 'memory_write', args: { content: '用户明确偏好麦茶。', tags: ['麦茶', '饮品偏好'] } }) });
       const response = await call(), body = await response.json() as { ok: boolean; result?: unknown; error?: string };
       expect(body.ok).toBe(!unresolved);
       if (!unresolved) { expect(body.result).toMatchObject({ state: 'pending', durable: true }); expect(await (await call()).json()).toEqual(body); }

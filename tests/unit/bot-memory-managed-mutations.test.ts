@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from 'vitest';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, rm, symlink } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,8 +39,10 @@ function runtime(home: string) {
     _require: () => ({ getDb: () => ({ prepare: () => ({ get: () => undefined }), exec: () => {} }) }),
     callTool: async (_name: string, input: { Date: string; Content: string; Tag: string; fileName: string }) => {
       const dir = path.join(home, 'dailynote/Companion'); await mkdir(dir, { recursive: true });
-      const filename = `${input.Date}-12_00_00-${input.fileName}.txt`, file = path.join(dir, filename);
-      await writeFile(file, `[${input.Date}] - Companion\n[12:00]\n${input.Content}\nTag: ${input.Tag}`, { flag: 'wx' }); pending.add(file);
+      const explicit = /^\[(\d\d):(\d\d):(\d\d)\]\n/u.exec(input.Content);
+      const time = explicit ? explicit.slice(1).join('_') : '12_00_00', body = explicit ? input.Content : '[12:00]\n' + input.Content;
+      const filename = `${input.Date}-${time}-${input.fileName}.txt`, file = path.join(dir, filename);
+      await writeFile(file, `[${input.Date}] - Companion\n${body}\nTag: ${input.Tag}`, { flag: 'wx' }); pending.add(file);
       return { status: 'success', result: { folder: 'Companion', fileName: filename } };
     } };
 }
@@ -69,6 +71,76 @@ it('CAS-updates only an owned physical note, keeps provenance and an immutable o
   expect((await f.host.readNote({ id: note.id })).content).toBe(input.content);
   const sources = f.host.db.prepare('SELECT kind,id FROM mutation_sources WHERE note_id=?').all(note.id);
   expect(sources).toEqual(expect.arrayContaining([{ kind: 'event', id: 'source-a' }, { kind: 'event', id: 'correction' }, { kind: 'message', id: 'correction-message' }]));
+});
+
+it('rechecks cross-diary evidence on a resumed annotation and withdraws the derived tracked note with that evidence', async () => {
+  const f = await fixture(), target = await f.seed('track-original', '周五可能试运行。'), evidence = await f.seed('track-result', '试运行已经结束。');
+  const unrelated = await f.seed('unrelated-track', '单独的演出安排。');
+  const annotation = { operationId: 'annotate', sourceEventId: 'tracking', expectedSourceRevision: '0', id: target.id, expectedChecksum: target.checksum,
+    evidenceSources: [{ id: evidence.id, expectedChecksum: evidence.checksum }], content: '周五可能试运行。\n状态注记：已结束。' };
+  await f.host.managed.makePlan(annotation, 'update');
+  const corrected = await f.host.update(f.rt, { operationId: 'correct-result', sourceEventId: 'correcting', id: evidence.id,
+    expectedChecksum: evidence.checksum, content: '周五试运行已结束并提交报告。' });
+  expect(await f.host.update(f.rt, annotation)).toMatchObject({ state: 'conflict' });
+  expect(await f.host.readNote({ id: target.id })).toMatchObject({ checksum: target.checksum });
+  const resumed = { ...annotation, operationId: 'annotate-with-current-version', evidenceSources: [{ id: evidence.id, expectedChecksum: corrected.checksum }] };
+  const annotated = await f.host.update(f.rt, resumed);
+  expect(annotated).toMatchObject({ state: 'indexed', id: target.id });
+  expect(await f.host.update(f.rt, resumed)).toEqual(annotated);
+  await expect(f.host.update(f.rt, { ...resumed, operationId: 'circular-track', id: evidence.id, expectedChecksum: corrected.checksum,
+    evidenceSources: [{ id: target.id, expectedChecksum: annotated.checksum }] })).rejects.toMatchObject({ code: 'MEMORY_CONFLICT' });
+  const removed = await f.host.forget(f.rt, { id: evidence.id, companionId: 'owner' });
+  expect(removed.relatedIds.sort()).toEqual([target.id, evidence.id].sort());
+  await expect(f.host.readNote({ id: target.id })).rejects.toMatchObject({ code: 'MEMORY_NOTE_UNAVAILABLE' });
+  expect(await f.host.readNote({ id: unrelated.id })).toMatchObject({ checksum: unrelated.checksum, indexState: 'indexed' });
+});
+
+it('pages the maintenance inventory by verified source identity, including reviewed notes and omitting unfinished and withdrawn records', async () => {
+  const f = await fixture(), notes = [];
+  for (let n = 0; n < 9; n++) notes.push(await f.seed('inventory-' + n, '库存第' + n + '条。'));
+  const [pending, archived, stale, unowned, busy, approved, other, last, revoked] = notes;
+  f.host.db.prepare("UPDATE mutations SET state='pending' WHERE id=?").run(pending.id);
+  f.host.db.prepare("UPDATE mutations SET state='archived' WHERE id=?").run(archived.id);
+  f.host.db.prepare("UPDATE mutations SET state='unknown' WHERE id=?").run(stale.id);
+  f.host.db.prepare('DELETE FROM mutation_sources WHERE note_id=?').run(unowned.id);
+  await f.host.managed.makePlan({ operationId: 'inventory-uncommitted', sourceEventId: 'unfinished', id: busy.id,
+    expectedChecksum: busy.checksum, content: '修改仍未提交。' }, 'update');
+  f.host.db.prepare("UPDATE maintenance_work SET state='reviewed' WHERE note_id=?").run(approved.id);
+  f.host.db.prepare("UPDATE maintenance_work SET state='derived' WHERE note_id=?").run(other.id);
+  f.host.db.prepare("INSERT INTO tombstones(kind,id,created_at) VALUES('event',?,?)").run('inventory-8', new Date().toISOString());
+  const page = f.host.catalog({ indexedOnly: true, limit: 2 });
+  expect(page.items).toHaveLength(2);
+  expect(page.items[1].afterCursor).toBe(page.nextCursor);
+  const fromMiddle = f.host.catalog({ indexedOnly: true, cursor: page.items[0].afterCursor, limit: 2 });
+  expect(fromMiddle.items[0].id).toBe(page.items[1].id);
+  expect([page.items[0], ...fromMiddle.items].map(row => row.id).sort()).toEqual([approved.id, other.id, last.id].sort());
+  expect(fromMiddle.nextCursor).toBeUndefined();
+  expect(JSON.stringify(page)).not.toContain(revoked.id);
+  expect(() => f.host.catalog({ indexedOnly: true, limit: 21 })).toThrow();
+});
+
+it('uses the diary’s recorded local day for an inclusive indexed date range and keeps the range bound to its page cursor', async () => {
+  const f = await fixture(), indexed = [];
+  for (const [n, day] of ['2024-02-28','2024.02.29','2024-03-01','2024-03-01','2024-03-02','legacy'].entries()) {
+    const note = await f.seed('dated-' + n, '海边日录第' + n + '篇。');
+    const row = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(note.id);
+    const file = 'Companion/' + day + '-' + note.id + '.txt';
+    await rename(f.host.notePath(row.note_path), f.host.notePath(file));
+    f.host.db.prepare('UPDATE mutations SET note_path=?,created_at=? WHERE id=?')
+      .run(file, day === 'legacy' ? '2024-02-29T16:00:01.123Z' : '2026-11-27T10:00:00.000Z', note.id);
+    indexed.push({ id: note.id, day: day === 'legacy' ? '2024-03-01' : day.replaceAll('.', '-') });
+  }
+  const filter = { indexedOnly: true, fromDate: '2024-02-29', toDate: '2024-03-01', limit: 2 };
+  const first = f.host.catalog(filter), rest = f.host.catalog({ ...filter, cursor: first.nextCursor });
+  const matches = [...first.items, ...rest.items];
+  expect(matches.map(note => note.id).sort()).toEqual(indexed.filter(note => note.day >= filter.fromDate && note.day <= filter.toDate).map(note => note.id).sort());
+  expect(matches.map(note => note.diaryDate)).toEqual(['2024-03-01','2024-03-01','2024-03-01','2024-02-29']);
+  expect(rest.nextCursor).toBeUndefined();
+  expect(f.host.catalog({ indexedOnly: true, fromDate: '2024-03-02' }).items).toHaveLength(1);
+  expect(f.host.catalog({ indexedOnly: true, toDate: '2024-02-28' }).items).toHaveLength(1);
+  expect(() => f.host.catalog({ ...filter, toDate: '2024-03-02', cursor: first.nextCursor })).toThrow(/cursor/);
+  expect(() => f.host.catalog({ indexedOnly: true, fromDate: '2026-02-29' })).toThrow(/date range/);
+  expect(() => f.host.catalog({ indexedOnly: true, fromDate: '2024-03-01', toDate: '2024-02-29' })).toThrow(/date range/);
 });
 it('returns a durable pending receipt when indexing fails, and resumes the same operation without a second write identity', async () => {
   const f = await fixture(), note = await f.seed('source', '旧安排。'); f.rt.setFailIndex(true);
@@ -122,6 +194,63 @@ it('keeps a partial organize journal when deletion receipts fail and resumes wit
   expect(await f.host.organize(f.rt, input)).toMatchObject({ status: 'success', state: 'indexed', archived: [note.id] });
   expect(await readdir(path.join(f.home, 'dailynote/已整理'))).toHaveLength(1);
   expect((await readdir(path.join(f.home, 'dailynote/Companion'))).filter(name => !name.startsWith('.'))).toHaveLength(1);
+});
+
+it('recovers a lost DailyNote.create reply for the second volume without archiving prematurely or duplicating either output', async () => {
+  const f = await fixture(), a = await f.seed('source-a', '开始尝试分批。'), b = await f.seed('source-b', '分批核对让更正更容易。');
+  const input = { operationId: 'maintenance-pair', sourceEventId: 'pair-source', sources: [a, b].map(note => ({ id: note.id, expectedChecksum: note.checksum })),
+    content: '先分批整理，随后完成核对。', tags: '项目甲,经过', crystal: { content: '分批核对可保留更正线索。', tags: ['项目甲','方法'] } };
+  const call = f.rt.callTool; let creates = 0;
+  f.rt.callTool = async (name, args) => { creates++; await call(name, args); throw Error('Lost DailyNote reply after file commit'); };
+  const partial = await f.host.organize(f.rt, input);
+  expect(partial).toMatchObject({ state: 'partial', indexed: false });
+  expect((await f.host.readNote({ id: a.id })).indexState).toBe('indexed');
+  expect(f.host.operationReceipt({ operationId: input.operationId }).receipt).not.toHaveProperty('crystal.indexed', true);
+  f.host.close(); hosts.splice(hosts.indexOf(f.host), 1);
+  const reopened = new BotHost(f.home); hosts.push(reopened);
+  const chroniclePath = reopened.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(partial.id).note_path;
+  f.rt.index.delete(chroniclePath);
+  const done = await reopened.organize(f.rt, input);
+  expect(f.rt.index.get(chroniclePath)).toMatchObject({ exists: true, completeVectors: true, completeTags: true });
+  expect(done).toMatchObject({ state: 'indexed', crystal: { indexed: true }, archived: [a.id,b.id] });
+  expect(creates).toBe(1); expect(await reopened.organize(f.rt, input)).toEqual(done);
+  for (const [volume, tags] of [[done,['项目甲','经过']], [done.crystal,['项目甲','方法']]] as const) {
+    expect(await reopened.readNote({ id: volume.id })).toMatchObject({ tags, indexState: 'indexed', checksum: volume.checksum });
+    expect(reopened.db.prepare('SELECT state FROM maintenance_work WHERE note_id=?').all(volume.id)).toEqual([{state:'derived'},{state:'derived'}]);
+  }
+  expect(await readdir(path.join(f.home,'dailynote/Companion'))).toHaveLength(2);
+  await expect(reopened.organize(f.rt, { ...input, crystal: { ...input.crystal, content: '不同的结论' } })).rejects.toMatchObject({ code: 'MEMORY_CONFLICT' });
+  const forgotten = await reopened.forget(f.rt, { id: b.id, companionId: 'owner' });
+  expect(forgotten.relatedIds).toEqual(expect.arrayContaining([done.id, done.crystal.id]));
+  expect(await readdir(path.join(f.home,'dailynote/Companion'))).toEqual([]);
+  expect(await reopened.readNote({ id: a.id })).toMatchObject({ indexState: 'archived' });
+});
+it('revokes both planned volumes when an original event is withdrawn before DailyNote creates the second file', async () => {
+  const f = await fixture(), note = await f.seed('original-event', '第一次在北门采样。');
+  const input = { operationId: 'maintenance-interrupted-pair', sourceEventId: 'planned-pair', expectedSourceRevision: '0',
+    sources: [{ id: note.id, expectedChecksum: note.checksum }], content: '采样地点是北门。', tags: '采样,经过', crystal: { content: '核对采样地点。', tags: ['采样','方法'] } };
+  f.rt.callTool = async () => { throw Error('Native diary temporarily offline'); };
+  const partial = await f.host.organize(f.rt, input);
+  expect(partial).toMatchObject({ state: 'partial', indexed: false });
+  const crystal = f.host.db.prepare('SELECT note_id FROM managed_operation_sources WHERE operation_id=? AND note_id NOT IN (?,?)').get(input.operationId, note.id, partial.id).note_id;
+  const result = await f.host.withdrawSources(f.rt, { companionId: 'owner', sourceEventIds: ['original-event'] });
+  expect(result.relatedIds).toEqual(expect.arrayContaining([note.id, partial.id, crystal]));
+  expect(await readdir(path.join(f.home, 'dailynote/Companion'))).toEqual([]);
+  expect(f.host.operationReceipt({ operationId: input.operationId })).toMatchObject({ found: true, receipt: { state: 'withdrawn' } });
+  await expect(f.host.readNote({ id: crystal })).rejects.toMatchObject({ code: 'MEMORY_NOTE_UNAVAILABLE' });
+});
+it('organizes twenty owned originals in one operation and rejects a twenty-first before creating any output', async () => {
+  const f = await fixture(), sources: Array<{ id: string; expectedChecksum: string }> = [];
+  for (let index = 0; index < 21; index++) {
+    const note = await f.seed('observation-' + index, '采样记录 ' + index);
+    sources.push({ id: note.id, expectedChecksum: note.checksum });
+  }
+  const input = { operationId: 'batch-size', sourceEventId: 'organized-batch', sources, content: '汇总记录前二十次采样。' };
+  await expect(f.host.organize(f.rt, input)).rejects.toThrow(/twenty/u);
+  expect(f.host.operationReceipt({ operationId: input.operationId })).toMatchObject({ found: false });
+  const result = await f.host.organize(f.rt, { ...input, sources: sources.slice(0, 20) });
+  expect(result).toMatchObject({ state: 'indexed', archived: sources.slice(0, 20).map(source => source.id) });
+  expect(await f.host.readNote({ id: sources[20]!.id })).toMatchObject({ indexState: 'indexed' });
 });
 it('uses stable SQL keyset pages, exact tag filters and bounded Unicode previews without reading whole bodies', async () => {
   const f = await fixture();

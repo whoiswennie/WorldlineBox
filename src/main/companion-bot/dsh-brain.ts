@@ -21,7 +21,9 @@ export interface BotDshCallback { url: string; token: string }
 export interface BotDshAudience { conversationId: string; kind: 'direct' | 'group' | 'peer' | 'world'; allowedConversationIds: string[] }
 export interface BotDshRun {
   audience?: BotDshAudience;
+  checkRetiredSessions?: boolean;
   laneId: string; eventId: string; cwd: string; system: string; prompt: string;
+  memoryContext?: string;
   observationImages?: { data: string; name: string }[];
   model: BotDshModel; tools: readonly BotDshTool[]; callback: BotDshCallback;
   role?: 'brain' | 'worker'; instanceId?: string; signal?: AbortSignal;
@@ -94,7 +96,7 @@ export class BotDshEffectUnknownError extends Error {
 type CancelInput = Omit<BotDshRun, 'prompt' | 'onEvent' | 'signal' | 'resumeHost'>;
 interface PendingStop { promise: Promise<BotDshCancelAck>; input: CancelInput; suspend: boolean }
 const cancellationInput = (input: Omit<BotDshRun, 'prompt' | 'onEvent'>): CancelInput => ({
-  laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, model: input.model, audience: input.audience,
+  laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, model: input.model, audience: input.audience, checkRetiredSessions: input.checkRetiredSessions,
   tools: input.tools, callback: input.callback, role: input.role, instanceId: input.instanceId,
   workerAccess: input.workerAccess, workerTools: input.workerTools, workspaceTitle: input.workspaceTitle, runningOnly: input.runningOnly,
   workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle,
@@ -173,7 +175,7 @@ export class BotDshBrain {
       acquireUse = () => this.options.acquireLease?.(host) ?? (() => undefined);
       attachmentStage = 'attach';
       created = await client.request('/bot/lanes', {
-        sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, audience: input.audience,
+        sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, audience: input.audience, memoryContext: input.memoryContext, checkRetiredSessions: input.checkRetiredSessions,
         model: input.model, tools: input.tools, callback: input.callback, role: input.role ?? 'brain', workerAccess: input.workerAccess ?? 'scoped',
         workerTools: input.workerTools,
         workspaceTitle: input.workspaceTitle, workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle,
@@ -301,7 +303,7 @@ export class BotDshBrain {
       // path. Network/inspection errors never become an absence assertion.
       if (!(error && typeof error === 'object' && 'status' in error && error.status === 404)) throw new BotDshDeliveryUnknownError(error, 'cancel');
     }
-    try { await client.request('/bot/lanes', { sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, audience: input.audience,
+    try { await client.request('/bot/lanes', { sessionId, laneId: input.laneId, eventId: input.eventId, cwd: input.cwd, system: input.system, audience: input.audience, checkRetiredSessions: input.checkRetiredSessions,
       model: input.model, tools: input.tools, callback: input.callback, role: input.role ?? 'brain',
       workerAccess: input.workerAccess ?? 'scoped', workerTools: input.workerTools, workspaceTitle: input.workspaceTitle,
       workspaceParent: input.workspaceParent, sessionTitle: input.sessionTitle, cancelIntent: true, suspendIntent: suspend }, input.signal); }

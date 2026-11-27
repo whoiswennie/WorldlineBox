@@ -1,0 +1,72 @@
+{
+  "passed": true,
+  "usesRealModel": true,
+  "usesRealEmbedding": true,
+  "phases": [
+    {
+      "stage": "embedding-warmup",
+      "durationMs": 2294.6136
+    },
+    {
+      "stage": "native-host",
+      "durationMs": 16.841499999999996
+    },
+    {
+      "stage": "ordinary-chat",
+      "durationMs": 8737.0891
+    },
+    {
+      "stage": "fresh-session",
+      "durationMs": 971.0543999999973
+    },
+    {
+      "stage": "completed-interaction-diary",
+      "durationMs": 7.2237999999997555
+    },
+    {
+      "stage": "passive-recall-in-new-topic",
+      "durationMs": 1478.2776000000013
+    },
+    {
+      "stage": "memory-write",
+      "durationMs": 29.293900000000576
+    },
+    {
+      "stage": "memory-search",
+      "durationMs": 359.5893999999971
+    },
+    {
+      "stage": "native-memory-tool",
+      "durationMs": 2407.928399999997
+    }
+  ],
+  "errors": [],
+  "embedding": {
+    "dimension": 768,
+    "model": "embeddinggemma-2-compact"
+  },
+  "dsh": {
+    "version": "0.2.2-rc.5"
+  },
+  "sessions": {
+    "distinctSessionIds": true,
+    "sameCompanionWorkspace": true,
+    "noRouterTranscript": true,
+    "legacyToolsAbsent": true,
+    "streamedEvents": 37
+  },
+  "interactionDiary": {
+    "indexed": true,
+    "liveToolCallVerified": true,
+    "tagsVerified": true,
+    "sourceMessagesVerified": true,
+    "contentVerified": true
+  },
+  "memory": {
+    "semanticRecall": true,
+    "nativeToolRecall": true,
+    "passiveEvidenceIncluded": true,
+    "newTopicWithoutSearchTool": true
+  },
+  "modelName": "deepseek-flash"
+}

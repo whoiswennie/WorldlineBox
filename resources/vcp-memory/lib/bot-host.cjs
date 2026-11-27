@@ -12,6 +12,7 @@ const { ManagedNotes, tagsOf } = require('./managed-notes.cjs');
 class BotHost {
   constructor(home) {
     this.home = home;
+    this.authorName = 'Companion';
     this.db = new Database(path.join(home, 'bot-adapter.sqlite'));
     this.db.pragma('journal_mode = WAL');
     this.db.exec(`CREATE TABLE IF NOT EXISTS mutations(id TEXT PRIMARY KEY, hash TEXT NOT NULL, state TEXT NOT NULL,
@@ -22,10 +23,14 @@ class BotHost {
       CREATE TABLE IF NOT EXISTS mutation_sources(note_id TEXT NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(note_id,kind,id));
       CREATE INDEX IF NOT EXISTS mutation_sources_reverse ON mutation_sources(kind,id,note_id);
       CREATE TABLE IF NOT EXISTS withdrawal_episodes(episode INTEGER PRIMARY KEY,state TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS withdrawal_topics(topic TEXT PRIMARY KEY,state TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS source_withdrawal_modes(note_id TEXT PRIMARY KEY,mode TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value INTEGER NOT NULL);`);
     const columns = this.db.prepare('PRAGMA table_info(mutations)').all().map(column => column.name);
-    for (const column of ['source_event', 'source_root', 'source_messages', 'content']) {
+    if (!this.db.prepare('PRAGMA table_info(history_receipts)').all().some(column => column.name === 'topic')) {
+      this.db.exec('ALTER TABLE history_receipts ADD COLUMN topic TEXT');
+    }
+    for (const column of ['source_event', 'source_root', 'source_messages', 'content', 'author_name']) {
       if (!columns.includes(column)) this.db.exec(`ALTER TABLE mutations ADD COLUMN ${column} TEXT`);
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS mutations_source_root ON mutations(source_root); CREATE INDEX IF NOT EXISTS mutations_created ON mutations(created_at); CREATE INDEX IF NOT EXISTS mutations_state ON mutations(state);');
@@ -34,6 +39,7 @@ class BotHost {
       this.db.prepare("INSERT INTO metadata VALUES('mutation-sources-v1',1)").run();
     })();
     this.managed = new ManagedNotes(this);
+    this.unfinishedMutation = this.db.prepare("SELECT 1 FROM mutations WHERE state IN ('pending','writing','failed','withdrawing','unknown') LIMIT 1");
     const { MaintenanceHost } = require('./maintenance-host.cjs');
     this.maintenance = new MaintenanceHost(this);
     const { MaintenanceWork } = require('./maintenance-work.cjs');
@@ -44,7 +50,7 @@ class BotHost {
     for (const id of [row.source_root, row.source_event].filter(Boolean)) insert.run(row.id, 'event', id);
     for (const id of JSON.parse(row.source_messages || '[]')) insert.run(row.id, 'message', id);
   }
-  async remember(runtime, payload) {
+  async remember(runtime, payload, author = this.authorName) {
     this.managed.assertSourceRevision(payload);
     const { sourceEventId, content } = payload;
     if (typeof sourceEventId !== 'string' || !sourceEventId || typeof content !== 'string' || !content.trim()) throw new TypeError('sourceEventId and content are required');
@@ -59,9 +65,10 @@ class BotHost {
       if (row.state === 'writing') throw Object.assign(new Error('Previous memory write has an unknown outcome; reconcile it before retrying'), { code: 'MEMORY_OUTCOME_UNKNOWN' });
       return this.receipt(row);
     }
+    const writtenAt = new Date();
     this.db.transaction(() => {
-      this.db.prepare('INSERT INTO mutations(id,hash,state,created_at,source_event,source_root,source_messages,content) VALUES(?,?,?,?,?,?,?,?)')
-        .run(id, hash, 'writing', new Date().toISOString(), sourceEventId, root, JSON.stringify(sourceMessages), content);
+      this.db.prepare('INSERT INTO mutations(id,hash,state,created_at,source_event,source_root,source_messages,content,author_name) VALUES(?,?,?,?,?,?,?,?,?)')
+        .run(id, hash, 'writing', writtenAt.toISOString(), sourceEventId, root, JSON.stringify(sourceMessages), content, author);
       this.indexSources({ id, source_root: root, source_event: sourceEventId, source_messages: JSON.stringify(sourceMessages) });
     })();
     const notebook = path.join(this.home, 'dailynote', 'Companion');
@@ -69,9 +76,10 @@ class BotHost {
     if ((await fs.lstat(notebook)).isSymbolicLink() || path.resolve(await fs.realpath(notebook)).toLowerCase() !== path.resolve(notebook).toLowerCase()) {
       throw Object.assign(new Error('Managed notebook must be an owned physical directory'), { code: 'MEMORY_OUTCOME_UNKNOWN' });
     }
-    const parts = new Intl.DateTimeFormat('en', { timeZone: runtime.config.DEFAULT_TIMEZONE || 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const parts = new Intl.DateTimeFormat('en', { timeZone: runtime.config.DEFAULT_TIMEZONE || 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(writtenAt);
     const date = ['year','month','day'].map(type => parts.find(part => part.type === type).value).join('-');
-    const result = await runtime.callTool('DailyNote', { command: 'create', maid: 'Companion', folder: 'Companion',
+    // DailyNote's legacy [folder]author form lets literal bracketed display names survive its parser.
+    const result = await runtime.callTool('DailyNote', { command: 'create', maid: `[Companion]${author}`, folder: 'Companion',
       Date: date, Content: content, Tag: payload.tags || '对话记录', fileName: id });
     if (result.status === 'error' || !result.result?.fileName) {
       this.db.prepare('UPDATE mutations SET state=?,error=? WHERE id=?').run('failed', JSON.stringify(result), id);
@@ -129,7 +137,7 @@ class BotHost {
     const text = await fs.readFile(absolute, 'utf8');
     const parts = new Intl.DateTimeFormat('en', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(row.created_at));
     const date = ['year','month','day'].map(type => parts.find(part => part.type === type).value).join('-');
-    const header = `[${date}] - Companion\n`;
+    const header = `[${date}] - ${row.author_name || 'Companion'}\n`;
     if (!text.startsWith(header) || !candidate.name.startsWith(date + '-')) throw unknown('Unconfirmed DailyNote date/owner proof differs from its source');
     let body = text.slice(header.length);
     if (!/^\s*\[([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?\](?=\s|$)/.test(row.content)) {
@@ -171,6 +179,7 @@ class BotHost {
         } });
       if (md5(await fs.readFile(absolute, 'utf8')) !== row.checksum) throw Object.assign(new Error('Memory changed during indexing'), { code: 'MEMORY_VERSION_CHANGED' });
       this.db.prepare('UPDATE mutations SET state=? WHERE id=? AND checksum=?').run('indexed', row.id, row.checksum);
+      runtime.rag?.cacheManager?.clear('query');
       receipts.push({ ...this.receipt(row), state: 'indexed', version: indexed.version });
     }
     return { receipts, ...this.status() };
@@ -185,10 +194,15 @@ class BotHost {
         if (this.blocked('message', message.id)) continue;
         const hash = digest(JSON.stringify([message.role, message.content, message.timestamp, message.senderId]));
         let row = this.db.prepare('SELECT * FROM history_receipts WHERE id=?').get(message.id);
-        if (row && row.hash !== hash) throw Object.assign(new Error('History id reused with different content'), { code: 'MEMORY_CONFLICT' });
+        const topic = message.topicId ?? null;
+        if (topic !== null && (typeof topic !== 'string' || !topic || topic === '.' || topic === '..' || /[\x00-\x1f/\\]/u.test(topic))) throw new TypeError('Invalid conversation topic');
+        if (row && (row.hash !== hash || topic && row.topic && row.topic !== topic)) throw Object.assign(new Error('History id reused with different content or topic'), { code: 'MEMORY_CONFLICT' });
         if (row?.state === 'done' || seen.has(message.id)) continue;
-        if (!row) { row = { episode: Math.floor(n++ / 100) }; this.db.prepare('INSERT INTO history_receipts VALUES(?,?,?,?)').run(message.id, hash, row.episode, 'pending'); }
-        const session = 'episode-' + String(row.episode).padStart(8, '0');
+        if (!row) {
+          row = { episode: topic ? -1 : Math.floor(n++ / 100), topic };
+          this.db.prepare('INSERT INTO history_receipts(id,hash,episode,state,topic) VALUES(?,?,?,?,?)').run(message.id, hash, row.episode, 'pending', topic);
+        }
+        const session = row.topic ?? ('episode-' + String(row.episode).padStart(8, '0'));
         if (!groups.has(session)) groups.set(session, []);
         groups.get(session).push(message); seen.add(message.id);
       }
@@ -205,6 +219,9 @@ class BotHost {
       for (const message of group) appended.push({ messageId: message.id, episode: session });
     }
     return { appended };
+  }
+  turnPending() {
+    return Boolean(this.unfinishedMutation.get() || this.managed.unfinishedOperation.get());
   }
   status() {
     return { pending: this.db.prepare("SELECT COUNT(*) AS n FROM mutations WHERE state='pending'").get().n,
@@ -236,6 +253,39 @@ class BotHost {
   update(runtime, payload) { return this.managed.update(runtime, payload); }
   organize(runtime, payload) { return this.managed.organize(runtime, payload); }
   catalog(payload) { return this.managed.catalog(payload); }
+  async verifyRetrievedSources(runtime, retrieval) {
+    const unavailable = () => Object.assign(new Error('Native hits could not be linked to current, indexed managed notes'), { code: 'MEMORY_PROVENANCE_UNAVAILABLE' });
+    const hits = retrieval.results;
+    if (!Array.isArray(hits) || hits.length > 64) throw unavailable();
+    const chunks = await runtime.kb.hydrateChunksByIds(hits.map(hit => hit.chunkId ?? hit.id));
+    const current = new Map(chunks.map(chunk => [chunk.id, chunk]));
+    const findNote = this.db.prepare("SELECT id,checksum FROM mutations WHERE note_path=? AND state='indexed'");
+    const lineage = this.db.prepare(`WITH RECURSIVE ancestors(id) AS (
+      SELECT ? UNION SELECT d.parent_id FROM note_dependencies d JOIN ancestors a ON d.child_id=a.id
+    ) SELECT DISTINCT s.kind,s.id FROM mutation_sources s JOIN ancestors a ON a.id=s.note_id`);
+    const root = runtime.kb.config.rootPath;
+    const results = [];
+    for (const hit of hits) {
+      const chunkId = Number(hit.chunkId ?? hit.id), chunk = current.get(chunkId);
+      if (!chunk || chunk.text !== hit.text || typeof chunk.sourceFile !== 'string') throw unavailable();
+      const relative = path.relative(root, path.resolve(root, chunk.sourceFile)).replaceAll('\\', '/');
+      if (!/^Companion\/[^/]+\.(?:txt|md)$/iu.test(relative)) throw unavailable();
+      const row = findNote.get(relative);
+      if (!row) throw unavailable();
+      const [indexed] = await runtime.kb.probeIngestionFiles([relative]);
+      if (!indexed?.exists || indexed.checksum !== row.checksum || !indexed.completeVectors || !indexed.completeTags) throw unavailable();
+      const note = await this.managed.readNote({ id: row.id }).catch(error => {
+        if (['MEMORY_OUTCOME_UNKNOWN', 'MEMORY_NOTE_UNAVAILABLE', 'ENOENT'].includes(error.code)) throw unavailable();
+        throw error;
+      });
+      const sources = lineage.all(row.id);
+      if (!sources.length || sources.some(source => this.blocked(source.kind, source.id))) throw unavailable();
+      results.push({ id: row.id, chunkId, text: chunk.text, score: hit.score, checksum: note.checksum,
+        sourceEventId: note.sourceEventId, sourceEventIds: sources.filter(s => s.kind === 'event').map(s => s.id),
+        sourceMessageIds: sources.filter(s => s.kind === 'message').map(s => s.id) });
+    }
+    return { results, meta: retrieval.meta };
+  }
   operationReceipt(payload) { return this.managed.operationReceipt(payload); }
   async forget(runtime, { id, companionId }) {
     if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Owned memory id is required; paths are not accepted');
@@ -265,8 +315,12 @@ class BotHost {
         if (seen.has(key)) continue; seen.add(key);
         const added = insert.run(kind, id, now).changes; changed += added;
         if (kind === 'message') {
-          const receipt = this.db.prepare('SELECT episode FROM history_receipts WHERE id=?').get(id);
-          if (receipt && (added || this.withdrawalPending() || noteIds.length)) { this.db.prepare("INSERT INTO withdrawal_episodes VALUES(?,'pending') ON CONFLICT(episode) DO UPDATE SET state='pending'").run(receipt.episode); needsCleanup = true; }
+          const receipt = this.db.prepare('SELECT episode,topic FROM history_receipts WHERE id=?').get(id);
+          if (receipt && (added || this.withdrawalPending() || noteIds.length)) {
+            const session = receipt.topic ?? ('episode-' + String(receipt.episode).padStart(8, '0'));
+            this.db.prepare("INSERT INTO withdrawal_topics VALUES(?,'pending') ON CONFLICT(topic) DO UPDATE SET state='pending'").run(session);
+            needsCleanup = true;
+          }
         }
         if (kind === 'note') {
           pending.push(...this.db.prepare('SELECT child_id FROM note_dependencies WHERE parent_id=?').all(id).map(row => ['note', row.child_id]));
@@ -311,6 +365,7 @@ class BotHost {
     this.db.transaction(() => {
       this.db.prepare("INSERT INTO metadata VALUES('withdrawal-pending',0) ON CONFLICT(key) DO UPDATE SET value=0").run();
       this.db.prepare('DELETE FROM withdrawal_episodes').run();
+      this.db.prepare('DELETE FROM withdrawal_topics').run();
     })();
   }
   async cleanupWithdrawals(runtime, companionId) {
@@ -336,17 +391,18 @@ class BotHost {
       this.db.prepare("UPDATE mutations SET state='forgotten',content=NULL WHERE id=?").run(row.id);
     }
     const changedEpisodes = [];
-    for (const { episode, state } of this.db.prepare('SELECT * FROM withdrawal_episodes').all()) {
-      const session = 'episode-' + String(episode).padStart(8, '0');
+    this.db.exec("INSERT OR IGNORE INTO withdrawal_topics(topic,state) SELECT printf('episode-%08d',episode),state FROM withdrawal_episodes");
+    for (const { topic: session, state } of this.db.prepare('SELECT * FROM withdrawal_topics').all()) {
       if (state === 'pending') {
         const history = await dispatch('session.get', { agent: companionId, session }, { home: this.home });
         await dispatch('session.put', { agent: companionId, session, history: history.filter(message => !this.blocked('message', message.id)) }, { home: this.home });
-        this.db.prepare("UPDATE withdrawal_episodes SET state='done' WHERE episode=?").run(episode);
+        this.db.prepare("UPDATE withdrawal_topics SET state='done' WHERE topic=?").run(session);
       }
       changedEpisodes.push(session);
     }
     // OneRing is a derived recording/projection. Reset its per-domain caches,
     // then only legally filtered source messages may populate it again.
+    await runtime.clearDerivedContext?.(companionId);
     const oneRingDb = runtime._require('Plugin/OneRing/OneRingDB.js').getDb(companionId, runtime.runtimeDir);
     for (const table of ['messages','postTurns','oneRingPostSnapshots']) {
       if (oneRingDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)) oneRingDb.exec(`DELETE FROM ${table}`);

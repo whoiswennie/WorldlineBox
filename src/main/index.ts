@@ -68,6 +68,7 @@ import {
   clipboard,
   dialog,
   ipcMain,
+  powerMonitor,
   protocol,
   safeStorage,
   screen,
@@ -740,7 +741,6 @@ async function vcpEmbeddingConfiguration() {
   await prepareBundledEmbedding();
   const provider = globalEmbedding();
   const profile = await provider.resolveProfile();
-  if (profile.dimension > 4096) throw new Error('VCP 记忆支持 1–4096 维向量，请选择兼容的全局模型。');
   vcpEmbeddingGateway ??= new VcpEmbeddingGateway(provider);
   return vcpEmbeddingGateway.configuration(profile.selectionId, profile);
 }
@@ -5317,7 +5317,15 @@ async function startApplication(): Promise<void> {
       // VCP uses the application's bundled Node ABI. Resolving memory never
       // starts or depends on a DSH instance or its profile.
       let memoryNode: Promise<string> | undefined;
-      const memory = new BotMemoryService({ root: path.join(root, 'memory'),
+      const { openNativeMemoryGeneration } = await import('./companion-bot/memory-generation');
+      const generation = openNativeMemoryGeneration(app.getPath('userData'));
+      void generation.retirement.catch(error => logger?.error('companion-bot.retire-legacy-memory', error));
+      const memory = new BotMemoryService({ root: generation.root,
+        authorName: id => {
+          const companion = botService?.store.getCompanion(id);
+          if (!companion) throw new Error('写入日记的伙伴不存在。');
+          return companion.name;
+        },
         runtime: async () => ({ nodePath: await (memoryNode ??= import('./portable-tools').then(({ resolvePortableTools }) => resolvePortableTools()).then(tools => tools.nodeExecutable).catch(error => { memoryNode = undefined; throw error; })), packageRoot: app.isPackaged
           ? path.join(process.resourcesPath, 'vcp-memory') : path.join(app.getAppPath(), '.tools', 'bot-memory-release', 'vcp-memory') }),
         embedding: vcpEmbeddingConfiguration,
@@ -5660,11 +5668,19 @@ async function startApplication(): Promise<void> {
     }
     catch (error) { logger?.error('companion-bot.request', error); return { ok: false, error: error instanceof Error ? error.message : '伙伴服务暂不可用。' }; }
   });
-  // Start the scheduler at application startup when a persisted schedule exists.
+  // Previously earned diary work and unfinished native jobs resume even if the
+  // user does not open the companion workspace during this launch.
   const scheduleDatabase = path.join(app.getPath('userData'), 'companion-bot-v2', 'bot.sqlite');
-  void import('./companion-bot/schedules').then(({ hasActiveSchedules }) => {
-    if (hasActiveSchedules(scheduleDatabase)) return ensureBotService();
-  }).catch(error => logger?.error('companion-bot.schedule.start', error));
+  const wakeCompanion = () => {
+    if (applicationClosing || botDataCleanup?.busy) return;
+    if (botService) { botService.awaken(); return; }
+    void import('./companion-bot/schedules').then(({ hasCompanionBackgroundWork }) => {
+      if (!applicationClosing && !botDataCleanup?.busy && hasCompanionBackgroundWork(scheduleDatabase)) return ensureBotService();
+    }).catch(error => logger?.error('companion-bot.schedule.start', error));
+  };
+  powerMonitor.on('resume', wakeCompanion);
+  app.once('before-quit', () => { powerMonitor.off('resume', wakeCompanion); });
+  wakeCompanion();
   ipcMain.on(BOT_MEDIA_CLIPBOARD_CHANNEL,(event,conversationId:unknown)=>{
     event.returnValue=false;
     if(!mainWindow||mainWindow.isDestroyed()||event.sender!==mainWindow.webContents||event.senderFrame!==mainWindow.webContents.mainFrame)return;

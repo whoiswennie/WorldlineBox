@@ -8,16 +8,23 @@ import type { BotTopics } from './topics';
 const source = 'companion-schedule';
 const key = (id: string) => `companion-schedule:${id}`;
 
-export function hasActiveSchedules(file: string): boolean {
+export function hasCompanionBackgroundWork(file: string): boolean {
   if (!existsSync(file)) return false;
   const ReadonlyDatabase = Database as new (filename: string, options: { readonly: boolean; fileMustExist: boolean }) => BotScheduleReader;
   const db = new ReadonlyDatabase(file, { readonly: true, fileMustExist: true });
   try {
-    if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='bot_metadata'").get()) return false;
-    return !!db.prepare("SELECT 1 FROM bot_metadata WHERE key GLOB 'companion-schedule:*' AND json_extract(value,'$.enabled')=1 LIMIT 1").get();
+    const hasTable = (name: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+    if (hasTable('bot_metadata') && db.prepare("SELECT 1 FROM bot_metadata WHERE key GLOB 'companion-schedule:*' AND json_extract(value,'$.enabled')=1 LIMIT 1").get()) return true;
+    if (hasTable('bot_memory_jobs') && db.prepare("SELECT 1 FROM bot_memory_jobs WHERE status IN ('queued','running') LIMIT 1").get()) return true;
+    if (!hasTable('bot_maintenance_settings')) return false;
+    if (hasTable('bot_maintenance_maturity') && db.prepare(`SELECT 1 FROM bot_maintenance_maturity m JOIN bot_maintenance_settings s ON s.owner_key=m.owner_key
+      WHERE json_extract(s.settings_json,'$.enabled')=1 LIMIT 1`).get()) return true;
+    const hasDreamClock = db.prepare("SELECT 1 FROM pragma_table_info('bot_maintenance_settings') WHERE name='dream_planned'").get();
+    const pending = hasDreamClock ? 'dirty>dream_planned' : 'dirty>0';
+    return !!db.prepare(`SELECT 1 FROM bot_maintenance_settings WHERE json_extract(settings_json,'$.enabled')=1 AND dirty>0 AND ${pending} LIMIT 1`).get();
   } finally { db.close(); }
 }
-interface BotScheduleReader { prepare(sql: string): { get(): unknown }; close(): void }
+interface BotScheduleReader { prepare(sql: string): { get(...args: string[]): unknown }; close(): void }
 
 export function nextScheduleTime(recurrence: ScheduleDraft['recurrence'], after: number): number {
   if (recurrence.kind !== 'daily') return after + recurrence.minutes * 60000;

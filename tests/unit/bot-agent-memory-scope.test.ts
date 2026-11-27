@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotAgentMemoryScopes } from '../../src/main/companion-bot/agent-memory-scope';
 import { BotService } from '../../src/main/companion-bot/service';
+import { BotTopics } from '../../src/main/companion-bot/topics';
 import type { BotMemoryScope } from '../../src/main/companion-bot/memory-service';
 import type { BotEvent } from '../../src/main/companion-bot/types';
 import type { BotToolCall } from '../../src/main/companion-bot/tool-server';
@@ -21,13 +22,14 @@ function fixture() {
   const checked = { available: true, records: [{ content: 'GROUP_FACT', sourceEventId: targetSource.id, sourceMessageIds: [targetSource.sourceMessageRecordId] }],
     provenance: { revision: '0', sourceEventIds: [targetSource.id], sourceMessageIds: [targetSource.sourceMessageRecordId] } };
   const memory = { readScoped: vi.fn(async (scope: BotMemoryScope, name: string, args: Record<string, unknown>) => { calls.push({ scope, name, args }); return checked; }),
-    tool: vi.fn(async (scope: BotMemoryScope, name: string, args: Record<string, unknown>) => { calls.push({ scope, name, args }); return { local: true }; }),
+    tool: vi.fn<(scope: BotMemoryScope, name: string, args: Record<string, unknown>, signal: AbortSignal, topicId?: string) => Promise<{ local: boolean }>>(async (scope, name, args) => { calls.push({ scope, name, args }); return { local: true }; }),
     readNote: vi.fn(async (scope: BotMemoryScope, args: Record<string, unknown>) => { calls.push({ scope, name: 'memory_note', args }); return { local: true }; }) };
   const service = Object.create(BotService.prototype) as BotService;
-  Object.assign(service, { store, options: { memory }, loadTombstones: vi.fn(async () => undefined), historyProjector: { project: vi.fn(async () => undefined) } });
+  const topics = new BotTopics(store);
+  Object.assign(service, { store, topics, options: { memory }, loadTombstones: vi.fn(async () => undefined), historyProjector: { project: vi.fn(async () => undefined) } });
   const invoke = (event: BotEvent, name: string, args: Record<string, unknown>) => (service as unknown as { executeTool(event: BotEvent, call: BotToolCall, signal: AbortSignal): Promise<unknown> })
     .executeTool(event, { eventId: event.id, laneId: event.laneId, callId: 'scope-read', name, args }, new AbortController().signal);
-  return { store, direct, otherDirect, group, otherGroup, peer, world, source, targetSource, scopes, calls, checked, memory, service, invoke, event };
+  return { store, topics, direct, otherDirect, group, otherGroup, peer, world, source, targetSource, scopes, calls, checked, memory, service, invoke, event };
 }
 
 it('lists only the same companion owner-observable direct, group and two-companion peer scopes in stable pages without VCP', () => {
@@ -164,6 +166,10 @@ it('passes host-derived target scope for all five read tools and preserves defau
   expect(f.calls.every(call => call.scope.companionId === 'alice' && call.scope.conversationId === f.group.id && call.scope.securityDomainId === f.group.securityDomainId)).toBe(true);
   expect(await f.invoke(f.source, 'memory_search', { query: 'local' })).toEqual({ local: true });
   expect(f.calls.at(-1)?.scope).toEqual({ companionId: 'alice', conversationId: f.direct.id, securityDomainId: f.direct.securityDomainId });
+  const topic = f.topics.create(f.direct.id, '观鸟');
+  f.topics.bind([f.source], topic);
+  await f.invoke(f.source, 'memory_history', { keyword: '观鸟' });
+  expect(f.memory.tool.mock.calls.at(-1)?.[4]).toBe(topic.id);
   await expect(f.invoke(f.source, 'memory_search', { query: 'forge', conversationId: f.group.id, home: 'C:/private' })).rejects.toThrow();
 });
 

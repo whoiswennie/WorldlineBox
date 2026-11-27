@@ -1,6 +1,6 @@
 /** Durable bot state is independent of the retired companion cognition schema. */
 import type { BotMediaRef } from '../../shared/companion-bot-media';
-import type { BotReplyProgress, BotReplyTiming, BotReplyPart } from '../../shared/companion-bot';
+import type { BotMessageOrigin, BotMessageQuote, BotReplyProgress, BotReplyTiming, BotReplyPart } from '../../shared/companion-bot';
 export type BotConversationKind = 'direct' | 'group' | 'world' | 'peer';
 export type BotMessageStatus = 'queued' | 'running' | 'sent' | 'failed' | 'cancelled';
 export type BotEventStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -21,8 +21,8 @@ export interface BotConversation {
   announcement?: { text: string; updatedAt: string };
 }
 export interface BotMessage {
-  origin?: import('../../shared/companion-bot').BotMessageOrigin;
-  quote?: import('../../shared/companion-bot').BotMessageQuote;
+  origin?: BotMessageOrigin;
+  quote?: BotMessageQuote;
   id: string; eventId: string; conversationId: string; senderId: string; senderName: string;
   senderType: BotSenderType; content: string; status: BotMessageStatus; sequence: number;
   kind: 'message' | 'task_progress' | 'task_done' | 'world_observation' | 'attention';
@@ -68,7 +68,7 @@ export interface BotTask {
   status: BotTaskStatus; attemptId: string; dshTaskId?: string; sessionId?: string;
   summary?: string; summaryIsPreview?: boolean; error?: string; createdAt: string; updatedAt: string; extra: Record<string, unknown>;
 }
-export type BotMemoryJobKind = 'prepare' | 'response' | 'capture' | 'projection' | 'mutation' | 'maintenance';
+export type BotMemoryJobKind = 'prepare' | 'response' | 'projection' | 'mutation' | 'maintenance';
 export interface BotMemoryJobInput { id?: string; key?: string; kind: BotMemoryJobKind; payload: Record<string, unknown>; }
 export interface BotMemoryJob {
   id: string; kind: BotMemoryJobKind; domainKey: string; payload: Record<string, unknown>;

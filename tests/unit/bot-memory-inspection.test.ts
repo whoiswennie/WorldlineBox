@@ -2,12 +2,25 @@ import { afterEach, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { buildBotMemoryInspection, boundedMemoryDiagnostic } from '../../src/main/companion-bot/memory-inspection';
+import { buildBotMemoryInspection, boundedMemoryDiagnostic, restoreMemoryInspection } from '../../src/main/companion-bot/memory-inspection';
 import { BotStore } from '../../src/main/companion-bot/store';
 
 const roots: Array<{ path: string; store: BotStore }> = [];
 afterEach(async () => { for (const root of roots.splice(0)) { root.store.close(); await rm(root.path, { recursive: true, force: true }); } });
 const base = { requestId: 'inspection-1', query: '决定是什么', totalMs: 321.4 };
+it('shows the exact final DeepMemo transcript, retaining topic and speakers without assigning CDS candidate scores', () => {
+  const final = '[回忆片段1]:\n主题: 北岸安排\n小明: 下周四。\n\n[回忆片段2]:\n主题: 行程\n小林: 改为周五。';
+  const report = buildBotMemoryInspection({ ...base, mode: 'history', result: { status: 'success', result: final },
+    telemetry: { chat: { spans: [{ stage: 'cds.searchMemories', raw: { windows: [{ score: 9 }, { score: 11 }] } }] } } });
+  expect(report).toMatchObject({ presentation: 'formatted', evidence: final, hits: [], coverage: { finalRankingAvailable: false } });
+  expect(report.coverage).not.toHaveProperty('returnedCandidates', 0);
+  const empty = `[DeepMemo] 未找到与关键词“${base.query}”相关的回忆。`;
+  expect(buildBotMemoryInspection({ ...base, mode: 'history', result: { result: empty } }).presentation).toBe('empty');
+  expect(buildBotMemoryInspection({ ...base, mode: 'history', result: { result: final + '\n小明: ' + empty } }).presentation).toBe('formatted');
+  const saved = { ...report, presentation: undefined, evidence: JSON.stringify({ status: 'success', result: final }) };
+  expect(restoreMemoryInspection(saved)).toMatchObject({ presentation: 'formatted', evidence: final });
+  expect(restoreMemoryInspection({ ...saved, raw: {}, evidence: '{' }).presentation).toBe('unavailable');
+});
 it('recovers diary heading date and time when VCP omitted date metadata without guessing dates mentioned in prose', () => {
   const result = buildBotMemoryInspection({ ...base, mode: 'passive', result: { events: [{ type: 'RAG_RETRIEVAL_DETAILS', results: [
     { text: '[2026-11-10] - Companion\n[10:30]\n用户提到明年旅行。' },

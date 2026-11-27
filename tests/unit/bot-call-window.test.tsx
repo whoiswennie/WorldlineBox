@@ -360,8 +360,8 @@ it('shows the submitted prompt while waiting and presents reports from a differe
 it('keeps desktop pet progress and interruption outside the caption as the reply streams', async () => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   const onInterrupt = vi.fn(), ignored = new Set<string>(), baseline = new Set<string>();
-  const turn = { id: 'turn', content: '问题', replyIds: ['reply'] };
   const render = async (message: BotMessage) => {
+    const turn = { id: 'turn', content: '问题', receipt: { replyIds: ['reply'], pending: message.status === 'running' ? ['reply'] : [] } };
     await act(() => root!.render(<BotCallDialogue messages={[message]} baseline={baseline} ignored={ignored} connectedAt={0}
       turn={turn} companionId={companion.id} activeAtConnect={baseline} desktopPet zh hideDialogue={false} modelLoading interrupted={false}
       onInterrupt={onInterrupt} onPresent={() => undefined} onPlayback={() => undefined} onNotice={() => undefined} />));
@@ -381,6 +381,54 @@ it('keeps desktop pet progress and interruption outside the caption as the reply
   await render(stageReply('reply', 1, [text]));
   expect(pill()).toBeNull();
   expect(caption()).toBe(text.text);
+});
+
+it.each(['sent', 'failed', 'cancelled'] as const)('does not wait for or interrupt an aged-out %s reply', async status => {
+  vi.stubGlobal('worldlinebox', { companionCallPet: {
+    supported: true, command: vi.fn(), onClosed: () => () => undefined, onAnchorChanged: () => () => undefined,
+  } });
+  const f = await mount('下一条消息', companion, { send: async () => ({ ok: true, replyMessageIds: ['own'] }) });
+  await act(() => button('接通').click());
+  const child = document.createElement('iframe');
+  host.append(child);
+  const open = vi.spyOn(window, 'open').mockReturnValue(child.contentWindow);
+  try { await act(() => button('切换为桌宠').click()); }
+  finally { open.mockRestore(); }
+  const pet = child.contentDocument!;
+  await act(async () => { await f.target.current!()!.send('上一个问题', 'voice-turn'); });
+  expect(pet.querySelector('.bot-call-pet-progress')).not.toBeNull();
+  await f.refresh([stageReply('own', 1, [], 'running')]);
+  expect(f.request).toHaveBeenCalledWith(expect.objectContaining({ type: 'state', callReplyIds: ['own'] }));
+  await f.refresh([stageReply('own', 1, [], status)]);
+  const later = Array.from({ length: 80 }, (_, index) => ({ ...stageReply('later-' + index, index + 2, []), senderId: 'user' }));
+  await f.refresh(later);
+  expect(pet.querySelector('.bot-call-pet-progress')).toBeNull();
+  expect(f.request.mock.calls.filter(([input]) => input.type === 'state').at(-1)?.[0]).not.toHaveProperty('callReplyIds');
+  await act(() => button('发送 ↑', pet).click());
+  expect(f.request).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'call.interrupt' }));
+});
+
+it('keeps replay and page navigation inside the retained window when older captions roll off', async () => {
+  const f = await mount('');
+  await act(() => button('接通').click());
+  const replies = [0, 1].map(batch => stageReply('batch-' + batch, batch + 1, Array.from({ length: 80 }, (_, i) => ({
+    id: 'part-' + i, kind: 'text' as const, sequence: i + 1, text: '对白 ' + (batch * 80 + i), presentation: {},
+  }))));
+  await f.refresh(replies);
+  const counter = () => document.querySelector('.bot-call-bubble-controls > span')?.textContent;
+  expect(counter()).toBe('1/128');
+  expect(caption()).toBe('对白 32');
+  await act(() => namedButton('下一段').click());
+  expect(caption()).toBe('对白 33');
+  await f.refresh([...replies]);
+  expect(counter()).toBe('2/128');
+  const newest = { ...stageReply('newest', 3, []), content: '新一轮' };
+  await f.refresh([...replies, newest]);
+  expect(caption()).toBe('新一轮');
+  expect(counter()).toBe('128/128');
+  await act(() => namedButton('从头播放').click());
+  expect(caption()).toBe('对白 33');
+  expect(counter()).toBe('1/128');
 });
 
 it('shows active desktop capture and DSH progress in the same dock row without an overlay', async () => {

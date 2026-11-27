@@ -147,6 +147,12 @@ impl Ranker {
         let _permit = limit.acquire_owned().await.map_err(|_| "RERANK_CLOSED")?;
         let key = &self.keys[KEY_CURSOR.fetch_add(1, Ordering::Relaxed) % self.keys.len()];
         let mut request = self.client.post(self.url.clone()).bearer_auth(key).json(&body);
+        if self.jev && jev_long_context(&body)? {
+            if !self.provider.is_empty() && self.provider != "typesafe" {
+                return Err("JEV_LONG_CONTEXT_UNSUPPORTED".into());
+            }
+            request = request.header("TypeSafe-Danger-Zone-Long-Context", "true");
+        }
         if self.jev && self.provider == "openrouter" {
             request = request.header("X-OpenRouter-Title", &self.title);
             if !self.referer.is_empty() { request = request.header("HTTP-Referer", &self.referer); }
@@ -223,13 +229,38 @@ impl Ranker {
             while let Some(result) = pending.join_next().await {
                 match result {
                     Ok(Ok(mut scores)) => output.append(&mut scores),
-                    _ => return Err("RERANK_BATCH_FAILED".into()),
+                    // post/parse_rerank codes are already sanitized; keep them.
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => return Err("RERANK_BATCH_FAILED".into()),
                 }
             }
         }
         output.sort_by(|a,b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         Ok(output)
     }
+}
+
+fn jev_long_context(body: &Value) -> Result<bool, String> {
+    // Same local cl100k estimate as JS; not an official tokenizer guarantee.
+    let count = |value: Value| tiktoken_rs::cl100k_base_singleton()
+        .encode_ordinary(&value.to_string()).len();
+    let state = &body["state"];
+    let questions = body["questions"].as_object().ok_or("JEV_INVALID_QUESTIONS")?;
+    let total = count(json!({"state":state,"questions":questions}));
+    let mut largest = 0;
+    if questions.len() == 1 {
+        // The single-question body is the whole body; do not tokenize it twice.
+        largest = total;
+    } else {
+        for (key, question) in questions {
+            let single = serde_json::Map::from_iter([(key.clone(), question.clone())]);
+            largest = largest.max(count(json!({"state":state,"questions":single})));
+        }
+    }
+    if total > 240000 || largest > 240000 {
+        return Err("JEV_CONTEXT_TOO_LARGE".into());
+    }
+    Ok(largest > 32000 || total > 64000)
 }
 
 fn estimate_tokens(text: &str) -> usize {
@@ -304,6 +335,23 @@ pub(crate) fn fuse(mut river: Vec<Value>, external: &[(i64, f64)], alpha: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_context_budget_checks_single_questions_and_request_total() {
+        let question = |text: String| json!({"type":"noul","instructions":text});
+        let body = |questions: Value| json!({"state":"query","questions":questions});
+        assert!(!jev_long_context(&body(json!({"q":question("hello".into())}))).unwrap());
+        assert!(jev_long_context(&body(json!({"q":question(" hello".repeat(33000))}))).unwrap());
+        // Each question fits 32k, but the complete request exceeds 64k.
+        assert!(jev_long_context(&body(json!({
+            "a":question(" hello".repeat(22000)),
+            "b":question(" hello".repeat(22000)),
+            "c":question(" hello".repeat(22000))
+        }))).unwrap());
+        assert_eq!(jev_long_context(&body(json!({
+            "q":question(" hello".repeat(241000))
+        }))).unwrap_err(), "JEV_CONTEXT_TOO_LARGE");
+    }
     #[tokio::test]
     async fn local_http_protocols() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -382,6 +430,31 @@ mod tests {
             assert!(ranker.rank("query", &[json!({"id":1,"text":"one"})]).await.is_err());
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn traditional_batch_failure_keeps_sanitized_error_code() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = [0; 4096];
+            let _ = socket.read(&mut bytes).await;
+            socket.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await.unwrap();
+        });
+        let values = HashMap::from([
+            ("RerankUrl".into(), format!("http://{address}/")),
+            ("RerankApi".into(), "fixture".into()),
+            ("RerankModel".into(), "fixture".into()),
+            ("NativeRerankTimeoutMs".into(), "5000".into()),
+        ]);
+        let ranker = Ranker::from_values(&values, Some(false)).unwrap();
+        let error = ranker.rank("query", &[json!({"id":1,"text":"one"}), json!({"id":2,"text":"two"})])
+            .await.unwrap_err();
+        assert_eq!(error, "RERANK_HTTP_429");
+        server.abort();
     }
 
     #[test]

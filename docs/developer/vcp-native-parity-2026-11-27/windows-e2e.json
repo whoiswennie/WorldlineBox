@@ -1,0 +1,72 @@
+{
+  "stats": {
+    "startTime": "2026-11-27T05:26:27.788Z",
+    "duration": 303445.23099999997,
+    "expected": 5,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "scenarios": [
+    {
+      "title": "opens the companion workspace with an exclusively locked legacy index and retires it on the next launch",
+      "file": "companion-bot-memory.test.ts",
+      "ok": true,
+      "results": [
+        {
+          "status": "passed",
+          "duration": 13230,
+          "retry": 0
+        }
+      ]
+    },
+    {
+      "title": "reopens a legacy transcript on a fresh native lane only where the retired memory body was sent",
+      "file": "companion-bot-memory.test.ts",
+      "ok": true,
+      "results": [
+        {
+          "status": "passed",
+          "duration": 8914,
+          "retry": 0
+        }
+      ]
+    },
+    {
+      "title": "cold-starts idle diary organization while the companion workspace remains closed",
+      "file": "companion-bot-memory.test.ts",
+      "ok": true,
+      "results": [
+        {
+          "status": "passed",
+          "duration": 214891,
+          "retry": 0
+        }
+      ]
+    },
+    {
+      "title": "maximized companion workspace keeps one chat summary after using the desktop pet and memory",
+      "file": "companion-bot-memory.test.ts",
+      "ok": true,
+      "results": [
+        {
+          "status": "passed",
+          "duration": 25180,
+          "retry": 0
+        }
+      ]
+    },
+    {
+      "title": "memory workspace manages real local VCP notes and inspects original recall without a chat model",
+      "file": "companion-bot-memory.test.ts",
+      "ok": true,
+      "results": [
+        {
+          "status": "passed",
+          "duration": 38550,
+          "retry": 0
+        }
+      ]
+    }
+  ]
+}

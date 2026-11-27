@@ -17,7 +17,7 @@ const verdict = (input: BotDshRun) => {
   return { decision: 'approve', reason: '逐项核对通过，来源和限定均完整保留。', checks: MEMORY_REVIEW_CRITERIA.map(criterion => ({ criterion, passed: true, reason: '已对照完整原件核查。' })),
     evidence: data.candidate.sources.map((source: { id: string }) => ({ sourceId: source.id, quote: source.id === a ? '用户计划周六去湖边，尚未出发。' : '用户改为博物馆，尚未订票。' })) };
 };
-async function fixture(types: Array<'organize' | 'update' | 'archive'> = ['organize']) {
+async function fixture(types: Array<'organize' | 'update' | 'archive'> = ['organize'], manual = true) {
   const root = mkdtempSync(path.join(os.tmpdir(), 'wlb-auto-review-')), filename = path.join(root, 'bot.sqlite'); let store = new BotStore(filename);
   store.createCompanion({ id: 'alice', name: 'Alice', persona: '认真核对' }); const room = store.openDirect('alice');
   const scope = { companionId: 'alice', conversationId: room.id, securityDomainId: room.securityDomainId };
@@ -32,8 +32,9 @@ async function fixture(types: Array<'organize' | 'update' | 'archive'> = ['organ
     model: () => ({ apiFormat: 'openai_chat', model: 'GLOBAL-MODEL', baseUrl: 'http://127.0.0.1:9', apiKey: 'PRIVATE_API_KEY_NEVER_PERSIST', contextWindow: 1048576, maxTokens: 4096, maxOutputTokens: 32768 }),
     callback: async () => ({ url: 'http://127.0.0.1:9/bot/tool', token: 'a'.repeat(64) }), changed: vi.fn(), report: vi.fn() } as unknown as BotMaintenanceRuntimeOptions;
   const runtime = new BotMaintenanceRuntime(options), job = runtime.journal.enqueue(scope, 'organize', 'review-fixture');
-  const body: Omit<BotMemoryMaintenancePlan, 'id'> = { format: 'worldlinebox-memory-maintenance-v1', operationId: job.id, scope, kind: 'organize', contextEpoch: 1, sourceRevision: '0', createdAt: at,
-    scan: { examined: 2, selected: 2, deferred: [] }, sources: notes.map(note => ({ ...note, checksum: note.checksum })), retrieval: { engine: 'LightMemo', result: {} }, narrative: '保留计划更正和未完成状态。',
+  if (manual) runtime.journal.updateSettings(scope, { autoReview: false });
+  const body: Omit<BotMemoryMaintenancePlan, 'id'> = { format: 'worldlinebox-memory-maintenance-v2', operationId: job.id, scope, kind: 'organize', contextEpoch: 1, sourceRevision: '0', createdAt: at,
+    scan: { examined: 2, selected: 2, deferred: [] }, sources: notes.map(note => ({ ...note, checksum: note.checksum })), retrieval: { engine: 'DailyNoteManager.Associate', result: {} }, narrative: '保留计划更正和未完成状态。',
     candidates: types.map((type, index) => ({ id: 'candidate-' + index, type, sourceIds: type === 'organize' ? [a, b] : [index ? b : a], content: type === 'archive' ? '' : '用户原计划周六去湖边，后改为博物馆，尚未订票。', tags: [], reason: '保存更正脉络。', uncertainties: [], quotes: [{ sourceId: index ? b : a, text: index ? notes[1]!.content : notes[0]!.content }] })) };
   runtime.journal.savePlan(scope, job.id, { ...body, id: maintenanceDigest(body) });
   const apply = vi.spyOn(BotMemoryMaintenance.prototype, 'applyCandidate').mockResolvedValue({ actionId: 'applied', operationId: 'applied-operation', status: 'indexed' });
@@ -45,10 +46,12 @@ async function fixture(types: Array<'organize' | 'update' | 'archive'> = ['organ
     async reopen() { await runtime.close(); store.close(); store = new BotStore(filename); return new BotMaintenanceStore(store); } };
 }
 
-it('defaults to manual review, uses the global model when enabled, applies only after approval and persists the complete audit', async () => {
-  const f = await fixture(); expect(f.runtime.journal.queueAutomaticReview()).toBeUndefined(); expect(f.run).not.toHaveBeenCalled();
-  await f.toggle(true); await f.step(); expect(f.candidate().status).toBe('approved'); expect(f.apply).not.toHaveBeenCalled();
+it('uses the existing global model by default for ordinary organization, applying only after a verified approval', async () => {
+  const f = await fixture(['organize'], false); expect(f.runtime.journal.settings(f.scope).autoReview).toBe(true); expect(f.run).not.toHaveBeenCalled();
+  await f.step(); expect(f.candidate().status).toBe('approved'); expect(f.apply).not.toHaveBeenCalled();
   expect(f.run.mock.calls[0]![0]).toMatchObject({ role: 'brain', tools: [], model: { model: 'GLOBAL-MODEL', maxTokens: 32768 } });
+  expect(path.basename(path.dirname(f.run.mock.calls[0]![0].cwd))).toBe('reviews');
+  expect(path.basename(path.dirname(path.dirname(f.run.mock.calls[0]![0].cwd)))).toBe('vcp-maintenance-v2');
   await f.step(); expect(f.candidate().status).toBe('applied');
   expect(f.store.taskTransaction(sql => sql.prepare('SELECT dirty FROM bot_maintenance_settings').get())).toMatchObject({ dirty: 0 });
   const audit = f.runtime.journal.reviews(f.scope, f.job.id).items[0]!;

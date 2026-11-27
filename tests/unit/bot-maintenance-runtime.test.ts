@@ -38,8 +38,8 @@ function fixture() {
   return { root, scope, foreign, get store() { return store; }, get journal() { return journal; }, reopen() { store.close(); store = new BotStore(filename); journal = new BotMaintenanceStore(store); } };
 }
 function snapshot(scope: BotMemoryScope, operationId: string): BotMemoryMaintenanceSnapshot {
-  return { format: 'worldlinebox-memory-maintenance-snapshot-v1', operationId, scope, kind: 'organize', contextEpoch: 1, sourceRevision: '0', createdAt: new Date().toISOString(), scan: { examined: 2, selected: 2, deferred: [] },
-    sources: ['a', 'b'].map(id => ({ id: id.repeat(64), checksum: id.repeat(32), content: 'PRIVATE 原始资料 ' + id, tags: ['日常'], createdAt: new Date().toISOString(), sourceMessageIds: ['message-' + id] })), retrieval: { engine: 'LightMemo', result: {} } };
+  return { format: 'worldlinebox-memory-maintenance-snapshot-v2', operationId, scope, kind: 'organize', contextEpoch: 1, sourceRevision: '0', createdAt: new Date().toISOString(), scan: { examined: 2, selected: 2, deferred: [] },
+    sources: ['a', 'b'].map(id => ({ id: id.repeat(64), checksum: id.repeat(32), content: 'PRIVATE 原始资料 ' + id, tags: ['日常'], createdAt: new Date().toISOString(), sourceMessageIds: ['message-' + id] })), retrieval: { engine: 'DailyNoteManager.Associate', result: {} } };
 }
 it('connects a fresh durable job to the actual core with a valid frozen epoch before model admission', async () => {
   const f = fixture();
@@ -50,7 +50,7 @@ it('connects a fresh durable job to the actual core with a valid frozen epoch be
     store: f.store, root: f.root, brain: { run, archive: vi.fn(async () => undefined) },
     memory: { withdrawnSources: vi.fn(async () => ({ revision: '0', sourceEventIds: [], sourceMessageIds: [] })),
       catalog: vi.fn(async () => ({ items: originals, tags: [] })), readNote: vi.fn(async (_scope: unknown, input: { id: string }) => originals.find(note => note.id === input.id)),
-      tool: vi.fn(async () => ({ results: [] })) },
+      associateDiaries: vi.fn(async () => ({ engine: 'DailyNoteManager.Associate', sourceRevision: '0', items: [], queries: [] })) },
     model: () => ({ apiFormat: 'openai_chat', baseUrl: 'http://127.0.0.1', apiKey: 'local-protocol-fixture', model: 'fixture', contextWindow: 65536, maxTokens: 512 }),
     callback: async () => ({ url: 'http://127.0.0.1/bot/tool', token: 'fixture' }), changed: () => undefined,
   } as unknown as BotMaintenanceRuntimeOptions;
@@ -62,23 +62,134 @@ it('connects a fresh durable job to the actual core with a valid frozen epoch be
   const saved = maintenance.journal.get(f.scope, job.id);
   expect(saved.snapshot?.contextEpoch).toBe(1); expect(saved.plan?.contextEpoch).toBe(1);
   expect(saved.job.status).toBe('completed'); expect(run).toHaveBeenCalledOnce();
+  expect(run).toHaveBeenCalledWith(expect.objectContaining({ cwd: path.join(f.root, 'vcp-maintenance-v2', 'plans', maintenanceDomain(f.scope), job.id) }));
 });
 function plan(scope: BotMemoryScope, operationId: string, types: Array<'organize' | 'insight' | 'archive'> = ['organize']): BotMemoryMaintenancePlan {
-  return { ...snapshot(scope, operationId), format: 'worldlinebox-memory-maintenance-v1', id: 'f'.repeat(64), narrative: '推测：可能有共同线索，尚未写成用户事实。', candidates: types.map((type, index) => ({ id: 'candidate-' + index, type, sourceIds: type === 'organize' ? ['a'.repeat(64), 'b'.repeat(64)] : ['a'.repeat(64)], content: 'PRIVATE 提案正文 ' + index, tags: ['待审'], reason: '待人工确认', uncertainties: ['未证实的联系'], quotes: [{ sourceId: 'a'.repeat(64), text: 'PRIVATE 原始资料 a' }] })) };
+  return { ...snapshot(scope, operationId), format: 'worldlinebox-memory-maintenance-v2', id: 'f'.repeat(64), narrative: '推测：可能有共同线索，尚未写成用户事实。', candidates: types.map((type, index) => ({ id: 'candidate-' + index, type, sourceIds: type === 'organize' ? ['a'.repeat(64), 'b'.repeat(64)] : ['a'.repeat(64)], content: 'PRIVATE 提案正文 ' + index, tags: ['待审'], reason: '待人工确认', uncertainties: ['未证实的联系'], quotes: [{ sourceId: 'a'.repeat(64), text: 'PRIVATE 原始资料 a' }] })) };
 }
-function runtime(f: ReturnType<typeof fixture>, liveEligibleCount: number | null = 12) {
+function runtime(f: ReturnType<typeof fixture>, liveEligibleCount: number | null = 12, companionBusy?: (id: string) => boolean) {
   const catalog = vi.fn(async () => ({ items: [{ indexState: 'indexed' }], total: 999, ...(liveEligibleCount === null ? {} : { liveEligibleCount }) }));
   const options = { store: f.store, root: f.root, memory: { catalog, maintenanceWork: workFixture(catalog) }, brain: {}, model: () => ({ apiKey: 'never-used', model: 'fixture', baseUrl: 'http://127.0.0.1:9', apiFormat: 'openai_chat' }), callback: async () => ({ url: 'http://127.0.0.1:9', token: 'never-used' }), changed: vi.fn(), report: vi.fn() } as unknown as BotMaintenanceRuntimeOptions;
-  const value = new BotMaintenanceRuntime(options); cleanups.push(() => value.close()); return { value, catalog };
+  const value = new BotMaintenanceRuntime({ ...options, companionBusy }); cleanups.push(() => value.close()); return { value, catalog };
 }
 async function execute(f: ReturnType<typeof fixture>, value: BotMaintenanceRuntime) {
   const claim = f.store.claimMemoryJob({ workerId: 'maintenance-test' })!; expect(claim).toBeDefined();
   const result = await value.run(claim, new AbortController().signal); f.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, ...result }); return { claim, result };
 }
-async function settlePoll(value: BotMaintenanceRuntime) { value.poll(); await new Promise(resolve => setTimeout(resolve, 20)); }
+async function settlePoll(value: BotMaintenanceRuntime) {
+  value.poll();
+  // The UI polls without waiting. Finish its real asynchronous check before
+  // advancing the simulated clock to the next sampling window.
+  await value['polling'];
+}
+async function scheduled(journal: BotMaintenanceStore, now: number, random: () => number) {
+  const scopes: BotMemoryScope[] = [];
+  await journal.scheduleDreams({ now, random, onScheduled: scope => scopes.push(scope) });
+  return scopes;
+}
+
+it('organizes the original older diaries after an empty daytime wave and consumes their version only after the batch receipt', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const noon = new Date(2026, 10, 27, 12).getTime();
+  vi.setSystemTime(noon);
+  const f = fixture();
+  const notes = ['a', 'b'].map(key => ({ id: key.repeat(64), checksum: key.repeat(32), content: '去年约定的集合地点 ' + key,
+    indexState: 'indexed', tags: ['观鸟'], createdAt: '2025-04-01T00:00:00Z', sourceMessageIds: [] }));
+  const model = vi.fn(async () => ({ status: 'succeeded', text: JSON.stringify({ narrative: '核对了两篇旧日记，保留各自的约定。', candidates: [] }) }));
+  const configuration = vi.fn(() => ({ apiFormat: 'openai_chat', model: 'fixture', baseUrl: 'http://localhost', apiKey: 'fixture' }));
+  const readNote = vi.fn(async (_scope: BotMemoryScope, input: { id: string }) => notes.find(note => note.id === input.id));
+  const work = workFixture(async () => ({ items: notes, liveEligibleCount: 0 }), f.store);
+  const runtime = new BotMaintenanceRuntime({
+    store: f.store, root: f.root, changed: () => undefined, brain: { run: model, archive: async () => undefined },
+    memory: { readNote, associateDiaries: async () => ({ engine: 'DailyNoteManager.Associate', sourceRevision: '0', items: [], queries: [] }), maintenanceWork: work,
+      withdrawnSources: async () => ({ revision: '0', sourceMessageIds: [], sourceEventIds: [] }),
+      dreamRecall: async () => ({ engine: 'DreamWaveEngine', sourceRevision: '0', sources: [] }) },
+    model: configuration,
+    callback: async () => ({ url: 'http://localhost', token: 'fixture' }),
+  } as unknown as BotMaintenanceRuntimeOptions);
+  cleanups.push(() => runtime.close());
+  runtime.activity(f.scope, 'version-from-last-year');
+  vi.setSystemTime(noon + 180000);
+  await settlePoll(runtime);
+  expect(configuration).not.toHaveBeenCalled();
+  expect(f.journal.list(f.scope).items).toMatchObject([{ kind: 'dream', trigger: 'idle' }]);
+  await execute(f, runtime);
+  expect(model).not.toHaveBeenCalled();
+  expect(f.journal.list(f.scope).items[0]).toMatchObject({ kind: 'organize', trigger: 'idle', status: 'queued' });
+  vi.setSystemTime(Date.now() + 31000);
+  await execute(f, runtime);
+  expect(readNote.mock.calls.map(([, input]) => input.id)).toEqual(notes.map(note => note.id));
+  expect(model).toHaveBeenCalledOnce();
+  expect(f.journal.list(f.scope).items[0]).toMatchObject({ kind: 'organize', automatic: true, status: 'completed' });
+  vi.setSystemTime(Date.now() + 86400000);
+  await settlePoll(runtime);
+  expect(f.journal.list(f.scope).items).toHaveLength(2);
+});
+async function idleDream(journal: BotMaintenanceStore, now: number, isIdle: (companion: string) => boolean = () => true) {
+  const scopes: BotMemoryScope[] = [];
+  await journal.scheduleIdleDream({ now, isIdle, onScheduled: scope => scopes.push(scope) });
+  return scopes;
+}
+function dreamPlan(scope: BotMemoryScope, jobId: string, seeded = true): BotMemoryMaintenancePlan {
+  const result = plan(scope, jobId, []);
+  return { ...result, kind: 'dream', sources: seeded ? result.sources.map(source => ({ ...source, role: 'seed' })) : [] };
+}
+it.each([false, true])('reopens an unfinished retired automatic dream once after its cooldown, migrated watermark=%s', async unknownWatermark => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const at = new Date(2026, 0, 26, 9).getTime();
+  vi.setSystemTime(at);
+  const f = fixture();
+  for (const [scope, finished] of [[f.scope, false], [f.foreign, true]] as const) {
+    f.journal.activity(scope, 'original-indexed-diary');
+    const job = f.journal.enqueue(scope, 'dream', 'previous-dream', true, undefined, 'idle');
+    const frozen = dreamPlan(scope, job.id);
+    if (!finished) frozen.candidates = plan(scope, job.id, ['insight']).candidates;
+    f.journal.savePlan(scope, job.id, frozen);
+    f.journal.recordDreamSuccess(scope, at);
+    f.store.taskTransaction(sql => {
+      sql.prepare("UPDATE bot_maintenance_jobs SET plan_json=json_set(plan_json,'$.format','worldlinebox-memory-maintenance-v1') WHERE id=?").run(job.id);
+      if (unknownWatermark) sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=-1 WHERE owner_key=?').run(maintenanceOwner(scope));
+    });
+  }
+  f.store.taskTransaction(sql => sql.prepare('DELETE FROM bot_metadata WHERE key=?').run('maintenance-native-submission-v2'));
+  f.reopen();
+  expect(await idleDream(f.journal, at + 60000)).toEqual([]);
+  const later = at + 8 * 3600000;
+  vi.setSystemTime(later);
+  expect(await idleDream(f.journal, later)).toEqual([f.scope]);
+  const replacement = f.journal.list(f.scope).items[0]!;
+  expect(replacement).toMatchObject({ status: 'queued', trigger: 'idle', kind: 'dream' });
+  f.reopen();
+  expect(await idleDream(f.journal, later + 120000)).toEqual([]);
+  f.journal.savePlan(f.scope, replacement.id, dreamPlan(f.scope, replacement.id));
+  f.journal.recordDreamSuccess(f.scope, later);
+  f.reopen();
+  expect(await idleDream(f.journal, later + 86400000)).toEqual([]);
+  expect(f.journal.list(f.scope).items).toHaveLength(2);
+  expect(f.journal.list(f.foreign).items).toHaveLength(1);
+});
+
+it('retires an unfinished frozen DSH turn and its unsent survey page while keeping an unrelated fresh request', () => {
+  const f = fixture();
+  const old = f.journal.enqueue(f.scope, 'organize', 'old-report', false, undefined, undefined, undefined, 'scan');
+  const next = f.journal.enqueue(f.scope, 'organize', 'old-next-page', false, 'obsolete-page', undefined, undefined, 'scan', { rootId: old.id, page: 2 });
+  const fresh = f.journal.enqueue(f.foreign, 'organize', 'fresh-unfrozen');
+  f.store.taskTransaction(sql => {
+    sql.prepare('DELETE FROM bot_metadata WHERE key=?').run('maintenance-native-submission-v2');
+    sql.prepare('UPDATE bot_maintenance_jobs SET snapshot_json=? WHERE id=?').run(JSON.stringify({ ...snapshot(f.scope, old.id), format: 'worldlinebox-memory-maintenance-snapshot-v1' }), old.id);
+  });
+  f.store.setMetadata('maintenance-output:' + old.id + ':0', JSON.stringify({ eventId: 'retired-dsh-event', checkpoint: 17, text: '旧回复片段' }));
+  f.reopen();
+  for (const job of [old, next]) {
+    expect(f.journal.get(f.scope, job.id).job).toMatchObject({ phase: 'planner_retired', status: 'cancelled' });
+    expect(() => f.journal.control(f.scope, job.id, 'retry', job.id + '-retry')).toThrow('旧版');
+  }
+  expect(f.journal.get(f.foreign, fresh.id).job.status).toBe('queued');
+  expect(f.store.claimMemoryJob({ workerId: 'new-executor' })?.job.payload.jobId).toBe(fresh.id);
+});
 it('keeps invalid source evidence distinct from executor outages and releases the failed generation queue item', async () => {
   vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(); f.journal.settings(f.scope); const r = runtime(f);
-  vi.setSystemTime(Date.now() + 3600000); const job = r.value.journal.enqueue(f.scope, 'organize', 'invalid-evidence', true);
+  vi.setSystemTime(Date.now() + 3600000); const job = r.value.journal.enqueue(f.scope, 'organize', 'invalid-evidence');
   vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockRejectedValueOnce(Object.assign(new Error('候选引用无法在来源原文中核对。'), { code: 'MEMORY_MAINTENANCE_INVALID_PLAN' }));
   const { result } = await execute(f, r.value); expect(result.status).toBe('failed');
   expect(r.value.journal.get(f.scope, job.id).job).toMatchObject({ status: 'blocked', phase: 'invalid_plan' });
@@ -87,14 +198,14 @@ it('keeps invalid source evidence distinct from executor outages and releases th
   expect(f.store.claimMemoryJob({ workerId: 'next-task' })?.job.payload.jobId).toBe(next.id);
 });
 it('backs off repeated provider failures without exhausting a retry quota or blocking another memory domain', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now(); f.journal.activity(f.scope, 'diary'); vi.setSystemTime(at + 86400001);
-  let calls = 0;
-  const run = vi.fn<BotMaintenanceRuntimeOptions['brain']['run']>(async input => {
-    if (++calls <= 5) throw new BotDshTurnFailedError(input.eventId, 'provider temporarily HTTP 503');
-    return { text: '{"narrative":"已恢复","candidates":[]}', status: 'succeeded', eventId: input.eventId, sessionId: input.laneId };
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(2026, 0, 21, 1, 15));
+  const f = fixture(), r = runtime(f), job = f.journal.enqueue(f.scope, 'dream', 'retry-until-recovery', true);
+  let attempts = 0;
+  const run = vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => {
+    if (++attempts <= 5) throw Object.assign(new Error('provider temporarily HTTP 503'), { code: 'MEMORY_MAINTENANCE_MODEL_FAILED' });
+    return { ...plan(input.scope, input.operationId), kind: 'dream', candidates: [] };
   });
-  const r = realCoreRuntime(f, { run, archive: vi.fn(async () => undefined) } as unknown as BotMaintenanceRuntimeOptions['brain']);
-  const job = r.value.journal.enqueue(f.scope, 'organize', 'retry-until-recovery', true);
   for (let index = 0; index < 5; index++) {
     expect((await execute(f, r.value)).result.status).toBe('retry');
     expect(r.value.journal.get(f.scope, job.id).job).toMatchObject({ status: 'queued', phase: 'waiting_executor' });
@@ -105,22 +216,29 @@ it('backs off repeated provider failures without exhausting a retry quota or blo
   }
   expect((await execute(f, r.value)).result.status).toBe('done');
   expect(r.value.journal.get(f.scope, job.id).job.status).toBe('completed');
-  expect(run).toHaveBeenCalledTimes(6); expect(r.memory.catalog).toHaveBeenCalledOnce();
+  expect(run).toHaveBeenCalledTimes(6);
 });
-it('catches up after several days offline and continues all pages without daily or unfinished-plan quotas', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now();
-  f.journal.activity(f.scope, 'new-diary'); f.journal.updateSettings(f.scope, { intervalHours: 1, idleMinutes: 1 });
-  f.reopen(); vi.setSystemTime(at + 3 * 86400000);
-  const r = runtime(f); let page = 0;
-  const prepare = vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => {
-    const result = plan(input.scope, input.operationId); result.scan = { examined: 24, selected: 2, deferred: [], cursor: input.cursor, nextCursor: ++page < 6 ? `page-${page}` : undefined }; return result;
-  });
+it('checks the native window at most once each 15 minutes and rolls without consulting pending diary counts', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const at = new Date(2026, 0, 21, 0, 45).getTime();
+  vi.setSystemTime(at);
+  const f = fixture(), r = runtime(f);
+  f.journal.settings(f.scope);
+  const roll = vi.spyOn(Math, 'random').mockReturnValue(0.6);
   await settlePoll(r.value);
-  expect(f.journal.list(f.scope).items).toHaveLength(1);
-  for (let index = 0; index < 6; index++) expect((await execute(f, r.value)).result.status).toBe('done');
-  expect(prepare).toHaveBeenCalledTimes(6); expect(f.journal.list(f.scope).items).toHaveLength(6);
-  expect(f.journal.list(f.scope).items.every(job => job.status === 'review')).toBe(true);
-  expect(f.store.listPendingMemory().filter(job => job.kind === 'maintenance')).toHaveLength(0);
+  expect(roll).not.toHaveBeenCalled();
+  vi.setSystemTime(at + 15 * 60000);
+  await settlePoll(r.value);
+  expect(roll).toHaveBeenCalledTimes(1);
+  expect(f.journal.list(f.scope).items).toHaveLength(0);
+  roll.mockReturnValue(0.59);
+  vi.setSystemTime(at + 29 * 60000);
+  await settlePoll(r.value);
+  expect(roll).toHaveBeenCalledTimes(1);
+  vi.setSystemTime(at + 30 * 60000);
+  await settlePoll(r.value);
+  expect(f.journal.list(f.scope).items).toMatchObject([{ kind: 'dream', automatic: true }]);
+  expect(r.catalog).not.toHaveBeenCalled();
 });
 
 it('restores the exact output checkpoint after reopening without rescanning or replaying the original model input', async () => {
@@ -142,28 +260,22 @@ it('restores the exact output checkpoint after reopening without rescanning or r
   expect(next.memory.catalog).not.toHaveBeenCalled();
 });
 
-it('automatically resumes a legacy output-limit failure and leaves unrelated failed jobs out of the scheduling gate', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now(); f.journal.activity(f.scope, 'source');
-  const job = f.journal.enqueue(f.scope, 'organize', 'legacy-output', true), claim = f.store.claimMemoryJob({ workerId: 'old' })!;
-  f.journal.start(f.scope, job.id, false); f.journal.snapshot(f.scope, job.id, snapshot(f.scope, job.id));
-  f.journal.diagnostic(f.scope, job.id, 'error', { code: 'BOT_OUTPUT_LIMIT' }); f.journal.progress(f.scope, job.id, 'blocked', 'blocked', 'old output limit');
-  f.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'failed' });
-  f.reopen(); vi.setSystemTime(at + 20 * 60000); const r = runtime(f);
-  await settlePoll(r.value); expect(f.journal.get(f.scope, job.id).job.status).toBe('queued');
-  vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => { const result = plan(input.scope, input.operationId); result.candidates = []; return result; });
-  expect((await execute(f, r.value)).result.status).toBe('done');
-  f.journal.activity(f.scope, 'later-diary');
-  const bad = f.journal.enqueue(f.scope, 'organize', 'bad-plan', true);
-  const queued = f.store.claimMemoryJob({ workerId: 'bad' })!;
-  f.store.settleMemoryJob({ id: queued.job.id, leaseToken: queued.leaseToken, status: 'failed' });
-  f.journal.progress(f.scope, bad.id, 'blocked', 'blocked', 'requires inspection');
-  vi.setSystemTime(at + 2 * 86400000); expect(f.journal.due()).toEqual(f.scope);
+it('keeps manual organization out of the native automatic scheduler after reopening', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const at = new Date(2026, 0, 21, 12).getTime(); vi.setSystemTime(at);
+  const f = fixture();
+  const job = f.journal.enqueue(f.scope, 'organize', 'manual-org');
+  f.journal.progress(f.scope, job.id, 'blocked', 'blocked', 'manual attention');
+  f.reopen();
+  expect(await scheduled(f.journal, at + 24 * 3600000, () => 0)).toEqual([]);
+  expect(f.journal.get(f.scope, job.id).job.status).toBe('blocked');
 });
+
 function realCoreRuntime(f: ReturnType<typeof fixture>, brain: BotMaintenanceRuntimeOptions['brain'], baseUrl = 'http://127.0.0.1:9') {
   const originals = ['a', 'b'].map(id => ({ id: id.repeat(64), checksum: id.repeat(32), indexState: 'indexed', content: '隔离HTTP回归测试的来源日记：' + id,
     tags: ['测试'], createdAt: '2026-11-03T10:00:00Z', sourceMessageIds: [] }));
   const memory = { withdrawnSources: vi.fn(async () => ({ revision: '0', sourceEventIds: [], sourceMessageIds: [] })), catalog: vi.fn(async () => ({ items: originals, tags: [] })),
-    readNote: vi.fn(async (_scope: unknown, input: { id: string }) => originals.find(note => note.id === input.id)), tool: vi.fn(async () => ({ results: [] })), maintenanceWork: undefined as unknown as BotMemoryService['maintenanceWork'] };
+    readNote: vi.fn(async (_scope: unknown, input: { id: string }) => originals.find(note => note.id === input.id)), associateDiaries: vi.fn(async () => ({ engine: 'DailyNoteManager.Associate', sourceRevision: '0', items: [], queries: [] })), maintenanceWork: undefined as unknown as BotMemoryService['maintenanceWork'] };
   memory.maintenanceWork = workFixture(memory.catalog, f.store);
   const report = vi.fn<(error: unknown) => void>();
   const value = new BotMaintenanceRuntime({ store: f.store, root: f.root, brain, memory, report,
@@ -220,31 +332,74 @@ it('does not let terminal-lane cleanup failure mask the confirmed failure receip
   const diagnostic = f.store.taskTransaction(sql => sql.prepare("SELECT text FROM bot_maintenance_diagnostics WHERE job_id=? AND phase='model-response' ORDER BY sequence DESC LIMIT 1").get(job.id)) as { text: string };
   expect(JSON.parse(diagnostic.text)).toMatchObject({ outcome: 'host-terminal-failure-confirmed', cleanupError: 'local cleanup failed' });
 });
-it('persists cold-start cooldown, unique dirty changes and settings without automatically admitting a model', () => {
+it('persists successful companion cooldowns across restart and separates successive agent dreams', async () => {
   vi.useFakeTimers({ toFake: ['Date'] });
-  const f = fixture(), settings = f.journal.settings(f.scope), at = Date.now();
-  expect(settings).toMatchObject({ enabled: true, autoApply: 'never', minNotes: 12, idleMinutes: 15 });
-  expect(Date.parse(settings.nextEligibleAt) - at).toBe(86400000); expect(f.journal.due()).toBeUndefined();
-  f.journal.activity(f.scope, 'source-indexed'); f.journal.activity(f.scope, 'source-indexed');
-  f.reopen(); expect(f.journal.settings(f.scope)).toEqual({ ...settings, lastActivityAt: new Date(at).toISOString() });
-  vi.setSystemTime(at + 86400001); expect(f.journal.due()).toEqual(f.scope);
-  f.journal.updateSettings(f.scope, { enabled: false }); expect(f.journal.due()).toBeUndefined();
+  const at = new Date(2026, 0, 21, 1, 30).getTime(); vi.setSystemTime(at);
+  const f = fixture(); f.journal.settings(f.scope); f.journal.settings(f.foreign);
+  f.journal.recordDreamAttemptFinished(at - 60000);
+  expect(f.journal.dreamExecutionDelay(f.scope, at - 59500)).toBe(29500);
+  expect(f.journal.dreamExecutionDelay(f.scope, at)).toBe(0);
+  f.journal.recordDreamSuccess(f.scope, at); f.reopen();
+  expect(f.journal.dreamExecutionDelay(f.scope, at + 1000)).toBe(8 * 3600000 - 1000);
+  expect(f.journal.dreamExecutionDelay(f.foreign, at + 1000)).toBe(29000);
+  expect(f.journal.dreamExecutionDelay(f.foreign, at + 30000)).toBe(0);
+  expect(await scheduled(f.journal, at + 15 * 60000, () => 0)).toEqual([f.foreign]);
+  expect(await scheduled(f.journal, at + 30 * 60000, () => 0)).toEqual([]);
 });
-it('requires pending incremental versions and never treats retained catalog total as automatic eligibility', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now(); f.journal.activity(f.scope, 'changed'); vi.setSystemTime(at + 86400001);
-  const r = runtime(f, null); await settlePoll(r.value);
-  expect(r.catalog).toHaveBeenCalledTimes(1); expect(f.journal.list(f.scope).items).toEqual([]);
+it('stops sampling at 06:00 local, respects disabling the clock and never replays missed daytime draws', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const at = new Date(2026, 0, 21, 5, 45).getTime(); vi.setSystemTime(at);
+  const f = fixture(), roll = vi.fn(() => 0);
+  f.journal.settings(f.scope);
+  expect(await scheduled(f.journal, at + 15 * 60000, roll)).toEqual([]);
+  expect(roll).not.toHaveBeenCalled();
+  f.journal.updateSettings(f.scope, { enabled: false });
+  expect(await scheduled(f.journal, at + 24 * 3600000, roll)).toEqual([]);
+  expect(roll).not.toHaveBeenCalled();
 });
-it('enforces same-domain memory leases before background planning and queues only one daily automatic plan', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now(); f.journal.activity(f.scope, 'changed'); vi.setSystemTime(at + 86400001);
-  const r = runtime(f), capture = f.store.enqueueMemoryJob({ kind: 'capture', key: 'capture', payload: { scope: f.scope } });
-  await settlePoll(r.value); expect(r.catalog).not.toHaveBeenCalled();
-  const claim = f.store.claimMemoryJob({ workerId: 'capture' })!; expect(claim.job.id).toBe(capture.id); f.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done' });
-  vi.setSystemTime(Date.now() + 60001); await settlePoll(r.value); expect(f.journal.list(f.scope).items).toHaveLength(1);
-  const job = f.journal.list(f.scope).items[0]!; expect(job).toMatchObject({ automatic: true, status: 'queued' });
-  expect(f.journal.enqueue(f.scope, 'dream', 'second-auto', true)).toMatchObject({ automatic: true, status: 'queued' });
-  expect(f.store.claimMemoryJob({ workerId: 'one' })).toBeDefined(); expect(f.store.claimMemoryJob({ workerId: 'two' })).toBeUndefined();
+it('rolls once per companion and isolates the selected audience when several chats are eligible', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const at = new Date(2026, 0, 21, 1, 0).getTime(); vi.setSystemTime(at);
+  const f = fixture(), group = f.store.createGroup({ title: 'group', memberIds: ['alice', 'bob'] });
+  const newer = { ...f.scope, conversationId: group.id, securityDomainId: group.securityDomainId };
+  f.journal.activity(f.scope);
+  vi.setSystemTime(at + 1000); f.journal.activity(newer);
+  vi.setSystemTime(at + 2000);
+  for (let i = 0; i < 34; i++) {
+    const departed = f.store.createGroup({ title: 'departed-' + i, memberIds: ['alice', 'bob'], reuseMembers: false });
+    f.journal.activity({ ...f.scope, conversationId: departed.id, securityDomainId: departed.securityDomainId });
+    f.store.taskTransaction(sql => sql.prepare('DELETE FROM bot_members WHERE conversation_id=? AND member_id=?').run(departed.id, 'alice'));
+  }
+  const roll = vi.fn(() => 0);
+  expect(await scheduled(f.journal, at + 15 * 60000, roll)).toEqual([newer]);
+  expect(roll).toHaveBeenCalledTimes(1);
+  expect(f.journal.list(f.scope).items).toHaveLength(0);
 });
+it('serves foreground work between native clock pages and advances the clock without rewriting audience settings', async () => {
+  const at = new Date(2026, 0, 21, 1).getTime(), f = fixture();
+  const existing = f.journal.settings(f.scope, at);
+  for (let i = 0; i < 65; i++) {
+    const id = 'dream-test-' + i;
+    f.store.createCompanion({ id, name: id, persona: '伙伴' });
+    const room = f.store.openDirect(id);
+    f.journal.settings({ companionId: id, conversationId: room.id, securityDomainId: room.securityDomainId }, at);
+  }
+  const rawSettings = () => f.store.taskTransaction(sql => sql.prepare('SELECT settings_json FROM bot_maintenance_settings ORDER BY owner_key').all());
+  const before = rawSettings();
+  let draws = 0, drawsAtRead = 0;
+  let result: ReturnType<BotStore['getConversation']>;
+  const roll = () => {
+    if (++draws === 1) setImmediate(() => { result = f.store.getConversation(f.scope.conversationId); drawsAtRead = draws; });
+    return 1;
+  };
+  expect(await scheduled(f.journal, at + 15 * 60000, roll)).toEqual([]);
+  expect(result?.id).toBe(f.scope.conversationId);
+  expect(drawsAtRead).toBeGreaterThan(0); expect(drawsAtRead).toBeLessThanOrEqual(16); expect(draws).toBe(66);
+  expect(rawSettings()).toEqual(before);
+  expect(existing.nextEligibleAt).toBe(new Date(at + 15 * 60000).toISOString());
+  expect(f.journal.settings(f.scope, at + 15 * 60000).nextEligibleAt).toBe(new Date(at + 30 * 60000).toISOString());
+});
+
 it('keeps plan snapshots and candidate reviews durable across reopen, with CAS revision and no self-approval', () => {
   const f = fixture(), job = f.journal.enqueue(f.scope, 'dream', 'manual-one'); f.journal.snapshot(f.scope, job.id, snapshot(f.scope, job.id)); f.journal.savePlan(f.scope, job.id, plan(f.scope, job.id, ['organize', 'insight', 'archive']));
   f.reopen(); expect(f.journal.get(f.scope, job.id).snapshot?.sources).toHaveLength(2);
@@ -253,6 +408,27 @@ it('keeps plan snapshots and candidate reviews durable across reopen, with CAS r
   expect(f.journal.review(f.scope, job.id, detail.id, detail.revision, 'reject', 'reject-one').status).toBe('rejected');
   expect(() => f.journal.review(f.scope, job.id, detail.id, detail.revision, 'approve', 'different')).toThrow('其他决定');
   expect(f.journal.candidates(f.scope, job.id).items.filter(item => item.status === 'pending')).toHaveLength(2);
+});
+it('requires a human decision on dream proposals even when the organizer has automatic review enabled', () => {
+  const f = fixture(), job = f.journal.enqueue(f.scope, 'dream', 'dream-for-review');
+  f.journal.updateSettings(f.scope, { autoReview: true });
+  f.journal.savePlan(f.scope, job.id, { ...plan(f.scope, job.id, ['insight', 'archive']), kind: 'dream' });
+  expect(f.journal.queueAutomaticReview()).toBeUndefined();
+  expect(f.journal.get(f.scope, job.id).job.autoReview).toBeUndefined();
+  expect(f.journal.candidates(f.scope, job.id).items.map(item => item.status)).toEqual(['pending', 'pending']);
+});
+it('defers model review before admission while that companion already has a foreground turn', async () => {
+  const f = fixture(), busy = vi.fn(() => true), { value } = runtime(f, 12, busy);
+  const job = f.journal.enqueue(f.scope, 'organize', 'busy-review');
+  const planning = f.store.claimMemoryJob({ workerId: 'fixture-planner' })!;
+  f.store.settleMemoryJob({ id: planning.job.id, leaseToken: planning.leaseToken, status: 'done' });
+  f.journal.savePlan(f.scope, job.id, plan(f.scope, job.id));
+  expect(f.journal.queueAutomaticReview(f.scope)).toEqual(f.scope);
+  const claim = f.store.claimMemoryJob({ workerId: 'fixture-reviewer' })!;
+  expect(claim.job.payload.operation).toBe('review');
+  expect(await value.run(claim, new AbortController().signal)).toMatchObject({ status: 'retry' });
+  expect(busy).toHaveBeenCalledWith(f.scope.companionId);
+  expect(f.journal.reviews(f.scope, job.id).items).toHaveLength(0);
 });
 it('binds jobs/candidates/diagnostic pages to the real audience and returns exact Unicode pages', () => {
   const f = fixture(), job = f.journal.enqueue(f.scope, 'organize', 'page'); f.journal.savePlan(f.scope, job.id, plan(f.scope, job.id));
@@ -276,7 +452,6 @@ it('stores a frozen plan before model admission, and only finishes an approved c
   const job = f.journal.enqueue(f.scope, 'organize', 'prepare'); await execute(f, r.value); expect(prepare).toHaveBeenCalledTimes(1); expect(apply).not.toHaveBeenCalled();
   const candidate = f.journal.candidate(f.scope, job.id, 'candidate-0'); f.journal.review(f.scope, job.id, candidate.id, candidate.revision, 'approve', 'approve');
   const pending = await execute(f, r.value); expect(pending.result.status).toBe('retry'); expect(f.journal.get(f.scope, job.id).job.status).not.toBe('completed');
-  expect(f.store.getMetadata(`memory-capture-backfill-v2-suppressed:${maintenanceDomain(f.scope)}`)).toBe(job.id);
   apply.mockResolvedValue({ actionId: 'candidate-0', operationId: 'same-operation', status: 'indexed', receipt: { state: 'indexed', id: 'c'.repeat(64) } });
   const second = f.store.claimMemoryJob({ workerId: 'retry', now: Date.now() + 30000 })!; const result = await r.value.run(second, new AbortController().signal); f.store.settleMemoryJob({ id: second.job.id, leaseToken: second.leaseToken, ...result });
   expect(f.journal.get(f.scope, job.id).job).toMatchObject({ status: 'completed', metrics: { applied: 1 } }); expect(apply.mock.calls[0]![0].plan).toEqual(apply.mock.calls[1]![0].plan);
@@ -291,7 +466,7 @@ it('clears withdrawn maintenance material and blocks old candidates without sile
 it('validates bounded maintenance input and rejects approval via an unrecognized action', () => {
   const base = { conversationId: 'room', companionId: 'alice' };
   expect(botRequestSchema.safeParse({ ...base, type: 'memory.maintenance.list', limit: 21 }).success).toBe(false);
-  expect(botRequestSchema.safeParse({ ...base, type: 'memory.maintenance.settings.update', settings: { intervalHours: 1, idleMinutes: 1 } }).success).toBe(true);
+  expect(botRequestSchema.safeParse({ ...base, type: 'memory.maintenance.settings.update', settings: { enabled: true, autoReview: true } }).success).toBe(true);
   expect(botRequestSchema.safeParse({ ...base, type: 'memory.maintenance.review', jobId: 'j', candidateId: 'c', revision: 'a'.repeat(64), decision: 'self-approve', requestId: 'r' }).success).toBe(false);
 });
 it('cancels a real in-flight planning signal, then explicitly resumes the same frozen source with one known-cancel admission', async () => {
@@ -310,8 +485,8 @@ it('cancels a real in-flight planning signal, then explicitly resumes the same f
   f.journal.control(f.scope, job.id, 'retry', 'resume'); await execute(f, r.value);
   expect(calls.map(call => call.attempt)).toEqual([0, 1]); expect(calls[1]!.source?.sources).toHaveLength(2); expect(f.journal.get(f.scope, job.id).job.status).toBe('review');
 });
-it('preempts automatic planning even for a greeting, yields its lease to capture, then resumes the same job after idle', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), r = runtime(f), started = Date.now(); f.journal.settings(f.scope); vi.setSystemTime(started + 16 * 60000);
+it.each([true, false])('yields an in-flight dream to a new greeting and resumes it (automatic=%s)', async automatic => {
+  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), r = runtime(f), started = new Date(2026, 0, 21, 1).getTime(); vi.setSystemTime(started); f.journal.settings(f.scope); vi.setSystemTime(started + 16 * 60000);
   let admitted!: () => void; const waiting = new Promise<void>(resolve => { admitted = resolve; }); const attempts: number[] = [];
   vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => {
     attempts.push(input.admissionAttempt ?? 0);
@@ -319,9 +494,9 @@ it('preempts automatic planning even for a greeting, yields its lease to capture
     await input.onSnapshot(snapshot(input.scope, input.operationId)); admitted();
     await new Promise<void>((_resolve, reject) => input.signal!.addEventListener('abort', () => reject(Object.assign(new Error('Known cancelled'), { code: 'BOT_ABORT_ACKNOWLEDGED' })), { once: true })); throw new Error('Unreachable');
   });
-  const job = f.journal.enqueue(f.scope, 'organize', 'automatic-idle', true), first = execute(f, r.value); await waiting;
+  const job = f.journal.enqueue(f.scope, 'dream', 'interruptible-dream', automatic), first = execute(f, r.value); await waiting;
   r.value.userMessage(f.scope, false); expect((await first).result.status).toBe('retry'); expect(f.journal.get(f.scope, job.id).job).toMatchObject({ status: 'queued', phase: 'waiting_idle' });
-  const capture = f.store.enqueueMemoryJob({ kind: 'capture', key: 'new-user-capture', payload: { scope: f.scope } }), claim = f.store.claimMemoryJob({ workerId: 'capture-now' })!;
+  const capture = f.store.enqueueMemoryJob({ kind: 'mutation', key: 'new-user-mutation', payload: { scope: f.scope } }), claim = f.store.claimMemoryJob({ workerId: 'foreground-mutation' })!;
   expect(claim.job.id).toBe(capture.id); f.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done' });
   vi.setSystemTime(Date.now() + 15 * 60000 + 1); await execute(f, r.value);
   expect(attempts).toEqual([0, 1]); expect(f.journal.get(f.scope, job.id).job.status).toBe('review'); expect(f.journal.list(f.scope).items).toHaveLength(1);
@@ -334,51 +509,137 @@ it('never creates a fresh model admission to hide an unknown delivery, including
   await r.value.close(); f.reopen(); r = runtime(f); vi.setSystemTime(Date.now() + 30001); await execute(f, r.value);
   expect(attempts).toEqual([0, 0]); expect(f.journal.get(f.scope, job.id).snapshot?.sourceRevision).toBe('0');
 });
-it('persists lossless approval mode through an unknown write and never auto-approves dream insights or archives', async () => {
-  const f = fixture(), r = runtime(f); f.journal.updateSettings(f.scope, { autoApply: 'lossless' });
-  vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => plan(input.scope, input.operationId, ['organize', 'insight', 'archive']));
-  const apply = vi.spyOn(BotMemoryMaintenance.prototype, 'applyCandidate').mockResolvedValue({ actionId: 'candidate-0', operationId: 'lossless-effect', status: 'unknown' });
-  const job = f.journal.enqueue(f.scope, 'organize', 'lossless'); await execute(f, r.value);
-  expect(f.journal.candidates(f.scope, job.id).items.map(item => item.status)).toEqual(['approved', 'pending', 'pending']);
-  await execute(f, r.value); expect(apply.mock.calls[0]![0].approval).toBe('lossless');
-  f.journal.updateSettings(f.scope, { autoApply: 'never' }); f.journal.control(f.scope, job.id, 'retry', 'recover-lossless'); await execute(f, r.value);
-  expect(apply.mock.calls[1]![0].approval).toBe('lossless'); expect(f.journal.candidates(f.scope, job.id).items.slice(1).every(item => item.status === 'pending')).toBe(true);
+it('starts new native jobs without reusing a saved legacy catalog cursor or deferred cycle', async () => {
+  const f = fixture(), r = runtime(f);
+  const owner = maintenanceOwner(f.scope);
+  f.store.setMetadata('maintenance-scan-cursor:' + owner + ':organize', 'obsolete-page');
+  f.store.setMetadata('maintenance-scan-cycle:' + owner + ':organize', '{"version":1,"deferred":true}');
+  const prepare = vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => plan(input.scope, input.operationId, []));
+  f.journal.enqueue(f.scope, 'organize', 'after-old-cursor');
+  await execute(f, r.value);
+  expect(prepare.mock.calls[0]![0]).toMatchObject({ cursor: undefined, selectBatch: expect.any(Function) });
 });
-it('continues finite catalog batches past an archived first page and resets the cursor only at the true end', async () => {
-  const f = fixture(), r = runtime(f); const cursors: Array<string | undefined> = [];
-  vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => {
-    cursors.push(input.cursor);
-    const result = plan(input.scope, input.operationId, []); result.scan = { ...result.scan, examined: 24, selected: 0, nextCursor: cursors.length === 1 ? 'page-two' : undefined }; return result;
-  });
-  const first = f.journal.enqueue(f.scope, 'organize', 'batch-first'); await execute(f, r.value); expect(f.journal.get(f.scope, first.id).job.nextCursor).toBe('page-two');
-  f.reopen(); const next = runtime(f); f.journal.enqueue(f.scope, 'organize', 'batch-second'); await execute(f, next.value); f.journal.enqueue(f.scope, 'organize', 'batch-third'); await execute(f, next.value);
-  expect(cursors).toEqual([undefined, 'page-two', undefined]);
+it('only polls the persisted journal, and leaves it untouched after shutdown', async () => {
+  const f = fixture(), r = runtime(f);
+  await r.value.close();
+  const sample = vi.spyOn(r.value.journal, 'scheduleDreams');
+  r.value.poll();
+  expect(sample).not.toHaveBeenCalled();
+  expect(r.catalog).not.toHaveBeenCalled();
 });
-it('retains deferred sources across every page and revisits the cycle instead of claiming whole-library completion', async () => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now(); f.journal.activity(f.scope, 'first-note-change'); vi.setSystemTime(at + 86400001);
-  const seen: Array<string | undefined> = []; let r = runtime(f);
-  vi.spyOn(BotMemoryMaintenance.prototype, 'preparePlan').mockImplementation(async input => {
-    seen.push(input.cursor); const result = plan(input.scope, input.operationId, []);
-    result.scan = { ...result.scan, cursor: input.cursor, nextCursor: seen.length === 1 ? 'later-page' : undefined, deferred: seen.length === 1 ? [{ id: 'a'.repeat(64), reason: 'temporarily over current model budget' }] : [] }; return result;
-  });
-  f.journal.enqueue(f.scope, 'organize', 'deferred-first'); await execute(f, r.value);
-  await r.value.close(); f.reopen(); r = runtime(f); f.journal.enqueue(f.scope, 'organize', 'deferred-last'); await execute(f, r.value);
-  const state = () => f.store.taskTransaction(sql => sql.prepare('SELECT dirty,planned FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner(f.scope))) as { dirty: number; planned: number };
-  expect(state()).toEqual({ dirty: 1, planned: 0 }); expect(f.journal.due()).toEqual(f.scope);
-  f.journal.enqueue(f.scope, 'organize', 'deferred-next-cycle'); await execute(f, r.value);
-  expect(seen).toEqual([undefined, 'later-page', undefined]); expect(state()).toEqual({ dirty: 1, planned: 1 }); expect(f.journal.due()).toEqual(f.scope); // Eligibility now comes from the version queue, rather than the coarse dirty counter.
+
+it('coalesces offline diary changes into one idle dream and preserves concurrent writes plus the previous foreground time across restart', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const at = new Date(2026, 0, 21, 15).getTime(), week = 7 * 86400000;
+  vi.setSystemTime(at - week);
+  const f = fixture();
+  f.journal.activity(f.scope);
+  expect(await idleDream(f.journal, at - week)).toEqual([]);
+  f.journal.activity(f.scope, 'indexed-v1'); f.journal.activity(f.scope, 'indexed-v1'); f.journal.activity(f.scope, 'indexed-v2');
+  f.journal.recordForeground('alice', at - week); f.journal.recordForeground('alice', at - week - 1);
+  f.reopen(); vi.setSystemTime(at);
+  expect(f.journal.lastForegroundAt('alice')).toBe(at - week);
+  expect(await idleDream(f.journal, at)).toEqual([f.scope]);
+  const first = f.journal.list(f.scope).items[0]!;
+  expect(first).toMatchObject({ kind: 'dream', trigger: 'idle', automatic: true });
+  expect(await idleDream(f.journal, at + 60000)).toEqual([]);
+  f.journal.activity(f.scope, 'indexed-while-dreaming');
+  f.journal.savePlan(f.scope, first.id, dreamPlan(f.scope, first.id));
+  f.journal.recordDreamSuccess(f.scope, at);
+  expect(await idleDream(f.journal, at + 2 * 3600000)).toEqual([]);
+  expect(await idleDream(f.journal, at + 8 * 3600000)).toEqual([f.scope]);
+  const next = f.journal.list(f.scope).items[0]!;
+  f.journal.savePlan(f.scope, next.id, dreamPlan(f.scope, next.id));
+  expect(await idleDream(f.journal, at + week)).toEqual([]);
+  expect(f.journal.list(f.scope).items).toHaveLength(2);
 });
-it.each(['resolve', 'reject'] as const)('bounds close while catalog never settles and fences late %s from the closed store', async outcome => {
-  vi.useFakeTimers({ toFake: ['Date'] }); const f = fixture(), at = Date.now(); f.journal.activity(f.scope, 'changed'); vi.setSystemTime(at + 86400001);
-  const r = runtime(f); let reject!: (cause: unknown) => void, resolve!: (value: Awaited<ReturnType<typeof r.catalog>>) => void;
-  r.catalog.mockImplementationOnce(() => new Promise((done, fail) => { resolve = done; reject = fail; }));
-  const defer = vi.spyOn(r.value.journal, 'defer'), enqueue = vi.spyOn(r.value.journal, 'enqueue'); r.value.poll();
-  await new Promise(done => setTimeout(done, 10));
-  const started = performance.now(); await r.value.close(); expect(performance.now() - started).toBeLessThan(2600);
-  const rows = f.journal.list(f.scope).items.length;
+it('allows Bob to be admitted while Alice yielded or is backing off, while keeping separate audiences for Alice deduplicated', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); const at = new Date(2026, 0, 21, 13).getTime(); vi.setSystemTime(at);
+  const f = fixture(), group = f.store.createGroup({ title: 'another audience', memberIds: ['alice', 'bob'] });
+  const otherAlice = { companionId: 'alice', conversationId: group.id, securityDomainId: group.securityDomainId };
+  f.journal.activity(f.scope, 'v1');
+  expect(await idleDream(f.journal, at)).toEqual([f.scope]);
+  const alice = f.journal.list(f.scope).items[0]!;
+  const lease = f.store.claimMemoryJob({ workerId: 'actual-running-dream', now: at })!;
+  f.journal.start(f.scope, alice.id, false);
+  f.journal.activity(otherAlice, 'other-audience-v1'); f.journal.activity(f.foreign, 'bob-v1');
+  expect(await idleDream(f.journal, at + 1000)).toEqual([]);
+  f.journal.progress(f.scope, alice.id, 'waiting_idle', 'queued');
+  f.store.settleMemoryJob({ id: lease.job.id, leaseToken: lease.leaseToken, status: 'retry', retryDelayMs: 3600000 });
+  expect(await idleDream(f.journal, at + 60000, id => id === 'bob')).toEqual([f.foreign]);
+  expect(f.journal.list(otherAlice).items).toHaveLength(0);
+  expect(f.journal.list(f.foreign).items[0]!.trigger).toBe('idle');
+});
+it('recovers old confirmed changes after manual organizing and honors exactly the frozen nightly source version at midday', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); const at = new Date(2026, 0, 21, 12).getTime(); vi.setSystemTime(at);
+  const f = fixture();
+  f.journal.activity(f.scope, 'pre-upgrade-note');
+  const organized = f.journal.enqueue(f.scope, 'organize', 'manual');
+  f.journal.savePlan(f.scope, organized.id, plan(f.scope, organized.id, []));
+  f.store.taskTransaction(sql => sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=-1,dream_ready_at=0').run());
+  expect(await idleDream(f.journal, at)).toEqual([f.scope]);
+  const idle = f.journal.list(f.scope).items[0]!;
+  f.journal.control(f.scope, idle.id, 'cancel', 'cancel-empty-lease');
+  const night = f.journal.enqueue(f.scope, 'dream', 'night-carryover', true);
+  expect(f.journal.dreamExecutionDelay(f.scope, at, { trigger: 'night', allowDaytime: false })).toBe(60000);
+  expect(f.journal.dreamExecutionDelay(f.scope, at, { trigger: 'night', allowDaytime: true })).toBe(0);
+  expect(f.journal.dreamExecutionDelay(f.scope, at, { trigger: 'idle', allowDaytime: false })).toBe(60000);
+  f.journal.savePlan(f.scope, night.id, dreamPlan(f.scope, night.id, false));
+  expect(f.journal.enqueueIdleOrganization(f.scope, night.id)).toBeUndefined();
+  f.store.taskTransaction(sql => sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=-1,dream_ready_at=0').run());
+  expect(await idleDream(f.journal, at + 2 * 3600000)).toEqual([f.scope]);
+  const later = f.journal.list(f.scope).items[0]!;
+  f.journal.savePlan(f.scope, later.id, dreamPlan(f.scope, later.id));
+  expect(await idleDream(f.journal, at + 4 * 3600000)).toEqual([]);
+});
+it('falls back from old seedless diaries to durable incremental organization until its native queue is empty and honors the organizer review setting', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] }); const at = new Date(2026, 0, 21, 12).getTime(); vi.setSystemTime(at);
+  const f = fixture(); f.journal.updateSettings(f.scope, { autoReview: true }); f.journal.activity(f.scope, 'old-indexed-diary');
+  await idleDream(f.journal, at);
+  const wave = f.journal.list(f.scope).items[0]!;
+  const empty = dreamPlan(f.scope, wave.id, false);
+  f.journal.savePlan(f.scope, wave.id, { ...empty, scan: { ...empty.scan, deferred: [{ id: 'a', reason: 'temporarily unavailable', retryable: true }] } });
+  expect(f.journal.enqueueIdleOrganization(f.scope, wave.id)).toBeUndefined();
+  f.journal.savePlan(f.scope, wave.id, empty);
+  const fallback = f.journal.enqueueIdleOrganization(f.scope, wave.id)!;
+  expect(fallback).toMatchObject({ kind: 'organize', trigger: 'idle', automatic: true });
+  expect(f.journal.enqueueIdleOrganization(f.scope, wave.id)!.id).toBe(fallback.id);
   f.reopen();
-  if (outcome === 'reject') reject(new Error('late native reader rejection after shutdown'));
-  else resolve({ items: [{ indexState: 'indexed' }], total: 999, liveEligibleCount: 12 });
-  await new Promise(resolve => setTimeout(resolve, 10));
-  expect(defer).not.toHaveBeenCalled(); expect(enqueue).not.toHaveBeenCalled(); expect(f.journal.list(f.scope).items).toHaveLength(rows);
+  f.journal.activity(f.scope, 'new-during-fallback');
+  f.journal.savePlan(f.scope, fallback.id, plan(f.scope, fallback.id, ['organize']));
+  expect(f.journal.queueAutomaticReview(f.scope)).toEqual(f.scope);
+  expect(f.journal.get(f.scope, fallback.id).job.autoReview?.total).toBe(1);
+  f.journal.finishIdleOrganization(f.scope, fallback.id, { hasMore: true, retryAt: at + 120000 });
+  expect(await idleDream(f.journal, at + 60000)).toEqual([]);
+  vi.setSystemTime(at + 120000);
+  expect(await idleDream(f.journal, at + 120000)).toEqual([f.scope]);
+  const continued = f.journal.list(f.scope).items[0]!;
+  expect(continued).toMatchObject({ kind: 'organize', trigger: 'idle' });
+  f.journal.savePlan(f.scope, continued.id, plan(f.scope, continued.id, []));
+  f.journal.finishIdleOrganization(f.scope, continued.id, { hasMore: false });
+  expect(await idleDream(f.journal, at + 3600000)).toEqual([f.scope]);
+  const newer = f.journal.list(f.scope).items[0]!;
+  expect(newer).toMatchObject({ kind: 'dream', trigger: 'idle' });
+  f.journal.savePlan(f.scope, newer.id, dreamPlan(f.scope, newer.id));
+  expect(await idleDream(f.journal, at + 2 * 3600000)).toEqual([]);
+});
+
+it('reopens after the 30-day maturation and organizes once even when the dream already covered the last diary', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const created = new Date(2026, 0, 2, 12).getTime();
+  vi.setSystemTime(created);
+  const f = fixture(); f.journal.activity(f.scope, 'indexed-in-january');
+  const wave = f.journal.enqueue(f.scope, 'dream', 'night-after-writing', true);
+  f.journal.savePlan(f.scope, wave.id, dreamPlan(f.scope, wave.id));
+  expect(await idleDream(f.journal, created + 29 * 86400000)).toEqual([]);
+  f.reopen();
+  const opened = created + 37 * 86400000; vi.setSystemTime(opened);
+  expect(await idleDream(f.journal, opened, () => false)).toEqual([]);
+  vi.setSystemTime(opened + 60001);
+  expect(await idleDream(f.journal, Date.now())).toEqual([f.scope]);
+  const job = f.journal.list(f.scope).items[0]!;
+  expect(job).toMatchObject({ kind: 'organize', trigger: 'idle', automatic: true });
+  f.journal.savePlan(f.scope, job.id, plan(f.scope, job.id, []));
+  f.journal.finishIdleOrganization(f.scope, job.id, { hasMore: false });
+  expect(await idleDream(f.journal, opened + 7 * 86400000)).toEqual([]);
 });

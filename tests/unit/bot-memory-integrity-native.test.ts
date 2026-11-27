@@ -51,7 +51,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'lib/integ
         const recall = performance.now();
         const prepared = await service.prepareTurn({ scope, requestId: `${companion}-query`, messages: [{ id: `${companion}-input`, role: 'user', content: '本项目选了哪个数据库？', timestamp: Date.now() }] });
         const recallMs = performance.now() - recall;
-        expect(prepared.evidence).toContain(fact); expect(prepared.evidence).not.toContain(absent);
+        expect(prepared.nativeContext).toContain(fact); expect(prepared.nativeContext).not.toContain(absent);
         records.push({ companion: companion!, activationMs, recallMs, noteIndexConfirmed: true });
       }
       expect(doctors).toHaveLength(2); expect(doctors.map(item => item.reused)).toEqual([false, true]);

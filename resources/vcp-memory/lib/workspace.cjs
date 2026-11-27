@@ -81,6 +81,11 @@ function stageRuntime(home) {
     fs.mkdirSync(runtime, { recursive: true });
     fs.cpSync(source, runtime, { recursive: true, force: false, errorOnExist: false,
       filter: file => !['tests', 'docs', 'target', 'node_modules'].includes(path.basename(file)) });
+    const pluginDir = path.join(runtime, 'Plugin', 'RAGDiaryPlugin');
+    for (const [name, initial] of [['semantic_groups.edit.json', { config: {}, groups: {} }], ['rag_tags.json', {}]]) {
+      const file = path.join(pluginDir, name);
+      if (!fs.existsSync(file)) atomicJson(file, initial);
+    }
     fs.writeFileSync(marker, signature);
   }
   const dependencies = path.join(runtime, 'node_modules');

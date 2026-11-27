@@ -10,7 +10,7 @@ import type { BotEvent } from '../../src/main/companion-bot/types';
 class Memory extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw Error('fixture boundary'); }, embedding: async () => { throw Error('fixture boundary'); } }); }
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-    return { requestId: input.requestId, inputHash: 'fixture', scope: input.scope, messages: input.messages, metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 };
+    return { requestId: input.requestId, inputHash: 'fixture', scope: input.scope, messages: input.messages, metadata: {}, events: [], nativeContext: '', status: 'ready' };
   }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
   override async finishTurn() { return { recorded: true }; }

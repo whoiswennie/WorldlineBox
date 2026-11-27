@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { diaryDateSql, validDate, dateRange } = require('./diary-calendar.cjs');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
 const checksum = text => crypto.createHash('md5').update(text).digest('hex');
 const error = (code, message) => Object.assign(new Error(message), { code });
@@ -14,6 +15,7 @@ const tagsOf = value => [...new Set((typeof value === 'string' ? value.split(/[,
 const idOk = id => typeof id === 'string' && /^[a-f0-9]{64}$/u.test(id);
 const sumOk = value => typeof value === 'string' && /^[a-f0-9]{32}$/u.test(value);
 const terminal = state => ['indexed', 'conflict', 'withdrawn'].includes(state);
+const unfinishedOperation = "state NOT IN ('indexed','conflict','withdrawn')";
 const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
 class ManagedNotes {
   constructor(host) {
@@ -23,9 +25,15 @@ class ManagedNotes {
       if (!this.db.prepare('PRAGMA table_info(mutations)').all().some(column => column.name === name)) this.db.exec(`ALTER TABLE mutations ADD COLUMN ${name} ${type}`);
     }
     this.db.exec(`CREATE TABLE IF NOT EXISTS managed_operations(operation_id TEXT PRIMARY KEY,kind TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,plan_json TEXT NOT NULL,receipt_json TEXT,error TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS managed_unfinished_operations ON managed_operations(state) WHERE ${unfinishedOperation};
       CREATE TABLE IF NOT EXISTS managed_operation_sources(operation_id TEXT NOT NULL,note_id TEXT NOT NULL,PRIMARY KEY(operation_id,note_id));
       CREATE INDEX IF NOT EXISTS managed_sources_note ON managed_operation_sources(note_id);
-      CREATE TABLE IF NOT EXISTS note_dependencies(parent_id TEXT NOT NULL,child_id TEXT NOT NULL,operation_id TEXT NOT NULL,PRIMARY KEY(parent_id,child_id));`);
+      CREATE INDEX IF NOT EXISTS mutations_indexed_catalog ON mutations(created_at DESC,id DESC) WHERE state='indexed';
+      CREATE INDEX IF NOT EXISTS mutations_indexed_calendar ON mutations((${diaryDateSql()}) DESC,created_at DESC,id DESC) WHERE state='indexed';
+      CREATE TABLE IF NOT EXISTS note_dependencies(parent_id TEXT NOT NULL,child_id TEXT NOT NULL,operation_id TEXT NOT NULL,PRIMARY KEY(parent_id,child_id));
+      CREATE INDEX IF NOT EXISTS note_dependencies_child ON note_dependencies(child_id,parent_id);`);
+    this.unfinishedOperation = this.db.prepare(`SELECT 1 FROM managed_operations WHERE ${unfinishedOperation} LIMIT 1`);
+    this.unknownOperation = this.db.prepare(`SELECT 1 FROM managed_operations WHERE ${unfinishedOperation} AND state='unknown' LIMIT 1`);
   }
   serial(fn) { const result = this.tail.then(fn); this.tail = result.catch(() => undefined); return result; }
   validate(payload, kind) {
@@ -33,12 +41,21 @@ class ManagedNotes {
     for (const key of ['operationId', 'sourceEventId']) if (typeof payload[key] !== 'string' || !payload[key] || payload[key].length > 512 || payload[key].includes('\0')) throw new TypeError('Stable operation and source IDs are required.');
     if (typeof payload.content !== 'string' || !payload.content.trim()) throw new TypeError('Managed note content must be a non-empty string.');
     if (payload.tags !== undefined && (typeof payload.tags !== 'string' || payload.tags.length > 4096)) throw new TypeError('Managed tags must be a bounded string.');
+    if (payload.crystal !== undefined) {
+      const crystal = payload.crystal;
+      if (kind !== 'organize' || !crystal || typeof crystal.content !== 'string' || !crystal.content.trim() || !Array.isArray(crystal.tags)
+        || !crystal.tags.length || crystal.tags.length > 12 || crystal.tags.some(tag => typeof tag !== 'string' || !tag.trim() || tag.length > 64 || /[,，、\r\n]/u.test(tag))
+        || !tagsOf(payload.tags).some(tag => crystal.tags.includes(tag))) throw new TypeError('A crystal volume must have content and share an event tag with its chronicle.');
+    }
     if (payload.sourceRootEventId !== undefined && (typeof payload.sourceRootEventId !== 'string' || !payload.sourceRootEventId || payload.sourceRootEventId.length > 512 || payload.sourceRootEventId.includes('\0'))) throw new TypeError('Invalid source root ID.');
     const messages = payload.sourceMessageIds ?? [];
     if (!Array.isArray(messages) || messages.length > 2000 || messages.some(id => typeof id !== 'string' || !id || id.length > 512 || id.includes('\0'))) throw new TypeError('Invalid source message IDs.');
     if (kind === 'update' && (!idOk(payload.id) || !sumOk(payload.expectedChecksum))) throw new TypeError('Owned note ID and expectedChecksum are required.');
-    if (kind === 'organize' && (!Array.isArray(payload.sources) || !payload.sources.length || payload.sources.length > 16
-      || new Set(payload.sources.map(value => value.id)).size !== payload.sources.length || payload.sources.some(value => !idOk(value.id) || !sumOk(value.expectedChecksum)))) throw new TypeError('One to sixteen distinct owned source notes and checksums are required.');
+    if (payload.evidenceSources !== undefined && (kind !== 'update' || !Array.isArray(payload.evidenceSources) || payload.evidenceSources.length > 19
+      || new Set(payload.evidenceSources.map(ref => ref?.id)).size !== payload.evidenceSources.length || payload.evidenceSources.some(ref => !idOk(ref?.id)
+        || ref.id === payload.id || !sumOk(ref.expectedChecksum)))) throw new TypeError('An annotation requires distinct owned evidence versions.');
+    if (kind === 'organize' && (!Array.isArray(payload.sources) || !payload.sources.length || payload.sources.length > 20
+      || new Set(payload.sources.map(value => value.id)).size !== payload.sources.length || payload.sources.some(value => !idOk(value.id) || !sumOk(value.expectedChecksum)))) throw new TypeError('One to twenty distinct owned source notes and checksums are required.');
   }
   assertSourceRevision(payload) {
     if (payload.expectedSourceRevision === undefined) return;
@@ -47,7 +64,7 @@ class ManagedNotes {
   }
   row(id) { if (!idOk(id)) throw new TypeError('Owned note ID is required.'); const row = this.db.prepare('SELECT * FROM mutations WHERE id=?').get(id);
     if (!row || ['forgotten', 'withdrawing'].includes(row.state) || this.host.blocked('note', id)) throw error('MEMORY_NOTE_UNAVAILABLE', 'The owned note is unavailable in this domain.'); return row; }
-  async physical(relative, allowMissing = false) {
+  async physicalInfo(relative, allowMissing = false) {
     const root = path.join(this.host.home, 'dailynote'), absolute = this.host.notePath(relative);
     const parts = path.relative(root, absolute).split(path.sep); let current = root;
     for (const part of ['', ...parts.slice(0, -1)]) {
@@ -57,6 +74,12 @@ class ManagedNotes {
     }
     let info; try { info = await fs.lstat(absolute); } catch (cause) { if (allowMissing && cause.code === 'ENOENT') return null; throw cause; }
     if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1 || !samePath(await fs.realpath(absolute), absolute)) throw error('MEMORY_OUTCOME_UNKNOWN', 'Managed note is not an owned regular file.');
+    return { absolute, info };
+  }
+  async physical(relative, allowMissing = false) {
+    const entry = await this.physicalInfo(relative, allowMissing);
+    if (!entry) return null;
+    const { absolute, info } = entry;
     const text = await fs.readFile(absolute, 'utf8'), after = await fs.lstat(absolute);
     if (info.size !== after.size || info.mtimeMs !== after.mtimeMs || info.ino !== after.ino) throw error('MEMORY_OUTCOME_UNKNOWN', 'Managed note changed during verification.');
     return { absolute, text, checksum: checksum(text), info: after };
@@ -73,15 +96,45 @@ class ManagedNotes {
     return { id, content: row.content || '', checksum: actual.checksum, indexState: row.state, tags, createdAt: row.created_at, updatedAt: row.updated_at || row.created_at,
       sourceEventId: row.source_root || row.source_event, sourceMessageIds: JSON.parse(row.source_messages || '[]') };
   }
-  catalog({ query = '', tag = '', cursor, limit = 30 } = {}) {
-    if (typeof query !== 'string' || query.length > 4000 || typeof tag !== 'string' || tag.length > 64 || !Number.isSafeInteger(limit) || limit < 1 || limit > 60) throw new TypeError('Invalid memory catalog filter.');
+  catalog({ query = '', tag = '', cursor, fromDate, toDate, indexedOnly = false, limit = indexedOnly ? 20 : 30 } = {}) {
+    const dated = dateRange(fromDate, toDate);
+    if (dated && !indexedOnly) throw new TypeError('Date-filtered maintenance requires the indexed diary catalog.');
+    if (typeof indexedOnly !== 'boolean' || typeof query !== 'string' || query.length > 4000 || typeof tag !== 'string' || tag.length > 64 || !Number.isSafeInteger(limit) || limit < 1 || limit > (indexedOnly ? 20 : 60)) throw new TypeError('Invalid memory catalog filter.');
     const escape = value => value.replace(/[\\%_]/gu, '\\$&');
     let boundary; if (cursor) { if (typeof cursor !== 'string' || cursor.length > 1024) throw new TypeError('Invalid memory catalog cursor.');
       try { boundary = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw new TypeError('Invalid memory catalog cursor.'); }
-      if (!Array.isArray(boundary) || boundary.length !== 2 || typeof boundary[0] !== 'string' || !idOk(boundary[1])) throw new TypeError('Invalid memory catalog cursor.'); }
+      const valid = dated ? Array.isArray(boundary) && boundary.length === 5 && validDate(boundary[0]) && typeof boundary[1] === 'string'
+        && idOk(boundary[2]) && boundary[3] === (fromDate ?? null) && boundary[4] === (toDate ?? null)
+        : Array.isArray(boundary) && boundary.length === 2 && typeof boundary[0] === 'string' && idOk(boundary[1]);
+      if (!valid) throw new TypeError('Invalid memory catalog cursor.'); }
     const where = ["state NOT IN ('forgotten','withdrawing')"], values = [];
     if (query) { where.push("content LIKE ? ESCAPE '\\'"); values.push('%' + escape(query) + '%'); }
     if (tag) { where.push("EXISTS(SELECT 1 FROM json_each(COALESCE(tags_json,'[]')) WHERE value=?)"); values.push(tag); }
+    if (indexedOnly) {
+      this.host.assertWithdrawalsSettled();
+      const day = diaryDateSql('m');
+      if (fromDate) { where.push(`(${day})>=?`); values.push(fromDate); }
+      if (toDate) { where.push(`(${day})<=?`); values.push(toDate); }
+      if (boundary) {
+        if (dated) { where.push(`(${day},m.created_at,m.id)<(?,?,?)`); values.push(...boundary.slice(0,3)); }
+        else { where.push('(m.created_at,m.id)<(?,?)'); values.push(...boundary); }
+      }
+      // Full-inventory maintenance reads small, checksum-addressed pages. The
+      // planner must open and verify the selected notes before using their text.
+      const rows = this.db.prepare(`SELECT m.id,m.checksum,m.tags_json,m.created_at,m.updated_at,${day} AS diary_day FROM mutations m INDEXED BY ${dated ? 'mutations_indexed_calendar' : 'mutations_indexed_catalog'}
+        WHERE m.state='indexed' AND length(m.checksum)=32 AND m.note_path GLOB 'Companion/*' AND instr(substr(m.note_path,11),'/')=0
+        AND EXISTS(SELECT 1 FROM mutation_sources s WHERE s.note_id=m.id AND s.kind='event')
+        AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.kind='note' AND t.id=m.id)
+        AND NOT EXISTS(SELECT 1 FROM mutation_sources s JOIN tombstones t ON t.kind=s.kind AND t.id=s.id WHERE s.note_id=m.id)
+        AND NOT EXISTS(SELECT 1 FROM managed_operation_sources s JOIN managed_operations o USING(operation_id)
+          WHERE s.note_id=m.id AND o.state NOT IN('indexed','conflict','withdrawn'))
+        AND ${where.join(' AND ')} ORDER BY ${dated ? 'diary_day DESC,' : ''}m.created_at DESC,m.id DESC LIMIT ?`).all(...values, limit + 1);
+      const selected = rows.slice(0, limit), last = selected.at(-1);
+      const after = row => Buffer.from(JSON.stringify(dated ? [row.diary_day,row.created_at,row.id,fromDate ?? null,toDate ?? null] : [row.created_at, row.id])).toString('base64url');
+      return { items: selected.map(row => ({ id: row.id, checksum: row.checksum, indexState: 'indexed', createdAt: row.created_at, diaryDate: row.diary_day,
+        updatedAt: row.updated_at || row.created_at, tags: row.tags_json ? JSON.parse(row.tags_json) : [], afterCursor: after(row) })),
+        ...(rows.length > limit ? { nextCursor: after(last) } : {}) };
+    }
     const filter = where.join(' AND '), total = this.db.prepare(`SELECT COUNT(*) AS n FROM mutations WHERE ${filter}`).get(...values).n;
     const liveEligibleCount = this.db.prepare(`SELECT COUNT(*) AS n FROM mutations m WHERE m.state='indexed'
       AND NOT EXISTS(SELECT 1 FROM managed_operation_sources s JOIN managed_operations o USING(operation_id) WHERE s.note_id=m.id AND o.state='unknown')
@@ -121,7 +174,8 @@ class ManagedNotes {
     if (prior) { if (prior.fingerprint !== fingerprint || prior.kind !== kind) throw error('MEMORY_CONFLICT', 'Operation ID already belongs to a different mutation.'); return prior; }
     const sources = kind === 'update' ? [{ id: payload.id, expectedChecksum: payload.expectedChecksum }] : payload.sources;
     const snapshots = [];
-    for (const source of sources) {
+    const evidence = [];
+    for (const source of [...sources, ...(payload.evidenceSources || [])]) {
       const row = this.row(source.id);
       if (!['indexed', 'pending'].includes(row.state)) throw error('MEMORY_NOTE_UNAVAILABLE', 'Only an active confirmed note can be updated or organized.');
       const busy = this.db.prepare(`SELECT o.operation_id FROM managed_operation_sources s JOIN managed_operations o USING(operation_id)
@@ -135,6 +189,12 @@ class ManagedNotes {
         this.db.prepare('INSERT INTO managed_operations VALUES(?,?,?,?,?,?,?,?,?)').run(payload.operationId, kind, fingerprint, 'conflict', JSON.stringify({ payload, sources: [] }), JSON.stringify(receipt), null, now, now);
         return { conflict: receipt };
       }
+      if (kind === 'update' && source.id !== payload.id) {
+        if (row.state !== 'indexed') throw error('MEMORY_NOTE_UNAVAILABLE', 'Annotation evidence must be currently indexed.');
+        if (this.db.prepare(`WITH RECURSIVE ancestor(id) AS (SELECT ? UNION SELECT d.parent_id FROM note_dependencies d JOIN ancestor a ON d.child_id=a.id)
+          SELECT 1 FROM ancestor WHERE id=? LIMIT 1`).get(source.id, payload.id)) throw error('MEMORY_CONFLICT', 'This annotation would create a circular source dependency.');
+        evidence.push({ ...source, path: row.note_path }); continue;
+      }
       const lastLine = actual.text.trimEnd().split('\n').at(-1);
       snapshots.push({ ...source, path: row.note_path, oldText: actual.text, oldContent: row.content,
         tags: row.tags_json ? JSON.parse(row.tags_json) : /^Tag:\s*.+/iu.test(lastLine) ? tagsOf(lastLine.replace(/^Tag:\s*/iu, '')) : [] });
@@ -142,10 +202,11 @@ class ManagedNotes {
     const root = payload.sourceRootEventId || payload.sourceEventId, messages = payload.sourceMessageIds || [];
     if (this.host.blocked('event', root) || this.host.blocked('event', payload.sourceEventId) || messages.some(id => this.host.blocked('message', id))) return { conflict: { status: 'withdrawn', state: 'withdrawn', withdrawn: true, operationId: payload.operationId } };
     const selectedTags = payload.tags === undefined ? snapshots[0].tags : tagsOf(payload.tags), tags = selectedTags.length ? selectedTags : ['对话记录'];
-    const plan = { payload, sources: snapshots, tags, revisedAt: new Date().toISOString() };
+    const plan = { payload, sources: snapshots, ...(evidence.length && { evidence }), tags, revisedAt: new Date().toISOString() };
     if (kind === 'update') {
-      const firstLine = snapshots[0].oldText.split('\n')[0];
+      const [firstLine, oldTime] = snapshots[0].oldText.split('\n', 2);
       const body = payload.content.trimEnd().split('\n'); if (/^Tag:\s*.+/iu.test(body.at(-1).trim())) body.pop();
+      if (/^\[\d{1,2}:\d{2}(?::\d{2})?\]$/u.test(oldTime || '') && !/^\[\d{1,2}:\d{2}(?::\d{2})?\](?:\s|$)/u.test(body[0])) body.unshift(oldTime);
       plan.newText = `${firstLine}\n${body.join('\n').trimEnd()}\n\n受管修订时间：${plan.revisedAt}\n修订来源事件：${payload.sourceEventId}\nTag: ${tags.join(', ') || '对话记录'}`;
       plan.newChecksum = checksum(plan.newText);
     } else {
@@ -157,8 +218,25 @@ class ManagedNotes {
       const hour = part('hour') === '24' ? '00' : part('hour');
       plan.newPath = `Companion/${date}-${hour}_${part('minute')}_${part('second')}-${plan.newId}.txt`;
       const body = payload.content.trimEnd().split('\n'); if (/^Tag:\s*.+/iu.test(body.at(-1).trim())) body.pop();
-      plan.newText = `[${date}] - Companion\n[${hour}:${part('minute')}]\n${body.join('\n').trimEnd()}\n\n整理时间：${plan.revisedAt}\n来源记忆：${sources.map(source => source.id).join(', ')}\nTag: ${tags.join(', ') || '对话记录'}`;
+      plan.author = this.host.authorName;
+      const origins = sources.map(source => source.id).join(', ');
+      const chronicle = payload.crystal ? `[整理合并·脉络卷] 原始来源：${origins}\n` : '';
+      plan.newText = `[${date}] - ${plan.author}\n[${hour}:${part('minute')}]\n${chronicle}${body.join('\n').trimEnd()}\n\n整理时间：${plan.revisedAt}\n来源记忆：${origins}\nTag: ${tags.join(', ') || '对话记录'}`;
       plan.newChecksum = checksum(plan.newText);
+      if (payload.crystal) {
+        const sourceEventId = 'organized-crystal-' + hash(payload.operationId), id = hash(sourceEventId);
+        if (id === plan.newId || this.db.prepare('SELECT 1 FROM mutations WHERE id=?').get(id) || this.host.blocked('note', id) || this.host.blocked('event', sourceEventId))
+          throw error('MEMORY_CONFLICT', 'Crystal output identity already belongs to another write.');
+        const time = `${hour}:${part('minute')}:${part('second')}`;
+        const extension = String(process.env.DAILY_NOTE_EXTENSION || 'txt').toLowerCase() === 'md' ? 'md' : 'txt';
+        const crystalBody = payload.crystal.content.trimEnd().split('\n');
+        if (/^Tag:\s*.+/iu.test(crystalBody.at(-1).trim())) crystalBody.pop();
+        const content = `[${time}]\n[整理合并·结晶卷] 原始来源：${origins}\n${crystalBody.join('\n').trimEnd()}`;
+        // DailyNote.create canonicalizes its external Tag line, including trailing punctuation.
+        const tag = tagsOf(payload.crystal.tags).join(', ').replace(/：/gu, '').replace(/[。.]+$/gu, '').replace(/\s+,/gu, ',').replace(/\s{2,}/gu, ' ').trim();
+        plan.crystal = { id, sourceEventId, date, content, tag, path: `Companion/${date}-${time.replaceAll(':', '_')}-${id}.${extension}`,
+          checksum: checksum(`[${date}] - ${plan.author}\n${content}\nTag: ${tag}`) };
+      }
       for (const source of snapshots) source.archivePath = `已整理/${source.id}-${hash(payload.operationId).slice(0, 16)}${path.extname(source.path)}`;
     }
     const now = new Date().toISOString();
@@ -166,12 +244,21 @@ class ManagedNotes {
       this.db.prepare('INSERT INTO managed_operations VALUES(?,?,?,?,?,?,?,?,?)').run(payload.operationId, kind, fingerprint, 'prepared', JSON.stringify(plan), null, null, now, now);
       for (const source of sources) this.db.prepare('INSERT INTO managed_operation_sources VALUES(?,?)').run(payload.operationId, source.id);
       if (plan.newId) {
-        this.db.prepare('INSERT INTO mutations(id,hash,state,note_path,checksum,created_at,source_event,source_root,source_messages,content,tags_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)')
+        this.db.prepare('INSERT INTO mutations(id,hash,state,note_path,checksum,created_at,source_event,source_root,source_messages,content,tags_json,updated_at,author_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
           .run(plan.newId, hash(payload.content), 'writing', plan.newPath, plan.newChecksum, now, payload.sourceEventId,
-            payload.sourceRootEventId || payload.sourceEventId, JSON.stringify(payload.sourceMessageIds || []), payload.content, JSON.stringify(plan.tags), now);
+            payload.sourceRootEventId || payload.sourceEventId, JSON.stringify(payload.sourceMessageIds || []), payload.content, JSON.stringify(plan.tags), now, plan.author);
         this.db.prepare('INSERT INTO managed_operation_sources VALUES(?,?)').run(payload.operationId, plan.newId);
         for (const source of sources) this.db.prepare('INSERT OR IGNORE INTO note_dependencies VALUES(?,?,?)').run(source.id, plan.newId, payload.operationId);
         this.addSources(plan.newId, payload, sources.map(source => source.id));
+        if (plan.crystal) {
+          const crystal = plan.crystal;
+          this.db.prepare('INSERT INTO mutations(id,hash,state,note_path,checksum,created_at,source_event,source_root,source_messages,content,tags_json,updated_at,author_name) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(crystal.id, hash(payload.crystal.content), 'writing', crystal.path, crystal.checksum, now, crystal.sourceEventId,
+              root, JSON.stringify(messages), payload.crystal.content, JSON.stringify(tagsOf(crystal.tag)), now, plan.author);
+          this.db.prepare('INSERT INTO managed_operation_sources VALUES(?,?)').run(payload.operationId, crystal.id);
+          for (const source of sources) this.db.prepare('INSERT INTO note_dependencies VALUES(?,?,?)').run(source.id, crystal.id, payload.operationId);
+          this.addSources(crystal.id, { ...payload, sourceEventId: crystal.sourceEventId, sourceRootEventId: root });
+        }
       }
     })();
     return this.operation(payload.operationId);
@@ -214,6 +301,14 @@ class ManagedNotes {
       if (kind === 'update') return await this.applyUpdate(runtime, op, plan);
       return await this.applyOrganize(runtime, op, plan);
     } catch (cause) {
+      if (cause.code === 'MEMORY_ANNOTATION_CONFLICT') {
+        const receipt = { status: 'conflict', state: 'conflict', updated: false, id: plan.sources[0].id, operationId: op.operation_id };
+        this.db.transaction(() => {
+          this.db.prepare('DELETE FROM note_dependencies WHERE operation_id=?').run(op.operation_id);
+          this.save(op, 'conflict', receipt);
+        })();
+        return receipt;
+      }
       if (cause.code === 'MEMORY_NOTE_UNAVAILABLE') {
         const receipt = { status: 'withdrawn', state: 'withdrawn', withdrawn: true, operationId: op.operation_id };
         this.save(op, 'withdrawn', receipt); return receipt;
@@ -236,6 +331,16 @@ class ManagedNotes {
     await runtime.start({ vectors: true });
     const source = plan.sources[0];
     await runtime.kb.runExternalFileMutation('WorldlineBoxUpdate:' + hash(op.operation_id), async () => {
+      if (plan.evidence?.length) {
+        if (!(await this.evidenceIntact(runtime, plan))) {
+          const file = await this.physical(source.path);
+          if (file.checksum !== source.expectedChecksum) throw error('MEMORY_OUTCOME_UNKNOWN', 'Evidence changed after an annotation may have committed.');
+          throw error('MEMORY_ANNOTATION_CONFLICT', 'The cited diary changed before the annotation was written.');
+        }
+        this.assertSourceRevision(plan.payload);
+        const link = this.db.prepare('INSERT OR IGNORE INTO note_dependencies VALUES(?,?,?)');
+        this.db.transaction(() => { for (const ref of plan.evidence) link.run(ref.id, source.id, op.operation_id); })();
+      }
       await this.atomicReplace(source, plan, op.operation_id);
       return { status: 'success', mutationPaths: { upserts: [this.host.notePath(source.path)], deletes: [] } };
     }, { waitForIndex: false });
@@ -250,9 +355,21 @@ class ManagedNotes {
     const receipt = { status: 'success', state: 'indexed', indexed: true, operationId: op.operation_id, id: source.id, checksum: plan.newChecksum };
     this.save(op, 'indexed', receipt); return receipt;
   }
+  async evidenceIntact(runtime, plan) {
+    const refs = plan.evidence || [];
+    if (!refs.length) return true;
+    const probes = await runtime.kb.probeIngestionFiles(refs.map(ref => ref.path));
+    const byPath = new Map(probes.map(probe => [probe.path, probe]));
+    for (const ref of refs) {
+      const row = this.row(ref.id), probe = byPath.get(ref.path);
+      if (row.state !== 'indexed' || row.note_path !== ref.path || row.checksum !== ref.expectedChecksum || !probe?.completeVectors
+        || !probe.completeTags || probe.checksum !== ref.expectedChecksum || (await this.physical(ref.path)).checksum !== ref.expectedChecksum) return false;
+    }
+    return true;
+  }
   async applyOrganize(runtime, op, plan) {
     await runtime.start({ vectors: true });
-    if (this.host.blocked('note', plan.newId)) throw error('MEMORY_NOTE_UNAVAILABLE', 'Organized output was withdrawn.');
+    if (this.host.blocked('note', plan.newId) || plan.crystal && this.host.blocked('note', plan.crystal.id)) throw error('MEMORY_NOTE_UNAVAILABLE', 'Organized output was withdrawn.');
     for (const source of plan.sources) {
       const row = this.row(source.id), physical = await this.physical(row.state === 'archived' ? source.archivePath : source.path, true);
       if (physical && physical.checksum !== source.expectedChecksum) throw error('MEMORY_OUTCOME_UNKNOWN', 'Organization source changed after planning.');
@@ -272,11 +389,14 @@ class ManagedNotes {
           .run(plan.newId, hash(plan.payload.content), 'pending', plan.newPath, plan.newChecksum, op.created_at, plan.payload.sourceEventId,
             plan.payload.sourceRootEventId || plan.payload.sourceEventId, JSON.stringify(plan.payload.sourceMessageIds || []), plan.payload.content, JSON.stringify(plan.tags), new Date().toISOString());
       }
-      this.db.prepare("UPDATE mutations SET state='pending' WHERE id=? AND state IN ('writing','pending','unknown')").run(plan.newId);
+      // A resumed pair can outlive a lost or rebuilt native index. Probe both files
+      // again before retiring any originals, even if SQLite retained one receipt.
+      this.db.prepare("UPDATE mutations SET state='pending' WHERE id=? AND (state IN ('writing','pending','unknown') OR state='indexed' AND ?=1)").run(plan.newId, plan.crystal ? 1 : 0);
       this.addSources(plan.newId, plan.payload, plan.sources.map(source => source.id)); this.save(op, 'file_committed');
     })();
     const indexed = await this.host.sync(runtime, { id: plan.newId });
     if (!indexed.receipts.some(receipt => receipt.id === plan.newId && receipt.state === 'indexed' && receipt.checksum === plan.newChecksum)) throw error('MEMORY_INDEX_PENDING', 'Organized output is not indexed.');
+    const crystal = plan.crystal ? await this.indexCrystal(runtime, plan) : undefined;
     const ignored = runtime.kb.config?.ignorePrefixes;
     if (!Array.isArray(ignored) || !ignored.some(prefix => '已整理'.startsWith(prefix))) throw error('MEMORY_ARCHIVE_POLICY_REQUIRED', 'The archive must be excluded from VCP scanning before organization.');
     const archiveDir = path.join(this.host.home, 'dailynote', '已整理'); await fs.mkdir(archiveDir, { recursive: true });
@@ -306,18 +426,46 @@ class ManagedNotes {
     }
     this.clearCaches(runtime);
     const receipt = { status: 'success', state: 'indexed', indexed: true, operationId: op.operation_id, id: plan.newId, checksum: plan.newChecksum,
+      ...(crystal && { crystal }),
       archived: plan.sources.map(source => source.id) };
     this.save(op, 'indexed', receipt); return receipt;
   }
+  async indexCrystal(runtime, plan) {
+    const crystal = plan.crystal, row = this.row(crystal.id);
+    let file = await this.physical(crystal.path, true);
+    if (!file) {
+      if (row.state === 'indexed') throw error('MEMORY_OUTCOME_UNKNOWN', 'An indexed crystal volume disappeared.');
+      const extension = String(process.env.DAILY_NOTE_EXTENSION || 'txt').toLowerCase() === 'md' ? '.md' : '.txt';
+      if (path.extname(crystal.path) !== extension) throw error('MEMORY_OUTCOME_UNKNOWN', 'The native diary extension changed during a split operation.');
+      // The pinned DailyNote plugin uses the explicit date, HH:MM:SS prefix and
+      // filename suffix. A lost reply therefore has one exact, verifiable path.
+      const result = await runtime.callTool('DailyNote', { command: 'create', maid: `[Companion]${plan.author}`, folder: 'Companion',
+        Date: crystal.date, Content: crystal.content, Tag: crystal.tag, fileName: crystal.id });
+      if (result.status === 'error' || !result.result?.fileName) throw error('MEMORY_WRITE_FAILED', 'DailyNote did not confirm the crystal volume.');
+      if (result.result.folder !== 'Companion' || result.result.fileName !== path.posix.basename(crystal.path)) throw error('MEMORY_OUTCOME_UNKNOWN', 'DailyNote returned a different crystal file identity.');
+      file = await this.physical(crystal.path);
+    }
+    if (file.checksum !== crystal.checksum) throw error('MEMORY_OUTCOME_UNKNOWN', 'The crystal volume differs from the approved source text.');
+    this.db.prepare("UPDATE mutations SET state='pending' WHERE id=? AND state IN ('writing','unknown','indexed')").run(crystal.id);
+    const indexed = await this.host.sync(runtime, { id: crystal.id });
+    if (!indexed.receipts.some(receipt => receipt.id === crystal.id && receipt.state === 'indexed' && receipt.checksum === crystal.checksum))
+      throw error('MEMORY_INDEX_PENDING', 'The crystal volume is awaiting its index receipt.');
+    return { id: crystal.id, checksum: crystal.checksum, indexed: true };
+  }
   clearCaches(runtime) { for (const name of runtime.rag?.cacheManager?.caches?.keys() || []) runtime.rag.cacheManager.clear(name); }
-  assertReadable() { if (this.db.prepare("SELECT 1 FROM managed_operations WHERE state='unknown' LIMIT 1").get()) throw error('MEMORY_OUTCOME_UNKNOWN', 'A note mutation requires reconciliation before memory can be queried.'); }
+  assertReadable() { if (this.unknownOperation.get()) throw error('MEMORY_OUTCOME_UNKNOWN', 'A note mutation requires reconciliation before memory can be queried.'); }
   async reconcileExpired(runtime, op, plan) {
-    if (plan.sources.some(source => this.host.blocked('note', source.id)) || plan.newId && this.host.blocked('note', plan.newId)) return;
+    if (plan.sources.some(source => this.host.blocked('note', source.id)) || plan.newId && this.host.blocked('note', plan.newId) || plan.crystal && this.host.blocked('note', plan.crystal.id)) return;
     let receipt = { state: 'unknown', operationId: op.operation_id, reason: 'source-revision-changed' };
     try {
       const id = op.kind === 'update' ? plan.sources[0].id : plan.newId, targetPath = op.kind === 'update' ? plan.sources[0].path : plan.newPath;
       const actual = await this.physical(targetPath, true), [probe] = await runtime.kb.probeIngestionFiles([targetPath]);
       let confirmed = actual?.checksum === plan.newChecksum && probe?.path === targetPath && probe.checksum === plan.newChecksum && probe.completeVectors && probe.completeTags;
+      if (confirmed && plan.evidence?.length) confirmed = await this.evidenceIntact(runtime, plan);
+      if (confirmed && plan.crystal) {
+        const crystal = plan.crystal, file = await this.physical(crystal.path, true), [index] = await runtime.kb.probeIngestionFiles([crystal.path]);
+        confirmed = file?.checksum === crystal.checksum && index?.path === crystal.path && index.checksum === crystal.checksum && index.completeVectors && index.completeTags;
+      }
       if (confirmed && op.kind === 'organize') for (const source of plan.sources) {
         const original = await this.physical(source.path, true), archived = await this.physical(source.archivePath, true), [absent] = await runtime.kb.probeIngestionFiles([source.path]);
         if (original || archived?.checksum !== source.expectedChecksum || absent?.path !== source.path || absent.exists !== false) { confirmed = false; break; }
@@ -327,9 +475,11 @@ class ManagedNotes {
           this.db.prepare("UPDATE mutations SET state='indexed',note_path=?,checksum=?,content=?,tags_json=?,updated_at=? WHERE id=? AND state NOT IN ('forgotten','withdrawing')")
             .run(targetPath, plan.newChecksum, plan.payload.content, JSON.stringify(plan.tags), plan.revisedAt, id);
           if (op.kind === 'organize') for (const source of plan.sources) this.db.prepare("UPDATE mutations SET state='archived',note_path=? WHERE id=? AND state NOT IN ('forgotten','withdrawing')").run(source.archivePath, source.id);
+          if (plan.crystal) this.db.prepare("UPDATE mutations SET state='indexed' WHERE id=? AND state NOT IN ('forgotten','withdrawing')").run(plan.crystal.id);
           this.addSources(id, plan.payload, op.kind === 'organize' ? plan.sources.map(source => source.id) : []);
         })();
         receipt = { state: 'indexed', indexed: true, id, checksum: plan.newChecksum, operationId: op.operation_id, reconciled: true,
+          ...(plan.crystal && { crystal: { id: plan.crystal.id, checksum: plan.crystal.checksum, indexed: true } }),
           ...(op.kind === 'organize' ? { archived: plan.sources.map(source => source.id) } : {}) };
       }
     } catch { /* Reconciliation observes bytes/index only; it never replays a write. */ }
@@ -339,7 +489,7 @@ class ManagedNotes {
   finalizeWithdrawn() {
     for (const op of this.db.prepare("SELECT * FROM managed_operations WHERE state NOT IN ('conflict','withdrawn')").all()) {
       const plan = JSON.parse(op.plan_json);
-      if (!plan.sources.some(source => this.host.blocked('note', source.id)) && !(plan.newId && this.host.blocked('note', plan.newId))) continue;
+      if (![...plan.sources, ...(plan.evidence || [])].some(source => this.host.blocked('note', source.id)) && !(plan.newId && this.host.blocked('note', plan.newId)) && !(plan.crystal && this.host.blocked('note', plan.crystal.id))) continue;
       const receipt = { state: 'withdrawn', withdrawn: true, operationId: op.operation_id, meaning: 'Sources were withdrawn and real cleanup completed; prior mutation history is retained.' };
       this.host.maintenance.audit(op, op.kind, receipt); this.save(op, 'withdrawn', receipt);
     }

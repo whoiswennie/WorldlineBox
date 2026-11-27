@@ -12,7 +12,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 class Memory extends BotMemoryService {
   evidence: unknown;
   tombstones = new Map<string, { sourceEventIds: string[]; sourceMessageIds: string[] }>();
-  override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> { return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'scope-acl', metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 }; }
+  override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> { return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'scope-acl', metadata: {}, events: [], nativeContext: '', status: 'ready' }; }
   override async withdrawnSources(scope: BotMemoryScope) { return { revision: this.tombstones.has(scope.conversationId) ? '1' : '0', sourceEventIds: [], sourceMessageIds: [], ...this.tombstones.get(scope.conversationId) }; }
   override async withdrawSources(scope: BotMemoryScope, input: Parameters<BotMemoryService['withdrawSources']>[1]) { this.tombstones.set(scope.conversationId, input); return { withdrawn: true as const, revision: '1', ...input }; }
   override async readScoped() { return this.evidence; }

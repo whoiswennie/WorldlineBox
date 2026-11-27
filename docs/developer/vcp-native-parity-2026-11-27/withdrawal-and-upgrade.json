@@ -1,0 +1,324 @@
+{
+  "runtime": "0.2.2-rc.5",
+  "withdrawn": "航海图纸装在朱砂八角铜匣里。",
+  "independent": "我的借书证收在靛蓝鲸鱼卡套里。",
+  "sourceId": "message-7d48095eda1429225520330fd817adece02e3db28cf756d8f119610f767e5c63",
+  "scope": {
+    "companionId": "builtin-dafeiyu",
+    "conversationId": "e699d78d-b931-4abd-bd87-50cdca83ecd3",
+    "securityDomainId": "e699d78d-b931-4abd-bd87-50cdca83ecd3"
+  },
+  "legacyText": "旧版独有的松石九边信柜",
+  "legacyTopicId": "topic-1ad6aaa998998233996bdb0d828c544ea1208ec666c03a4f6ea4b455568a6ea1",
+  "cleanTopicId": "topic-b74726187da76b879224b44134b53f8d1b7701d738dd81b3031290953b5b9928",
+  "retainedV5NoteId": "a708df92c9e46229e8f1cd50d8b7d172bda33fc24c8d96d7e9dabf6eba73baa2",
+  "diagnostics": [
+    {
+      "at": "2026-11-27T05:28:45.827Z",
+      "detail": "preprocess event-37991cb2c9ae4e94871a4884150bae02bdbb05a3f63002e4ef6ee7e0157d3fed 555ms"
+    },
+    {
+      "at": "2026-11-27T05:28:51.521Z",
+      "detail": "provider 航海图纸装在朱砂八角铜匣里。 admission=1"
+    },
+    {
+      "at": "2026-11-27T05:28:52.308Z",
+      "detail": "preprocess event-7f5565085ab8428d9a7d0baa0c4fd98b2325d51d242f02aac71926de53236700 90ms"
+    },
+    {
+      "at": "2026-11-27T05:28:52.523Z",
+      "detail": "provider 之前说的航海图纸最终是放在哪里的？ admission=1"
+    },
+    {
+      "at": "2026-11-27T05:28:57.430Z",
+      "detail": "preprocess event-f45ba52203c9bf33cc8693d0d3a6b80509f4898298bcb0aa4c466bd43f958656 865ms"
+    },
+    {
+      "at": "2026-11-27T05:28:57.695Z",
+      "detail": "provider 现在还能查到航海图纸的位置吗？ admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:00.421Z",
+      "detail": "preprocess event-8652e403b9b2945e0160793795c6192a40bc52f2d68422f5d4df51e26849be64 226ms"
+    },
+    {
+      "at": "2026-11-27T05:29:00.640Z",
+      "detail": "provider 我去图书馆时应该在哪里取借书证？ admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:02.493Z",
+      "detail": "preprocess event-e9a3bee0a1444c47f6df115a4b4ede9f2927fdd1265cd720f7cce41c34072bdd 61ms"
+    },
+    {
+      "at": "2026-11-27T05:29:02.752Z",
+      "detail": "provider 保存独立话题中的绿色标题。 admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:04.528Z",
+      "detail": "preprocess event-53d98d2722c5c17bc00dd1eb22ccc3a59546743bbbcd78f3c6ff9783ee3c0e6c 63ms"
+    },
+    {
+      "at": "2026-11-27T05:29:04.782Z",
+      "detail": "provider 登记一个不含回忆的空白目录。 admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:06.564Z",
+      "detail": "preprocess event-e39d4fbe9ab42a80d636c547b6ee5747be32f6afa566b6824a25381ec4fffd66 62ms"
+    },
+    {
+      "at": "2026-11-27T05:29:06.814Z",
+      "detail": "provider 空白目录是不是已经登记完成？ admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:09.613Z",
+      "detail": "preprocess event-b6fcaec585f175fd8cb42b7665a1e855755679bf9b78878ac457a85157c0ae7c 208ms"
+    },
+    {
+      "at": "2026-11-27T05:29:09.824Z",
+      "detail": "provider 我的借书证收在哪里？ admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:11.702Z",
+      "detail": "preprocess event-d28fd0c79cb9172b90e262dc2b056e6f6eb1fcf9f82fdde58d746d935af1bf17 64ms"
+    },
+    {
+      "at": "2026-11-27T05:29:11.871Z",
+      "detail": "provider 上一条标题是什么颜色？ admission=1"
+    },
+    {
+      "at": "2026-11-27T05:29:14.849Z",
+      "detail": "preprocess event-d27fc7139dceeaf14426659aaca57e973c9cb091529a95ea1eb45cb416efde14 232ms"
+    },
+    {
+      "at": "2026-11-27T05:29:15.046Z",
+      "detail": "provider 借书证还能找得到吗？ admission=1"
+    }
+  ],
+  "turns": [
+    {
+      "lane": "topic-topic-8e8943c5746acf30705235d8186b6b1235650d7d78465df42171bccbe8eb7090-builtin-dafeiyu",
+      "sessionId": "wlb-bot-50fd87f5d646d50ceca3f489635d07685780f869ce5099c17c8ec40119aa9dc4",
+      "question": "航海图纸装在朱砂八角铜匣里。",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user"
+          ],
+          "messageDigest": "cb1c366b150c7a2cc540c8e3d481d98400c18d0782dc8bc44e2192c483cc8b8f",
+          "secretText": true,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-8e8943c5746acf30705235d8186b6b1235650d7d78465df42171bccbe8eb7090-builtin-dafeiyu",
+      "sessionId": "wlb-bot-50fd87f5d646d50ceca3f489635d07685780f869ce5099c17c8ec40119aa9dc4",
+      "question": "之前说的航海图纸最终是放在哪里的？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user",
+            "assistant",
+            "user",
+            "user"
+          ],
+          "messageDigest": "d4971471069516fe05218cdcaf961b7a492a797f5d63efc129a6dfbbaad59013",
+          "secretText": true,
+          "secretInRag": true,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-0e95c924588d155acaac0bff6481208c9a620727d0158339e6a26de15e494318-builtin-dafeiyu",
+      "sessionId": "wlb-bot-57249bd194cc6dd6eea280951277f4207bb0754a52f1b142d7e0fe8d8bd80fc8",
+      "question": "现在还能查到航海图纸的位置吗？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user"
+          ],
+          "messageDigest": "3b0a6a292b86b2562f65412d1e91ed36bcb6f2c6397b7b68d2e43fb6636d0b45",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-0e95c924588d155acaac0bff6481208c9a620727d0158339e6a26de15e494318-builtin-dafeiyu",
+      "sessionId": "wlb-bot-57249bd194cc6dd6eea280951277f4207bb0754a52f1b142d7e0fe8d8bd80fc8",
+      "question": "我去图书馆时应该在哪里取借书证？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user",
+            "assistant",
+            "user",
+            "user"
+          ],
+          "messageDigest": "e1253caab2b02fa280ca10aa862390e964a86634544f72fe1f433ab3acc40fd5",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-b74726187da76b879224b44134b53f8d1b7701d738dd81b3031290953b5b9928-builtin-dafeiyu",
+      "sessionId": "wlb-bot-9043fc682f5dd9ac632a600dd04490ccccedd0d30f59f872424f9c68f5b49ada",
+      "question": "保存独立话题中的绿色标题。",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user"
+          ],
+          "messageDigest": "23a52930016988ac0928384b40535f50318fddaa498b98f7b8a2e6332ac35ffb",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-1ad6aaa998998233996bdb0d828c544ea1208ec666c03a4f6ea4b455568a6ea1-builtin-dafeiyu",
+      "sessionId": "wlb-bot-13516c2d6ef0276e32e8e3d2368cc9c895173499ad0e282142bc7d8d962fe83e",
+      "question": "登记一个不含回忆的空白目录。",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user"
+          ],
+          "messageDigest": "01896bbe64bef1de980fba8913359033c8b9bc371347e3f6e3a6ac98bb477298",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": false,
+          "legacyEvidence": true
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-1ad6aaa998998233996bdb0d828c544ea1208ec666c03a4f6ea4b455568a6ea1-builtin-dafeiyu",
+      "sessionId": "wlb-bot-13516c2d6ef0276e32e8e3d2368cc9c895173499ad0e282142bc7d8d962fe83e",
+      "question": "空白目录是不是已经登记完成？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user",
+            "assistant",
+            "user",
+            "user"
+          ],
+          "messageDigest": "60dcae47be19eca281b00269d8680aceb8c48c14a17d174579b4f655d66c1974",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": true
+        }
+      ]
+    },
+    {
+      "lane": "topic-vcp5-13516c2d6ef0276e32e8e3d2368cc9c895173499ad0e282142bc7d8d962fe83e",
+      "sessionId": "wlb-bot-b2326415c80c980086746eadaf44ff6c57de5ac7572d5ab0e6e5ca27e79608d4",
+      "question": "我的借书证收在哪里？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user"
+          ],
+          "messageDigest": "f69c2825d68bb154d364e3cec468e24826f63692220bc9d07366f4e7b3750c1b",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-topic-b74726187da76b879224b44134b53f8d1b7701d738dd81b3031290953b5b9928-builtin-dafeiyu",
+      "sessionId": "wlb-bot-9043fc682f5dd9ac632a600dd04490ccccedd0d30f59f872424f9c68f5b49ada",
+      "question": "上一条标题是什么颜色？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user",
+            "assistant",
+            "user",
+            "user"
+          ],
+          "messageDigest": "8c82025148617b9fc67cd46d101394a75064c99a368c47fa9c5c7792d511ed69",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    },
+    {
+      "lane": "topic-vcp5-13516c2d6ef0276e32e8e3d2368cc9c895173499ad0e282142bc7d8d962fe83e",
+      "sessionId": "wlb-bot-b2326415c80c980086746eadaf44ff6c57de5ac7572d5ab0e6e5ca27e79608d4",
+      "question": "借书证还能找得到吗？",
+      "requests": [
+        {
+          "roles": [
+            "system",
+            "user",
+            "user",
+            "user",
+            "user",
+            "assistant",
+            "user",
+            "user"
+          ],
+          "messageDigest": "a09df48cc6df10164f7402b3c5cb8637fbe12fae8874e4ba0ef844b152c4d90d",
+          "secretText": false,
+          "secretInRag": false,
+          "independentInRag": true,
+          "legacyEvidence": false
+        }
+      ]
+    }
+  ]
+}

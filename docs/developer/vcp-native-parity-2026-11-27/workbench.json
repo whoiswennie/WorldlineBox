@@ -1,0 +1,177 @@
+{
+  "date": "2026-11-27",
+  "upstream": {
+    "VCPToolBox": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+    "VCPChat": "ea8942cfbe275bbe7fca1cbf1222f6c0ca0b3fe4"
+  },
+  "package": {
+    "executableSha256": "88cf0ef3a15fe8dadc2cedb18cb24f5fb65ff03c1bc78555dd7e9454ad22e9ca",
+    "asarSha256": "1032a8defaa62ceb19bc3467347241eb8d6b1a0b7dae95ec064a99ea5f70dd89",
+    "compiledFiles": 247,
+    "compiledManifestSha256": "752c27aee5e21b415a2f5eb271ff359f579b1e6c0455096b279701d7e1c20840",
+    "runtimeSourceFiles": 528,
+    "runtimeSourceTreeSha256": "5717ca5fb6b46d4d577f3675c17b66dd23272bb3249322aa60aff2621793ad11",
+    "removedLegacyPreviewStrings": [
+      "host-citations-not-vcp-chunk-ids",
+      "omittedChars"
+    ]
+  },
+  "defaultBuild": {
+    "directory": "out/WorldlineBox-win32-x64",
+    "sha256MatchedFiles": 20680,
+    "bytes": 5031343984
+  },
+  "contextComparison": {
+    "stages": [
+      "MemoryThinkingTray",
+      "RAGDiaryPlugin",
+      "OneRing"
+    ],
+    "toolboxMessages": 5,
+    "toolboxRoleContentSha256": "9a53d9175528ee9ca290bc0efd1398b171d93bfd0049fd6caa25bfcc0d59c538",
+    "vcpChatMessages": 4,
+    "vcpChatRoleContentSha256": "0187c5da704abb90ef8044123c125dc83c64810f13213101072fdf850f1a6a4d"
+  },
+  "recallComparison": {
+    "engine": "rivermemo",
+    "fallback": "none",
+    "hits": [
+      {
+        "id": 2,
+        "score": 0.8291277053334217
+      },
+      {
+        "id": 1,
+        "score": 0.6164890005375303
+      }
+    ],
+    "fullTextAndModelMessagesEqual": true
+  },
+  "realModel": {
+    "model": {
+      "model": "deepseek-flash",
+      "endpointHost": "api.deepseek.com"
+    },
+    "embedding": {
+      "dimension": 768,
+      "model": "embeddinggemma-2-compact"
+    },
+    "dsh": {
+      "version": "0.2.2-rc.5"
+    },
+    "interactionDiary": {
+      "indexed": true,
+      "liveToolCallVerified": true,
+      "tagsVerified": true,
+      "sourceMessagesVerified": true,
+      "contentVerified": true
+    },
+    "memory": {
+      "semanticRecall": true,
+      "nativeToolRecall": true,
+      "passiveEvidenceIncluded": true,
+      "newTopicWithoutSearchTool": true
+    },
+    "phases": [
+      {
+        "stage": "embedding-warmup",
+        "durationMs": 2225.0089
+      },
+      {
+        "stage": "native-host",
+        "durationMs": 27.57470000000012
+      },
+      {
+        "stage": "ordinary-chat",
+        "durationMs": 13579.455599999987
+      },
+      {
+        "stage": "fresh-session",
+        "durationMs": 965.788899999985
+      },
+      {
+        "stage": "completed-interaction-diary",
+        "durationMs": 5.339799999987008
+      },
+      {
+        "stage": "passive-recall-in-new-topic",
+        "durationMs": 1311.8310999999812
+      },
+      {
+        "stage": "memory-write",
+        "durationMs": 26.517900000006193
+      },
+      {
+        "stage": "memory-search",
+        "durationMs": 344.148600000015
+      },
+      {
+        "stage": "native-memory-tool",
+        "durationMs": 1944.8568000000087
+      }
+    ],
+    "cleanup": {
+      "removedRoots": 2,
+      "retained": []
+    }
+  },
+  "unit": {
+    "passed": 400,
+    "skipped": 4,
+    "workers": 1
+  },
+  "packagedScenarios": [
+    {
+      "name": "opens the companion workspace with an exclusively locked legacy index and retires it on the next launch",
+      "passed": true
+    },
+    {
+      "name": "reopens a legacy transcript on a fresh native lane only where the retired memory body was sent",
+      "passed": true
+    },
+    {
+      "name": "cold-starts idle diary organization while the companion workspace remains closed",
+      "passed": true
+    },
+    {
+      "name": "maximized companion workspace keeps one chat summary after using the desktop pet and memory",
+      "passed": true
+    },
+    {
+      "name": "memory workspace manages real local VCP notes and inspects original recall without a chat model",
+      "passed": true
+    }
+  ],
+  "oneTimeCleanup": {
+    "remainingPartnerMessages": 0,
+    "remainingPartnerTopics": 0,
+    "remainingSearchableChatMessages": 0,
+    "remainingNativeDiaryFiles": 0,
+    "remainingDshSessionProjections": 0,
+    "remainingDshColdSessionLogs": 0,
+    "remainingWorldDialogueRecords": 0,
+    "preservedCharacters": 16,
+    "preservedWorldDocuments": 755,
+    "auditedTemporaryRoots": 67,
+    "remainingVerifiedTemporaryChatFiles": 0,
+    "auditedChromiumProfiles": 18,
+    "confirmedChatFilesInChromium": 0
+  },
+  "maintenanceReleaseScenarios": {
+    "passed": 2,
+    "embeddingDimension": 768,
+    "planner": "controlled local HTTP model",
+    "relatedInsightSurvivedArchive": true,
+    "checks": [
+      "explicitUiRetry",
+      "checksumConflictDidNotOverwrite",
+      "foreignScopeRejected",
+      "withdrawnApprovalRejected",
+      "cachedOldBodyRetired"
+    ],
+    "reports": {
+      "memory-maintenance-native-evidence.json": "c19a2c022c26e6fedbcae3597bafa935c3081c52f5c37fa23e9e53b01e79f01e",
+      "maintenance-fences-evidence.json": "70382a128aec67fd8dd5b70f47c0ed1a58f4668ebe67dcf11d91aaa577c58b2f"
+    }
+  }
+}

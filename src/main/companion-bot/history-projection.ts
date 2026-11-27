@@ -25,22 +25,27 @@ export class BotHistoryProjector {
       if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > target) throw new Error('原文投影游标无效，拒绝跳过源记录。');
       while (cursor < target) {
         signal?.throwIfAborted();
-        const found = store.historyProjectionPage(scope.conversationId, { after: cursor, through: target, limit: 32 });
+        const found = store.historyProjectionPage(scope.conversationId, { after: cursor, through: target, limit: 32, companionId: scope.companionId });
         if (!found.length) throw new Error('原文投影日志存在未解释缺口。');
         const page = []; let chars = 0;
         for (const row of found) {
+          // A queued input can still be steered to another topic. Its claim
+          // or guidance receipt schedules a fresh pass with the final topic.
+          if (row.awaitingTopic) break;
           const size = botMessageEvidence(row.message).length;
           if (page.length && chars + size > 64000) break;
           page.push(row); chars += size;
         }
+        if (!page.length) break;
         const withdrawn = store.withdrawnIn(scope.companionId, scope.securityDomainId, page.map(row => row.message.id));
         // Preserve the full publication-order cursor, including pages made
         // entirely of another actor's private task notices. Those rows are
         // intentionally skipped, never copied into this companion's memory.
         const legal = page.filter(row => !row.suppressed && !withdrawn.has(row.message.id) && store.isMessageVisibleToCompanion(row.message.id, scope.companionId));
-        if (legal.length) await memory.appendHistory(scope, legal.map(({ message, timestamp }) => ({
+        if (legal.length) await memory.appendHistory(scope, legal.map(({ message, timestamp, topicId, topicTitle }) => ({
           id: message.id, role: message.senderId === scope.companionId ? 'assistant' : 'user', content: botMessageEvidence(message),
           timestamp, senderId: message.senderId, senderName: message.senderName,
+          ...(topicId ? { topicId, topicTitle } : {}),
         })), signal);
         signal?.throwIfAborted();
         cursor = page.at(-1)!.projectionSequence;

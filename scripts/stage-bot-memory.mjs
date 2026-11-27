@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, writeFile, stat, lstat } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, writeFile, stat, lstat, realpath, unlink } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,6 +32,23 @@ if (!process.argv.includes('--install') && existsSync(path.join(target, 'worldli
   }
 }
 await mkdir(target, { recursive: true });
+// Retire only files owned by the previous release. A changed snapshot can
+// remove a module as well as add one. The final verifier rejects unknown files.
+const previousManifest = path.join(target, 'worldlinebox-integration-manifest.json');
+if (existsSync(previousManifest)) {
+  const previous = JSON.parse(await readFile(previousManifest, 'utf8'));
+  const releaseRoot = await realpath(target);
+  for (const entry of previous.files) {
+    const relative = entry.path;
+    if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.includes('\\')
+      || relative.split('/').some(part => !part || ['.', '..', 'node_modules'].includes(part))) throw new Error('Invalid previous memory release path');
+    if (existsSync(path.join(source, relative))) continue;
+    const retired = path.join(releaseRoot, relative);
+    if (!existsSync(retired)) continue;
+    if (!(await lstat(retired)).isFile() || await realpath(retired) !== retired) throw new Error('Invalid retired memory release file');
+    await unlink(retired);
+  }
+}
 // Copy immutable source only. This runtime owns its Node dependencies; never
 // reuse Electron-rebuilt better-sqlite3 or package a second embedding model.
 for (const entry of await readdir(source)) {

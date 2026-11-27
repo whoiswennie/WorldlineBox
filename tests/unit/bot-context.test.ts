@@ -11,7 +11,7 @@ const event: BotEvent = { id: 'e1', eventId: 'e1', companionId: 'alice', convers
 const conversation = { id: 'c1', title: '聊天', kind: 'direct' as const, memberIds: ['user','alice'], audienceScopeId: 'c1', securityDomainId: 'c1', revision: 1, createdAt: '2026-11-02' };
 it('omits unselected application instructions, contexts and declarations', () => {
   const pageEvent = { ...event, payload: { browserContext: { title: 'OLD_PAGE' } } };
-  const base = { companion, event: pageEvent, conversation, companions: [companion], files: [], memories: '' };
+  const base = { companion, event: pageEvent, conversation, companions: [companion], files: [] };
   const plain = buildNativeBotContext(base);
   expect(plain.system).not.toContain('MCP'); expect(plain.system).not.toContain('browserContext');
   expect(JSON.parse(plain.prompt)).not.toHaveProperty('browserContext'); expect(JSON.parse(plain.prompt)).not.toHaveProperty('apps');
@@ -20,15 +20,15 @@ it('omits unselected application instructions, contexts and declarations', () =>
   expect(botToolsForApps(['asset-manager']).map(tool => tool.name)).toContain('asset_manager'); expect(botToolsForApps(['asset-manager']).map(tool => tool.name)).not.toContain('browser');
   const browser = buildNativeBotContext({ ...base, apps: ['browser'] }); expect(JSON.parse(browser.prompt).browserContext.title).toBe('OLD_PAGE'); expect(browser.system).not.toContain('MCP');
 });
-it('keeps current user input, attribution, persona and recalled evidence in a fresh native envelope', () => {
-  const context = buildNativeBotContext({ companion, event, conversation, companions: [companion], files: [], memories: 'VCP证据' });
+it('keeps current user input, attribution and persona in a fresh native envelope', () => {
+  const context = buildNativeBotContext({ companion, event, conversation, companions: [companion], files: [] });
   expect(context.system).toContain(companion.persona);
   expect(context.system).toContain('原生 DSH Agent');
   expect(context.system).toContain('需要用户看到的文字统一写入最终正文');
   expect(context.system).toContain('caption 仅是元数据，不在聊天中展示');
   const body = JSON.parse(context.prompt);
   expect(body.message).toMatchObject({ content: '当前问题', senderId: 'user' });
-  expect(body.memoryEvidence).toBe('VCP证据');
+  expect(body).not.toHaveProperty('memoryEvidence');
   expect(body).not.toHaveProperty('history'); expect(body).not.toHaveProperty('tasks');
 });
 it('formats trusted Shanghai time across a UTC date boundary without changing source timestamps', () => {
@@ -38,7 +38,7 @@ it('formats trusted Shanghai time across a UTC date boundary without changing so
 });
 it('bounds member and character directories without exposing private personas', () => {
   const companions = Array.from({ length: 1000 }, (_, n) => ({ ...companion, id: 'actor-' + n, name: '伙伴' + n }));
-  const body = JSON.parse(buildNativeBotContext({ companion, event, conversation: { ...conversation, memberIds: companions.map(a => a.id) }, companions, files: [], memories: '' }).prompt);
+  const body = JSON.parse(buildNativeBotContext({ companion, event, conversation: { ...conversation, memberIds: companions.map(a => a.id) }, companions, files: [] }).prompt);
   expect(body.room.members).toHaveLength(64); expect(body.room.memberCount).toBe(1000);
   expect(body.companionDirectory).toHaveLength(64); expect(body.companionDirectoryHasMore).toBe(true);
   expect(body.companionDirectory[0]).not.toHaveProperty('persona');

@@ -1,7 +1,7 @@
 {
   "name": "vcp-memory",
-  "version": "0.1.0",
-  "description": "Standalone, source-preserving VCP memory and context runtime with an agent CLI",
+  "version": "0.2.0",
+  "description": "WorldlineBox native VCP memory runtime",
   "private": true,
   "main": "lib/client.cjs",
   "bin": {
@@ -59,7 +59,7 @@
     "pdf-poppler": "^0.2.3",
     "proper-lockfile": "^4.1.2",
     "sharp": "^0.35.5",
-    "triviumdb": "^0.8.5",
+    "triviumdb": "0.9.3",
     "turndown": "^7.2.4",
     "uuid": "^14.0.0"
   },

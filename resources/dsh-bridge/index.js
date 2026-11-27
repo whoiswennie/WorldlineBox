@@ -483,7 +483,7 @@ export async function apply(ctx) {
     if (!prompt) throw new Error('Native child system prompt service is unavailable.');
     record.disposers.push(prompt.section({ name: 'worldlinebox-companion', order: 0, complete: true, interpolate: false, text: () => record.bot.system }));
     record.disposers.push(...registerWorkspaceSessions(ctx, record, {
-      sessions, create: input => createBot(input), emit, settle: target => { if (target) void settle(target); },
+      sessions, create: input => createBot(input), emit, retiredSessions, settle: target => { if (target) void settle(target); },
     }, agent));
   });
   const emit = (record, event) => {
@@ -709,6 +709,9 @@ export async function apply(ctx) {
     const body = await response.json(); if (body.ok !== true) throw new Error('Worker host did not accept ' + name + '.');
     return body.result;
   };
+  // Private host authority for native workspace tools. Its result remains in
+  // the bridge and is never mounted as a model tool or shown in a message.
+  const retiredSessions = (owner, signal) => workerCallback(owner, 'workspace_retired_sessions', {}, randomUUID(), signal);
   const registerWorkerHostTools = (record, agent) => {
     record.workerToolAgents ??= new Map();
     let registrations = record.workerToolAgents.get(agent);
@@ -804,7 +807,7 @@ export async function apply(ctx) {
     if (record.bot.role === 'worker') {
       registerWorkerHostTools(record, record.agent);
       record.disposers.push(...registerWorkspaceSessions(ctx, record, {
-        sessions, create: input => createBot(input), emit, settle: target => { if (target) void settle(target); },
+        sessions, create: input => createBot(input), emit, retiredSessions, settle: target => { if (target) void settle(target); },
       }));
     }
       if (record.bot.role === 'brain') {
@@ -830,6 +833,9 @@ export async function apply(ctx) {
       const prompt = record.agent.ctx.get('systemPrompt');
       if (!prompt) throw new Error('DSH system prompt service is unavailable.');
       record.disposers.push(prompt.section({ name: 'worldlinebox-companion', order: 0, complete: true, interpolate: false, text: () => record.bot.system }));
+      if (record.bot.role === 'worker') record.disposers.push(prompt.context({
+        name: 'vcp-memory', order: 0, required: true, interpolate: false, text: () => record.bot.memoryContext ?? '',
+      }));
       record.disposers.push(record.agent.ctx.on('system-prompt/assemble', async (_assembly, _context, next) => {
         const value = await next(); return { ...value, ...(record.bot.role === 'brain' ? { contexts: [] } : {}),
           variables: { ...value.variables, ...(record.agent.model?.current?.() ?? record.bot.selection) } };
@@ -1100,6 +1106,7 @@ export async function apply(ctx) {
       if (request.method === 'POST' && url.pathname === '/bot/lanes') {
         const input = await body(request);
         input.workerTools ??= [];
+        if (input.checkRetiredSessions !== undefined && typeof input.checkRetiredSessions !== 'boolean') throw new Error('Invalid workspace Session policy.');
         if (input.audience !== undefined && (!input.audience || typeof input.audience.conversationId !== 'string' || !input.audience.conversationId.length || input.audience.conversationId.length > 200
           || !['direct', 'group', 'peer', 'world'].includes(input.audience.kind) || !Array.isArray(input.audience.allowedConversationIds) || input.audience.allowedConversationIds.length > 5000
           || input.audience.allowedConversationIds.some(id => typeof id !== 'string' || !id.length || id.length > 200)
@@ -1107,6 +1114,7 @@ export async function apply(ctx) {
         if (!/^[A-Za-z0-9_-]{1,200}$/.test(input.sessionId) || typeof input.cwd !== 'string' || !path.isAbsolute(input.cwd) || typeof input.laneId !== 'string' || input.laneId.length > 600
           || !['brain', 'worker'].includes(input.role) || input.workerAccess !== undefined && !['scoped', 'full'].includes(input.workerAccess)
           || typeof input.system !== 'string' || !input.system.trim() || input.system.length > modelContextChars(input.model)
+          || input.memoryContext !== undefined && typeof input.memoryContext !== 'string'
           || !Array.isArray(input.tools) || input.tools.length > 24 || input.tools.some(tool => !tool || !/^[a-z][a-z0-9_]{0,63}$/.test(tool.name)
             || typeof tool.description !== 'string' || !tool.parameters || typeof tool.parameters !== 'object')
           || new Set(input.tools.map(tool => tool.name)).size !== input.tools.length
@@ -1173,6 +1181,7 @@ export async function apply(ctx) {
           if (record.status === 'running') {
             if (record.bot.eventId !== input.eventId) throw new Error('The companion lane has an active turn.');
             record.bot.callback = input.callback; record.bot.audience = input.audience;
+            record.bot.checkRetiredSessions ||= input.checkRetiredSessions;
             json(response, { sessionId: record.id, cursor: record.next - 1 }); return;
           }
           if (record.admissions || record.botMutationActive) throw new Error('The companion lane has an active maintenance admission.');
@@ -1189,6 +1198,8 @@ export async function apply(ctx) {
           try {
             await record.agent.runMaintenance(async () => {
               record.bot.system = input.system; record.bot.callback = input.callback; record.bot.audience = input.audience;
+              record.bot.checkRetiredSessions ||= input.checkRetiredSessions;
+              record.bot.memoryContext = input.memoryContext;
               record.bot.workerTools = input.workerTools;
               if (record.bot.role !== 'brain') registerWorkerHostTools(record, record.agent);
               if (record.policy.tools && record.bot.role !== 'brain') record.policy.tools = [...scopedWorkerTools, ...input.workerTools.map(tool => tool.name)];

@@ -1,0 +1,2378 @@
+{
+  "revision": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+  "fixtureSha256": "45baebd186d954b6a8e636fd67a1029b69066f454b766de6d9f9848e118ca1b1",
+  "closedIndexSha256": "0f18f77109c462ec644d229d9d856c4858e4274936fe27d234f15111dcc6c1c3",
+  "notes": 48,
+  "queries": 44,
+  "rounds": 6,
+  "model": "embeddinggemma-2-compact",
+  "dimension": 768,
+  "threads": 4,
+  "cpu": "Intel(R) Core(TM) i9-14900HX",
+  "pairedComparisons": 1056,
+  "pairDifferences": [],
+  "percentileMethod": "nearest-rank on successful attempts only; errors are counted separately",
+  "runtimeSourceManifestSha256": "a307aaf839f8387c8e3d4f4b2bbe9c282c153a9934937bb76faa87f421ac13c2",
+  "summary": {
+    "official": {
+      "coldOpen": {
+        "n": 6,
+        "p50Ms": 436.45530000000144,
+        "p95Ms": 3370.7788,
+        "maxMs": 3370.7788
+      },
+      "quality": {
+        "positives": 42,
+        "top1": 0.9523809523809523,
+        "hitAt3": 0.9761904761904762,
+        "recallAt3": 0.9523809523809523,
+        "relevantRetrieved": 45,
+        "relevantTotal": 48,
+        "mrrAt3": 0.9642857142857143,
+        "multisource": 6,
+        "multisourceAllHit": 4,
+        "outOfCorpus": [
+          {
+            "id": "q43",
+            "returned": 3,
+            "ids": [
+              "n04",
+              "n01",
+              "n29"
+            ]
+          },
+          {
+            "id": "q44",
+            "returned": 3,
+            "ids": [
+              "n07",
+              "n30",
+              "n29"
+            ]
+          }
+        ],
+        "missed": [
+          {
+            "id": "q28",
+            "category": "near-neighbor",
+            "expected": [
+              "n34"
+            ],
+            "ids": [
+              "n35",
+              "n36",
+              "n33"
+            ],
+            "relevance": 0,
+            "top1": false,
+            "hit": false,
+            "recall": 0,
+            "reciprocal": 0
+          },
+          {
+            "id": "q40",
+            "category": "multi-source",
+            "expected": [
+              "n34",
+              "n35"
+            ],
+            "ids": [
+              "n35",
+              "n36",
+              "n33"
+            ],
+            "relevance": 1,
+            "top1": true,
+            "hit": true,
+            "recall": 0.5,
+            "reciprocal": 1
+          },
+          {
+            "id": "q41",
+            "category": "multi-source",
+            "expected": [
+              "n01",
+              "n02"
+            ],
+            "ids": [
+              "n01",
+              "n03",
+              "n04"
+            ],
+            "relevance": 1,
+            "top1": true,
+            "hit": true,
+            "recall": 0.5,
+            "reciprocal": 1
+          }
+        ],
+        "top1Failures": [
+          {
+            "id": "q26",
+            "category": "near-neighbor",
+            "expected": [
+              "n32"
+            ],
+            "ids": [
+              "n30",
+              "n32",
+              "n29"
+            ],
+            "relevance": 1,
+            "top1": false,
+            "hit": true,
+            "recall": 1,
+            "reciprocal": 0.5
+          },
+          {
+            "id": "q28",
+            "category": "near-neighbor",
+            "expected": [
+              "n34"
+            ],
+            "ids": [
+              "n35",
+              "n36",
+              "n33"
+            ],
+            "relevance": 0,
+            "top1": false,
+            "hit": false,
+            "recall": 0,
+            "reciprocal": 0
+          }
+        ]
+      },
+      "firstSeen": {
+        "n": 264,
+        "p50Ms": 33.89229999999952,
+        "p95Ms": 45.11959999999817,
+        "maxMs": 58.184699999997974,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 33.89229999999952,
+          "p95Ms": 45.11959999999817,
+          "maxMs": 58.184699999997974
+        },
+        "sourceDirect": {
+          "n": 264,
+          "p50Ms": 33.41650000000004,
+          "p95Ms": 44.66269999999986,
+          "maxMs": 57.569600000000264
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 264,
+        "jointUses": 264
+      },
+      "warmRepeat": {
+        "n": 264,
+        "p50Ms": 13.268299999996088,
+        "p95Ms": 16.794000000001688,
+        "maxMs": 22.32430000000022,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 13.268299999996088,
+          "p95Ms": 16.794000000001688,
+          "maxMs": 22.32430000000022
+        },
+        "sourceDirect": {
+          "n": 264,
+          "p50Ms": 12.801699999999983,
+          "p95Ms": 16.28309999999965,
+          "maxMs": 21.7487000000001
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 0,
+        "jointUses": 264
+      },
+      "preencoded": {
+        "n": 264,
+        "p50Ms": 13.065699999999197,
+        "p95Ms": 16.23149999999987,
+        "maxMs": 21.495099999999184,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 13.626500000005763,
+          "p95Ms": 16.812799999999697,
+          "maxMs": 22.2132000000056
+        },
+        "sourceDirect": {
+          "n": 264,
+          "p50Ms": 13.119899999999689,
+          "p95Ms": 16.27559999999994,
+          "maxMs": 21.62710000000061
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 0,
+        "jointUses": 264
+      },
+      "guardedRepeat": {
+        "n": 264,
+        "p50Ms": 13.684300000000803,
+        "p95Ms": 19.054199999998673,
+        "maxMs": 23.24579999999696,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 13.684300000000803,
+          "p95Ms": 19.054199999998673,
+          "maxMs": 23.24579999999696
+        },
+        "sourceDirect": {
+          "n": 264,
+          "p50Ms": 13.190300000000207,
+          "p95Ms": 18.541700000000674,
+          "maxMs": 22.869199999999182
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 0,
+        "jointUses": 264
+      }
+    },
+    "host": {
+      "coldOpen": {
+        "n": 6,
+        "p50Ms": 496.34040000000095,
+        "p95Ms": 508.76750000000175,
+        "maxMs": 508.76750000000175
+      },
+      "quality": {
+        "positives": 42,
+        "top1": 0.9523809523809523,
+        "hitAt3": 0.9761904761904762,
+        "recallAt3": 0.9523809523809523,
+        "relevantRetrieved": 45,
+        "relevantTotal": 48,
+        "mrrAt3": 0.9642857142857143,
+        "multisource": 6,
+        "multisourceAllHit": 4,
+        "outOfCorpus": [
+          {
+            "id": "q43",
+            "returned": 3,
+            "ids": [
+              "n04",
+              "n01",
+              "n29"
+            ]
+          },
+          {
+            "id": "q44",
+            "returned": 3,
+            "ids": [
+              "n07",
+              "n30",
+              "n29"
+            ]
+          }
+        ],
+        "missed": [
+          {
+            "id": "q28",
+            "category": "near-neighbor",
+            "expected": [
+              "n34"
+            ],
+            "ids": [
+              "n35",
+              "n36",
+              "n33"
+            ],
+            "relevance": 0,
+            "top1": false,
+            "hit": false,
+            "recall": 0,
+            "reciprocal": 0
+          },
+          {
+            "id": "q40",
+            "category": "multi-source",
+            "expected": [
+              "n34",
+              "n35"
+            ],
+            "ids": [
+              "n35",
+              "n36",
+              "n33"
+            ],
+            "relevance": 1,
+            "top1": true,
+            "hit": true,
+            "recall": 0.5,
+            "reciprocal": 1
+          },
+          {
+            "id": "q41",
+            "category": "multi-source",
+            "expected": [
+              "n01",
+              "n02"
+            ],
+            "ids": [
+              "n01",
+              "n03",
+              "n04"
+            ],
+            "relevance": 1,
+            "top1": true,
+            "hit": true,
+            "recall": 0.5,
+            "reciprocal": 1
+          }
+        ],
+        "top1Failures": [
+          {
+            "id": "q26",
+            "category": "near-neighbor",
+            "expected": [
+              "n32"
+            ],
+            "ids": [
+              "n30",
+              "n32",
+              "n29"
+            ],
+            "relevance": 1,
+            "top1": false,
+            "hit": true,
+            "recall": 1,
+            "reciprocal": 0.5
+          },
+          {
+            "id": "q28",
+            "category": "near-neighbor",
+            "expected": [
+              "n34"
+            ],
+            "ids": [
+              "n35",
+              "n36",
+              "n33"
+            ],
+            "relevance": 0,
+            "top1": false,
+            "hit": false,
+            "recall": 0,
+            "reciprocal": 0
+          }
+        ]
+      },
+      "firstSeen": {
+        "n": 264,
+        "p50Ms": 35.417199999999866,
+        "p95Ms": 48.07589999999982,
+        "maxMs": 55.35199999999895,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 35.417199999999866,
+          "p95Ms": 48.07589999999982,
+          "maxMs": 55.35199999999895
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 264,
+        "jointUses": 264
+      },
+      "warmRepeat": {
+        "n": 264,
+        "p50Ms": 14.266999999999825,
+        "p95Ms": 18.699199999988195,
+        "maxMs": 24.2899000000034,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 14.266999999999825,
+          "p95Ms": 18.699199999988195,
+          "maxMs": 24.2899000000034
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 0,
+        "jointUses": 264
+      },
+      "preencoded": {
+        "n": 264,
+        "p50Ms": 13.837799999999334,
+        "p95Ms": 17.813000000000102,
+        "maxMs": 26.00590000000011,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 17.729100000011385,
+          "p95Ms": 22.178700000004028,
+          "maxMs": 31.852099999996426
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 0,
+        "jointUses": 264
+      },
+      "guardedRepeat": {
+        "n": 264,
+        "p50Ms": 22.785799999997835,
+        "p95Ms": 29.45760000000155,
+        "maxMs": 39.70350000000326,
+        "rpc": {
+          "n": 264,
+          "p50Ms": 22.785799999997835,
+          "p95Ms": 29.45760000000155,
+          "maxMs": 39.70350000000326
+        },
+        "attempts": 264,
+        "errors": 0,
+        "actualModelInputs": 0,
+        "jointUses": 264
+      }
+    }
+  },
+  "firstSeenQueries": [
+    {
+      "id": "q01",
+      "query": "青鹭湾那次观鸟最终在哪里几点碰头？",
+      "category": "correction",
+      "expectedIds": [
+        "n02"
+      ],
+      "top3": [
+        {
+          "id": "n02",
+          "nativeId": 1,
+          "score": 0.8559883085831813
+        },
+        {
+          "id": "n04",
+          "nativeId": 4,
+          "score": 0.8333459947610011
+        },
+        {
+          "id": "n03",
+          "nativeId": 3,
+          "score": 0.799669693688984
+        }
+      ]
+    },
+    {
+      "id": "q02",
+      "query": "拍照课在小鹭洲当天要去哪里签到？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n03"
+      ],
+      "top3": [
+        {
+          "id": "n03",
+          "nativeId": 3,
+          "score": 0.8840108830428297
+        },
+        {
+          "id": "n01",
+          "nativeId": 2,
+          "score": 0.7823959718617051
+        },
+        {
+          "id": "n31",
+          "nativeId": 30,
+          "score": 0.7436769519044155
+        }
+      ]
+    },
+    {
+      "id": "q03",
+      "query": "参加青鹭湾活动要向谁借看远处鸟的那件设备？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n04"
+      ],
+      "top3": [
+        {
+          "id": "n04",
+          "nativeId": 4,
+          "score": 0.8676248261027721
+        },
+        {
+          "id": "n01",
+          "nativeId": 2,
+          "score": 0.8402448590982731
+        },
+        {
+          "id": "n03",
+          "nativeId": 3,
+          "score": 0.7866299440373994
+        }
+      ]
+    },
+    {
+      "id": "q04",
+      "query": "青铜书展取预订图册现在该到哪个柜台？",
+      "category": "correction",
+      "expectedIds": [
+        "n06"
+      ],
+      "top3": [
+        {
+          "id": "n06",
+          "nativeId": 6,
+          "score": 0.9014964762960063
+        },
+        {
+          "id": "n05",
+          "nativeId": 5,
+          "score": 0.8806330970663157
+        },
+        {
+          "id": "n07",
+          "nativeId": 7,
+          "score": 0.7872042142813274
+        }
+      ]
+    },
+    {
+      "id": "q05",
+      "query": "新馆读者的卡片弄丢了，应去哪里补？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n07"
+      ],
+      "top3": [
+        {
+          "id": "n07",
+          "nativeId": 7,
+          "score": 0.8521158982572653
+        },
+        {
+          "id": "n05",
+          "nativeId": 5,
+          "score": 0.7831653303379739
+        },
+        {
+          "id": "n06",
+          "nativeId": 6,
+          "score": 0.7780267885172929
+        }
+      ]
+    },
+    {
+      "id": "q06",
+      "query": "银河那次共读分发的小说在哪个柜子取？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n08"
+      ],
+      "top3": [
+        {
+          "id": "n08",
+          "nativeId": 9,
+          "score": 0.8601542912646915
+        },
+        {
+          "id": "n05",
+          "nativeId": 5,
+          "score": 0.7211499946125517
+        },
+        {
+          "id": "n06",
+          "nativeId": 6,
+          "score": 0.7171879883127562
+        }
+      ]
+    },
+    {
+      "id": "q07",
+      "query": "家门的备份钥匙收在哪个房间、哪个位置？",
+      "category": "direct",
+      "expectedIds": [
+        "n09"
+      ],
+      "top3": [
+        {
+          "id": "n09",
+          "nativeId": 8,
+          "score": 0.8491897062117167
+        },
+        {
+          "id": "n10",
+          "nativeId": 10,
+          "score": 0.8239246262502551
+        },
+        {
+          "id": "n23",
+          "nativeId": 23,
+          "score": 0.7822502051099022
+        }
+      ]
+    },
+    {
+      "id": "q08",
+      "query": "给单车解锁的那把备用钥匙去哪找？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n10"
+      ],
+      "top3": [
+        {
+          "id": "n10",
+          "nativeId": 10,
+          "score": 0.8531228889386371
+        },
+        {
+          "id": "n09",
+          "nativeId": 8,
+          "score": 0.8137231448260791
+        },
+        {
+          "id": "n23",
+          "nativeId": 23,
+          "score": 0.7644840384957889
+        }
+      ]
+    },
+    {
+      "id": "q09",
+      "query": "签房屋文件时要拿的那份老合同收在哪里？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n11"
+      ],
+      "top3": [
+        {
+          "id": "n11",
+          "nativeId": 11,
+          "score": 0.8356517823651991
+        },
+        {
+          "id": "n09",
+          "nativeId": 8,
+          "score": 0.7321328147426487
+        },
+        {
+          "id": "n05",
+          "nativeId": 5,
+          "score": 0.7124529296771306
+        }
+      ]
+    },
+    {
+      "id": "q10",
+      "query": "客人睡的房间灯不亮，之前说要先查什么？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n12"
+      ],
+      "top3": [
+        {
+          "id": "n12",
+          "nativeId": 12,
+          "score": 0.8858692474374184
+        },
+        {
+          "id": "n23",
+          "nativeId": 23,
+          "score": 0.7442638414524674
+        },
+        {
+          "id": "n24",
+          "nativeId": 24,
+          "score": 0.7345841789370656
+        }
+      ]
+    },
+    {
+      "id": "q11",
+      "query": "小满喝手冲要不要加糖，奶怎么放？",
+      "category": "direct",
+      "expectedIds": [
+        "n13"
+      ],
+      "top3": [
+        {
+          "id": "n13",
+          "nativeId": 13,
+          "score": 0.8586223264044689
+        },
+        {
+          "id": "n14",
+          "nativeId": 14,
+          "score": 0.7806700171443883
+        },
+        {
+          "id": "n15",
+          "nativeId": 15,
+          "score": 0.7559613970898508
+        }
+      ]
+    },
+    {
+      "id": "q12",
+      "query": "小禾早上那杯咖啡要用哪种奶、几份浓缩？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n14"
+      ],
+      "top3": [
+        {
+          "id": "n14",
+          "nativeId": 14,
+          "score": 0.8730807201328419
+        },
+        {
+          "id": "n13",
+          "nativeId": 13,
+          "score": 0.813235998606121
+        },
+        {
+          "id": "n16",
+          "nativeId": 16,
+          "score": 0.6859620038106139
+        }
+      ]
+    },
+    {
+      "id": "q13",
+      "query": "给小满过生日，蛋糕的点缀怎么换？",
+      "category": "direct",
+      "expectedIds": [
+        "n15"
+      ],
+      "top3": [
+        {
+          "id": "n15",
+          "nativeId": 15,
+          "score": 0.9225684384046186
+        },
+        {
+          "id": "n13",
+          "nativeId": 13,
+          "score": 0.7690924418389657
+        },
+        {
+          "id": "n14",
+          "nativeId": 14,
+          "score": 0.7111819129019998
+        }
+      ]
+    },
+    {
+      "id": "q14",
+      "query": "茶话会那壶需要冷藏的饮料在哪里？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n16"
+      ],
+      "top3": [
+        {
+          "id": "n16",
+          "nativeId": 16,
+          "score": 0.8543061760217279
+        },
+        {
+          "id": "n14",
+          "nativeId": 14,
+          "score": 0.7271231914724531
+        },
+        {
+          "id": "n13",
+          "nativeId": 13,
+          "score": 0.7251694138776198
+        }
+      ]
+    },
+    {
+      "id": "q15",
+      "query": "枫桥现在怎样留灾备副本，恢复时核哪项记录？",
+      "category": "correction",
+      "expectedIds": [
+        "n18"
+      ],
+      "top3": [
+        {
+          "id": "n18",
+          "nativeId": 19,
+          "score": 0.8510302127877212
+        },
+        {
+          "id": "n17",
+          "nativeId": 17,
+          "score": 0.8473585302849909
+        },
+        {
+          "id": "n20",
+          "nativeId": 20,
+          "score": 0.8023151741346056
+        }
+      ]
+    },
+    {
+      "id": "q16",
+      "query": "白塔的备份存放在哪，更新频率如何？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n19"
+      ],
+      "top3": [
+        {
+          "id": "n19",
+          "nativeId": 18,
+          "score": 0.8990901776478267
+        },
+        {
+          "id": "n18",
+          "nativeId": 19,
+          "score": 0.7740604144443017
+        },
+        {
+          "id": "n17",
+          "nativeId": 17,
+          "score": 0.7401919966013737
+        }
+      ]
+    },
+    {
+      "id": "q17",
+      "query": "枫桥这周末出了告警应该通知谁？",
+      "category": "direct",
+      "expectedIds": [
+        "n20"
+      ],
+      "top3": [
+        {
+          "id": "n20",
+          "nativeId": 20,
+          "score": 0.8502727697808719
+        },
+        {
+          "id": "n17",
+          "nativeId": 17,
+          "score": 0.805358879889936
+        },
+        {
+          "id": "n18",
+          "nativeId": 19,
+          "score": 0.7848132108366398
+        }
+      ]
+    },
+    {
+      "id": "q18",
+      "query": "青灯展最后什么时候才能把展品送进去布置？",
+      "category": "correction",
+      "expectedIds": [
+        "n22"
+      ],
+      "top3": [
+        {
+          "id": "n22",
+          "nativeId": 22,
+          "score": 0.9084469676797737
+        },
+        {
+          "id": "n24",
+          "nativeId": 24,
+          "score": 0.8803688839072762
+        },
+        {
+          "id": "n21",
+          "nativeId": 21,
+          "score": 0.8613634484595313
+        }
+      ]
+    },
+    {
+      "id": "q19",
+      "query": "青灯展散场后把陈列柜的钥匙交给谁？",
+      "category": "direct",
+      "expectedIds": [
+        "n23"
+      ],
+      "top3": [
+        {
+          "id": "n23",
+          "nativeId": 23,
+          "score": 0.9023700909883269
+        },
+        {
+          "id": "n22",
+          "nativeId": 22,
+          "score": 0.8665975513422371
+        },
+        {
+          "id": "n24",
+          "nativeId": 24,
+          "score": 0.8490045084832111
+        }
+      ]
+    },
+    {
+      "id": "q20",
+      "query": "蓝灯展的工作人员在开幕前哪一天进场？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n24"
+      ],
+      "top3": [
+        {
+          "id": "n24",
+          "nativeId": 24,
+          "score": 0.9566131150102422
+        },
+        {
+          "id": "n22",
+          "nativeId": 22,
+          "score": 0.8786877322723126
+        },
+        {
+          "id": "n21",
+          "nativeId": 21,
+          "score": 0.860984941456753
+        }
+      ]
+    },
+    {
+      "id": "q21",
+      "query": "阳台那盆白掌是否该浇水，要怎样判断？",
+      "category": "direct",
+      "expectedIds": [
+        "n25"
+      ],
+      "top3": [
+        {
+          "id": "n25",
+          "nativeId": 26,
+          "score": 0.9003435120660908
+        },
+        {
+          "id": "n26",
+          "nativeId": 25,
+          "score": 0.7880734317249725
+        },
+        {
+          "id": "n27",
+          "nativeId": 27,
+          "score": 0.7535750201804341
+        }
+      ]
+    },
+    {
+      "id": "q22",
+      "query": "书桌旁带刺的盆栽，冬天该怎样给水？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n26"
+      ],
+      "top3": [
+        {
+          "id": "n26",
+          "nativeId": 25,
+          "score": 0.8552144017014616
+        },
+        {
+          "id": "n25",
+          "nativeId": 26,
+          "score": 0.7640074075092073
+        },
+        {
+          "id": "n27",
+          "nativeId": 27,
+          "score": 0.7435598168752333
+        }
+      ]
+    },
+    {
+      "id": "q23",
+      "query": "会议室的绿萝准备什么天气换新盆？",
+      "category": "direct",
+      "expectedIds": [
+        "n28"
+      ],
+      "top3": [
+        {
+          "id": "n28",
+          "nativeId": 29,
+          "score": 0.9032035177124638
+        },
+        {
+          "id": "n25",
+          "nativeId": 26,
+          "score": 0.7500166318218588
+        },
+        {
+          "id": "n45",
+          "nativeId": 45,
+          "score": 0.7488191883155042
+        }
+      ]
+    },
+    {
+      "id": "q24",
+      "query": "现在参加春季公益跑能否在家收到号码布，应带什么？",
+      "category": "correction",
+      "expectedIds": [
+        "n30"
+      ],
+      "top3": [
+        {
+          "id": "n30",
+          "nativeId": 31,
+          "score": 0.9232230556008281
+        },
+        {
+          "id": "n29",
+          "nativeId": 28,
+          "score": 0.8936143506485391
+        },
+        {
+          "id": "n32",
+          "nativeId": 32,
+          "score": 0.8351541213269188
+        }
+      ]
+    },
+    {
+      "id": "q25",
+      "query": "星河夜跑负责帮忙的人去哪里报到？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n31"
+      ],
+      "top3": [
+        {
+          "id": "n31",
+          "nativeId": 30,
+          "score": 0.9114517128151727
+        },
+        {
+          "id": "n32",
+          "nativeId": 32,
+          "score": 0.7599327782027144
+        },
+        {
+          "id": "n30",
+          "nativeId": 31,
+          "score": 0.7568297905539022
+        }
+      ]
+    },
+    {
+      "id": "q26",
+      "query": "公益跑结束后怎样领回自己寄的东西？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n32"
+      ],
+      "top3": [
+        {
+          "id": "n30",
+          "nativeId": 31,
+          "score": 0.8761667015423747
+        },
+        {
+          "id": "n32",
+          "nativeId": 32,
+          "score": 0.861057788026919
+        },
+        {
+          "id": "n29",
+          "nativeId": 28,
+          "score": 0.8608736681802328
+        }
+      ]
+    },
+    {
+      "id": "q27",
+      "query": "湖畔团排练找不到伴奏纸谱，去哪里拿？",
+      "category": "direct",
+      "expectedIds": [
+        "n33"
+      ],
+      "top3": [
+        {
+          "id": "n33",
+          "nativeId": 33,
+          "score": 0.8517109438417716
+        },
+        {
+          "id": "n35",
+          "nativeId": 35,
+          "score": 0.8311196154797248
+        },
+        {
+          "id": "n36",
+          "nativeId": 36,
+          "score": 0.7753687099084287
+        }
+      ]
+    },
+    {
+      "id": "q28",
+      "query": "湖畔的返场曲需怎样移调，领唱从哪一段进入？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n34"
+      ],
+      "top3": [
+        {
+          "id": "n35",
+          "nativeId": 35,
+          "score": 0.8155286010358574
+        },
+        {
+          "id": "n36",
+          "nativeId": 36,
+          "score": 0.7612879277309129
+        },
+        {
+          "id": "n33",
+          "nativeId": 33,
+          "score": 0.7480922348720962
+        }
+      ]
+    },
+    {
+      "id": "q29",
+      "query": "山谷团怎样处理返场曲的调性，由谁从哪一段起唱？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n35"
+      ],
+      "top3": [
+        {
+          "id": "n35",
+          "nativeId": 35,
+          "score": 0.8201231602756801
+        },
+        {
+          "id": "n33",
+          "nativeId": 33,
+          "score": 0.680291756906021
+        },
+        {
+          "id": "n36",
+          "nativeId": 36,
+          "score": 0.6701779415019568
+        }
+      ]
+    },
+    {
+      "id": "q30",
+      "query": "按外婆的方法做绿豆汤，什么时候调甜、什么时候放花？",
+      "category": "direct",
+      "expectedIds": [
+        "n37"
+      ],
+      "top3": [
+        {
+          "id": "n37",
+          "nativeId": 37,
+          "score": 0.8859104695110541
+        },
+        {
+          "id": "n38",
+          "nativeId": 38,
+          "score": 0.7904945693190046
+        },
+        {
+          "id": "n28",
+          "nativeId": 29,
+          "score": 0.716198848035335
+        }
+      ]
+    },
+    {
+      "id": "q31",
+      "query": "做陶杯修形和上底釉时各要干到什么程度？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n39"
+      ],
+      "top3": [
+        {
+          "id": "n39",
+          "nativeId": 39,
+          "score": 0.8615775709958037
+        },
+        {
+          "id": "n40",
+          "nativeId": 40,
+          "score": 0.6963221866651947
+        },
+        {
+          "id": "n25",
+          "nativeId": 26,
+          "score": 0.6525293226032268
+        }
+      ]
+    },
+    {
+      "id": "q32",
+      "query": "晚班渡轮改动后应在哪验票，开船时间变了吗？",
+      "category": "correction",
+      "expectedIds": [
+        "n42"
+      ],
+      "top3": [
+        {
+          "id": "n42",
+          "nativeId": 42,
+          "score": 0.903035684578419
+        },
+        {
+          "id": "n43",
+          "nativeId": 43,
+          "score": 0.8489805347286472
+        },
+        {
+          "id": "n44",
+          "nativeId": 44,
+          "score": 0.8121746517878189
+        }
+      ]
+    },
+    {
+      "id": "q33",
+      "query": "白天观光的船票买好后登船前还要办什么？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n43"
+      ],
+      "top3": [
+        {
+          "id": "n43",
+          "nativeId": 43,
+          "score": 0.8371032984784902
+        },
+        {
+          "id": "n41",
+          "nativeId": 41,
+          "score": 0.7669715097545268
+        },
+        {
+          "id": "n02",
+          "nativeId": 1,
+          "score": 0.7402486343473449
+        }
+      ]
+    },
+    {
+      "id": "q34",
+      "query": "画版画用的那种纸该去哪个柜子拿？",
+      "category": "near-neighbor",
+      "expectedIds": [
+        "n46"
+      ],
+      "top3": [
+        {
+          "id": "n46",
+          "nativeId": 46,
+          "score": 0.8730948865335803
+        },
+        {
+          "id": "n45",
+          "nativeId": 45,
+          "score": 0.8121663410448999
+        },
+        {
+          "id": "n33",
+          "nativeId": 33,
+          "score": 0.7500262611814019
+        }
+      ]
+    },
+    {
+      "id": "q35",
+      "query": "剧组联排结束后录音是谁负责留备份？",
+      "category": "direct",
+      "expectedIds": [
+        "n47"
+      ],
+      "top3": [
+        {
+          "id": "n47",
+          "nativeId": 47,
+          "score": 0.8792602487494026
+        },
+        {
+          "id": "n48",
+          "nativeId": 48,
+          "score": 0.7667343953930689
+        },
+        {
+          "id": "n18",
+          "nativeId": 19,
+          "score": 0.766636247065385
+        }
+      ]
+    },
+    {
+      "id": "q36",
+      "query": "服装组的报销和票根应该怎么交？",
+      "category": "paraphrase",
+      "expectedIds": [
+        "n48"
+      ],
+      "top3": [
+        {
+          "id": "n48",
+          "nativeId": 48,
+          "score": 0.8587027217819655
+        },
+        {
+          "id": "n36",
+          "nativeId": 36,
+          "score": 0.7953156466289573
+        },
+        {
+          "id": "n30",
+          "nativeId": 31,
+          "score": 0.7422657486030472
+        }
+      ]
+    },
+    {
+      "id": "q37",
+      "query": "给家门和单车锁分别留的备用钥匙，各自收在哪里？",
+      "category": "multi-source",
+      "expectedIds": [
+        "n09",
+        "n10"
+      ],
+      "top3": [
+        {
+          "id": "n10",
+          "nativeId": 10,
+          "score": 0.8656785071845344
+        },
+        {
+          "id": "n09",
+          "nativeId": 8,
+          "score": 0.8431709331424635
+        },
+        {
+          "id": "n23",
+          "nativeId": 23,
+          "score": 0.7604899427011793
+        }
+      ]
+    },
+    {
+      "id": "q38",
+      "query": "小满的手冲和小禾的早餐咖啡，分别要怎么准备？",
+      "category": "multi-source",
+      "expectedIds": [
+        "n13",
+        "n14"
+      ],
+      "top3": [
+        {
+          "id": "n14",
+          "nativeId": 14,
+          "score": 0.8448220356012554
+        },
+        {
+          "id": "n13",
+          "nativeId": 13,
+          "score": 0.8304617184255109
+        },
+        {
+          "id": "n15",
+          "nativeId": 15,
+          "score": 0.7224571234926629
+        }
+      ]
+    },
+    {
+      "id": "q39",
+      "query": "对比枫桥和白塔现在分别怎样做备份。",
+      "category": "multi-source",
+      "expectedIds": [
+        "n18",
+        "n19"
+      ],
+      "top3": [
+        {
+          "id": "n19",
+          "nativeId": 18,
+          "score": 0.8982161118252343
+        },
+        {
+          "id": "n17",
+          "nativeId": 17,
+          "score": 0.8646650132713615
+        },
+        {
+          "id": "n18",
+          "nativeId": 19,
+          "score": 0.8607627282945632
+        }
+      ]
+    },
+    {
+      "id": "q40",
+      "query": "湖畔和山谷两个团的安可曲，领唱分别何时进入？",
+      "category": "multi-source",
+      "expectedIds": [
+        "n34",
+        "n35"
+      ],
+      "top3": [
+        {
+          "id": "n35",
+          "nativeId": 35,
+          "score": 0.8565098846908908
+        },
+        {
+          "id": "n36",
+          "nativeId": 36,
+          "score": 0.7512798278948769
+        },
+        {
+          "id": "n33",
+          "nativeId": 33,
+          "score": 0.7365573160005632
+        }
+      ]
+    },
+    {
+      "id": "q41",
+      "query": "青鹭湾最初和最终的两版集合时间、地点各是什么？",
+      "category": "multi-source",
+      "expectedIds": [
+        "n01",
+        "n02"
+      ],
+      "top3": [
+        {
+          "id": "n01",
+          "nativeId": 2,
+          "score": 0.8460829916568589
+        },
+        {
+          "id": "n03",
+          "nativeId": 3,
+          "score": 0.7748305608705417
+        },
+        {
+          "id": "n04",
+          "nativeId": 4,
+          "score": 0.7709254992889203
+        }
+      ]
+    },
+    {
+      "id": "q42",
+      "query": "现在坐白天游览船要去哪个码头，坐晚班渡轮又要去哪个泊位验票？",
+      "category": "multi-source",
+      "expectedIds": [
+        "n42",
+        "n43"
+      ],
+      "top3": [
+        {
+          "id": "n43",
+          "nativeId": 43,
+          "score": 0.8906385584201063
+        },
+        {
+          "id": "n42",
+          "nativeId": 42,
+          "score": 0.8676051503413003
+        },
+        {
+          "id": "n44",
+          "nativeId": 44,
+          "score": 0.8094272091118159
+        }
+      ]
+    },
+    {
+      "id": "q43",
+      "query": "之前约好的滑雪教练叫什么名字？",
+      "category": "no-answer",
+      "expectedIds": [],
+      "top3": [
+        {
+          "id": "n04",
+          "nativeId": 4,
+          "score": 0.7153426453379365
+        },
+        {
+          "id": "n01",
+          "nativeId": 2,
+          "score": 0.7110511833378794
+        },
+        {
+          "id": "n29",
+          "nativeId": 28,
+          "score": 0.6908808574182785
+        }
+      ]
+    },
+    {
+      "id": "q44",
+      "query": "给宠物狗续办登记证的截止日期是哪一天？",
+      "category": "no-answer",
+      "expectedIds": [],
+      "top3": [
+        {
+          "id": "n07",
+          "nativeId": 7,
+          "score": 0.7286532128342853
+        },
+        {
+          "id": "n30",
+          "nativeId": 31,
+          "score": 0.7285246149758612
+        },
+        {
+          "id": "n29",
+          "nativeId": 28,
+          "score": 0.6971211639436075
+        }
+      ]
+    }
+  ],
+  "previousIndependentRuns": [
+    {
+      "revision": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+      "fixtureSha256": "45baebd186d954b6a8e636fd67a1029b69066f454b766de6d9f9848e118ca1b1",
+      "closedIndexSha256": "b949c6d89b4261def8d5dd468f7e142c0b76de2bb844c56af9716447cf6b2559",
+      "pairedComparisons": 1056,
+      "pairDifferences": [],
+      "summary": {
+        "official": {
+          "coldOpen": {
+            "n": 6,
+            "p50Ms": 436.9259999999995,
+            "p95Ms": 3215.807999999999,
+            "maxMs": 3215.807999999999
+          },
+          "quality": {
+            "positives": 42,
+            "top1": 0.9523809523809523,
+            "hitAt3": 0.9761904761904762,
+            "recallAt3": 0.9523809523809523,
+            "relevantRetrieved": 45,
+            "relevantTotal": 48,
+            "mrrAt3": 0.9642857142857143,
+            "multisource": 6,
+            "multisourceAllHit": 4,
+            "outOfCorpus": [
+              {
+                "id": "q43",
+                "returned": 3,
+                "ids": [
+                  "n04",
+                  "n01",
+                  "n29"
+                ]
+              },
+              {
+                "id": "q44",
+                "returned": 3,
+                "ids": [
+                  "n07",
+                  "n30",
+                  "n29"
+                ]
+              }
+            ],
+            "missed": [
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              },
+              {
+                "id": "q40",
+                "category": "multi-source",
+                "expected": [
+                  "n34",
+                  "n35"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              },
+              {
+                "id": "q41",
+                "category": "multi-source",
+                "expected": [
+                  "n01",
+                  "n02"
+                ],
+                "ids": [
+                  "n01",
+                  "n03",
+                  "n04"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              }
+            ],
+            "top1Failures": [
+              {
+                "id": "q26",
+                "category": "near-neighbor",
+                "expected": [
+                  "n32"
+                ],
+                "ids": [
+                  "n30",
+                  "n32",
+                  "n29"
+                ],
+                "relevance": 1,
+                "top1": false,
+                "hit": true,
+                "recall": 1,
+                "reciprocal": 0.5
+              },
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              }
+            ]
+          },
+          "firstSeen": {
+            "n": 264,
+            "p50Ms": 34.42269999999917,
+            "p95Ms": 48.41969999999856,
+            "maxMs": 60.721300000001065,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 34.42269999999917,
+              "p95Ms": 48.41969999999856,
+              "maxMs": 60.721300000001065
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 33.871399999999994,
+              "p95Ms": 47.95769999999993,
+              "maxMs": 60.056900000000496
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 264,
+            "jointUses": 264
+          },
+          "warmRepeat": {
+            "n": 264,
+            "p50Ms": 14.319999999999709,
+            "p95Ms": 18.308899999996356,
+            "maxMs": 21.713700000000244,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 14.319999999999709,
+              "p95Ms": 18.308899999996356,
+              "maxMs": 21.713700000000244
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 13.769199999999728,
+              "p95Ms": 17.796299999999974,
+              "maxMs": 20.9429999999993
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "preencoded": {
+            "n": 264,
+            "p50Ms": 13.967800000000352,
+            "p95Ms": 19.814699999999903,
+            "maxMs": 22.511199999999917,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 14.534500000001572,
+              "p95Ms": 20.473699999998644,
+              "maxMs": 23.030400000003283
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 13.998499999999694,
+              "p95Ms": 19.865200000000186,
+              "maxMs": 22.533300000000054
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "guardedRepeat": {
+            "n": 264,
+            "p50Ms": 15.701100000005681,
+            "p95Ms": 22.026399999995192,
+            "maxMs": 25.373200000001816,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 15.701100000005681,
+              "p95Ms": 22.026399999995192,
+              "maxMs": 25.373200000001816
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 15.088200000000143,
+              "p95Ms": 21.33680000000095,
+              "maxMs": 24.533299999999144
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          }
+        },
+        "host": {
+          "coldOpen": {
+            "n": 6,
+            "p50Ms": 500.3081999999995,
+            "p95Ms": 515.7191000000021,
+            "maxMs": 515.7191000000021
+          },
+          "quality": {
+            "positives": 42,
+            "top1": 0.9523809523809523,
+            "hitAt3": 0.9761904761904762,
+            "recallAt3": 0.9523809523809523,
+            "relevantRetrieved": 45,
+            "relevantTotal": 48,
+            "mrrAt3": 0.9642857142857143,
+            "multisource": 6,
+            "multisourceAllHit": 4,
+            "outOfCorpus": [
+              {
+                "id": "q43",
+                "returned": 3,
+                "ids": [
+                  "n04",
+                  "n01",
+                  "n29"
+                ]
+              },
+              {
+                "id": "q44",
+                "returned": 3,
+                "ids": [
+                  "n07",
+                  "n30",
+                  "n29"
+                ]
+              }
+            ],
+            "missed": [
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              },
+              {
+                "id": "q40",
+                "category": "multi-source",
+                "expected": [
+                  "n34",
+                  "n35"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              },
+              {
+                "id": "q41",
+                "category": "multi-source",
+                "expected": [
+                  "n01",
+                  "n02"
+                ],
+                "ids": [
+                  "n01",
+                  "n03",
+                  "n04"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              }
+            ],
+            "top1Failures": [
+              {
+                "id": "q26",
+                "category": "near-neighbor",
+                "expected": [
+                  "n32"
+                ],
+                "ids": [
+                  "n30",
+                  "n32",
+                  "n29"
+                ],
+                "relevance": 1,
+                "top1": false,
+                "hit": true,
+                "recall": 1,
+                "reciprocal": 0.5
+              },
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              }
+            ]
+          },
+          "firstSeen": {
+            "n": 264,
+            "p50Ms": 36.04559999999765,
+            "p95Ms": 51.339100000001054,
+            "maxMs": 56.15649999999732,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 36.04559999999765,
+              "p95Ms": 51.339100000001054,
+              "maxMs": 56.15649999999732
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 264,
+            "jointUses": 264
+          },
+          "warmRepeat": {
+            "n": 264,
+            "p50Ms": 15.743000000002212,
+            "p95Ms": 20.48189999999886,
+            "maxMs": 24.379799999995157,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 15.743000000002212,
+              "p95Ms": 20.48189999999886,
+              "maxMs": 24.379799999995157
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "preencoded": {
+            "n": 264,
+            "p50Ms": 15.14639999999963,
+            "p95Ms": 20.22910000000047,
+            "maxMs": 25.066499999999905,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 19.181100000001607,
+              "p95Ms": 24.9900000000016,
+              "maxMs": 32.145400000001246
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "guardedRepeat": {
+            "n": 264,
+            "p50Ms": 26.069699999992736,
+            "p95Ms": 35.491299999994226,
+            "maxMs": 38.307999999997264,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 26.069699999992736,
+              "p95Ms": 35.491299999994226,
+              "maxMs": 38.307999999997264
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          }
+        }
+      }
+    },
+    {
+      "revision": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+      "fixtureSha256": "45baebd186d954b6a8e636fd67a1029b69066f454b766de6d9f9848e118ca1b1",
+      "closedIndexSha256": "ac56ea538ba170b2ccfe5dc409667f1d8a5f37129a7704d1ecb3d02ce063e7ea",
+      "pairedComparisons": 1056,
+      "pairDifferences": [],
+      "summary": {
+        "official": {
+          "coldOpen": {
+            "n": 6,
+            "p50Ms": 433.9363000000012,
+            "p95Ms": 2774.898400000002,
+            "maxMs": 2774.898400000002
+          },
+          "quality": {
+            "positives": 42,
+            "top1": 0.9523809523809523,
+            "hitAt3": 0.9761904761904762,
+            "recallAt3": 0.9523809523809523,
+            "relevantRetrieved": 45,
+            "relevantTotal": 48,
+            "mrrAt3": 0.9603174603174602,
+            "multisource": 6,
+            "multisourceAllHit": 4,
+            "outOfCorpus": [
+              {
+                "id": "q43",
+                "returned": 3,
+                "ids": [
+                  "n04",
+                  "n01",
+                  "n29"
+                ]
+              },
+              {
+                "id": "q44",
+                "returned": 3,
+                "ids": [
+                  "n30",
+                  "n07",
+                  "n29"
+                ]
+              }
+            ],
+            "missed": [
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              },
+              {
+                "id": "q40",
+                "category": "multi-source",
+                "expected": [
+                  "n34",
+                  "n35"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              },
+              {
+                "id": "q41",
+                "category": "multi-source",
+                "expected": [
+                  "n01",
+                  "n02"
+                ],
+                "ids": [
+                  "n01",
+                  "n03",
+                  "n04"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              }
+            ],
+            "top1Failures": [
+              {
+                "id": "q26",
+                "category": "near-neighbor",
+                "expected": [
+                  "n32"
+                ],
+                "ids": [
+                  "n30",
+                  "n29",
+                  "n32"
+                ],
+                "relevance": 1,
+                "top1": false,
+                "hit": true,
+                "recall": 1,
+                "reciprocal": 0.3333333333333333
+              },
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              }
+            ]
+          },
+          "firstSeen": {
+            "n": 264,
+            "p50Ms": 34.22609999999986,
+            "p95Ms": 47.06069999999818,
+            "maxMs": 85.09920000000056,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 34.22609999999986,
+              "p95Ms": 47.06069999999818,
+              "maxMs": 85.09920000000056
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 33.740999999999985,
+              "p95Ms": 46.609300000000076,
+              "maxMs": 84.3140999999996
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 264,
+            "jointUses": 264
+          },
+          "warmRepeat": {
+            "n": 264,
+            "p50Ms": 13.072700000000623,
+            "p95Ms": 15.883699999998498,
+            "maxMs": 19.249100000000908,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 13.072700000000623,
+              "p95Ms": 15.883699999998498,
+              "maxMs": 19.249100000000908
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 12.557700000000295,
+              "p95Ms": 15.43139999999994,
+              "maxMs": 18.658400000000256
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "preencoded": {
+            "n": 264,
+            "p50Ms": 12.626000000000204,
+            "p95Ms": 14.64010000000053,
+            "maxMs": 19.45169999999962,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 13.121299999998882,
+              "p95Ms": 15.233600000006845,
+              "maxMs": 19.872400000000198
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 12.662600000000566,
+              "p95Ms": 14.678499999999985,
+              "maxMs": 19.473799999999756
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "guardedRepeat": {
+            "n": 264,
+            "p50Ms": 12.852200000001176,
+            "p95Ms": 15.514700000006997,
+            "maxMs": 17.65860000000248,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 12.852200000001176,
+              "p95Ms": 15.514700000006997,
+              "maxMs": 17.65860000000248
+            },
+            "sourceDirect": {
+              "n": 264,
+              "p50Ms": 12.389299999999821,
+              "p95Ms": 14.942599999999402,
+              "maxMs": 17.1241
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          }
+        },
+        "host": {
+          "coldOpen": {
+            "n": 6,
+            "p50Ms": 499.8631999999998,
+            "p95Ms": 522.5318999999945,
+            "maxMs": 522.5318999999945
+          },
+          "quality": {
+            "positives": 42,
+            "top1": 0.9523809523809523,
+            "hitAt3": 0.9761904761904762,
+            "recallAt3": 0.9523809523809523,
+            "relevantRetrieved": 45,
+            "relevantTotal": 48,
+            "mrrAt3": 0.9603174603174602,
+            "multisource": 6,
+            "multisourceAllHit": 4,
+            "outOfCorpus": [
+              {
+                "id": "q43",
+                "returned": 3,
+                "ids": [
+                  "n04",
+                  "n01",
+                  "n29"
+                ]
+              },
+              {
+                "id": "q44",
+                "returned": 3,
+                "ids": [
+                  "n30",
+                  "n07",
+                  "n29"
+                ]
+              }
+            ],
+            "missed": [
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              },
+              {
+                "id": "q40",
+                "category": "multi-source",
+                "expected": [
+                  "n34",
+                  "n35"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              },
+              {
+                "id": "q41",
+                "category": "multi-source",
+                "expected": [
+                  "n01",
+                  "n02"
+                ],
+                "ids": [
+                  "n01",
+                  "n03",
+                  "n04"
+                ],
+                "relevance": 1,
+                "top1": true,
+                "hit": true,
+                "recall": 0.5,
+                "reciprocal": 1
+              }
+            ],
+            "top1Failures": [
+              {
+                "id": "q26",
+                "category": "near-neighbor",
+                "expected": [
+                  "n32"
+                ],
+                "ids": [
+                  "n30",
+                  "n29",
+                  "n32"
+                ],
+                "relevance": 1,
+                "top1": false,
+                "hit": true,
+                "recall": 1,
+                "reciprocal": 0.3333333333333333
+              },
+              {
+                "id": "q28",
+                "category": "near-neighbor",
+                "expected": [
+                  "n34"
+                ],
+                "ids": [
+                  "n35",
+                  "n36",
+                  "n33"
+                ],
+                "relevance": 0,
+                "top1": false,
+                "hit": false,
+                "recall": 0,
+                "reciprocal": 0
+              }
+            ]
+          },
+          "firstSeen": {
+            "n": 264,
+            "p50Ms": 36.56380000000354,
+            "p95Ms": 49.14930000000095,
+            "maxMs": 66.95660000000134,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 36.56380000000354,
+              "p95Ms": 49.14930000000095,
+              "maxMs": 66.95660000000134
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 264,
+            "jointUses": 264
+          },
+          "warmRepeat": {
+            "n": 264,
+            "p50Ms": 14.175899999994726,
+            "p95Ms": 17.21440000000075,
+            "maxMs": 25.98639999999432,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 14.175899999994726,
+              "p95Ms": 17.21440000000075,
+              "maxMs": 25.98639999999432
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "preencoded": {
+            "n": 264,
+            "p50Ms": 13.391999999999825,
+            "p95Ms": 15.852899999999863,
+            "maxMs": 17.97559999999976,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 16.924800000000687,
+              "p95Ms": 20.124400000000605,
+              "maxMs": 22.27560000000085
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          },
+          "guardedRepeat": {
+            "n": 264,
+            "p50Ms": 22.200400000001537,
+            "p95Ms": 26.546100000006845,
+            "maxMs": 47.23559999999998,
+            "rpc": {
+              "n": 264,
+              "p50Ms": 22.200400000001537,
+              "p95Ms": 26.546100000006845,
+              "maxMs": 47.23559999999998
+            },
+            "attempts": 264,
+            "errors": 0,
+            "actualModelInputs": 0,
+            "jointUses": 264
+          }
+        }
+      }
+    }
+  ]
+}

@@ -12,6 +12,34 @@ import { preserveBotNativeJournals } from '../fixtures/bot-native-journal-eviden
 // Explicit local Host contract test: real installed DSH CLI/Node/persistence
 // and maintained provider serializer, deterministic local protocol fixture.
 // This is not an online model quality test.
+it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('places VCP recall in the native model context independently of the chat message', async () => {
+  const requests: Array<{ role: string; content: unknown }[]> = [];
+  const server = createServer(async (request, response) => {
+    const chunks = []; for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')).messages);
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('data: ' + JSON.stringify({ choices: [{ index: 0, delta: { content: '收到' }, finish_reason: null }] }) + '\n\n');
+    response.end('data: ' + JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const address = server.address(); if (!address || typeof address === 'string') throw new Error('Missing model fixture');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const host = await createBotNativeHost(process.env.WORLDLINEBOX_BOT_DSH_PROGRAM!);
+  try {
+    const client = await host.instances.ensureHost(host.instance.id);
+    const brain = new BotDshBrain({ getHost: async () => ({ client }) });
+    const memory = 'VCP 回忆：观鸟集合处是青鹭湾北岸，原话含 {{literal}}。';
+    const result = await brain.run({ laneId: 'scoped-memory', eventId: 'ordinary-turn', cwd: path.join(host.root, 'workspace'),
+      role: 'worker', system: '你是世界线盒子伙伴。', prompt: '我们早上在哪里见面？', memoryContext: memory,
+      model: { apiFormat: 'openai_chat', model: 'fixture', apiKey: 'fixture', baseUrl }, callback: { url: baseUrl + '/bot/tool', token: 'a'.repeat(64) }, tools: [] });
+    expect(result.status).toBe('succeeded');
+    expect(requests[0]?.some(message => message.role === 'user' && JSON.stringify(message.content).includes(memory))).toBe(true);
+    expect(requests[0]?.some(message => message.role === 'user' && JSON.stringify(message.content).includes('在哪里见面') && !JSON.stringify(message.content).includes(memory))).toBe(true);
+  } finally {
+    try { await host.close(); } finally { server.closeAllConnections(); await new Promise<void>(done => server.close(() => done())); }
+  }
+}, 120000);
+
 it.runIf(!!process.env.WORLDLINEBOX_BOT_DSH_PROGRAM)('runs isolated native lanes, read_image wire, preset restart and durable duplicate replay', async () => {
   const requests: Array<{ messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string } }> }> = [];
   let heldResolve!: () => void;

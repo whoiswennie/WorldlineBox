@@ -23,7 +23,7 @@ async function fixture(memoryError?: Error, cabinWorldApp?: BotCabinWorldApp, re
   const memory = new class extends BotMemoryService {
     override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
       prepares++; input.onPhase?.('recalling-memory'); await preparation.promise; if (memoryError) throw memoryError;
-      return { requestId: input.requestId, inputHash: 'controlled', scope: input.scope, messages: input.messages, metadata: {}, evidence: '', events: [], omittedChars: 0, status: 'ready' };
+      return { requestId: input.requestId, inputHash: 'controlled', scope: input.scope, messages: input.messages, metadata: {}, nativeContext: '', events: [], status: 'ready' };
     }
     override async finishTurn() { return { recorded: true }; }
     override async appendHistory() { return { archived: true }; }
@@ -94,6 +94,25 @@ it('can immediately stop a prepared reply before its native turn was sent', asyn
   expect(f.service.store.getMetadata('native-stop:' + run.eventId)).toBeFalsy();
   expect((await f.reply())?.execution?.interruption?.state).toBe('ready');
   expect(f.host).not.toHaveBeenCalled();
+});
+
+it('returns a tracked call reply after it falls off the recent page and is cancelled without publication', async () => {
+  const { service, conversationId } = await fixture();
+  const store = service.store;
+  const add = (room: string) => store.enqueue({ conversationId: room, senderId: 'user', content: '一条消息' }).events[0]!;
+  const first = add(conversationId);
+  for (let i = 0; i < 41; i++) store.cancelEvent(add(conversationId).id);
+  const otherRoom = store.openDirect(store.createCompanion({ name: '另一位伙伴', persona: '日常陪伴' }).id);
+  const other = add(otherRoom.id);
+  const state = { type: 'state' as const, conversationId, surface: 'call' as const };
+  expect((await service.handle(state)).snapshot!.messages.some(message => message.id === first.replyMessageId)).toBe(false);
+  const tracked = { ...state, callReplyIds: [first.replyMessageId, other.replyMessageId] };
+  const replies = async () => (await service.handle(tracked)).snapshot!.messages;
+  expect(await replies()).toContainEqual(expect.objectContaining({ id: first.replyMessageId, status: 'queued' }));
+  store.cancelEvent(first.id);
+  const after = await replies();
+  expect(after).toContainEqual(expect.objectContaining({ id: first.replyMessageId, status: 'cancelled' }));
+  expect(after.some(message => message.id === other.replyMessageId)).toBe(false);
 });
 
 it.each([undefined, 'call' as const])('interrupts the current reply after speech is accepted and prioritizes the new question (%s)', async surface => {
@@ -299,21 +318,26 @@ it('carries a quiet observation into the next heartbeat of the same topic', asyn
   await target.observe(sample, new AbortController().signal);
   expect(JSON.parse(f.run!.prompt).observation.previousObservations).toEqual([note]);
 });
-it('keeps a crashed memory preparation terminal and readable, preserves the source and reports the original technical error once', async () => {
-  const original = Object.assign(new Error('Memory session closed (exit 3221226505)'), { code: 'MEMORY_SESSION_CLOSED' }), f = await fixture(original);
+it.each(['MEMORY_SESSION_CLOSED', 'MEMORY_PROVIDER_UNAVAILABLE'])('continues a fresh native chat with deferred memory when optional recall fails (%s)', async code => {
+  const original = Object.assign(new Error('Optional native recall is temporarily unavailable'), { code }), f = await fixture(original);
   await f.send(); await until(() => f.prepares ? true : undefined); f.preparation.resolve();
-  await until(async () => (await f.reply())?.status === 'failed' ? true : undefined);
-  expect((await f.reply())?.error).toBe('记忆服务异常退出，本条消息已保留；可重试。');
-  expect(f.service.store.messagesPage(f.conversationId).items.find(message => message.senderId === 'user')?.content).toBe('你好');
-  expect(f.prepares).toBe(1); expect(f.reported).toEqual([original]); expect(f.run).toBeUndefined(); expect(f.host).not.toHaveBeenCalled();
+  const run = await until(() => f.run);
+  expect(run.memoryContext).toBe(''); expect(f.service.store.getMetadata('native-memory-prepared:' + run.eventId)).toBe('deferred');
+  expect(f.reported).toContain(original); f.completion.resolve();
+  await until(async () => (await f.reply())?.status === 'sent' ? true : undefined);
 });
-it('persists a v3 interaction diary even when semantic encoding returns no notes', async () => {
+it('stops a new turn if recall reports a source withdrawal', async () => {
+  const f = await fixture(Object.assign(new Error('Source was withdrawn'), { code: 'MEMORY_SOURCE_WITHDRAWN' }));
+  await f.send(); f.preparation.resolve(); await until(async () => (await f.reply())?.status === 'failed' ? true : undefined);
+  expect(f.run).toBeUndefined();
+});
+it('keeps ordinary chat in topic history when the companion decides against writing a diary', async () => {
   const f = await fixture(); await f.send('刚刚我们一起讨论了桌面整理，尚未动手。'); f.preparation.resolve(); await until(() => f.run); f.completion.resolve();
   await until(async () => (await f.reply())?.status === 'sent' ? true : undefined);
   const companionId = f.service.store.getConversation(f.conversationId)!.memberIds.find(id => id !== 'user')!;
   const scope = { companionId, conversationId: f.conversationId, securityDomainId: f.service.store.getConversation(f.conversationId)!.securityDomainId };
-  await until(() => f.service.store.memoryActivity(scope).capture.withNotes === 1 ? true : undefined);
   const response = await f.service.handle({ type: 'memory.catalog', companionId, conversationId: f.conversationId, limit: 24 });
-  expect(response.memory).toMatchObject({ total: 0, activity: { capture: { empty: 0, withNotes: 1, unknownDone: 0, queued: 0, running: 0 } } });
+  expect(response.memory).toMatchObject({ total: 0, activity: { originals: expect.any(Object) } });
+  expect(f.service.store.memoryActivity(scope)).toHaveProperty('originals');
   expect(f.host).not.toHaveBeenCalled();
 });

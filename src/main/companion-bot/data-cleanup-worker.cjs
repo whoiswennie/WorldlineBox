@@ -51,6 +51,7 @@ async function* ids(table) {
 }
 function addScope(scope) {
   if (!scope || typeof scope.companionId !== 'string' || typeof scope.securityDomainId !== 'string') return;
+  if (!job.all && scope.companionId !== job.companionId) return;
   const home = digest([scope.companionId, scope.securityDomainId]);
   insert('domains', home);
 }
@@ -66,6 +67,12 @@ const mappings = {
 function predicate(db, table, all = job.all) {
   if (all) return '1';
   const fields = columns(db, table), clauses = [];
+  // Domain ledgers belong to one companion, even when their evidence names a
+  // message that another participant saw. Shared original records belong to
+  // the conversation, including their inbox and topic bindings.
+  if (fields.includes('owner_key')) return '(owner_key IN (SELECT id FROM cleanup.owners) OR owner_key IN (SELECT id FROM cleanup.domains))';
+  if (fields.includes('domain_key')) return 'domain_key IN (SELECT id FROM cleanup.domains)';
+  if (fields.includes('conversation_id')) return 'conversation_id IN (SELECT id FROM cleanup.rooms)';
   for (const field of fields) {
     if (mappings[field]) clauses.push(`${quote(field)} IN (SELECT id FROM cleanup.${mappings[field]})`);
     if (field === 'owner_key') clauses.push(`${quote(field)} IN (SELECT id FROM cleanup.domains)`);
@@ -95,11 +102,16 @@ async function batches(db, table, where) {
 }
 async function planCleanup() {
   progress('planning', true);
-  for (const name of ['rooms','messages','events','tasks','lanes','domains','owners','jobs','brains','delegations','workflows','tokens','media','files','grants']) plan.exec(`CREATE TABLE IF NOT EXISTS ${name}(id TEXT PRIMARY KEY)`);
-  if (plan.prepare("SELECT value FROM state WHERE key='planned'").get()) return;
+  const sets = ['rooms','messages','events','tasks','lanes','domains','owners','jobs','brains','delegations','workflows','tokens','media','files','grants'];
+  for (const name of sets) plan.exec(`CREATE TABLE IF NOT EXISTS ${name}(id TEXT PRIMARY KEY)`);
+  if (plan.prepare("SELECT value FROM state WHERE key='planned'").get()?.value === 'owner-v2') return;
+  // A saved plan from a broader single-companion cleanup must never carry its
+  // inherited list of co-members into a retry after upgrading.
+  plan.transaction(() => { for (const name of sets) plan.exec(`DELETE FROM ${name}`); })();
   const all = job.all, has = name => !!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
   if (all) plan.exec('INSERT OR IGNORE INTO rooms SELECT id FROM source.bot_conversations');
-  else plan.prepare('INSERT OR IGNORE INTO rooms SELECT conversation_id FROM source.bot_members WHERE member_id=?').run(job.companionId);
+  else plan.prepare(`INSERT OR IGNORE INTO rooms SELECT c.id FROM source.bot_conversations c JOIN source.bot_members m ON m.conversation_id=c.id
+    WHERE c.kind='direct' AND m.member_id=? AND NOT EXISTS(SELECT 1 FROM source.bot_members other WHERE other.conversation_id=c.id AND other.member_id NOT IN ('user',?))`).run(job.companionId, job.companionId);
   for (const [kind, table] of [['messages','bot_messages'],['events','bot_inbox'],['tasks','bot_tasks'],['lanes','bot_lanes']]) {
     if (has(table)) plan.exec(`INSERT OR IGNORE INTO ${kind} SELECT id FROM source.${table} WHERE conversation_id IN (SELECT id FROM rooms)`);
   }
@@ -108,26 +120,26 @@ async function planCleanup() {
   // conversations, credentials, personas or native DSH workspace.
   for (;;) {
     const added=plan.prepare(`INSERT OR IGNORE INTO events SELECT id FROM source.bot_inbox WHERE source_instance_id='peer-return-v1'
-      AND source_record_id IN (SELECT id FROM messages)`).run().changes;
+      AND conversation_id IN (SELECT id FROM rooms) AND source_record_id IN (SELECT id FROM messages)`).run().changes;
     plan.exec('INSERT OR IGNORE INTO messages SELECT reply_message_id FROM source.bot_inbox WHERE id IN (SELECT id FROM events)');
     if(!added)break;
     await pause();
   }
   for (const kind of ['messages','events','tasks','lanes','rooms']) plan.exec(`INSERT OR IGNORE INTO tokens SELECT id FROM ${kind}`);
   for (const raw of database.prepare('SELECT DISTINCT m.member_id AS companionId,c.id AS conversationId,c.domain_id AS securityDomainId FROM bot_members m JOIN bot_conversations c ON c.id=m.conversation_id WHERE m.member_id<>?').iterate('user')) {
-    if (all || raw.companionId === job.companionId || plan.prepare('SELECT 1 FROM rooms WHERE id=?').get(raw.conversationId)) addScope(raw);
+    addScope(raw);
   }
   if (has('bot_media_grants')) plan.exec('INSERT OR IGNORE INTO grants SELECT id FROM source.bot_media_grants WHERE conversation_id IN (SELECT id FROM rooms)');
-  try { for (const home of await fs.readdir(path.join(root,'memory'),{withFileTypes:true})) {
+  try { for (const home of await fs.readdir(path.join(root,'vcp-memory-v5'),{withFileTypes:true})) {
     if (!home.isDirectory() || !/^[a-f0-9]{64}$/.test(home.name)) continue;
-    try { const scope=JSON.parse(await fs.readFile(path.join(root,'memory',home.name,'worldlinebox-scope.json'),'utf8'));
-      if (all || scope.companionId===job.companionId || plan.prepare('SELECT 1 FROM rooms WHERE id=?').get(scope.conversationId)) addScope(scope);
+    try { const scope=JSON.parse(await fs.readFile(path.join(root,'vcp-memory-v5',home.name,'worldlinebox-scope.json'),'utf8'));
+      addScope(scope);
     } catch(error) { if(error.code!=='ENOENT') throw error; }
   } } catch(error) { if(error.code!=='ENOENT') throw error; }
   for (const raw of database.prepare('SELECT id,domain_key,payload_json FROM bot_memory_jobs').iterate()) {
     let payload; try { payload = JSON.parse(raw.payload_json); } catch { continue; }
     const scope = payload.scope || payload.prepared?.scope;
-    if (!scope || !all && scope.companionId !== job.companionId && !plan.prepare('SELECT 1 FROM rooms WHERE id=?').get(scope.conversationId)) continue;
+    if (!scope || !all && scope.companionId !== job.companionId) continue;
     addScope(scope); insert('jobs', raw.id);
     if (payload.sourceEventId) {
       const version = payload.policyVersion || 1;
@@ -143,7 +155,7 @@ async function planCleanup() {
   }
   if (has('bot_maintenance_settings')) for (const row of database.prepare('SELECT owner_key,scope_json FROM bot_maintenance_settings').iterate()) {
     const scope = JSON.parse(row.scope_json);
-    if (all || scope.companionId === job.companionId || plan.prepare('SELECT 1 FROM rooms WHERE id=?').get(scope.conversationId)) { addScope(scope); insert('owners',row.owner_key); }
+    if (all || scope.companionId === job.companionId) { addScope(scope); insert('owners',row.owner_key); }
   }
   for (const [kind, table] of [['jobs','bot_maintenance_jobs'],['brains','bot_brains'],['delegations','bot_delegations'],['workflows','bot_workflows']]) if (has(table)) {
     const where = predicate(database,table);
@@ -160,7 +172,7 @@ async function planCleanup() {
     for(const row of rows)for(const match of row.id.matchAll(/[a-f0-9]{64}/g))insert('tokens',match[0]);
     cursor=rows.at(-1).id; await pause();
   }
-  plan.exec("INSERT OR REPLACE INTO state(key,value) VALUES('planned','1')");
+  plan.exec("INSERT OR REPLACE INTO state(key,value) VALUES('planned','owner-v2')");
 }
 async function eraseMetadata() {
   const match = plan.prepare('SELECT 1 FROM tokens WHERE id=?'); let cursor = '';
@@ -168,7 +180,7 @@ async function eraseMetadata() {
     const rows = database.prepare('SELECT key,value FROM bot_metadata WHERE key>? ORDER BY key LIMIT 100').all(cursor); if (!rows.length) break;
     const ids = rows.filter(row => {
       if (metadataSetting(row.key)) return false;
-      if (job.all || row.key.includes(job.companionId)) return true;
+      if (job.all || row.key.split(':').includes(job.companionId)) return true;
       if (row.key.startsWith('native-continue-command:') && match.get(row.value)) return true;
       const tokens = [...(row.key.match(/(?:event-|lane-|task-|reply-)?[a-f0-9]{64}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}/g) || [])];
       return tokens.some(token => match.get(token) || match.get(token.replace(/^(event-|lane-|task-|reply-)/,'')));
@@ -179,14 +191,17 @@ async function eraseMetadata() {
 }
 async function resetMaintenance() {
   if (!database.prepare("SELECT 1 FROM sqlite_master WHERE name='bot_maintenance_settings'").get()) return;
+  const fields = columns(database,'bot_maintenance_settings');
+  const resetDream = ['dream_planned','dream_ready_at','idle_organize_version'].filter(field => fields.includes(field)).map(field => `,${field}=0`).join('');
+  const update = database.prepare(`UPDATE bot_maintenance_settings SET dirty=0,planned=0,last_activity=?,next_due=?,settings_json=?${resetDream} WHERE owner_key=?`);
   let cursor='';
   for (;;) {
     const rows=database.prepare(`SELECT owner_key,settings_json FROM bot_maintenance_settings WHERE owner_key>? AND ${predicate(database,'bot_maintenance_settings')} ORDER BY owner_key LIMIT 200`).all(cursor);
     if(!rows.length)break;
     database.transaction(()=>{for(const row of rows){
-      const previous=JSON.parse(row.settings_json),now=Date.now(),next=now+(previous.intervalHours||24)*3600000;
-      const settings={enabled:previous.enabled,kind:previous.kind,intervalHours:previous.intervalHours,idleMinutes:previous.idleMinutes,minNotes:previous.minNotes,autoApply:previous.autoApply,nextEligibleAt:new Date(next).toISOString(),lastActivityAt:new Date(now).toISOString()};
-      database.prepare('UPDATE bot_maintenance_settings SET dirty=0,planned=0,last_activity=?,next_due=?,settings_json=? WHERE owner_key=?').run(now,next,JSON.stringify(settings),row.owner_key);
+      const previous=JSON.parse(row.settings_json),now=Date.now(),next=now+15*60000;
+      const settings={enabled:previous.enabled,autoReview:previous.autoReview,nextEligibleAt:new Date(next).toISOString(),lastActivityAt:new Date(now).toISOString()};
+      update.run(now,next,JSON.stringify(settings),row.owner_key);
     }})();
     cursor=rows.at(-1).owner_key;await pause();
   }
@@ -204,13 +219,22 @@ async function main() {
   database.prepare('ATTACH DATABASE ? AS cleanup').run(path.join(root,'data-cleanup',job.id + '.plan.sqlite'));
   await planCleanup();
   progress('memory',true);
-  if (job.all) await removePhysical(path.join(root,'memory'));
-  else for await (const row of ids('domains')) await removePhysical(path.join(root,'memory',row.id));
+  if (job.all) await removePhysical(path.join(root,'vcp-memory-v5'));
+  else for await (const row of ids('domains')) await removePhysical(path.join(root,'vcp-memory-v5',row.id));
   progress('records',true);
   const tables = database.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'bot_%'").all().map(row=>row.name);
   // Message triggers own their FTS shadow rows. Never write shadow/config tables.
   for (const table of tables) if (!kept.has(table) && table !== 'bot_metadata' && !table.startsWith('bot_message_search')) await batches(database,table,predicate(database,table));
   await eraseMetadata();
+  if (!job.all) {
+    // Shared history remains available to its participants. Resume this
+    // companion's original-message archive from the next live publication.
+    const cursor = database.prepare(`SELECT c.id,c.domain_id,COALESCE(MAX(h.sequence),0) AS head FROM bot_conversations c
+      JOIN bot_members m ON m.conversation_id=c.id LEFT JOIN bot_history_projection h ON h.conversation_id=c.id
+      WHERE m.member_id=? AND c.id NOT IN(SELECT id FROM cleanup.rooms) GROUP BY c.id,c.domain_id`);
+    const set = database.prepare('INSERT OR REPLACE INTO bot_metadata(key,value) VALUES(?,?)');
+    for (const room of cursor.all(job.companionId)) set.run('history-projection:' + digest([job.companionId,room.id,room.domain_id]),String(room.head));
+  }
   await resetMaintenance();
   progress('attachments',true);
   if (job.all) {

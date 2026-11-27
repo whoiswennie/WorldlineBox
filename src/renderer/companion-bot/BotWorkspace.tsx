@@ -16,7 +16,7 @@ import { BotCompanionEditor, type BotCompanionEditorDraft, type BotCompanionSett
 import { BotGroupMembers } from './BotGroupMembers';
 import { useBotConversationUpdates } from './BotConversationActivity';
 import './bot-peer-observation.css';
-import { BotComposer, BotSpeechMuteButton } from './BotComposer';
+import { BotComposer, BotSpeechMuteButton, useBotInputActivity } from './BotComposer';
 import { BotTopicBar } from './BotTopicBar';
 import { BotIcon } from './BotIcon';
 import { BotAppAttachments, BotApps } from './BotApps';
@@ -87,6 +87,7 @@ export function BotWorkspace({ unread, notificationTarget, clearTarget, covered,
   const bindings = useBotDshBindings(launcherApi);
   const [dismissedBinding, setDismissedBinding] = useState('');
   const [snapshot, setSnapshot] = useState<BotSnapshot>(), [selected, setSelected] = useState(''), [error, setError] = useState('');
+  const inputActivity = useBotInputActivity(api, selected);
   const speech = useBotSpeech(api, setError);
   const [copied, setCopied] = useState('');
   const stopSpeech = speech.stop;
@@ -338,7 +339,7 @@ export function BotWorkspace({ unread, notificationTarget, clearTarget, covered,
     const conversationId = conversation.id, topic = snapshotRef.current?.chatRuntime?.topic;
     const topicId = topic?.conversationId === conversationId ? topic.id : undefined;
     return {
-      start: speech.stop,
+      start() { inputActivity(); speech.stop(); },
       async send(content, requestId) {
         const result = await request({ type: 'message.send', conversationId, topicId, requestId, content, delivery: 'interrupt' });
         if (result.ok && selectedRef.current === conversationId) void refresh(conversationId);
@@ -545,7 +546,7 @@ export function BotWorkspace({ unread, notificationTarget, clearTarget, covered,
   };
   const composer = bindingRequired ? <div className="bot-binding-blocked" role="status"><div><strong>{locale === 'zh-CN' ? bindings.loading ? '正在检查共享 DSH…' : '配置共享 DSH 后开始聊天' : bindings.loading ? 'Checking shared DSH…' : 'Set up shared DSH to chat'}</strong><p>{bindings.error || (locale === 'zh-CN' ? '所有伙伴共用账号、API、插件和技能，只需配置一次。已有聊天记录仍可查看。' : 'All companions share one account, API configuration, plugins and skills. Existing history remains available.')}</p></div><button type="button" disabled={bindings.loading} onClick={() => { showBinding(); if (!bindings.state) void bindings.refresh(); }}>{locale === 'zh-CN' ? bindings.state ? '配置 DSH' : '重新检查' : bindings.state ? 'Set up DSH' : 'Check again'}</button></div> : conversation?.kind === 'direct' && companion?.enabled === false ? <div className="bot-companion-disabled" role="status"><div><strong>{locale === 'zh-CN' ? `${companion.name}已关闭` : `${companion.name} is disabled`}</strong><p>{locale === 'zh-CN' ? '启用伙伴后可以继续聊天。已有聊天记录已保留。' : 'Enable this companion to continue chatting. Your chat history is preserved.'}</p></div><button type="button" disabled={busy} onClick={() => void request({ type: 'companion.runtime', companionId: companion.id, operation: 'start' }).then(result => { if (result.ok) void refresh(); })}>{locale === 'zh-CN' ? '启用伙伴' : 'Enable companion'}</button></div> : <BotComposer key={selected} locale={locale} draft={draft} setDraft={setDraft} disabled={!selected} busy={busy || attachingBrowser} group={conversation?.kind === 'group'} world={conversation?.kind === 'world'} mentionMembers={conversation && conversation.kind !== 'direct' ? participants : undefined} panel={panel} setPanel={setPanel} send={send}
     mediaApi={mediaApi} conversationId={selected} attachments={draftFiles[selected] ?? []} addingFiles={imports[selected]} addFiles={() => addFiles()} removeFile={id => setDraftFiles(current => ({ ...current, [selected]: (current[selected] ?? []).filter(file => file.id !== id) }))} sendSticker={async media => { await send('message', media); }} sendVoice={async media => { if (!await send('message', media)) throw Error(locale === 'zh-CN' ? '语音未发送，请重试。录音已保留。' : 'Voice message was not sent. Your recording is retained.'); }}
-    onTypingActivity={desktopPet ? setChatTyping : undefined} onVoiceInputActivity={setChatVoice}
+    onUserActivity={inputActivity} onTypingActivity={desktopPet ? setChatTyping : undefined} onVoiceInputActivity={setChatVoice}
     voiceCaptureBusy={pushToTalkBusy} pushToTalkShortcut={!!api?.onPushToTalk} status={activeCall ? undefined : pushToTalkStatus}
     desktopCapture={isActive && (!activeCall || desktopPet) && (conversation?.kind === 'direct' || conversation?.kind === 'group')
       ? { surface: 'chat', attach: files => attachDraftFiles(selected, files) } : undefined}
@@ -588,6 +589,7 @@ export function BotWorkspace({ unread, notificationTarget, clearTarget, covered,
           </div>
         </div>
         <nav aria-label={t.title}>
+        {bindingRequired && !observing && conversation && api && <button type="button" onClick={() => setPanel('memory')}><BotIcon name="memory" />{t.memory}</button>}
         <button type="button" onClick={() => void request({ type: 'user.identity' }).then(result => {
           if (result.ok) setIdentity({ name: result.userName ?? '', bio: result.userBio ?? '' });
         })}>{locale === 'zh-CN' ? '我的资料' : 'My profile'}</button>

@@ -1,7 +1,7 @@
 {
   "name": "worldlinebox",
   "productName": "WorldlineBox",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "A desktop hub for virtual characters, worlds, assets and ecosystem execution environments.",
   "author": "whoiswennie",
   "license": "MIT",
@@ -20,7 +20,7 @@
     "prepackage": "node scripts/media-binaries.mjs ensure && node scripts/verify-ufbx-wasm.mjs",
     "package": "electron-forge package",
     "verify:package": "node scripts/verify-package.mjs",
-    "test:e2e:companion-memory": "node scripts/run-e2e-isolated.mjs tests/e2e/companion-bot.test.ts",
+    "test:e2e:companion-memory": "node scripts/run-e2e-isolated.mjs tests/e2e/companion-bot-memory.test.ts",
     "rebuild:native": "node scripts/rebuild-native.mjs",
     "media:acquire": "node scripts/media-binaries.mjs acquire",
     "media:ensure": "node scripts/media-binaries.mjs ensure",
@@ -80,6 +80,9 @@
     "test:e2e:shortcuts": "node scripts/run-e2e.mjs tests/e2e/custom-shortcuts.test.ts tests/e2e/custom-shortcut-runtime.test.ts tests/e2e/custom-shortcut-worldlinebox.test.ts",
     "pretest:e2e:shortcuts": "node scripts/ensure-native.mjs",
     "verify:bot:memory": "node scripts/verify-bot-memory.mjs",
+    "verify:bot:memory:recall": "node scripts/verify-bot-memory-recall.cjs",
+    "verify:bot:memory:context": "node scripts/verify-bot-memory-context.cjs",
+    "benchmark:bot:memory:recall": "node scripts/benchmark-bot-memory-recall.cjs",
     "test:bot:protocol": "node scripts/verify-bot-real.mjs --protocol",
     "test:bot:real": "node scripts/verify-bot-real.mjs --real",
     "verify:bot:packaged": "node scripts/verify-package.mjs"

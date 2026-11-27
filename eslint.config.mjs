@@ -19,7 +19,6 @@ export default tseslint.config(
       'test-results/**',
       'node_modules/**',
       // Pinned upstream sources are hash-verified and intentionally kept byte-for-byte.
-      'vendor/vcp-memory/**',
       'resources/vcp-memory/**',
       // Vendored SoulLink SDK keeps its upstream style; compile and integration
       // tests validate the local adapters instead of rewriting third-party code.
@@ -39,7 +38,7 @@ export default tseslint.config(
     },
   },
   ...tseslint.configs.recommended,
-  { files: ['src/main/vcp-memory/**/*.cjs', 'resources/speech-runtime/**/*.cjs', 'scripts/**/*.cjs', 'tests/fixtures/bot-memory-fs-probe.cjs'], languageOptions: { globals: globals.node, sourceType: 'commonjs' },
+  { files: ['src/main/vcp-memory/**/*.cjs', 'src/main/companion-bot/memory-source-reader.cjs', 'resources/speech-runtime/**/*.cjs', 'scripts/**/*.cjs', 'tests/fixtures/bot-memory-fs-probe.cjs'], languageOptions: { globals: globals.node, sourceType: 'commonjs' },
     rules: { '@typescript-eslint/no-require-imports': 'off', 'no-redeclare': ['error', { builtinGlobals: false }] } },
   {
     files: ['**/*.{ts,tsx}'],

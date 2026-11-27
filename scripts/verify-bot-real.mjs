@@ -9,6 +9,7 @@ import { removeAcceptanceRoot } from './bot-acceptance-cleanup-lib.mjs';
 
 if (process.argv.includes('--protocol') && process.argv.includes('--real')) throw new Error('Choose one acceptance mode.');
 const protocolMode = process.argv.includes('--protocol') || process.env.WORLDLINEBOX_BOT_PROTOCOL_ACCEPTANCE === '1';
+const memoryOnly = process.argv.includes('--memory-only');
 if (!protocolMode && !process.argv.includes('--real') && process.env.WORLDLINEBOX_BOT_REAL_ACCEPTANCE !== '1') throw new Error('Pass --protocol or --real, or set the matching WORLDLINEBOX_BOT_*_ACCEPTANCE=1 flag.');
 const project = process.cwd(), require = createRequire(import.meta.url);
 const source = process.env.WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT ?? path.join(process.env.APPDATA, 'WorldlineBox');
@@ -19,7 +20,8 @@ const program = process.env.WORLDLINEBOX_BOT_DSH_PROGRAM ? path.resolve(process.
 const root = await mkdtemp(path.join(os.tmpdir(), 'worldlinebox-bot-real-'));
 const ownedRoots = new Set([root]), profile = path.join(root, 'electron-profile'); await mkdir(profile);
 await writeFile(path.join(root, '.worldlinebox-acceptance.json'), JSON.stringify({ kind: 'acceptance-runner', ownerPid: process.pid }));
-const output = path.resolve('artifacts/superagent-bot-development/' + (protocolMode ? 'protocol-acceptance' : 'real-acceptance')); await mkdir(output, { recursive: true });
+const suite = protocolMode ? 'protocol-acceptance' : memoryOnly ? 'real-memory-acceptance' : 'real-acceptance';
+const output = path.resolve('artifacts/superagent-bot-development', suite); await mkdir(output, { recursive: true });
 const bundle = path.join(output, 'main-' + path.basename(root) + '.cjs');
 let result, child, timer, terminating = Promise.resolve(); const errorNames = new Set();
 try {
@@ -31,7 +33,8 @@ await build({ configFile: false, logLevel: 'warn', build: { ssr: 'tests/fixtures
   rollupOptions: { external: ['electron','better-sqlite3','koffi','sharp','libarchive-wasm','7zip-bin'], output: { format: 'cjs', entryFileNames: path.basename(bundle) } } } });
 const env = { ...process.env, WORLDLINEBOX_BOT_REAL_ROOT: root, WORLDLINEBOX_BOT_REAL_PROJECT: project,
   WORLDLINEBOX_REAL_CHAT_CONFIG_ROOT: source, WORLDLINEBOX_BOT_DSH_PROGRAM: program,
-  WORLDLINEBOX_BOT_PROTOCOL_ACCEPTANCE: protocolMode ? '1' : '0', WORLDLINEBOX_BOT_REAL_ACCEPTANCE: protocolMode ? '0' : '1' }; delete env.ELECTRON_RUN_AS_NODE;
+  WORLDLINEBOX_BOT_PROTOCOL_ACCEPTANCE: protocolMode ? '1' : '0', WORLDLINEBOX_BOT_REAL_ACCEPTANCE: protocolMode ? '0' : '1',
+  WORLDLINEBOX_BOT_MEMORY_ONLY: memoryOnly ? '1' : '0' }; delete env.ELECTRON_RUN_AS_NODE;
 child = spawn(require('electron'), [bundle], { cwd: project, env, windowsHide: true, stdio: ['ignore','ignore','pipe','ipc'] });
 child.stderr.on('data', chunk => { for (const value of chunk.toString().match(/\b[A-Za-z]+Error\b/g) ?? []) errorNames.add(value); });
 child.on('message', value => { if (value?.kind === 'bot-real-progress') process.stdout.write(JSON.stringify(value) + '\n');

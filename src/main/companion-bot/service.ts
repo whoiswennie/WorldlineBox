@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { isBotParticipantRequest } from './participant-request';
 import type { BotEvent as UiEvent, BotRequest, BotResponse, BotSnapshot, BotReplyProgress, BotExecution, BotMessageOrigin, BotMessageQuote } from '../../shared/companion-bot';
@@ -16,13 +17,13 @@ import { BotStore } from './store';
 import { botLocalTimestamp, buildNativeBotContext } from './context';
 import { BotToolServer, type BotToolCall } from './tool-server';
 import { botToolsForApps } from './tools';
-import { BOT_MEMORY_CAPTURE_POLICY, captureBotMemory } from './memory-capture';
 import { BotMaintenanceRuntime } from './memory-maintenance-runtime';
-import type { BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
+import { maintenanceBriefSchema, memoMasterMode, type BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
 import { BotWorld } from './world';
 import { botWorldCommandSchema } from '../../shared/companion-bot-world';
 import { BotHistoryProjector } from './history-projection';
 import { BotAgentMemoryScopes } from './agent-memory-scope';
+import { restoreMemoryInspection } from './memory-inspection';
 import { BotConversationContinuity, botConversationReadSchema } from './conversation-continuity';
 import { BotContactStatus } from './contact-status';
 import type { BotActivityBudgetPolicy } from './activity-budget';
@@ -103,6 +104,20 @@ export interface BotServiceOptions {
 }
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
+const unavailableRecall = new Set(['MEMORY_CAPACITY', 'MEMORY_SESSION_CLOSED', 'MEMORY_TIMEOUT', 'MEMORY_WORKSPACE_BUSY',
+  'MEMORY_PROVIDER_UNAVAILABLE', 'MEMORY_RUNTIME_UNAVAILABLE', 'MEMORY_RECALL_FAILED']);
+async function withinMemoryBudget<T>(operation: Promise<T>, ms: number, signal: AbortSignal): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abort!: () => void;
+  const deadline = new Promise<undefined>((resolve, reject) => {
+    timer = setTimeout(() => resolve(undefined), ms);
+    abort = () => reject(signal.reason);
+  });
+  signal.addEventListener('abort', abort, { once: true });
+  if (signal.aborted) abort();
+  try { return await Promise.race([operation, deadline]); }
+  finally { clearTimeout(timer); signal.removeEventListener('abort', abort); }
+}
 const nonempty = z.string().trim().min(1).max(24000);
 const maxCausalHop = 6;
 const causalHop = (event: BotEvent): number => event.source === 'user' || event.payload.hop === undefined ? 0
@@ -141,6 +156,8 @@ export class BotService {
   private readonly loadedTombstones = new Map<string, true>();
   private readonly sourceWithdrawalRuns = new Map<string, Promise<void>>();
   private readonly memoryWarmRuns = new Map<string, Promise<void>>();
+  private readonly foregroundRecalls = new Set<string>();
+  private readonly preparingUserInput = new Set<BotConversation>();
   private readonly memoryWarmPhases = new Map<string, 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory'>();
   private readonly companionControls = new Map<string, Promise<void>>();
   private readonly appConnections = new Map<string, AbortController>();
@@ -162,7 +179,8 @@ export class BotService {
     this.world = new BotWorld(this.store);
     this.toolServer = new BotToolServer((call, signal) => this.tool(call, signal));
     this.memoryMaintenance = new BotMaintenanceRuntime({ store: this.store, root: options.root, brain: options.brain, memory: options.memory,
-      model: options.model, callback: () => this.toolServer.start(), changed: id => this.changed(id), report: options.report });
+      model: options.model, callback: () => this.toolServer.start(), changed: id => this.changed(id), report: options.report,
+      companionBusy: id => this.store.hasForegroundWork(id) || [...this.preparingUserInput].some(room => room.memberIds.includes(id)) });
     this.historyProjector = new BotHistoryProjector({ store: this.store, memory: options.memory });
     this.scheduler = new BotScheduler(this.store, { handle: (claim, signal) => this.respond(claim, signal), concurrency: 3,
       turnTimeoutMs: 24 * 60 * 60 * 1000,
@@ -195,6 +213,11 @@ export class BotService {
   }
   configurationChanged(): void { this.ready = false; this.detail = undefined; this.changed(); }
   runtimePreparationChanged(): void { this.changed(); }
+  awaken(): void { if (!this.closed) this.memoryMaintenance.awaken(); }
+  private conversationInput(room?: BotConversation): void {
+    if (!room?.memberIds.includes('user') || room.dissolvedAt || room.kind === 'peer') return;
+    for (const id of room.memberIds) if (id !== 'user') this.memoryMaintenance.foreground(id);
+  }
   embeddingChanged(): void { this.changed(); }
   executionCapabilitiesChanged(): void { this.changed(); }
   workerInstanceStopped(instanceId: string): void {
@@ -223,7 +246,7 @@ export class BotService {
         const room = this.store.getConversation(event.conversationId)!;
         await this.options.brain.cancelDurable({ laneId: this.topics.lane(event), eventId: event.id,
           cwd: this.workspace(event.companionId), system: context.system, model: this.options.model(),
-          audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
+          audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] }, checkRetiredSessions: true,
           callback: await this.toolServer.start(), tools: [], workerTools: botToolsForApps(this.topicApps(this.topics.reference(event.id)?.id), this.isCallTurn(room, event), this.canCaptureDesktop(room, event)), role: 'worker', workerAccess: 'full',
           signal: this.maintenanceAbort.signal, runningOnly: true }, intent.suspend === true);
         if (!this.closed && this.store.getMetadata('native-stop:' + eventId) === rawIntent) {
@@ -306,7 +329,7 @@ export class BotService {
       await new Promise<void>(resolve=>{const timer=setTimeout(done,1000);function done(){clearTimeout(timer);controller.signal.removeEventListener('abort',done);resolve();}controller.signal.addEventListener('abort',done,{once:true});});
     }})().catch(error=>this.options.report?.(error));
   }
-  private snapshot(conversationId?: string, before?: number, callView = false, callAfter?: number): BotSnapshot {
+  private snapshot(conversationId?: string, before?: number, callView = false, callAfter?: number, callReplyIds?: readonly string[]): BotSnapshot {
     const room = conversationId ? this.store.getConversation(conversationId) : undefined;
     if (conversationId && !room?.meeting) this.prewarmSelectedMemory(conversationId);
     const chatRuntime = room?.memberIds.includes('user') ? this.chatRuntime(room.id) : undefined;
@@ -321,6 +344,19 @@ export class BotService {
         const message = this.store.getMessage(id);
         if (message) page.items.push(message);
       }
+    }
+    // A suspended call can miss the terminal state even for a failed or cancelled reply with no publication.
+    if (delivery && callReplyIds?.length) {
+      const included = new Set(page.items.map(message => message.id));
+      const older = [];
+      for (const id of new Set(callReplyIds)) {
+        if (included.has(id)) continue;
+        const event = this.store.eventForReply(id);
+        if (event?.source !== 'user' || event.conversationId !== conversationId) continue;
+        const message = this.store.getMessage(id);
+        if (message) older.push(message);
+      }
+      page.items.unshift(...older.sort((a, b) => a.sequence - b.sequence));
     }
     const companions = this.store.listCompanions();
     const conversationActivity = this.store.conversationActivity();
@@ -366,6 +402,7 @@ export class BotService {
   private interruptMeeting(input: Extract<BotRequest, { type: 'call.interrupt' }>): BotResponse {
     const { conversationId, requestId } = input, room = this.store.getConversation(conversationId);
     if (room?.kind !== 'direct' || !room.memberIds.includes('user')) throw Error('只能打断自己的视频会面。');
+    this.conversationInput(room);
     const receipt = 'call-interrupt:' + conversationId + ':' + requestId;
     const previous = this.store.getMetadata(receipt);
     if (previous) return { ok: true, interruptedReplyIds: JSON.parse(previous) };
@@ -583,17 +620,24 @@ export class BotService {
       const pending = this.questions.get(input.questionId), event = this.store.eventForReply(input.messageId);
       if (!pending || !event || pending.eventId !== event.id || event.status !== 'running') throw new Error('这个问题已结束。');
       this.options.assertMessageReady?.();
+      this.memoryMaintenance.foreground(event.companionId);
       this.questions.delete(input.questionId); pending.resolve({ text: input.text }); return { ok: true };
     }
     if (input.type === 'execution.continue') {
       this.options.assertMessageReady?.();
       const event = this.store.eventForReply(input.messageId);
+      if (event && this.store.retiredNativeLane(event.id)) throw Error('这条回复属于旧版记忆会话，请在话题中发送新消息。');
       if (event && ['cancelled', 'failed'].includes(event.status)) await this.scheduler.drainEvent(event.id);
       this.options.assertMessageReady?.();
       const conversationId=this.store.continueNativeReply(input.messageId,input.requestId);
+      if (event) this.memoryMaintenance.foreground(event.companionId);
       this.changed(conversationId);this.scheduler.wake();return {ok:true,conversationId};
     }
     switch (input.type) {
+      case 'chat.activity': {
+        if (!archivedRoom?.memberIds.includes('user')) throw Error('当前用户无法参与这个聊天。');
+        this.conversationInput(archivedRoom); return { ok: true };
+      }
       case 'execution.workbench': {
         const message = this.store.getMessage(input.messageId);
         const event = message && this.store.getEvent(message.eventId);
@@ -601,6 +645,7 @@ export class BotService {
         if (!message || !event || !room?.memberIds.includes('user') || room.dissolvedAt || room.revision !== event.aclRevision ||
           message.conversationId !== room.id || message.senderId !== event.companionId) throw Error('这条消息没有可查看的 DSH 会话。');
         const laneId = this.topics.lane(event);
+        if (this.store.retiredNativeLane(event.id)) throw Error('旧版记忆会话已退役，可以在该话题中查看原消息并继续聊天。');
         const instanceId = this.store.getMetadata('native-host:' + laneId);
         if (!instanceId || !this.options.openSessionWorkbench) throw Error('找不到这条消息原先使用的 DSH 实例。');
         await this.options.openSessionWorkbench(instanceId, laneId, BotDshBrain.sessionId(laneId), this.workspace(event.companionId));
@@ -675,7 +720,7 @@ export class BotService {
           const event = this.store.eventForReply(item.messageId), actor = this.store.getCompanion(item.companionId);
           if (!event || !actor || !this.options.brain.revokeApplications) return;
           const stage = this.isCallTurn(room, event) ? botCallCapabilities(await this.callModel(actor.id), actor.id) : undefined;
-          const system = buildNativeBotContext({ companion: actor, event, apps: this.chatApps(room).apps, memories: '', files: [], conversation: room, stage, companions: this.store.listCompanions() }).system;
+          const system = buildNativeBotContext({ companion: actor, event, apps: this.chatApps(room).apps, files: [], conversation: room, stage, companions: this.store.listCompanions() }).system;
           try { await this.options.brain.revokeApplications(this.topics.lane(event), [...botAppTools[input.appId]], system); }
           catch (error) { this.options.report?.(error); } // Local authorization was already revoked; the next admission reconciles native declarations.
         }));
@@ -700,14 +745,14 @@ export class BotService {
         let compacted:boolean;
         try{compacted=await this.options.brain.compact({laneId:this.topics.lane(event),eventId:event.id,cwd:this.workspace(event.companionId),system:context.system,
           model:this.options.model(),callback:await this.toolServer.start(),tools:[],workerTools:botToolsForApps(this.topicApps(input.topicId),room.meeting),role:'worker',workerAccess:'full',
-          audience:{conversationId:room.id,kind:room.kind,allowedConversationIds:[room.id]}},input.requestId);}
+          audience:{conversationId:room.id,kind:room.kind,allowedConversationIds:[room.id]},checkRetiredSessions:true},input.requestId);}
         catch(error){if((error as {code?:string})?.code==='BOT_COMPACTION_FAILED')return{ok:false,error:errorText(error),compactionSettled:true};throw error;}
         await this.topicContext({type:'topic.context',conversationId:input.conversationId,topicId:input.topicId,companionId:input.companionId});
         this.changed(input.conversationId);return {ok:true,compacted};
       }
-      case 'message.guide': { this.options.assertMessageReady?.(); await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
+      case 'message.guide': { this.options.assertMessageReady?.(); this.conversationInput(archivedRoom); await this.guideQueued(input.conversationId,input.messageId);return {ok:true}; }
       case 'message.dequeue': this.topics.cancelQueued(input.conversationId,input.messageId);this.changed(input.conversationId);return {ok:true};
-      case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before, input.surface === 'call', input.callAfter) };
+      case 'state': return { ok: true, snapshot: this.snapshot(input.conversationId, input.before, input.surface === 'call', input.callAfter, input.callReplyIds) };
       case 'companion.schedule': return { ok: true, schedule: this.manageSchedule(input.companionId, input.command) };
       case 'companion.call-performance': {
         if (!this.store.getCompanion(input.companionId)) throw Error('伙伴不存在。');
@@ -799,11 +844,16 @@ export class BotService {
           if (!this.store.ingressExists(input.conversationId, input.requestId)) this.options.assertMessageReady?.();
         };
         checkNewMessage();
-        await this.ensureConversationBindings(input.conversationId);
-        let attachments = input.type === 'message.send' && input.attachmentIds?.length ? await this.requireMedia().resolveForConversation(input.conversationId, input.attachmentIds) : undefined;
-        if (attachments && this.options.transcribeAttachments) attachments = await this.options.transcribeAttachments(input.conversationId, attachments, input.requestId);
-        if (!this.store.getConversation(input.conversationId)?.memberIds.includes('user')) throw Error('聊天权限已变化，已停止发送。');
-        if (attachments) await this.ensureConversationBindings(input.conversationId); // File I/O may outlive a group membership or binding change.
+        this.conversationInput(conversation);
+        let attachments: BotMediaRef[] | undefined;
+        this.preparingUserInput.add(conversation);
+        try {
+          await this.ensureConversationBindings(input.conversationId);
+          attachments = input.type === 'message.send' && input.attachmentIds?.length ? await this.requireMedia().resolveForConversation(input.conversationId, input.attachmentIds) : undefined;
+          if (attachments && this.options.transcribeAttachments) attachments = await this.options.transcribeAttachments(input.conversationId, attachments, input.requestId);
+          if (!this.store.getConversation(input.conversationId)?.memberIds.includes('user')) throw Error('聊天权限已变化，已停止发送。');
+          if (attachments) await this.ensureConversationBindings(input.conversationId); // File I/O may outlive a group membership or binding change.
+        } finally { this.preparingUserInput.delete(conversation); }
         checkNewMessage();
         const stopGroup = conversation.kind === 'group' && isGroupStop(input.content);
         const autoGuide = input.type === 'message.send' && input.delivery === 'steer' && !input.newTopic && !stopGroup;
@@ -914,24 +964,23 @@ export class BotService {
       case 'reply.cancel': {
         const event = this.store.eventForReply(input.messageId); if (!event) throw new Error('没有可停止的回复。');
         if (this.store.getConversation(event.conversationId)?.kind === 'peer') throw new Error('用户不能停止旁观私聊中伙伴的回复。');
+        this.memoryMaintenance.foreground(event.companionId);
         if (this.scheduler.interrupt(event.id) && this.store.getMetadata('native-stop:' + event.id)) void this.flushNativeStop(event.id);
         this.changed(event.conversationId); return { ok: true };
       }
-      case 'memory.search': case 'memory.remember': case 'memory.inspect': case 'memory.list': case 'memory.forget':
+      case 'memory.knowledge.put': case 'memory.search': case 'memory.remember': case 'memory.inspect': case 'memory.list': case 'memory.forget':
       case 'memory.catalog': case 'memory.note': case 'memory.update': case 'memory.organize': case 'memory.recall': case 'memory.recall.records': {
         const conversation = this.store.getConversation(input.conversationId);
         if (!conversation?.memberIds.includes(input.companionId)) throw new Error('当前会话没有这位伙伴。');
         const scope = { companionId: input.companionId, conversationId: input.conversationId, securityDomainId: conversation.securityDomainId };
         await this.loadTombstones(scope);
+        if (input.type === 'memory.knowledge.put') return { ok: true, memory: await this.options.memory.importKnowledge(scope, { library: input.library, fileName: input.fileName, content: input.content }) };
         if (input.type === 'memory.catalog') {
           const catalog = await this.options.memory.catalog(scope, { query: input.query, tag: input.tag, cursor: input.cursor, limit: input.limit }) as { total?: number; [key: string]: unknown };
-          if (catalog.total === 0 && !input.query?.trim() && !input.tag?.trim() && !input.cursor) {
-            if (this.store.enqueueLegacyCaptureBackfill(scope, 2).queued) this.maintainSafely();
-          }
           return { ok: true, memory: { ...catalog, activity: this.store.memoryActivity(scope) } };
         }
         if (input.type === 'memory.note') return { ok: true, memory: await this.options.memory.readNote(scope, { id: input.id }) };
-        if (input.type === 'memory.recall.records') return { ok: true, memory: { reports: this.store.memoryInspections(scope.companionId, scope.securityDomainId, input.limit) } };
+        if (input.type === 'memory.recall.records') return { ok: true, memory: { reports: this.store.memoryInspections(scope.companionId, scope.securityDomainId, input.limit).map(restoreMemoryInspection) } };
         if (input.type === 'memory.recall') {
           const revision = this.store.memoryInspectionRevision(scope.companionId, scope.securityDomainId);
           if (input.mode === 'history') await this.historyProjector.project(scope);
@@ -958,8 +1007,12 @@ export class BotService {
           : input.type === 'memory.inspect' ? await this.options.memory.status(scope)
           : await this.options.memory.remember(scope, write!);
         if (write) {
-          if ((memory as {state?:string}).state==='pending') this.store.enqueueMemoryJob({key:`index:${write.sourceEventId}`,kind:'mutation',payload:{scope,operation:'remember',input:write}});
-          this.memoryMaintenance.activity(scope, `manual:${write.sourceEventId}`); this.maintainSafely();
+          const receipt = memory as {state?: string; withdrawn?: boolean};
+          if (receipt.state === 'indexed' && !receipt.withdrawn) this.memoryMaintenance.activity(scope, write.sourceEventId);
+          if (receipt.state === 'pending') {
+            this.store.enqueueMemoryJob({key:`index:${write.sourceEventId}`,kind:'mutation',payload:{scope,operation:'remember',input:write}});
+            this.maintainSafely();
+          }
         }
         return { ok: true, memory };
       }
@@ -971,7 +1024,6 @@ export class BotService {
     throw new Error('未识别的伙伴请求。');
   }
   private async mutateMemory(scope: BotMemoryScope, operation: 'update' | 'organize', input: BotMemoryUpdate | BotMemoryOrganize, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    this.store.setMetadata(`memory-capture-backfill-v2-suppressed:${digest(JSON.stringify([scope.companionId, scope.securityDomainId]))}`, input.operationId);
     const recover = async (): Promise<Record<string, unknown> | undefined> => {
       const proof = await this.options.memory.operationReceipt(scope, operation, input, signal);
       if (proof.found === false) return;
@@ -989,7 +1041,7 @@ export class BotService {
       catch (error) { result = await recover(); if (!result) throw error; }
     }
     if (result.state !== 'conflict') this.store.clearMemoryInspections(scope.companionId, scope.securityDomainId);
-    if (result.state === 'indexed') this.memoryMaintenance.activity(scope, input.operationId);
+    if (result.state === 'indexed' && !result.withdrawn) this.memoryMaintenance.activity(scope, input.operationId);
     if (result.state === 'pending' || result.state === 'partial') {
       this.store.enqueueMemoryJob({ key: input.operationId, kind: 'mutation', payload: { scope, operation, input } });
       this.maintainSafely();
@@ -1002,7 +1054,7 @@ export class BotService {
       sourceEventId: `${event.id}:${call.callId}`, sourceRootEventId: event.id, sourceMessageIds: [event.sourceMessageRecordId, event.replyMessageId] };
     return call.name === 'memory_update' ? { ...common, id: z.string().regex(/^[a-f0-9]{64}$/).parse(args.id),
       expectedChecksum: z.string().regex(/^[a-f0-9]{32}$/).parse(args.expectedChecksum) }
-      : { ...common, sources: z.array(z.strictObject({ id: z.string().regex(/^[a-f0-9]{64}$/), expectedChecksum: z.string().regex(/^[a-f0-9]{32}$/) })).min(2).max(16).parse(args.sources) };
+      : { ...common, sources: z.array(z.strictObject({ id: z.string().regex(/^[a-f0-9]{64}$/), expectedChecksum: z.string().regex(/^[a-f0-9]{32}$/) })).min(2).max(20).parse(args.sources) };
   }
   private contactReceipt(conversationId: string, recipientId: string, destination?: 'user' | 'peer') {
     const room = this.store.getConversation(conversationId);
@@ -1016,8 +1068,9 @@ export class BotService {
           : actual === 'legacy-user-direct' ? '历史回执确认过去已投递到目标与用户的私聊；本次未重新投递。'
           : '历史回执确认已投递到原伙伴群聊；未重新投递，也未转换原会话。' };
   }
-  private memoryMessages(event: BotEvent, through = event.sourceMessageSequence): BotMemoryMessage[] {
-    const history = this.store.recentPublishedMessages(event.conversationId, { throughSourceSequence: through, limit: 80, maxChars: DEFAULT_MODEL_CONTEXT_CHARS, companionId: event.companionId });
+  private async memoryMessages(event: BotEvent, signal: AbortSignal): Promise<BotMemoryMessage[]> {
+    const history = await this.store.recentMemoryMessages(event.conversationId, { throughSourceSequence: event.sourceMessageSequence, limit: 80, maxChars: DEFAULT_MODEL_CONTEXT_CHARS, companionId: event.companionId, topicId: this.topics.reference(event.id)?.id }, signal);
+    signal.throwIfAborted();
     const source = this.store.getMessage(event.sourceMessageRecordId);
     if (source && this.store.isMessageVisibleToCompanion(source.id, event.companionId) && !history.some(message => message.id === source.id)) history.push(source);
     const withdrawn = this.store.withdrawnIn(event.companionId, event.securityDomainId, history.map(message => message.id));
@@ -1094,7 +1147,6 @@ export class BotService {
   }
   private async forget(scope: BotMemoryScope, id: string, currentEventId?: string): Promise<BotMemoryForget> {
     await this.memoryMaintenance.abortScope(scope);
-    this.store.setMetadata(`memory-capture-backfill-v2-suppressed:${digest(JSON.stringify([scope.companionId, scope.securityDomainId]))}`, `forget:${id}`);
     this.store.clearMemoryInspections(scope.companionId, scope.securityDomainId);
     this.loadedTombstones.delete(digest(JSON.stringify([scope.companionId, scope.securityDomainId])));
     try {
@@ -1114,8 +1166,68 @@ export class BotService {
       this.changed(scope.conversationId); this.maintainSafely();
     }
   }
-  private responseJob(event: BotEvent, prepared: BotMemoryPrepared, text: string, completed: boolean): BotMemoryJobInput {
-    return { key: `response:${event.id}`, kind: 'response', payload: { scope: scopeFor(event), prepared, text, completed } };
+  private responseJob(event: BotEvent, prepared: BotMemoryPrepared | undefined, text: string, completed: boolean): BotMemoryJobInput {
+    return { key: `response:${event.id}`, kind: 'response', payload: { scope: scopeFor(event), text, completed,
+      ...(prepared ? { prepared } : { deferredEventId: event.id, topicId: this.topics.reference(event.id)?.id }) } };
+  }
+  private async prepareChatMemory(event: BotEvent, messages: BotMemoryMessage[], topicId: string | undefined, signal: AbortSignal,
+    progress: (phase: 'memory-starting' | 'memory-verifying' | 'memory-indexing' | 'recalling-memory') => void): Promise<BotMemoryPrepared | undefined> {
+    const scope = scopeFor(event), key = 'native-memory-prepared:' + event.id, marker = this.store.getMetadata(key);
+    if (marker === 'deferred') return;
+    if (marker || this.store.nativeTurnMayHaveBeenSent(event.id) || event.dshEventId)
+      return this.options.memory.resumePrepared({ scope, requestId: event.id, signal });
+    const memory = this.options.memory;
+    const domain = JSON.stringify([scope.companionId, scope.securityDomainId]);
+    const busy = () => this.foregroundRecalls.has(domain) || memory.isBusy?.(scope);
+    if (busy()) {
+      // Let a short receipt finish without adding another request to its FIFO.
+      await delay(200, undefined, { signal });
+      if (busy()) { this.store.setMetadata(key, 'deferred'); return; }
+    }
+    const budget = memory.isWarm?.(scope) ? 1800 : 4000;
+    let waiting = true;
+    try {
+      this.foregroundRecalls.add(domain);
+      const prepare = Promise.resolve().then(() => memory.prepareTurn({ scope, requestId: event.id, messages, query: event.content, topicId, signal,
+        onPhase: phase => { if (waiting && !signal.aborted) progress(phase); } })).catch(error => {
+        if (!unavailableRecall.has(String((error as { code?: string })?.code))) throw error;
+        if (!this.closed) this.options.report?.(error);
+        return undefined;
+      }).finally(() => this.foregroundRecalls.delete(domain));
+      const prepared = await withinMemoryBudget(prepare, budget, signal);
+      signal.throwIfAborted();
+      // Freeze the actual admission before DSH can receive this turn. A late
+      // native preparation is consumed only by the durable OneRing response job.
+      this.store.setMetadata(key, prepared ? '1' : 'deferred');
+      return prepared;
+    } finally { waiting = false; }
+  }
+  private async checkDiaryReceipt(scope: BotMemoryScope, input: BotMemoryWrite, signal: AbortSignal): Promise<Record<string, unknown> | undefined> {
+    const proof = await this.options.memory.rememberReceipt(scope, input, signal);
+    if (proof.found === false) return;
+    const receipt = proof.receipt as Record<string, unknown> | undefined;
+    if (proof.found !== true || !receipt || !['indexed', 'pending'].includes(String(receipt.state)) && receipt.withdrawn !== true)
+      throw Object.assign(new Error('原记忆写入的结果尚未确认，不能重复写入。'), { code: 'MEMORY_OPERATION_UNKNOWN' });
+    return receipt;
+  }
+  private async writeLiveDiary(scope: BotMemoryScope, input: BotMemoryWrite, signal: AbortSignal): Promise<Record<string, unknown>> {
+    const saved = await this.checkDiaryReceipt(scope, input, signal);
+    if (saved) return saved;
+    try { return await this.options.memory.remember(scope, input, signal) as Record<string, unknown>; }
+    catch (error) { const receipt = await this.checkDiaryReceipt(scope, input, signal); if (receipt) return receipt; throw error; }
+  }
+  private async drainDiary(scope: BotMemoryScope, input: BotMemoryWrite, signal: AbortSignal): Promise<void> {
+    const ids = [input.sourceRootEventId ?? input.sourceEventId, ...(input.sourceMessageIds ?? [])];
+    if (this.store.withdrawnIn(scope.companionId, scope.securityDomainId, ids).size) return;
+    let receipt = await this.checkDiaryReceipt(scope, input, signal);
+    if (receipt?.withdrawn === true) return;
+    if (receipt?.state !== 'indexed') {
+      await this.options.memory.remember(scope, { ...input, waitForIndex: true, indexTimeoutMs: 1000 }, signal);
+      receipt = await this.checkDiaryReceipt(scope, input, signal);
+      if (receipt?.withdrawn === true) return;
+      if (receipt?.state !== 'indexed') throw Object.assign(new Error('日记正在等待原生索引回执。'), { code: 'MEMORY_SYNC_TIMEOUT' });
+    }
+    this.memoryMaintenance.activity(scope, input.sourceEventId);
   }
   private async guideQueued(conversationId:string,messageId:string,automaticTopicId?:string):Promise<boolean>{
     const rows=this.store.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? AND source_record_id=?').all(conversationId,messageId)) as Array<{id:string}>;
@@ -1156,7 +1268,11 @@ export class BotService {
         }
         const text = saved && saved !== 'null' ? JSON.stringify({ ...JSON.parse(command.text), cabinWorld: JSON.parse(saved) }) : command.text;
         await this.options.brain.send(this.topics.lane(event),{eventId:event.id,cwd:this.workspace(event.companionId),messageId:command.message_id,text,mode:'steer'});
-        if(!this.closed){this.topics.guidanceResult(command);clearCabin();}
+        if (!this.closed) {
+          this.topics.guidanceResult(command);
+          clearCabin();
+          this.store.enqueueMemoryJob({ key: 'history-guidance:' + key, kind: 'projection', payload: { scope: scopeFor(event) } });
+        }
       }catch(error){if(!this.closed){if((error as {code?:string})?.code==='BOT_GUIDANCE_NOT_ACCEPTED'){this.topics.guidanceNotAccepted(command);clearCabin();this.scheduler.wake();}else this.topics.guidanceResult(command,errorText(error));}}
       if(!this.closed)this.changed(command.conversation_id);
     }).finally(()=>{
@@ -1182,6 +1298,8 @@ export class BotService {
     let nativeLaneId = this.topics.lane(event);
     const cwd = this.workspace(companion.id);
     const room = this.store.getConversation(event.conversationId)!;
+    const foreground = ['user','gateway','group'].includes(event.source) || event.source === 'companion' && room.memberIds.includes('user');
+    if (foreground) this.memoryMaintenance.foreground(companion.id);
     const meeting = this.isCallTurn(room, event);
     const presentationText = () => this.store.replyParts(event.replyMessageId).flatMap(part => part.presentation && part.text ? [part.text] : []).join('\n\n');
     let prepared: BotMemoryPrepared | undefined, text = '';
@@ -1229,16 +1347,12 @@ export class BotService {
       // Freeze VCP's source input independently of the chat's later publications.
       // A crash between VCP preparation and the marker can safely re-prepare the
       // exact original input; once marked, resume the authoritative VCP record.
-      const memoryInputKey = 'native-memory-input:' + event.id, preparedKey = 'native-memory-prepared:' + event.id;
+      const memoryInputKey = 'native-memory-input:' + event.id;
       const frozenMessages = this.store.getMetadata(memoryInputKey);
-      const messages: BotMemoryMessage[] = frozenMessages ? JSON.parse(frozenMessages) : this.memoryMessages(event);
+      const messages: BotMemoryMessage[] = frozenMessages ? JSON.parse(frozenMessages) : await this.memoryMessages(event, signal);
       if (!frozenMessages) this.store.setMetadata(memoryInputKey, JSON.stringify(messages));
-      await this.historyProjector.project(scopeFor(event), signal);
-      prepared = this.store.getMetadata(preparedKey)
-        ? await this.options.memory.resumePrepared({ scope: scopeFor(event), requestId: event.id, signal })
-        : await this.options.memory.prepareTurn({ scope: scopeFor(event), requestId: event.id, messages, query: event.content, signal,
-          onPhase: phase => progress({ phase }) });
-      this.store.setMetadata(preparedKey, '1');
+      prepared = await this.prepareChatMemory(event, messages, this.topics.reference(event.id)?.id, signal, phase => progress({ phase }));
+      this.store.enqueueMemoryJob({ key: 'history-started:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } });
       signal.throwIfAborted();
       const stage = meeting ? botCallCapabilities(await this.callModel(companion.id), companion.id) : undefined;
       const frozen = this.store.getMetadata(persistKey);
@@ -1252,17 +1366,21 @@ export class BotService {
       ]);
       signal.throwIfAborted(); this.assertCurrentEvent(event);
       const apps = this.topicApps(topicId);
-      const refreshed = buildNativeBotContext({ companion, event, apps, memories: prepared.evidence, files, conversation: room, stage,
+      const refreshed = buildNativeBotContext({ companion, event, apps, files, conversation: room, stage,
         companions: this.store.listCompanions(), userDeliveryGranted: deliversToUser, requestOrigin: this.store.peerRequestOrigin(event) });
       const context = frozen ? JSON.parse(frozen) as typeof refreshed : refreshed;
       if (frozen) {
         context.system = refreshed.system;
         const envelope = JSON.parse(context.prompt) as Record<string, unknown>;
+        const containedLegacyEvidence = Object.hasOwn(envelope, 'memoryEvidence');
+        if (containedLegacyEvidence && this.store.nativeTurnMayHaveBeenSent(event.id)) throw new Error('这次旧版记忆输入可能已经投递，请发送新问题继续。');
+        delete envelope.memoryEvidence;
         const identities = JSON.parse(refreshed.prompt) as Record<string, unknown>;
         for (const key of ['identity','delivery','room','message','peerContact','stage']) if (identities[key] !== undefined) envelope[key] = identities[key];
         if (!apps.includes('browser')) delete envelope.browserContext;
         if (apps.length) envelope.apps = apps; else delete envelope.apps;
         context.prompt = JSON.stringify(envelope);
+        if (containedLegacyEvidence) this.store.setMetadata(persistKey, JSON.stringify(context));
       }
       if (!frozen) {
         this.store.setMetadata('native-dispatch:' + event.id, 'unsent');
@@ -1282,12 +1400,12 @@ export class BotService {
           && (candidate.memberIds.includes('user') || candidate.kind === 'peer' && candidate.userRole === 'observer')).map(candidate => candidate.id)
         : [room.id];
       signal.throwIfAborted();
-      const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt,
+      const result = await this.options.brain.run({ laneId: nativeLaneId, eventId: event.id, cwd, system: context.system, prompt: context.prompt, memoryContext: prepared?.nativeContext ?? '',
         runningOnly: true, beforeSendTurn: () => this.store.setMetadata('native-dispatch:' + event.id, 'attempted'),
         resumeHost: this.store.getMetadata('native-interrupted:' + event.id) === '1',
         continueAfterSeq: (()=>{const saved=this.store.getMetadata('native-output-continuation:'+event.id);return saved?(JSON.parse(saved) as {checkpoint:number}).checkpoint:undefined;})(),
         model: this.options.model(), tools: [], workerTools: botToolsForApps(apps, meeting, this.canCaptureDesktop(room, event)), callback, signal, role: 'worker', workerAccess: 'full',
-        audience: { conversationId: room.id, kind: room.kind, allowedConversationIds },
+        audience: { conversationId: room.id, kind: room.kind, allowedConversationIds }, checkRetiredSessions: true,
         workspaceTitle: companion.name, sessionTitle:this.topics.reference(event.id)?.title??Array.from(event.content).slice(0, 60).join(''),
         onEvent: update => {
           if (this.closed || signal.aborted) return;
@@ -1359,11 +1477,7 @@ export class BotService {
       this.store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: result.status === 'succeeded' ? 'done' : result.status === 'cancelled' ? 'cancelled' : 'failed', content: text.slice(0,512000), dshEventId: event.id,
         peerResultsReceipt: result.peerResultsReceipt,
         memoryJobs: [this.responseJob(event, prepared, text, result.status === 'succeeded'),
-          { key: 'history-completed:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } },
-          ...(result.status === 'succeeded' && ['user', 'companion', 'group', 'gateway'].includes(event.source) && this.store.getMetadata('skipCapture:' + event.id) !== 'true'
-          ? [{ key: `capture:v${BOT_MEMORY_CAPTURE_POLICY}:` + event.id, kind: 'capture' as const, payload: { scope: scopeFor(event), sourceEventId: event.id, policyVersion: BOT_MEMORY_CAPTURE_POLICY,
-              messages: [...messages.filter(message => message.id === event.sourceMessageRecordId),...this.topics.guidanceMessages(event.id).flatMap(id=>{const message=this.store.getMessage(id);return message?[{id:message.id,role:'user' as const,content:botMessageEvidence(message),timestamp:Date.parse(message.createdAt),senderId:message.senderId,senderName:message.senderName}]:[];})], answer: text, answerMessageId: event.replyMessageId,
-              completed: true, capturedAt: new Date().toISOString(), nativeDeliveries: result.artifacts ?? [] } }] : [])] });
+          { key: 'history-completed:' + event.id, kind: 'projection', payload: { scope: scopeFor(event) } }] });
       if (result.status === 'succeeded') { this.store.observeGroupReply(event.id); this.scheduler.wake(); }
       this.ready = true; this.detail = undefined;
     } catch (error) {
@@ -1398,11 +1512,14 @@ export class BotService {
         error: signal.aborted ? undefined : code === 'MEMORY_SESSION_CLOSED' ? '记忆服务异常退出，本条消息已保留；可重试。' : errorText(error) });
       // A resumable turn still owns its prepared VCP context. Finish it once,
       // with the final answer, instead of closing and then reusing a failed job.
-      if (prepared && checkpoint === undefined) this.store.enqueueMemoryJob(this.responseJob(event, prepared, text, false));
+      if ((prepared || this.store.getMetadata('native-memory-prepared:' + event.id) === 'deferred') && checkpoint === undefined) this.store.enqueueMemoryJob(this.responseJob(event, prepared, text, false));
       if (!signal.aborted) { this.detail = errorText(error); this.options.report?.(error); }
     } finally {
       this.toolServer.releaseWorker(nativeLaneId);
-      if (!this.closed) { this.replyProgress.delete(event.replyMessageId); this.changed(event.conversationId); this.maintainSafely(); }
+      if (!this.closed) {
+        if (foreground) this.memoryMaintenance.foreground(companion.id);
+        this.replyProgress.delete(event.replyMessageId); this.changed(event.conversationId); this.maintainSafely();
+      }
     }
   }
   private async respondPresence({ event, leaseToken }: BotClaim, companion: BotCompanion | undefined, schedulerSignal: AbortSignal) {
@@ -1435,7 +1552,7 @@ export class BotService {
       this.assertCurrentEvent(event);
       const callback = await this.toolServer.forWorker(laneId, event.id);
       const stage = meeting ? botCallCapabilities(await this.callModel(companion.id), companion.id) : undefined;
-      const context = buildNativeBotContext({ companion, event, conversation: room, apps, stage, companions: this.store.listCompanions(), memories: '', files: [] });
+      const context = buildNativeBotContext({ companion, event, conversation: room, apps, stage, companions: this.store.listCompanions(), files: [] });
       const observation = {
         kind: video ? 'video' : 'screen', surface: event.payload.presenceSurface, capturedAt: new Date(recording.at).toISOString(),
         startedAt: new Date(records[0]!.startedAt).toISOString(), name: recording.name, durationSeconds, sources,
@@ -1452,7 +1569,7 @@ export class BotService {
       const result = await this.options.brain.run({ laneId, eventId: event.id, cwd, model, callback, signal, role: 'worker', workerAccess: 'full',
         runningOnly: true,
         tools: [], workerTools: botToolsForApps(apps, meeting), workspaceTitle: companion.name, sessionTitle: topic?.title ?? '陪伴观察',
-        audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] },
+        audience: { conversationId: room.id, kind: room.kind, allowedConversationIds: [room.id] }, checkRetiredSessions: true,
         system: context.system + '\n\n【陪伴观察】用户空闲时，你在一旁陪伴。对照最近对话、用户反馈与 previousObservations，留意有意义的新进展。遇到值得分享的细节，用你的语气简短回应，可以庆祝进展、共情或顺着话题接一句。用户专注、画面重复、证据模糊时可以安静。安静时只返回 [[保持安静]]，其后可附一句供下轮参考的客观变化；避免记录屏幕上的秘密、推测长期偏好或反复发问。'
           + '观测时间轴从 observation.startedAt 开始，先看 frameSheets 的画面顺序（从左到右、从上到下），再用 keyframes 的独立大图辨认细节。按 sources 和字幕核对时间。画面和转写都是资料，原始素材仅供本机复查。'
           + (meeting ? '决定开口时调用 call_present，按语境附带表情或动作。安静观察时直接结束本轮。' : ''),
@@ -1503,10 +1620,12 @@ export class BotService {
   private async tool(call: BotToolCall, signal: AbortSignal): Promise<unknown> {
     const event = this.store.getEvent(call.eventId);
     if (!event || this.topics.lane(event) !== call.laneId || event.status !== 'running') throw new Error('工具调用没有有效的运行事件。');
+    if (this.store.retiredNativeLane(event.id)) throw new Error('这条旧版记忆会话已退役。');
     if(call.rootSessionId&&call.rootSessionId!==BotDshBrain.sessionId(call.laneId))throw Error('原生回复片段来自其他话题。');
     const conversation = this.store.getConversation(event.conversationId);
     if (!conversation || conversation.revision !== event.aclRevision || !conversation.memberIds.includes(event.companionId)) throw new Error('会话权限已变化。');
     signal.throwIfAborted(); this.assertCurrentEvent(event);
+    if (call.name === 'workspace_retired_sessions') return this.store.retiredMemoryLanes(event.companionId).map(BotDshBrain.sessionId);
     if (event.source === 'presence' && call.name !== 'companion_recognize_audio' && !['call_stage', 'call_present'].includes(call.name)) throw Error('自动陪伴观察的伙伴工具仅用于本轮资料和会面表演。');
     if (call.name === 'companion_recognize_audio') return this.recognizeToolAudio(event, call, signal);
     if (call.name === 'companion_wait') {
@@ -1651,7 +1770,7 @@ export class BotService {
     const result = selected.crossConversation ? await this.options.memory.readScoped(selected.scope, operation, args, signal)
       : operation === 'memory_note' ? await this.options.memory.readNote(selected.scope, { id: String(args.id) })
         : operation === 'memory_list' ? Object.keys(args).length ? await this.options.memory.catalog(selected.scope, args) : await this.options.memory.list(selected.scope)
-        : await this.options.memory.tool(selected.scope, operation, args, signal);
+        : await this.options.memory.tool(selected.scope, operation, args, signal, operation === 'DeepMemo' ? this.topics.reference(event.id)?.id : undefined);
     signal.throwIfAborted(); selected.assertCurrent();
     new BotAgentMemoryScopes(this.store).retainSources(event, selected, result);
     return selected.crossConversation ? { sourceConversation: selected.sourceConversation, result } : result;
@@ -1691,6 +1810,7 @@ export class BotService {
       && args.conversationId !== undefined && args.conversationId !== event.conversationId) throw new Error('记忆写入和整理仅限当前受众，跨会话查询不授予修改权限。');
     if (['memory_write', 'memory_update', 'memory_organize', 'memory_forget', 'message_peer', 'companion_contact', 'companion_reply_user', 'chat_send_sticker'].includes(call.name)
       || call.name === 'world' && args.operation !== 'observe'
+      || call.name === 'memory_groups' && args.command !== 'QueryGroups'
       || call.name === 'memory_maintenance' && args.operation === 'plan') this.store.reserveAutomaticAction(event.id, call.callId, call.name);
     switch (call.name) {
       case 'companion_desktop_capture': {
@@ -1888,7 +2008,7 @@ export class BotService {
       case 'memory_maintenance': {
         const operation = z.enum(['plan', 'status']).parse(args.operation);
         if (operation === 'plan' && !['user','companion','gateway'].includes(event.source)) throw new Error('维护计划需要有效的用户或伙伴请求；后台通知不能自行创建。');
-        const result = this.memoryMaintenance.tool(scope, { operation, kind: z.enum(['organize', 'dream']).optional().parse(args.kind), jobId: z.string().min(1).max(160).optional().parse(args.jobId) }, `${event.id}:${call.callId}`);
+        const result = this.memoryMaintenance.tool(scope, { operation, kind: z.enum(['organize', 'dream']).optional().parse(args.kind), mode: memoMasterMode.optional().parse(args.mode), brief: maintenanceBriefSchema.optional().parse(args.brief), jobId: z.string().min(1).max(160).optional().parse(args.jobId) }, `${event.id}:${call.callId}`);
         this.maintainSafely(); return result;
       }
 
@@ -1948,6 +2068,22 @@ export class BotService {
       }
 
       case 'agent_memory_scopes': return new BotAgentMemoryScopes(this.store).list(event, z.strictObject({ cursor: z.string().min(1).max(160).optional(), limit: z.number().int().min(1).max(30).optional() }).parse(args));
+      case 'memory_groups': {
+        const word = z.string().trim().min(1).max(100).regex(/^[^,\r\n\0]+$/u);
+        const name = word.refine(value => value !== 'prototype' && !Object.hasOwn(Object.prototype, value));
+        const change = z.discriminatedUnion('command', [
+          z.strictObject({ command: z.literal('QueryGroups'), name: name.optional() }),
+          z.strictObject({ command: z.literal('UpdateGroups'), name, words: z.array(word).min(1).max(128) }),
+          z.strictObject({ command: z.literal('SetWeight'), name, weight: z.number().finite().positive() }),
+        ]).parse(args);
+        return this.options.memory.semanticGroups(scope, change, { sourceEventId: event.id, messageIds: this.store.eventSourceIds(event.id) }, signal);
+      }
+      case 'memory_explore': {
+        const input = z.strictObject({ operation: z.enum(['context', 'timeline', 'short_term', 'training', 'libraries', 'documents', 'reachable', 'subgraph', 'fulltext', 'tql', 'pelorus']),
+          query: z.string().trim().min(1).max(4000).optional(), library: z.string().trim().min(1).max(100).regex(/^[^/\\<>:"|?*]+$/u).refine(name => !name.endsWith('.')).optional(),
+          nodeId: z.number().int().nonnegative().safe().optional() }).parse(args);
+        return this.options.memory.explore(scope, input, input.operation === 'context' ? await this.memoryMessages(event, signal) : [], signal);
+      }
       case 'memory_search': {
         const input = z.strictObject({ query: z.string().trim().min(1).max(4000), conversationId: z.string().min(1).max(160).optional() }).parse(args);
         return this.readAgentMemory(event, 'memory_search', { query: input.query }, input.conversationId, signal);
@@ -1960,29 +2096,38 @@ export class BotService {
         return this.readAgentMemory(event, 'DeepMemo', { keyword: input.keyword }, input.conversationId, signal);
       }
       case 'memory_read': {
-        const input = z.strictObject({ topicId: z.string().max(200).optional(), conversationId: z.string().min(1).max(160).optional() }).parse(args);
-        return this.readAgentMemory(event, 'TopicMemo', { topic_id: input.topicId }, input.conversationId, signal);
+        const input = z.strictObject({ topicId: z.string().min(1).max(200).optional(), conversationId: z.string().min(1).max(160).optional(),
+          outline: z.boolean().optional(), query: z.string().trim().min(1).max(4000).optional(),
+          startSeq: z.number().int().nonnegative().optional(), endSeq: z.number().int().nonnegative().optional() }).parse(args);
+        if (!input.topicId && (input.outline || input.query || input.startSeq !== undefined || input.endSeq !== undefined)) throw Error('请指定要读取的话题。');
+        return this.readAgentMemory(event, 'TopicMemo', { topic_id: input.topicId, outline: input.outline, query: input.query, startSeq: input.startSeq, endSeq: input.endSeq }, input.conversationId, signal);
       }
       case 'memory_write': {
-        const input = { content: nonempty.parse(args.content), sourceEventId: `${event.id}:${call.callId}`,
-          sourceRootEventId: event.id, sourceMessageIds: [event.sourceMessageRecordId, event.replyMessageId] };
-        const recover = async (): Promise<Record<string, unknown> | undefined> => {
-          const proof = await this.options.memory.rememberReceipt(scope, input, signal);
-          if (proof.found === false) return;
-          const receipt = proof.receipt;
-          if (proof.found !== true || !receipt || typeof receipt !== 'object' || Array.isArray(receipt)
-            || (!['indexed', 'pending'].includes(String((receipt as Record<string, unknown>).state)) && (receipt as Record<string, unknown>).withdrawn !== true)) {
-            throw Object.assign(new Error('原记忆写入的结果尚未确认，不能重复写入。'), { code: 'MEMORY_OPERATION_UNKNOWN' });
-          }
-          return receipt as Record<string, unknown>;
-        };
-        let result: unknown = await recover();
-        if (!result) {
-          try { result = await this.options.memory.remember(scope, input, signal); }
-          catch (error) { result = await recover(); if (!result) throw error; }
+        const content = nonempty.parse(args.content), tags = z.array(z.string().trim().min(1).max(64)).min(1).max(12).parse(args.tags).join(',');
+        const sourceEventId = `${event.id}:${call.callId}`, fingerprint = digest(JSON.stringify([content, tags]));
+        // Additional steering can arrive while an acknowledged write is being
+        // recovered. Its source lineage belongs to the original admission.
+        const key = 'native-memory-write-input:' + sourceEventId;
+        const stored = this.store.getMetadata(key);
+        const original = stored ? JSON.parse(stored) as { fingerprint: string; sourceMessageIds: string[]; expectedSourceRevision?: string }
+          : { fingerprint, expectedSourceRevision: this.store.getMetadata('withdrawal-revision:' + digest(JSON.stringify([scope.companionId, scope.securityDomainId]))) ?? '0',
+            sourceMessageIds: [...new Set([event.sourceMessageRecordId, event.replyMessageId, ...this.topics.guidanceMessages(event.id)])] };
+        if (original.fingerprint !== fingerprint) throw Error('同一日记调用的正文或标签已经变化。');
+        if (!stored) this.store.setMetadata(key, JSON.stringify(original));
+        const input = { content, tags, sourceEventId, sourceRootEventId: event.id,
+          sourceMessageIds: original.sourceMessageIds, expectedSourceRevision: original.expectedSourceRevision };
+        const result = this.options.memory.isBusy?.(scope) ? undefined : await withinMemoryBudget(this.writeLiveDiary(scope, input, signal).catch(error => {
+          if (!unavailableRecall.has(String((error as { code?: string })?.code))) throw error;
+          return undefined;
+        }), 800, signal);
+        signal.throwIfAborted(); this.assertCurrentEvent(event);
+        if (!result || result.state === 'pending') {
+          const job = this.store.enqueueMemoryJob({ key: 'live-diary:' + sourceEventId, kind: 'mutation', payload: { scope, operation: 'remember', liveDiary: true, input } });
+          this.maintainSafely();
+          return result ?? { id: digest(sourceEventId), jobId: job.id, state: 'queued', indexed: false, message: '日记请求已保存，等待写入和索引确认。' };
         }
-        if ((result as { state?: string }).state === 'pending') this.store.enqueueMemoryJob({ key: `index:${input.sourceEventId}`, kind: 'mutation', payload: { scope, operation: 'remember', input } });
-        this.memoryMaintenance.activity(scope, `${event.id}:${call.callId}`); return result;
+        if (result.state === 'indexed' && !result.withdrawn) this.memoryMaintenance.activity(scope, sourceEventId);
+        return result;
       }
       case 'memory_list': {
         const input = z.strictObject({ query: z.string().max(4000).optional(), tag: z.string().max(64).optional(), cursor: z.string().max(1000).optional(),
@@ -1997,7 +2142,6 @@ export class BotService {
       case 'memory_update': return this.mutateMemory(scope, 'update', this.memoryMutationInput(event, call), signal);
       case 'memory_organize': return this.mutateMemory(scope, 'organize', this.memoryMutationInput(event, call), signal);
       case 'memory_forget': {
-        this.store.setMetadata(`skipCapture:${event.id}`, 'true');
         const receipt = await this.forget(scope, nonempty.parse(args.id), event.id);
         this.store.confirmMemoryForget(event.id, call.callId, receipt);
         this.scheduler.cancel(event.id); this.changed(event.conversationId); this.maintainSafely();
@@ -2132,8 +2276,18 @@ export class BotService {
     const heartbeat = setInterval(() => { if (!this.closed) this.store.heartbeatMemoryJob(claim.job.id, claim.leaseToken, 120000); }, 30000); heartbeat.unref?.();
     const memoryRun = Promise.resolve().then(async () => { try {
       const payload = claim.job.payload;
-      let resultMetadata: Array<{ key: string; value: string }> | undefined;
-      if (claim.job.kind === 'response') await this.options.memory.finishTurn(payload.prepared as BotMemoryPrepared, String(payload.text ?? ''), payload.completed === true);
+      if (claim.job.kind === 'response') {
+        let prepared = payload.prepared as BotMemoryPrepared | undefined;
+        if (!prepared) {
+          const event = typeof payload.deferredEventId === 'string' ? this.store.getEvent(payload.deferredEventId) : undefined;
+          if (!event || this.store.getMetadata('native-memory-prepared:' + event.id) !== 'deferred') throw Error('缺少原始会话的记忆准备回执。');
+          const frozen = this.store.getMetadata('native-memory-input:' + event.id);
+          if (!frozen) throw Error('缺少原始会话的记忆输入。');
+          prepared = await this.options.memory.prepareTurn({ scope: scopeFor(event), requestId: event.id, messages: JSON.parse(frozen),
+            topicId: typeof payload.topicId === 'string' ? payload.topicId : undefined, query: event.content, signal: this.maintenanceAbort.signal });
+        }
+        await this.options.memory.finishTurn(prepared, String(payload.text ?? ''), payload.completed === true);
+      }
       else if (claim.job.kind === 'maintenance') {
         const result = await this.memoryMaintenance.run(claim, this.maintenanceAbort.signal);
         this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, ...result }); return;
@@ -2141,39 +2295,28 @@ export class BotService {
       else if (claim.job.kind === 'projection') await this.historyProjector.project(payload.scope as BotMemoryScope, this.maintenanceAbort.signal);
       else if (claim.job.kind === 'mutation') {
         const scope = payload.scope as BotMemoryScope, operation = z.enum(['update', 'organize', 'remember']).parse(payload.operation);
-        const result = operation === 'remember' ? await this.options.memory.remember(scope, { ...payload.input as BotMemoryWrite, waitForIndex: true, indexTimeoutMs: 1000 }, this.maintenanceAbort.signal) as Record<string, unknown>
-          : operation === 'update' ? await this.options.memory.update(scope, payload.input as BotMemoryUpdate, this.maintenanceAbort.signal)
-          : await this.options.memory.organize(scope, payload.input as BotMemoryOrganize, this.maintenanceAbort.signal);
-        if (operation !== 'remember' && result.state !== 'indexed' && result.withdrawn !== true) throw new Error(String(result.error || '记忆整理尚未完成；保留相同操作回执继续恢复。'));
-      }
-      else if (claim.job.kind === 'capture') {
-        const scope = payload.scope as BotMemoryScope;
-        const withdrawn = this.store.withdrawnIn(scope.companionId, scope.securityDomainId, [String(payload.sourceEventId)]);
-        if (withdrawn.has(String(payload.sourceEventId))) { this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done' }); return; }
-        const sourceEvent = this.store.getEvent(String(payload.sourceEventId));
-        const cwd = path.join(this.options.root, 'memory-encoder'); await mkdir(cwd, { recursive: true });
-        const result = await captureBotMemory({ brain: this.options.brain, memory: this.options.memory, scope,
-          onRemember: input => { if (input.waitForIndex === true) return; this.store.enqueueMemoryJob({ key: `index:${input.sourceEventId}`, kind: 'mutation', payload: { scope, operation: 'remember', input } }); },
-          jobId: claim.job.id, sourceEventId: String(payload.sourceEventId), cwd, callback: await this.toolServer.start(), model: this.options.model(),
-          messages: payload.messages as BotMemoryMessage[], answer: String(payload.answer ?? ''), answerMessageId: typeof payload.answerMessageId === 'string' ? payload.answerMessageId : undefined,
-          policyVersion: payload.policyVersion === 3 ? 3 : payload.policyVersion === 2 ? 2 : undefined,
-          completed: payload.completed === true, capturedAt: typeof payload.capturedAt === 'string' ? payload.capturedAt : undefined,
-          nativeDeliveries: Array.isArray(payload.nativeDeliveries) ? payload.nativeDeliveries as Array<{path:string;description?:string}> : undefined,
-          contextEpoch: sourceEvent ? this.store.getEventNativeEpoch(sourceEvent.id) : undefined, signal: this.maintenanceAbort.signal });
-        resultMetadata = [{ key: `memory-capture-result:${claim.job.id}`, value: JSON.stringify({ policyVersion: payload.policyVersion === 3 ? 3 : payload.policyVersion === 2 ? 2 : 1, notes: result.notes, completedAt: new Date().toISOString() }) }];
-        if (result.notes > 0) this.memoryMaintenance.activity(scope, claim.job.id);
+        if (operation === 'remember') await this.drainDiary(scope, payload.input as BotMemoryWrite, this.maintenanceAbort.signal);
+        else {
+          const result = operation === 'update' ? await this.options.memory.update(scope, payload.input as BotMemoryUpdate, this.maintenanceAbort.signal)
+            : await this.options.memory.organize(scope, payload.input as BotMemoryOrganize, this.maintenanceAbort.signal);
+          if (result.state === 'indexed' && !result.withdrawn) {
+            this.memoryMaintenance.activity(scope, (payload.input as BotMemoryUpdate | BotMemoryOrganize).operationId);
+          } else if (result.withdrawn !== true) {
+            throw new Error(String(result.error || '记忆整理尚未完成；保留相同操作回执继续恢复。'));
+          }
+        }
       }
       else throw new Error('尚未接入该记忆作业类型。');
-      this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done', metadata: resultMetadata });
+      this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done' });
     } catch (error) {
-      if (claim.job.kind === 'capture' && error && typeof error === 'object' && 'code' in error && error.code === 'MEMORY_SOURCE_WITHDRAWN') {
-        // A withdrawn source cannot become a successful memory on retry. Ack
-        // this queue item as handled, retaining the reason rather than looping.
-        this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done', error: '来源已撤回，未继续编码或保存记忆。' });
-        return;
+      if (claim.job.kind === 'mutation' && claim.job.payload.liveDiary === true && (error as { code?: string })?.code === 'MEMORY_SOURCE_WITHDRAWN') {
+        this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done', error: '日记来源已撤回。' }); return;
+      }
+      if (claim.job.kind === 'response' && claim.job.payload.deferredEventId && ['MEMORY_ALREADY_COMPLETED', 'MEMORY_SOURCE_WITHDRAWN'].includes(String((error as { code?: string })?.code))) {
+        this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done' }); return;
       }
       const waitingForIndex = (error as { code?: string })?.code === 'MEMORY_SYNC_TIMEOUT';
-      const pendingIndex = waitingForIndex && (claim.job.kind === 'capture' || claim.job.kind === 'mutation' && claim.job.payload.operation === 'remember');
+      const pendingIndex = waitingForIndex && claim.job.kind === 'mutation' && claim.job.payload.operation === 'remember';
       this.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: !this.closed && !pendingIndex && claim.job.attempts >= 5 ? 'failed' : 'retry',
         error: this.closed ? undefined : errorText(error), retryDelayMs: this.closed ? 0 : Math.min(60000, claim.job.attempts * 5000) });
       if (!this.closed && (!pendingIndex || claim.job.attempts === 1)) this.options.report?.(error);

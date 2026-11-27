@@ -38,6 +38,22 @@ it('keeps stable direct conversations while security domains of groups remain se
   expect(group.securityDomainId).not.toBe(direct.securityDomainId);
   expect(() => store.createGroup({ title: '错群', memberIds: ['unknown'] })).toThrow('不存在');
 });
+it('retires legacy memory receipts once while keeping original messages and withdrawal authority', () => {
+  const room = store.openDirect('alice'), scope = { companionId: 'alice', conversationId: room.id, securityDomainId: room.securityDomainId };
+  const { message } = store.enqueue({ conversationId: room.id, senderId: 'user', content: '迁移验证' });
+  store.withdrawSources('alice', room.securityDomainId, [message.id]);
+  const old = store.enqueueMemoryJob({ kind: 'mutation', key: 'old', payload: { scope } });
+  store.setMetadata('history-projection:old', '3');
+  store.taskTransaction(sql => sql.prepare('PRAGMA user_version=21').run());
+  store.close(); store = new BotStore(path.join(root, 'bot.sqlite'));
+  expect(store.getMemoryJob(old.id)).toBeUndefined();
+  expect(store.getMetadata('history-projection:old')).toBeUndefined();
+  expect(store.getMessage(message.id)?.content).toBe('迁移验证');
+  expect(store.withdrawnIn('alice', room.securityDomainId, [message.id])).toContain(message.id);
+  const fresh = store.enqueueMemoryJob({ kind: 'mutation', key: 'new', payload: { scope } });
+  store.close(); store = new BotStore(path.join(root, 'bot.sqlite'));
+  expect(store.getMemoryJob(fresh.id)?.status).toBe('queued');
+});
 it('removes the rejected development appearance column without changing identities, conversations or queued work', () => {
   const conversation = store.openDirect('alice'), queued = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: '迁移前未处理的消息', sourceMessageId: 'before-v7' });
   const alice = store.getCompanion('alice'); store.close();
@@ -62,15 +78,15 @@ it('upgrades v14 lifecycle metadata atomically and refuses data from a future ta
     DROP INDEX bot_tasks_visible_activity; DROP INDEX bot_tasks_visible_global_activity;
     DROP INDEX bot_tasks_presence_active_v2; DROP INDEX bot_inbox_presence_active; PRAGMA user_version=14`);
   legacy.close(); store = new BotStore(filename);
-  expect(store.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toMatchObject({ user_version: 21 });
+  expect(store.taskTransaction(sql => sql.prepare('PRAGMA user_version').get())).toMatchObject({ user_version: 23 });
   expect(store.taskTransaction(sql => sql.prepare('SELECT status,goal,extra_json FROM bot_tasks WHERE id=?').get(queued.id))).toMatchObject({ status: 'queued', goal: queued.goal, extra_json: JSON.stringify(queued.extra) });
   expect(store.companionPresence([{ id: 'alice', updatedAt: store.getCompanion('alice')!.updatedAt }], true).alice!.counts.activeTasks).toBe(0);
   expect(store.taskTransaction(sql => sql.prepare("SELECT name FROM sqlite_master WHERE name IN ('bot_task_presence_events','bot_task_history_clear_targets','bot_tasks_visible_scope_status')").all())).toHaveLength(3);
   const futurePath = path.join(root, 'future.sqlite'), future = new LifecycleDatabase(futurePath);
-  future.pragma('user_version=22'); future.close();
+  future.pragma('user_version=24'); future.close();
   expect(() => new BotStore(futurePath)).toThrow('拒绝降级');
   const unchanged = new LifecycleDatabase(futurePath, { readonly: true });
-  try { expect(unchanged.pragma('user_version', { simple: true })).toBe(22); } finally { unchanged.close(); }
+  try { expect(unchanged.pragma('user_version', { simple: true })).toBe(24); } finally { unchanged.close(); }
 });
 it('deduplicates one transport message and rejects reuse of its ID for different content', () => {
   const conversation = store.openDirect('alice');
@@ -190,15 +206,15 @@ it('does not commit a final reply if its required memory job cannot be persisted
   const event = store.enqueue({ conversationId: conversation.id, senderId: 'user', content: '不能丢掉记录' }).events[0]!;
   const claim = store.claim({ workerId: 'router' })!;
   expect(() => store.settle({ eventId: event.id, leaseToken: claim.leaseToken, status: 'done', content: '不能静默成功',
-    memoryJobs: [{ key: event.id, kind: 'capture', payload: { text: '汉'.repeat(800000) } }] })).toThrow('2MB');
+    memoryJobs: [{ key: event.id, kind: 'mutation', payload: { text: '汉'.repeat(800000) } }] })).toThrow('2MB');
   expect(store.getEvent(event.id)?.status).toBe('running'); expect(store.getMessage(event.replyMessageId)?.status).toBe('running');
   expect(store.pendingOutbox()).toHaveLength(0); expect(store.listPendingMemory()).toHaveLength(0);
 });
 it('serializes memory work per security domain while allowing other domains and prioritizing response closure', () => {
   const scope = { companionId: 'alice', securityDomainId: 'one' };
-  store.enqueueMemoryJob({ id: 'capture', kind: 'capture', payload: { scope } });
+  store.enqueueMemoryJob({ id: 'capture', kind: 'mutation', payload: { scope } });
   store.enqueueMemoryJob({ id: 'response', kind: 'response', payload: { scope } });
-  store.enqueueMemoryJob({ id: 'other', kind: 'capture', payload: { scope: { ...scope, securityDomainId: 'two' } } });
+  store.enqueueMemoryJob({ id: 'other', kind: 'mutation', payload: { scope: { ...scope, securityDomainId: 'two' } } });
   const first = store.claimMemoryJob({ workerId: 'worker', now: 1000 })!;
   const other = store.claimMemoryJob({ workerId: 'worker', now: 1000 })!;
   expect(first.job.id).toBe('response'); expect(other.job.id).toBe('other');

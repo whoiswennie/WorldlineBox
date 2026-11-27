@@ -42,13 +42,16 @@ it.skipIf(!enabled)('uses the actual pinned VCP/Rust index for managed update, a
       const aPath=host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(a.id).note_path,bPath=host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(b.id).note_path;
       const [updatedProbe]=await runtime.kb.probeIngestionFiles([aPath]);if(updatedProbe.checksum!==update.checksum||!updatedProbe.completeVectors||!updatedProbe.completeTags)throw new Error('Real updated vectors/tags are incomplete');
       const organize=await host.organize(runtime,{operationId:'native-organize',sources:[{id:a.id,expectedChecksum:update.checksum},{id:b.id,expectedChecksum:b.checksum}],
-        content:'使用蓝色收纳盒，每次只整理12分钟。',tags:'整理,方案',sourceEventId:'native-organized'});
+        content:'使用蓝色收纳盒，每次只整理12分钟。',tags:'整理,方案',sourceEventId:'native-organized',crystal:{content:'用固定收纳盒并限制整理时间。',tags:['整理','方法']}});
       if(organize.state!=='indexed')throw new Error('Organization did not finish real native receipts: '+JSON.stringify(organize));
       const [oldA,oldB]=await runtime.kb.probeIngestionFiles([aPath,bPath]);if(oldA.exists||oldB.exists)throw new Error('Archived source index survived');
       const child=host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(organize.id),[childProbe]=await runtime.kb.probeIngestionFiles([child.note_path]);
       if(!childProbe.exists||!childProbe.completeVectors||!childProbe.completeTags||childProbe.checksum!==organize.checksum)throw new Error('Organized child has no complete native index');
-      const forget=await host.forget(runtime,{id:a.id,companionId:'native-owner'}),[withdrawn]=await runtime.kb.probeIngestionFiles([child.note_path]);
-      if(withdrawn.exists||!forget.relatedIds.includes(organize.id))throw new Error('Derived organized content survived parent withdrawal');
+      const crystal=host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(organize.crystal.id);
+      const recalled=await host.verifyRetrievedSources(runtime,await runtime.retrieve({query:'收纳整理',diaries:['Companion'],k:8}));
+      for(const id of [organize.id,organize.crystal.id])if(!recalled.results.some(hit=>hit.id===id&&hit.sourceEventIds.includes('native-a')&&hit.sourceEventIds.includes('native-b')))throw new Error('A volume is missing from native scoped recall or lost source lineage');
+      const forget=await host.forget(runtime,{id:a.id,companionId:'native-owner'}),[withdrawn,withdrawnCrystal]=await runtime.kb.probeIngestionFiles([child.note_path,crystal.note_path]);
+      if(withdrawn.exists||withdrawnCrystal.exists||!forget.relatedIds.includes(organize.id)||!forget.relatedIds.includes(organize.crystal.id))throw new Error('Derived organized content survived parent withdrawal');
       const independent=await host.readNote({id:b.id});if(independent.indexState!=='archived')throw new Error('Withdrawal propagated backwards into independent source');
       process.stdout.write('WLB_MANAGED_NATIVE:'+JSON.stringify({passed:true,update,organize,updatedProbe,oldA,oldB,childProbe,withdrawn,independentSourcePreserved:true})+'\\n');
     }finally{host.close();await runtime.close()}})().catch(error=>{console.error(error);process.exitCode=1});

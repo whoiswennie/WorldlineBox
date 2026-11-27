@@ -16,6 +16,24 @@ let runtime, unlock, providerRouter, localEmbedding, chatMemory, botHost;
 let fetchResolver;
 let activeDiagnostics = false, lastTelemetry, requestStartedAt;
 function send(value) { process.stdout.write('\x1eVCP_MEMORY_JSON:' + JSON.stringify(value) + '\n'); }
+function providerSettings(config) {
+  if (callerEnv.WORLDLINEBOX_VCP_MANAGED !== '1') return { ...callerEnv,
+    ...Object.fromEntries(Object.entries(config).filter(([, value]) => value !== '' && value != null)) };
+  const settings = { WORLDLINEBOX_VCP_MANAGED: '1' };
+  for (const key of ['EMBEDDING_API_URL', 'EMBEDDING_QUERY_API_URL']) {
+    const url = new URL(callerEnv[key]);
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password) throw new Error('Expected a built-in loopback embedding gateway');
+    settings[key] = url.href;
+  }
+  if (!callerEnv.EMBEDDING_API_KEY || callerEnv.EMBEDDING_MODEL !== config.WhitelistEmbeddingModel
+      || callerEnv.EmbeddingModelSig !== config.EmbeddingModelSig || String(config.LOCAL_EMBEDDING_ENABLED) !== 'false') {
+    throw new Error('Memory requires the companion’s built-in embedding profile');
+  }
+  for (const key of ['EMBEDDING_MODEL', 'EMBEDDING_API_KEY', 'CHAT_API_URL', 'CHAT_API_TYPE', 'CHAT_API_KEY', 'CHAT_MODEL']) {
+    if (callerEnv[key]) settings[key] = callerEnv[key];
+  }
+  return settings;
+}
 async function hostStage(stage, operation) {
   if (!lastTelemetry) return operation();
   const startedAt = performance.now();
@@ -78,7 +96,7 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
     if (!botHost) botHost = new (require('./bot-host.cjs').BotHost)(home);
     return botHost;
   };
-  if (['search', 'preprocess', 'context.prepare'].includes(operation) || operation === 'tool' && ['LightMemo', 'DeepMemo', 'TopicMemo'].includes(payload.name)) {
+  if (['search', 'retrieve', 'semantic-context', 'preprocess', 'context.prepare'].includes(operation) || operation === 'tool' && ['LightMemo', 'DeepMemo', 'TopicMemo'].includes(payload.name)) {
     if (!unlock) unlock = workspace.acquireLock(home);
     bot().managed.assertReadable();
     bot().maintenance.assertReadable();
@@ -110,7 +128,7 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
   if (operation === 'bot.prepared.get') { bot().assertWithdrawalsSettled(); return bot().getPrepared(payload.id); }
   if (operation === 'bot.prepared.put') return bot().savePrepared(payload.id, payload.prepared);
   if (operation === 'bot.prepared.complete') return bot().completePrepared(payload.id, payload.completion);
-  if (['tool','search','preprocess','response','session.prepare','invoke'].includes(operation) && fs.existsSync(path.join(home, 'bot-adapter.sqlite'))) bot().assertWithdrawalsSettled();
+  if (['tool','search','retrieve','semantic-context','preprocess','response','session.prepare','invoke'].includes(operation) && fs.existsSync(path.join(home, 'bot-adapter.sqlite'))) bot().assertWithdrawalsSettled();
   if (operation === 'config.get') return workspace.sanitizedConfig(config);
   if (operation === 'config.set') {
     if (unlock) await close();
@@ -132,7 +150,7 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
     let capabilities;
     try { capabilities = storage.capabilities(); } finally { storage.shutdown(); }
     const { resolveProviders } = require('./providers.cjs');
-    const routes = resolveProviders({ ...callerEnv, ...Object.fromEntries(Object.entries(config).filter(([, value]) => value !== '' && value !== null && value !== undefined)) });
+    const routes = resolveProviders(providerSettings(config));
     const local = config.LOCAL_EMBEDDING_ENABLED === true || config.LOCAL_EMBEDDING_ENABLED === 'true';
     return { home, node: process.version, platform: process.platform, architecture: process.arch,
       snapshot, native: capabilities,
@@ -172,8 +190,7 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
     try {
       if (['context.compact', 'context.auto-compact', 'session.compact', 'session.auto-compact'].includes(operation)
           && !payload.settings?.vcpServerUrl && !Object.hasOwn(payload, 'response') && !Object.hasOwn(payload.options || {}, 'response')) {
-        const router = providerRouter || (temporaryRouter = await require('./providers.cjs').startProviderRouter({ ...callerEnv,
-          ...Object.fromEntries(Object.entries(config).filter(([, value]) => value !== '' && value !== null && value !== undefined)) }));
+        const router = providerRouter || (temporaryRouter = await require('./providers.cjs').startProviderRouter(providerSettings(config)));
         payload = { ...payload, settings: { enableContextCompaction: true,
           contextCompactionModel: config.CHAT_MODEL || 'deepseek-flash', ...(payload.settings || {}),
           vcpServerUrl: router.url + '/v1/chat/completions', vcpApiKey: router.key } };
@@ -213,7 +230,7 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
     } });
     process.chdir(runtimeDir);
     workspace.applyEnvironment(home, config, runtimeDir);
-    const providerConfig = { ...callerEnv, ...Object.fromEntries(Object.entries(config).filter(([, value]) => value !== '' && value !== null && value !== undefined)) };
+    const providerConfig = providerSettings(config);
     if (config.LOCAL_EMBEDDING_ENABLED === true || config.LOCAL_EMBEDDING_ENABLED === 'true') {
       const { startLocalEmbedding } = require('./local-embedding.cjs');
       localEmbedding = await hostStage('localEmbedding.start', () => startLocalEmbedding(config));
@@ -229,23 +246,43 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
       MEMORY_DOCUMENT_API_URL: providerRouter.url,
       MEMORY_CHAT_API_URL: providerRouter.url, MEMORY_CHAT_API_KEY: providerRouter.key });
     // Route all built-in summarizers through the selected chat provider.
-    process.env.AIMemoUrl = config.AIMemoUrl || callerEnv.AIMemoUrl || providerRouter.url + '/';
-    process.env.AIMemoApi = config.AIMemoApi || callerEnv.AIMemoApi || providerRouter.key;
-    process.env.AIMemoModel = config.AIMemoModel || callerEnv.AIMemoModel || config.CHAT_MODEL || 'deepseek-flash';
+    const managed = callerEnv.WORLDLINEBOX_VCP_MANAGED === '1';
+    if (managed) {
+      process.env.FOLDING_SUMMARY_MODEL = providerConfig.CHAT_MODEL || 'companion';
+      process.env.SEMANTIC_GROUPS_PATH = path.join(runtimeDir, 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.edit.json');
+    }
+    process.env.AIMemoUrl = (!managed && (config.AIMemoUrl || callerEnv.AIMemoUrl)) || providerRouter.url + '/';
+    process.env.AIMemoApi = (!managed && (config.AIMemoApi || callerEnv.AIMemoApi)) || providerRouter.key;
+    process.env.AIMemoModel = managed ? (providerConfig.CHAT_MODEL || '') :
+      (config.AIMemoModel || callerEnv.AIMemoModel || providerConfig.CHAT_MODEL || 'deepseek-flash');
     const { MemoryRuntime } = require('./runtime.cjs');
     runtime = new MemoryRuntime({ runtimeDir, home, config: { ...config, API_URL: process.env.API_URL, API_Key: process.env.API_Key } });
+    if (managed) runtime.diaryAuthors = () => bot().db.prepare("SELECT DISTINCT author_name FROM mutations WHERE state='indexed' AND author_name IS NOT NULL").all().map(row => row.author_name);
     runtime.startTrace?.({ enabled: activeDiagnostics });
     const vectorOperation = !['tool', 'preprocess', 'status', 'response', 'probe-chat', 'embed'].includes(operation) || payload.vectors === true;
     await hostStage('memoryRuntime.start', () => runtime.start({ vectors: vectorOperation }));
+  }
+  if (['bot.remember', 'bot.organize', 'bot.maintenance.insight'].includes(operation)) {
+    const { hostAuthor, ...mutation } = payload;
+    bot().authorName = (typeof hostAuthor === 'string' && hostAuthor.replace(/[\u0000-\u001f\u007f\u0085\u2028\u2029]/gu, ' ').trim()) || 'Companion';
+    payload = mutation;
   }
   switch (operation) {
     case 'tool': {
       return runtime.callTool(payload.name, payload.args || {}, payload.context || {});
     }
     case 'search': return runtime.search(payload.query, payload.options || {});
+    case 'retrieve': {
+      const retrieval = await runtime.retrieve(payload);
+      return payload.managedSources ? bot().verifyRetrievedSources(runtime, retrieval) : retrieval;
+    }
+    case 'semantic-context': return runtime.inspectContext(payload);
+    case 'knowledge.put': return runtime.putKnowledgeDocument(payload);
+    case 'cold.pelorusSearch': case 'cold.tqlRead': return runtime.readColdLibrary(operation, payload);
     case 'bot.remember': return bot().remember(runtime, payload);
     case 'bot.update': return bot().update(runtime, payload);
     case 'bot.organize': return bot().organize(runtime, payload);
+    case 'bot.diaries.associate': return require('./diary-associations.cjs').associateDiaries(bot().maintenance, runtime, payload);
     case 'bot.dream.recall': return bot().maintenance.dreamRecall(runtime, payload);
     case 'bot.maintenance.insight': return bot().maintenance.insight(runtime, payload);
     case 'bot.maintenance.archive': return bot().maintenance.archive(runtime, payload);
@@ -268,7 +305,10 @@ async function executeCore({ operation, payload = {}, home: requestedHome }) {
       if (result.withdrawalPending) bot().completeWithdrawal();
       return result;
     }
-    case 'preprocess': return runtime.preprocess(payload.messages, payload.options || {});
+    case 'preprocess': {
+      const result = await runtime.preprocess(payload.messages, payload.options || {});
+      return payload.includeTurnReadiness === true ? { ...result, memoryPending: bot().turnPending() } : result;
+    }
     case 'response': return runtime.recordResponse(payload);
     case 'sync': await runtime.sync(); return runtime.status();
     case 'status': return { ...await runtime.status(), routes: providerRouter.capabilities,

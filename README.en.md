@@ -43,7 +43,7 @@ The current companion model connection requires OpenAI Chat Completions. The bra
 
 ### Memory and bounded active context
 
-The new `resources/vcp-memory` module provides diaries, semantic recall, history lookup and preprocessing/response recording. It uses the application's bundled EmbeddingGemma 2 and 768-dimensional embeddings, without a separate external embedding-model setting. A resident Node Worker and durable background jobs replace per-operation process startup and the old cognition/publication chain. Automatic memory encoding can make additional model calls.
+Companion chat uses the bundled RiverMemo V5 engine to recall relevant diaries automatically before each reply. Topic history is searchable, and idle dreams follow associations into earlier diaries. The Memory workspace shows the resulting narrative, sources and proposed changes. Indexing and retrieval use the bundled 768-dimensional EmbeddingGemma 2 model and require no VCP installation or memory API key. The companion writes diaries during conversation. Summaries and dreams also use the existing chat model. [Source comparison and test results (Chinese)](docs/developer/vcp-native-parity-2026-11-27.md)
 
 The Memory panel supports search, explicit notes, recent scoped records and forgetting by ID. Forgetting withdraws related sources from use, fences old captures and isolates prior native context; it does not physically erase DSH cold logs. Recall remains selective and can miss or misinterpret information.
 
@@ -59,7 +59,7 @@ The launcher integrates Cabin World. The former independent dream and growth das
 
 ### Data and validation
 
-New companion data lives under the application's `companion-bot-v2` profile directory: `bot.sqlite` holds messages, events, tasks and physical state; `memory` holds scoped VCP data. DSH owns native Sessions and cold logs. Asset libraries remain separate. The new entry point does not migrate or dual-write the old companion database.
+New companion data lives under the application's `companion-bot-v2` profile directory: `bot.sqlite` holds messages, events, tasks and physical state; `vcp-memory-v5` holds scoped VCP diaries, indexes, and history. DSH owns native Sessions and cold logs. Asset libraries remain separate. The new entry point does not migrate or dual-write the old companion database.
 
 Use `npm run test:bot:quick` for targeted tests, `npm run test:bot:e2e` for isolated Electron UI checks, and `npm run test:bot:protocol` for a controlled model fixture through real DSH/VCP boundaries. `npm run test:bot:real` explicitly uses a configured online model; a script existing does not mean its acceptance has passed. The 3D screenshot check used software WebGL and is not a hardware performance result. See the [user guide](docs/user-guide/companions.en.md), [runtime guide](docs/developer/superagent-bot-runtime-guide.md) and [historical research](docs/developer/superagent-bot-research-2026-11-02.md).
 
@@ -102,6 +102,6 @@ References: [PCL](https://github.com/Meloong-Git/PCL), [DeepSeek Harness](https:
 
 MIT; see [LICENSE](LICENSE). Thanks to [Serpent](https://github.com/dolag233/Serpent) author dolag233 and its contributors for the asset-management foundation and continued improvements. Their copyright notice is retained; WorldlineBox integrates the 0.3.2 changes by feature and keeps its own name and custom functionality. Third-party components and media follow their own licenses; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The maintainer supplied the new icon artwork.
 
-The memory-system design draws on [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context ideas. The current standalone module in `resources/vcp-memory` retains upstream provenance and licenses; the former vendor runtime and companion memory host are retired.
+The memory-system design draws on [VCPToolBox](https://github.com/lioensky/VCPToolBox) diary, vector-index, RiverMemo and long-term-context ideas. The embedded RiverMemo V5 runtime in `resources/vcp-memory` retains upstream provenance and licenses; the former vendor runtime and companion memory host are retired.
 
 Thanks also to [VCPChat](https://github.com/lioensky/VCPChat) for conversation and context components, [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) for the native execution environment, and [Cabin World by VADS](https://github.com/BabyBus2022/cabin-world) for the virtual living space. Windows includes authorized Live2D models for DeepSeek-chan (大肥鱼) and Yachiyo Tsukimi (月见八千代). Android includes DeepSeek-chan. [Call assets and credits](THIRD_PARTY_NOTICES.md#伙伴通话素材)

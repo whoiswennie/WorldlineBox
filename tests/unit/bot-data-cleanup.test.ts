@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { BotStore } from '../../src/main/companion-bot/store';
+import { BotMemoryService } from '../../src/main/companion-bot/memory-service';
 import { BotTopics } from '../../src/main/companion-bot/topics';
 import { BotDataCleanupService } from '../../src/main/companion-bot/data-cleanup';
 import { BotMaintenanceStore, maintenanceOwner } from '../../src/main/companion-bot/memory-maintenance-store';
@@ -28,10 +31,10 @@ async function fixture() {
   for (const room of [a,b,group]) store.enqueue({conversationId:room.id,senderId:'user',content:'OLD_HISTORY_' + room.id,sourceMessageId:room.id});
   const maintenance=new BotMaintenanceStore(store);
   for (const room of [a,b,group]) for (const companionId of room.memberIds.filter(id=>id!=='user')) {
-    const scope={companionId,conversationId:room.id,securityDomainId:room.securityDomainId}, home=path.join(root,'memory',digest([companionId,room.securityDomainId]));
+    const scope={companionId,conversationId:room.id,securityDomainId:room.securityDomainId}, home=path.join(root,'vcp-memory-v5',digest([companionId,room.securityDomainId]));
     await mkdir(home,{recursive:true}); await writeFile(path.join(home,'worldlinebox-scope.json'),JSON.stringify(scope)); await writeFile(path.join(home,'diary.txt'),'OLD_DIARY');
     store.enqueueMemoryJob({key:'old-'+room.id+companionId,kind:'projection',payload:{scope}});
-    maintenance.updateSettings(scope,{minNotes:24});maintenance.activity(scope,'old-'+room.id);
+    maintenance.updateSettings(scope,{enabled:false});maintenance.activity(scope,'old-'+room.id);
   }
   await mkdir(path.join(root,'workspaces','alice'),{recursive:true}); await writeFile(path.join(root,'workspaces','alice','KEEP-DSH.txt'),'KEEP_DSH_WORKSPACE');
   let cleaner: BotDataCleanupService;
@@ -40,12 +43,13 @@ async function fixture() {
   owned.push(async()=>{await cleaner.close();await rm(temporary,{recursive:true,force:true});});
   return {root,a,b,group,get cleaner(){return cleaner;},create};
 }
-it('clears the selected companion and shared room history and VCP stores, retaining other private history, personas and DSH files',async()=>{
+it('clears the selected companion’s private history, VCP stores and idle work, retaining shared history and other companions’ schedules',async()=>{
   const f=await fixture(), before=new BotStore(path.join(f.root,'bot.sqlite'));
   const event=before.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string};
   const topics=new BotTopics(before),topic=topics.create(f.a.id,'old-topic','旧话题');topics.bind([before.getEvent(event.id)!],topic);
   expect(before.contactPeer(before.getEvent(event.id)!,'bob','cleanup-return-route','请协作').accepted).toBe(true);
   before.taskTransaction(sql=>{
+    sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=3,dream_ready_at=1234567,idle_organize_version=4').run();
     sql.prepare("INSERT INTO bot_topic_title_sync(topic_id,conversation_id,native_lane_id,companion_id,revision,title,status) VALUES(?,?,?,?,1,'待同步旧话题','pending')").run(topic.id,f.a.id,'old-lane','alice');
     sql.prepare('INSERT INTO bot_reply_parts(message_id,event_id,conversation_id,id,sequence,payload_json) VALUES(?,?,?,?,1,?)').run(before.getEvent(event.id)!.replyMessageId,event.id,f.a.id,'old-native-part',JSON.stringify({id:'old-native-part',kind:'text',sequence:1,text:'OLD_REPLY_PART'}));
   });
@@ -54,13 +58,16 @@ it('clears the selected companion and shared room history and VCP stores, retain
   before.setMetadata('browser-context:' + event.id, 'OLD_BROWSER_CONTEXT');
   before.setMetadata('browser-context-ingress:' + f.a.id + ':old-request', 'OLD_BROWSER_INGRESS');
   before.setMetadata('native-interrupted:' + event.id, '1');
+  before.setMetadata('vcp-dream-foreground:alice','111');
+  before.setMetadata('vcp-dream-foreground:bob','222');
   before.setMetadata('native-continue-command:opaque-request',event.id);before.setMetadata('native-continue-command:other-request','unrelated-event');before.close();
   const request=await f.cleaner.begin('alice','single');
   expect((await f.cleaner.begin('alice','single')).id).toBe(request.id);
   await until(async()=> (await f.cleaner.status('alice'))?.status==='completed');
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
   try {
-    expect(store.messagesPage(f.a.id).items).toEqual([]); expect(store.messagesPage(f.group.id).items).toEqual([]);
+    expect(store.messagesPage(f.a.id).items).toEqual([]);
+    expect(store.messagesPage(f.group.id).items.some(message => message.content === 'OLD_HISTORY_' + f.group.id)).toBe(true);
     expect(store.taskTransaction(sql=>sql.prepare('SELECT count(*) AS count FROM bot_peer_returns').get())).toMatchObject({count:0});
     expect(store.getMetadata('native-context:'+f.a.id+':session')).toBeUndefined();
     expect(store.getMetadata('browser-context:' + event.id)).toBeUndefined(); expect(store.getMetadata('browser-context-ingress:' + f.a.id + ':old-request')).toBeUndefined(); expect(store.getMetadata('native-interrupted:' + event.id)).toBeUndefined();
@@ -69,13 +76,54 @@ it('clears the selected companion and shared room history and VCP stores, retain
     expect(store.getCompanion('alice')?.persona).toBe('PRIVATE_PERSONA_alice');
     expect(store.getMetadata('native-continue-command:opaque-request')).toBeUndefined();expect(store.getMetadata('native-continue-command:other-request')).toBe('unrelated-event');
     const scope={companionId:'alice',conversationId:f.a.id,securityDomainId:f.a.securityDomainId};
-    expect(new BotMaintenanceStore(store).settings(scope).minNotes).toBe(24);
+    expect(new BotMaintenanceStore(store).settings(scope).enabled).toBe(false);
+    const idleState=(companionId:string)=>store.taskTransaction(sql=>sql.prepare('SELECT dream_planned,dream_ready_at,idle_organize_version FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner({companionId,conversationId:f.group.id,securityDomainId:f.group.securityDomainId})));
+    expect(idleState('alice')).toEqual({dream_planned:0,dream_ready_at:0,idle_organize_version:0});
+    expect(idleState('bob')).toEqual({dream_planned:3,dream_ready_at:1234567,idle_organize_version:4});
+    expect(store.getMetadata('vcp-dream-foreground:alice')).toBeUndefined();
+    expect(store.getMetadata('vcp-dream-foreground:bob')).toBe('222');
     expect(store.taskTransaction(sql=>sql.prepare('SELECT dirty,planned FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner(scope)))).toEqual({dirty:0,planned:0});
   } finally {store.close();}
-  await expect(readFile(path.join(f.root,'memory',digest(['alice',f.a.securityDomainId]),'diary.txt'))).rejects.toMatchObject({code:'ENOENT'});
-  expect(await readFile(path.join(f.root,'memory',digest(['bob',f.b.securityDomainId]),'diary.txt'),'utf8')).toBe('OLD_DIARY');
+  await expect(readFile(path.join(f.root,'vcp-memory-v5',digest(['alice',f.a.securityDomainId]),'diary.txt'))).rejects.toMatchObject({code:'ENOENT'});
+  expect(await readFile(path.join(f.root,'vcp-memory-v5',digest(['bob',f.b.securityDomainId]),'diary.txt'),'utf8')).toBe('OLD_DIARY');
+  expect(await readFile(path.join(f.root,'vcp-memory-v5',digest(['bob',f.group.securityDomainId]),'diary.txt'),'utf8')).toBe('OLD_DIARY');
+  await expect(readFile(path.join(f.root,'vcp-memory-v5',digest(['alice',f.group.securityDomainId]),'diary.txt'))).rejects.toMatchObject({code:'ENOENT'});
   expect(await readFile(path.join(f.root,'workspaces','alice','KEEP-DSH.txt'),'utf8')).toBe('KEEP_DSH_WORKSPACE');
 });
+const release = path.resolve('.tools/bot-memory-release/vcp-memory'), nodePath = process.env.WORLDLINEBOX_BOT_NODE || path.resolve('.tools/node-v24.15.0-win-x64/node.exe');
+it.skipIf(!existsSync(nodePath) || !existsSync(path.join(release,'lib/client.cjs')) || !existsSync('resources/embedding-models/runtime-cpu/llama-server.exe'))('clears one member of a group without erasing the other member’s published chat, indexed native diary or source controls',async()=>{
+  const f=await fixture(), fromRelease=createRequire(path.join(release,'package.json'));
+  const model=await fromRelease('./lib/local-embedding.cjs').startLocalEmbedding({bundleDirectory:path.resolve('resources/embedding-models'),backend:'cpu'});
+  const scope = (id:string)=>({companionId:id,conversationId:f.group.id,securityDomainId:f.group.securityDomainId});
+  const home = (id:string)=>path.join(f.root,'vcp-memory-v5',digest([id,f.group.securityDomainId]));
+  const options = { root: path.join(f.root, 'vcp-memory-v5'), runtime: async () => ({ nodePath, packageRoot: release }),
+    embedding: async () => ({ baseUrl: model.documentUrl, queryBaseUrl: model.queryUrl, model: model.model,
+      dimension: model.dimension, modelSignature: model.modelSignature, apiKey: model.apiKey }) };
+  let memory = new BotMemoryService(options);
+  try {
+    for (const id of ['alice','bob']) {
+      const receipt = await memory.remember(scope(id), { sourceEventId: 'native-' + id, content: id + ' 把备用钥匙放在白色信封里。',
+        tags: '钥匙,信封', waitForIndex: true, indexTimeoutMs: 30000 });
+      expect(receipt).toMatchObject({ indexed: 1 });
+    }
+    await memory.close();
+    const db=new BotStore(path.join(f.root,'bot.sqlite')), domain=digest(['bob',f.group.securityDomainId]);
+    const bobSettings=new BotMaintenanceStore(db).settings(scope('bob'));
+    db.setMetadata('withdrawal-revision:'+domain,'2'); db.close();
+    await f.cleaner.begin('alice','group-native-clear'); await until(async()=> (await f.cleaner.status('alice'))?.status==='completed');
+    expect(existsSync(home('alice'))).toBe(false);
+    memory = new BotMemoryService(options);
+    const remaining = await memory.readScoped(scope('bob'), 'memory_search', { query: '钥匙在哪里' });
+    expect(remaining).toMatchObject({ available: true, provenance: { sourceEventIds: ['native-bob'] },
+      records: expect.arrayContaining([expect.objectContaining({ sourceEventId: 'native-bob', text: expect.stringContaining('bob 把备用钥匙') })]) });
+    const after=new BotStore(path.join(f.root,'bot.sqlite'));
+    try { expect(new BotMaintenanceStore(after).settings(scope('bob'))).toEqual(bobSettings); expect(after.getMetadata('withdrawal-revision:'+domain)).toBe('2');
+      expect(after.messagesPage(f.group.id).items.some(row=>row.content==='OLD_HISTORY_'+f.group.id)).toBe(true);
+      expect(after.getMetadata('history-projection:'+digest(['alice',f.group.id,f.group.securityDomainId]))).toBe(String(after.historyProjectionHead(f.group.id)));
+    } finally { after.close(); }
+  } finally { await memory.close(); await model.close(); }
+},90000);
+
 it('resumes a saved pending erasure after restart and never resumes old memory jobs',async()=>{
   const f=await fixture(); await f.cleaner.close();
   const id=crypto.randomUUID();
@@ -83,9 +131,9 @@ it('resumes a saved pending erasure after restart and never resumes old memory j
   f.create(); await f.cleaner.ready(); expect(f.cleaner.busy).toBe(true);
   await until(async()=> (await f.cleaner.status('alice'))?.status==='completed');
   const store=new BotStore(path.join(f.root,'bot.sqlite'));
-  try {expect(store.listPendingMemory().every(job=>(job.payload.scope as {companionId:string;conversationId:string}).companionId==='bob'&&(job.payload.scope as {conversationId:string}).conversationId===f.b.id)).toBe(true);}finally{store.close();}
+  try {expect(store.listPendingMemory().every(job=>(job.payload.scope as {companionId:string;conversationId:string}).companionId==='bob')).toBe(true);}finally{store.close();}
 });
-it('removes cross-room peer return notifications when clearing their source partner without erasing the coordinator original request',async()=>{
+it('preserves the coordinator’s original request and its retained peer return notification when clearing the sender',async()=>{
   const f=await fixture(),store=new BotStore(path.join(f.root,'bot.sqlite'));
   const sourceRow=store.taskTransaction(sql=>sql.prepare('SELECT id FROM bot_inbox WHERE conversation_id=? LIMIT 1').get(f.a.id)) as {id:string},source=store.getEvent(sourceRow.id)!;
   const contact=store.contactPeer(source,'bob','clear-return','请说近况');if(!contact.accepted)throw Error(contact.reason);
@@ -93,7 +141,7 @@ it('removes cross-room peer return notifications when clearing their source part
   finish(source.id);finish(contact.events[0]!.id);
   const notification=store.taskTransaction(sql=>sql.prepare("SELECT id,reply_message_id FROM bot_inbox WHERE source_instance_id='peer-return-v1'").get()) as {id:string;reply_message_id:string};expect(notification).toBeTruthy();store.close();
   await f.cleaner.begin('bob','clear-peer-origin');await until(async()=>(await f.cleaner.status('bob'))?.status==='completed');
-  const cleaned=new BotStore(path.join(f.root,'bot.sqlite'));try{expect(cleaned.getEvent(notification.id)).toBeUndefined();expect(cleaned.getMessage(notification.reply_message_id)).toBeUndefined();expect(cleaned.getMessage(source.sourceMessageRecordId)).toBeDefined();expect(cleaned.getMessage(source.replyMessageId)).toBeDefined();expect(cleaned.taskTransaction(sql=>sql.prepare('SELECT count(*) AS n FROM bot_inbox WHERE source_record_id NOT IN (SELECT id FROM bot_messages)').get())).toEqual({n:0});}finally{cleaned.close();}
+  const cleaned=new BotStore(path.join(f.root,'bot.sqlite'));try{expect(cleaned.getEvent(notification.id)).toBeDefined();expect(cleaned.getMessage(notification.reply_message_id)).toBeDefined();expect(cleaned.getMessage(source.sourceMessageRecordId)).toBeDefined();expect(cleaned.getMessage(source.replyMessageId)).toBeDefined();expect(cleaned.taskTransaction(sql=>sql.prepare('SELECT count(*) AS n FROM bot_inbox WHERE source_record_id NOT IN (SELECT id FROM bot_messages)').get())).toEqual({n:0});}finally{cleaned.close();}
 });
 it('erases a large history on the worker while the main event loop remains responsive',async()=>{
   const f=await fixture(),store=new BotStore(path.join(f.root,'bot.sqlite'));

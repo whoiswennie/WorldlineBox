@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "createdAt": "2026-11-02T01:31:04.029Z",
+  "sourceDate": "2026-11-27T11:03:19+08:00",
   "sources": {
     "toolbox": {
-      "path": "C:\\Users\\hp\\Desktop\\project\\VCPToolBox",
-      "commit": "b8e37d4fca6cab99db90c1a66b9a79d32825766b",
-      "dirty": true
+      "repository": "https://github.com/lioensky/VCPToolBox",
+      "commit": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+      "dirty": false
     }
   },
   "selection": {
@@ -22,9 +22,13 @@
       "config.env.example",
       "LICENSE",
       "Plugin.js",
+      "routes/memorySearch.js",
+      "Plugin/DailyNote/config.env",
+      "Agent/MemoMaster.txt",
       "modules/messageProcessor.js",
       "modules/associativeDiscovery.js",
       "modules/contextManager.js",
+      "modules/pluginBridgeRegistry.js",
       "modules/finalContextStore.js",
       "modules/roleDivider.js",
       "modules/jevContextPruner.js",
@@ -83,21 +87,21 @@
       "Plugin/PlaceholderExplorer/",
       "Plugin/SemanticGroupEditor/"
     ],
-    "policy": "Tracked, explicitly selected source and static dependencies; shipped native binaries; no private env, runtime state, diaries, agents or TVStxt data. Host implementation preserved for traceability and supplied by standalone adapter at runtime.",
+    "policy": "Explicitly selected tracked source, the official MemoMaster agent instructions, static dependencies and shipped native binaries. Private configuration, runtime diaries and personal agent data are excluded.",
     "pluginCompleteness": [
       {
         "name": "RAGDiaryPlugin",
         "existsInSource": true,
         "manifest": "Plugin/RAGDiaryPlugin/plugin-manifest.json",
         "entry": "RAGDiaryPlugin.js",
-        "files": 29
+        "files": 30
       },
       {
         "name": "DailyNote",
         "existsInSource": true,
         "manifest": "Plugin/DailyNote/plugin-manifest.json",
         "entry": "dailynote.js",
-        "files": 3
+        "files": 4
       },
       {
         "name": "DailyNoteManager",
@@ -157,7 +161,7 @@
         "existsInSource": true,
         "manifest": "Plugin/LightMemo/plugin-manifest.json",
         "entry": "LightMemo.js",
-        "files": 4
+        "files": 6
       },
       {
         "name": "OneRing",
@@ -171,7 +175,7 @@
         "existsInSource": true,
         "manifest": "Plugin/VCPTimeLine/plugin-manifest.json",
         "entry": "VCPTimeLine.js",
-        "files": 2
+        "files": 3
       },
       {
         "name": "PlaceholderExplorer",
@@ -205,20 +209,26 @@
     {
       "project": "toolbox",
       "path": "AdminPanel-Vue/src/features/rag-tuning/metadata.ts",
-      "sha256": "4be6417b39ee0ab797f82520f38997aa4d050425b58f50edf0277baf3626d952",
-      "bytes": 46070
+      "sha256": "dc106da98148e96dfc2102010946e907b0b650a1576921751c020dcd65bf44ce",
+      "bytes": 47387
+    },
+    {
+      "project": "toolbox",
+      "path": "Agent/MemoMaster.txt",
+      "sha256": "f6eea48c3c71bffacc5177ca86f9c7237f9ad0c480419e572839167c364b2701",
+      "bytes": 15479
     },
     {
       "project": "toolbox",
       "path": "EmbeddingUtils.js",
-      "sha256": "2eb07fd96c20a66d29f507405c51d63ecde3fa38c6eef32b2cd281a8b9784d31",
-      "bytes": 13478
+      "sha256": "8d9d7726a0a3a560b96b7f59885cf9797851cf845404f3068ee572250b9c49ae",
+      "bytes": 18375
     },
     {
       "project": "toolbox",
       "path": "KnowledgeBaseManager.js",
-      "sha256": "946edd60ec935f95d3d1e2f537448034a331006fa33a53962479ffa30e83e0bd",
-      "bytes": 168582
+      "sha256": "b5722f284993fe85ac2cf635ebb32704f47df3d6ec0991469f224604fbe00c18",
+      "bytes": 173877
     },
     {
       "project": "toolbox",
@@ -229,8 +239,8 @@
     {
       "project": "toolbox",
       "path": "Plugin.js",
-      "sha256": "6e73e1b6aca8af50e7a8df548e6ea2aac3e723fd865b6e5c61788a3739b347b1",
-      "bytes": 137776
+      "sha256": "28b8cbc8a7b20861ff8248c479205be6e26f0e14516424f3d89af8a0ebd17496",
+      "bytes": 141823
     },
     {
       "project": "toolbox",
@@ -277,8 +287,8 @@
     {
       "project": "toolbox",
       "path": "Plugin/ContextFoldingV2/ContextFoldingV2.js",
-      "sha256": "de29bd5fc818c8857b461d858f77d9114fb3954d5100bf1b53e913eb1fbd08a9",
-      "bytes": 35644
+      "sha256": "4722b213472a33c48c9447223d5f77373be9d3eda57069125d71f7567b38c26a",
+      "bytes": 36041
     },
     {
       "project": "toolbox",
@@ -306,15 +316,21 @@
     },
     {
       "project": "toolbox",
+      "path": "Plugin/DailyNote/config.env",
+      "sha256": "de58c498158411b3100085f1c3e690f1a019f9f00c95c8fd4ae84d9a63f96c8b",
+      "bytes": 452
+    },
+    {
+      "project": "toolbox",
       "path": "Plugin/DailyNote/dailynote.js",
-      "sha256": "021e23c975daea121c2ce16a20770fd6a1a3252675e53c1936ab23fcbd231e2e",
-      "bytes": 70721
+      "sha256": "bfa728edc57fd7a09905f68c982fc6984f64a16375e41029fea4b9320e318c11",
+      "bytes": 68254
     },
     {
       "project": "toolbox",
       "path": "Plugin/DailyNote/plugin-manifest.json",
-      "sha256": "3d140728c5e43f4a8e0956046265271b226372881ff3d0c80a47415bc2fdccb9",
-      "bytes": 6214
+      "sha256": "869c9f7d1721e6787c5182c651266f10bb2a23f85fa9b52153b2ded19388b56b",
+      "bytes": 7116
     },
     {
       "project": "toolbox",
@@ -439,8 +455,14 @@
     {
       "project": "toolbox",
       "path": "Plugin/LightMemo/LightMemo.js",
-      "sha256": "a72f9561708cea7e4fd4e74db270a8de198190063aa56abd4c4dbeb78b204be1",
-      "bytes": 46700
+      "sha256": "4f4b40f777fc3feb5b907b22cd40d1fd16ab61e7075e64e1024a3ec96488147e",
+      "bytes": 48077
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/LightMemo/abDiagnostics.js",
+      "sha256": "62d62c5634cce9b6ad508df1b46c465c5f4c303c27e8359935398ac9a86d55b1",
+      "bytes": 13514
     },
     {
       "project": "toolbox",
@@ -451,20 +473,26 @@
     {
       "project": "toolbox",
       "path": "Plugin/LightMemo/nativeQuery.js",
-      "sha256": "155936b99d2d34218a1895bc70f2a77625e93c6b0adc3eb2045b76c406fa0950",
-      "bytes": 9273
+      "sha256": "345656ea9ded16d0c55d1d639fd16423a3300adacfbc40eb98e7267dfe8caa89",
+      "bytes": 12524
     },
     {
       "project": "toolbox",
       "path": "Plugin/LightMemo/plugin-manifest.json",
-      "sha256": "da627209440407d41c8037bdd6c51044de41c063371bfa0ae357a2743b70298f",
-      "bytes": 4779
+      "sha256": "6c7953576ca811241ceb3a79eeefb555b2934fa1d39c63df52544f27daa9a7f4",
+      "bytes": 5969
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/LightMemo/queryTokens.js",
+      "sha256": "296a39bff7d3420a11db6a70cc99c6f151b1df5368c60d84e51985110068deed",
+      "bytes": 2482
     },
     {
       "project": "toolbox",
       "path": "Plugin/MagiAgent/MagiAgent.js",
-      "sha256": "c9eb4b3a4e9f4bcc933446118a2777d5f6bc34ecd6ed3732cee00a31aff41437",
-      "bytes": 18540
+      "sha256": "61ba47c48380f7cc7db83a0cf1da19cc19eaa9ecf210f5a6810673e2075473f5",
+      "bytes": 18887
     },
     {
       "project": "toolbox",
@@ -481,32 +509,32 @@
     {
       "project": "toolbox",
       "path": "Plugin/MemoryThinkingTray/MemoryThinkingTray.js",
-      "sha256": "529adad0acd151e0ec0e42b5eb08bc963650c26ea63b92d5ac0d09ab7ff7d349",
-      "bytes": 5573
+      "sha256": "d075f8365776950dcb423d34978089db113e85cf9255ee57d7c4f72322e372e6",
+      "bytes": 7364
     },
     {
       "project": "toolbox",
       "path": "Plugin/MemoryThinkingTray/README.md",
-      "sha256": "b455c3bc77c76c973ad0fcaa40628fe423dfdcb536a850445eff7c7c649a6680",
-      "bytes": 3826
+      "sha256": "8770509733e067da9f75e0d2e4a19ac309abbf4eb66f55918dd3b5ee0d53968c",
+      "bytes": 4901
     },
     {
       "project": "toolbox",
       "path": "Plugin/MemoryThinkingTray/config.env.example",
-      "sha256": "fc0f6d70781dafae095f765a320ef6a34a74a796c066898cca1aa948dea6f015",
-      "bytes": 526
+      "sha256": "522dde798ebaf167ba0f7551f164a0917ff9522cd6f3731385610f4fbbe76d93",
+      "bytes": 1019
     },
     {
       "project": "toolbox",
       "path": "Plugin/MemoryThinkingTray/plugin-manifest.json",
-      "sha256": "377f12bb155e011e2a605eb1a4817a2b0cd9d4c1ae672099ac681e5fcd1599aa",
-      "bytes": 869
+      "sha256": "25166ab3d7bff3b5ea8fb3b2dc1345ae1a8fd128d7db31a1b54a8283caee8a68",
+      "bytes": 1186
     },
     {
       "project": "toolbox",
       "path": "Plugin/OneRing/OneRing.js",
-      "sha256": "7d417934b2d77a684328c1f8782023af18b81bdfc98d9aa409932f2eab9dbd61",
-      "bytes": 165015
+      "sha256": "7f34f32f61fd54a10388a9e2499c83efbb91ccb9fd3f11e933dc219647184ef3",
+      "bytes": 167674
     },
     {
       "project": "toolbox",
@@ -547,14 +575,14 @@
     {
       "project": "toolbox",
       "path": "Plugin/OneRing/OneRingRawClientTimeline.js",
-      "sha256": "d36918bf8de691dfe7bf88f0d171ab80da945cc1ecfb90203cfe328844bf57e6",
-      "bytes": 23190
+      "sha256": "e62e00b82a1a7a80e1ef96bef988ca73a80a307bc0443ad86374495ea05d9b3d",
+      "bytes": 24142
     },
     {
       "project": "toolbox",
       "path": "Plugin/OneRing/OneRingServerInferredTimeline.js",
-      "sha256": "453b3e9a955da54ebc32433778ad73757a036c22217a6c48dcbbcf8e5b461f27",
-      "bytes": 15676
+      "sha256": "7e6cc3fa6e6db96761df229fac852e2c449dcbf90df4d004857d7ed3d278a270",
+      "bytes": 16826
     },
     {
       "project": "toolbox",
@@ -565,8 +593,8 @@
     {
       "project": "toolbox",
       "path": "Plugin/OneRing/OneRingTimelineCommon.js",
-      "sha256": "7aa58f60c1c17a5a45beb44296bb9a4bb1c33fa4158fda3a6f571160cf70fc7e",
-      "bytes": 4573
+      "sha256": "f049bf02b2ae064ec3bac004448107c89be6f6dd354bb4f2ba563e3e7e861233",
+      "bytes": 6051
     },
     {
       "project": "toolbox",
@@ -679,8 +707,8 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/AIMemoHandler.js",
-      "sha256": "3fd7a4a3b4a3c48855523ce8cbbce43fbe5a4dd58331b002b3560bd28a3b1901",
-      "bytes": 41838
+      "sha256": "2616637cb4fe1d76f143b5650100bb02f6de57446fc1652549182c8d0d7a57f1",
+      "bytes": 42058
     },
     {
       "project": "toolbox",
@@ -691,8 +719,8 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/AttachmentMemoUtils.js",
-      "sha256": "dc1860c5abe1c15c3e73db98cca7742891c4d8ef85b1fe3a4cef9b801ceeae52",
-      "bytes": 2278
+      "sha256": "b5355aa44e753c8bfbf8adacb7a8e56499ff5d8aa7cd6078984c8dc13eee6001",
+      "bytes": 12150
     },
     {
       "project": "toolbox",
@@ -709,20 +737,20 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/ContextVectorManager.js",
-      "sha256": "e8f6bdfa4a39bf643f331712abdd778c741992be209790bd795b67885cb52e1c",
-      "bytes": 22436
+      "sha256": "c4a41062c38f2a460e1e7c3929f2abbfe254f086ed68aa4bb53bfc9eb8b31de2",
+      "bytes": 26725
     },
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/DirectDiaryTextProcessor.js",
-      "sha256": "a44f0530fddd2bd838d734d7f165d323ea49ef70d796ae73a5190d4498383f7b",
-      "bytes": 49515
+      "sha256": "0d35ac7159b231380a8bb85474ebd62731272dec56226a6d4cb73bd5d9975d7d",
+      "bytes": 49670
     },
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/FoldingStore.js",
-      "sha256": "60734cdddfa6c2cfcee10461927e9fdabac8b4421fd88dca4c399e42f5b03c29",
-      "bytes": 12202
+      "sha256": "0361bd99ea879e48e2cb3e4b651f7c022634a35c3a7ca43485168cd25c813a5c",
+      "bytes": 13355
     },
     {
       "project": "toolbox",
@@ -739,8 +767,8 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/MetaThinkingManager.js",
-      "sha256": "ab2ed554a31a6c93ce7b5ef2409617306e1732ed5e0bc0ba07e8579bb31a9897",
-      "bytes": 30619
+      "sha256": "b3c6d0ce840338755642c5d964702eac265af080a5552877a3fba3a875fd2d95",
+      "bytes": 295385
     },
     {
       "project": "toolbox",
@@ -757,14 +785,14 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
-      "sha256": "b1f750fa6341bbbc7955f379b20b56b8aa5d2e5275b69d4681690c9eeec5f325",
-      "bytes": 298497
+      "sha256": "75d8468d6b51d0f19a66baf1d7402ecd8c0b4ffe4bded9116727de762d6d7db1",
+      "bytes": 325248
     },
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/RAGResultFormatter.js",
-      "sha256": "34027ece6f6b59b26f5507ec19547259f0dcf9b2f06bd1e7791cd4122cd0e573",
-      "bytes": 8484
+      "sha256": "4ea9c6fde9d5ee7b2ec8643f8b38c17885840736bbbdbedead5286d8b3d8548f",
+      "bytes": 9086
     },
     {
       "project": "toolbox",
@@ -775,14 +803,14 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/SemanticGroupManager.js",
-      "sha256": "f7d312a057f9886c32a48f68f3c39179b60b255e1990bc37b19fc60aacffb552",
-      "bytes": 20098
+      "sha256": "a482a993231e31864db7ae02773d9a4090049404a932223503a56e938e6a55f1",
+      "bytes": 21655
     },
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/TDBPlaceholderProcessor.js",
-      "sha256": "ea8a6d769e69302c6e211a90e642e5fabe7e4031a1a26f022ba2d9a7f2f1fd45",
-      "bytes": 24525
+      "sha256": "23dca04b2fd67084eae456f7e16cd833c54330ab7ac8eda2656a8b43c927d94f",
+      "bytes": 24634
     },
     {
       "project": "toolbox",
@@ -798,6 +826,12 @@
     },
     {
       "project": "toolbox",
+      "path": "Plugin/RAGDiaryPlugin/TimelinePlaceholderProcessor.js",
+      "sha256": "500a4448b6640015aa7547330f24d7ba00f355a5e2afa3fa8b72635fce9437d9",
+      "bytes": 6513
+    },
+    {
+      "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/VectorMathUtils.js",
       "sha256": "28ec8fd0e409671400ca9d88cb2c85efc7199b742e8a2e56522508763a3ff228",
       "bytes": 5173
@@ -805,8 +839,8 @@
     {
       "project": "toolbox",
       "path": "Plugin/RAGDiaryPlugin/config.env.example",
-      "sha256": "dd0411721821778ed816da7c8217fd7d7e3571248491a721611320c3f39b2c64",
-      "bytes": 5215
+      "sha256": "1ae489bc54b04465ede5b0500da25b8c832ad31797c0f674386653fd47473756",
+      "bytes": 5655
     },
     {
       "project": "toolbox",
@@ -864,15 +898,33 @@
     },
     {
       "project": "toolbox",
+      "path": "Plugin/VCPTimeLine/README.md",
+      "sha256": "dbd0cbef9b8437642c3b4917234987a6418b83d6809843b31dd761e2762523d3",
+      "bytes": 4442
+    },
+    {
+      "project": "toolbox",
       "path": "Plugin/VCPTimeLine/VCPTimeLine.js",
-      "sha256": "189e62657002bac19c42742e4f8288ef065defda7cb5308afdc256a416276129",
-      "bytes": 41442
+      "sha256": "7ca7e75c3f85fc83a5e39ab8d3460b73e2037ee1fbe7977ef80941b7b7f0e9b3",
+      "bytes": 51452
     },
     {
       "project": "toolbox",
       "path": "Plugin/VCPTimeLine/plugin-manifest.json",
-      "sha256": "4017ea5229f8fed5da97ce8b0352363f75cad904729d565f3d74b7082136d44b",
-      "bytes": 635
+      "sha256": "0d3cfd1fbb4896784481260cdea1846191c95eb8efd424ab4fe998913f7d5da7",
+      "bytes": 784
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/WarpedFieldAtlas/lib/geometry.js",
+      "sha256": "0247f3ae19bc57d6f242746b4ced5fcc7c94ccdb3c388f7678a817b6c8e3558b",
+      "bytes": 9125
+    },
+    {
+      "project": "toolbox",
+      "path": "Plugin/WarpedFieldAtlas/lib/snapshot.js",
+      "sha256": "c7cdae8f809630d5847052be3bb9420e358de17f531482d378f8d31c50fc6271",
+      "bytes": 9314
     },
     {
       "project": "toolbox",
@@ -889,14 +941,14 @@
     {
       "project": "toolbox",
       "path": "RiverMemoEngine.js",
-      "sha256": "bb9c6793f7f9eca541c34e979f59479023a523b2a8df9e71bfdcf5899ff4d023",
-      "bytes": 26992
+      "sha256": "795e2b783626913558835ab523e23a7f3720cf61dce30083dbfa08eb31f53a71",
+      "bytes": 27399
     },
     {
       "project": "toolbox",
       "path": "TDBKnowledge.js",
-      "sha256": "8016fa552b7291c4b410832285804480c9886fedc378a57156b3c0f9c76463d5",
-      "bytes": 66004
+      "sha256": "43fae11c302eb0101ad33a432c5007494e4ba5ba151da14e42b5bfb0e506cd45",
+      "bytes": 68118
     },
     {
       "project": "toolbox",
@@ -907,8 +959,8 @@
     {
       "project": "toolbox",
       "path": "TagMemoEngine.js",
-      "sha256": "55419c5f5914fece3a35e13c2e054c9637163f5c59e2a3dc73efcde2bf6daa57",
-      "bytes": 23589
+      "sha256": "60a681d60c308d7f4cffa516e4e9bbcb3df91470040b61d2e4d50d56519ecaf3",
+      "bytes": 26761
     },
     {
       "project": "toolbox",
@@ -931,14 +983,14 @@
     {
       "project": "toolbox",
       "path": "ToolConfigs/jev_tool_call_exp.json",
-      "sha256": "2e1705688521e4db16c7817c3e53040ad003bd19f3c584252461959fa933f019",
-      "bytes": 7665
+      "sha256": "3f9c2808626184b3b48c280b15028cdaf75e64947685d1271d0ffa7d431409b4",
+      "bytes": 8034
     },
     {
       "project": "toolbox",
       "path": "config.env.example",
-      "sha256": "f864ed3d4aed091a521e8b70f23431c06357ce12f0df6fdd30713e75400339a8",
-      "bytes": 49014
+      "sha256": "9d8aa18cfd82f5b54f4d205927f8db54af7a8abde463be2befe0181cf9f3fbe4",
+      "bytes": 55338
     },
     {
       "project": "toolbox",
@@ -955,8 +1007,8 @@
     {
       "project": "toolbox",
       "path": "docs/DOCUMENTATION_INDEX.md",
-      "sha256": "bded58f3fe90eff7c43f92c8e4bcab4bfccf0aed1b4bd484e3ee1c649a5e0b2c",
-      "bytes": 10594
+      "sha256": "22244f7e495a37591b85a24cc7a7d6125dacc0453640dcc2b8f11fb84590f16c",
+      "bytes": 10759
     },
     {
       "project": "toolbox",
@@ -967,8 +1019,8 @@
     {
       "project": "toolbox",
       "path": "docs/RIVERMEMO_TOPOLOGY_V3.md",
-      "sha256": "7e20228d2d76b97a722e309a576efe21c453e9952726e76691ec558f2a95c37c",
-      "bytes": 62821
+      "sha256": "36632aceead27d637a2c9b1415ad47e7c859c3992897f998510fd19382f51904",
+      "bytes": 47617
     },
     {
       "project": "toolbox",
@@ -1069,8 +1121,8 @@
     {
       "project": "toolbox",
       "path": "docs/vcp-whitepaper.md",
-      "sha256": "a0998a16ec06eefdc0b2ce459ba552665b0474cc9e059ce8b64796e6724823cc",
-      "bytes": 216669
+      "sha256": "5122ede6010be4f6c8f6259061455f1028fa67268f6a68d151d8200aff787d77",
+      "bytes": 200961
     },
     {
       "project": "toolbox",
@@ -1086,33 +1138,57 @@
     },
     {
       "project": "toolbox",
+      "path": "modules/asyncResultStore.js",
+      "sha256": "92744735d7f4058a289010ddbd8f00516b5a86b3800050b1412f61648748f84a",
+      "bytes": 3410
+    },
+    {
+      "project": "toolbox",
       "path": "modules/captchaDecoder.js",
-      "sha256": "a05a57a53de945f62aef0202af4337964d72d4c1554c4f2b7cf2eaf22ed1c769",
-      "bytes": 2090
+      "sha256": "f205f4f32d2186640290a453d88a56bb5dbd7d9b89b69fc4b0285a41fe8c6a01",
+      "bytes": 3247
     },
     {
       "project": "toolbox",
       "path": "modules/chatCompletionHandler.js",
-      "sha256": "cc6bc942996e37618216fe26fbad894b9303c58edb427874ea14f840add253f1",
-      "bytes": 62484
+      "sha256": "87edadb944cd81b9cf2a7e1e0d7e9265dce3ccd2d6e9a23c367aa217aafcb3d8",
+      "bytes": 73977
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/contextBudget.js",
+      "sha256": "a10d48011bba468e7c2a3431dfc92011ef7ebf09adc7177ea8ef7c5d2e3cbcc1",
+      "bytes": 27666
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/contextEmbeddingInput.js",
+      "sha256": "b1a8cc1a4dcbf9e5b21d43212ef7099df96c9199d3069ceb506c2fa4b87ad1c1",
+      "bytes": 4394
     },
     {
       "project": "toolbox",
       "path": "modules/contextManager.js",
-      "sha256": "d255550cadf4a80677ce982460b4c35273cc24e056c44f9aaf20f9aeb56f0108",
-      "bytes": 8173
+      "sha256": "9b0a9e002feb40af18fa65435f710388d3b170a7b321066820bb5afb68d88373",
+      "bytes": 14066
     },
     {
       "project": "toolbox",
       "path": "modules/dynamicToolRegistry.js",
-      "sha256": "bddbbbad16f3bc45b880cec65103b5a16d24939d2cea2dc1b0c40198311dbb2f",
-      "bytes": 73887
+      "sha256": "4c18d420ff5fada36ccfb769cc728f4c490c7ffc586b21bae7a33d90e9dff129",
+      "bytes": 82833
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/dynamicToolSemantics.js",
+      "sha256": "92297bc6c2290858e990f9af0a5f5beb278b89dea9c5272b90a516ab1e60c072",
+      "bytes": 17650
     },
     {
       "project": "toolbox",
       "path": "modules/finalContextStore.js",
-      "sha256": "f96da1931fab34921d01a05e3f274f76b4be45730c83afb208be2d01e82b0597",
-      "bytes": 11559
+      "sha256": "3c9c6b9125b9e5652302334b7ac0af89ac241aae392ee99a153775cc1ecbc8d0",
+      "bytes": 13158
     },
     {
       "project": "toolbox",
@@ -1129,20 +1205,20 @@
     {
       "project": "toolbox",
       "path": "modules/handlers/nonStreamHandler.js",
-      "sha256": "b24b2075986481d48dacbd42d45ad2a5ecb4ac54b15708b90ba17b4293ad79c6",
-      "bytes": 25513
+      "sha256": "485cedc868d2b4ab12fdda4f55a2d1f6f0a2f63ca39ddd4ed2d5a3b60e442406",
+      "bytes": 32265
     },
     {
       "project": "toolbox",
       "path": "modules/handlers/streamHandler.js",
-      "sha256": "e91f3fc5828b7d8d55a11c3b504770812f71fc479d838cbb7734eacc1bc15137",
-      "bytes": 34329
+      "sha256": "c7248828b37ad03cc5392ebb9ea258b4916fe784e838497779eab0d71d654869",
+      "bytes": 59009
     },
     {
       "project": "toolbox",
       "path": "modules/jevClient.js",
-      "sha256": "f88f19d8027280acd195ebaedb635ae713b6c078a0d0e208da8a705c9040e192",
-      "bytes": 19204
+      "sha256": "99fb2d0aa20abb0dd43234daf463114fe7a3cf829cb14a6befee578027774018",
+      "bytes": 20776
     },
     {
       "project": "toolbox",
@@ -1153,8 +1229,8 @@
     {
       "project": "toolbox",
       "path": "modules/jevFoldFilter.js",
-      "sha256": "95c139f65e7b190f8e4e95e11de6a7b0acdf44c1da063d919e9bad38f1823431",
-      "bytes": 16317
+      "sha256": "b4a2808e29f9f4288ecafcfd39115748572e72a4388a57552a0c0419ab3e1795",
+      "bytes": 18231
     },
     {
       "project": "toolbox",
@@ -1165,8 +1241,8 @@
     {
       "project": "toolbox",
       "path": "modules/jevScorer.js",
-      "sha256": "4b5f1efa7bf14d84ee130df422dbdfcfb57449470812632d4b83ba3411973e1d",
-      "bytes": 5879
+      "sha256": "58038aa2eef9b93a2b838ba1fdec6370bbfd8a73d8f6210a1d8b9fdba9b002c5",
+      "bytes": 7434
     },
     {
       "project": "toolbox",
@@ -1177,8 +1253,8 @@
     {
       "project": "toolbox",
       "path": "modules/jevToolCallExp.js",
-      "sha256": "cfb7013ad189883010817fe62349f330727acb78b29ea422f50f65f5c316006e",
-      "bytes": 55997
+      "sha256": "f13af4b3a5dee4a0714ea30962e10cc6719995b5be2b6f209e132ad341de59d7",
+      "bytes": 66852
     },
     {
       "project": "toolbox",
@@ -1201,14 +1277,20 @@
     {
       "project": "toolbox",
       "path": "modules/knowledgeBase/indexRepository.js",
-      "sha256": "50dcc09089eb42d5d0bb26cefa56019718bf53e2cbef0d752b193b508692e949",
-      "bytes": 23351
+      "sha256": "a5793c8b8784b24f1b022afb7d5162e94d47f0883080541246acdbabe3ad8f6d",
+      "bytes": 23477
     },
     {
       "project": "toolbox",
       "path": "modules/knowledgeBase/ingestionPipeline.js",
       "sha256": "9a2f6da6e858b6682b4399eacdf20b1d6c0d97d6be4d7cf694f31370a7ce2a89",
       "bytes": 37910
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/knowledgeBase/lightMemoAdmission.js",
+      "sha256": "4505e0ab22297fc9fa2c6fa1799708cc14720940165996350be2cf2f8a177550",
+      "bytes": 2185
     },
     {
       "project": "toolbox",
@@ -1225,8 +1307,8 @@
     {
       "project": "toolbox",
       "path": "modules/knowledgeBase/searchService.js",
-      "sha256": "d0a613fff293d85f69b544711af8d78d9e43c06aabd7ce2744e9d1d9a4a5ad35",
-      "bytes": 9525
+      "sha256": "6ae5ba3d12699cbb81933e9b951a256cae52352482c6d1d4c07ab6a1e7055e65",
+      "bytes": 6890
     },
     {
       "project": "toolbox",
@@ -1248,9 +1330,15 @@
     },
     {
       "project": "toolbox",
+      "path": "modules/markdownDataImageGuard.js",
+      "sha256": "834cfeab17ef09cbbf88fb8611b5f33b81eee306741f3a34dd144e06c0b0dd01",
+      "bytes": 3798
+    },
+    {
+      "project": "toolbox",
       "path": "modules/messageProcessor.js",
-      "sha256": "4093b312e343bd4de51f3363c22639acd48fbee50eeb82fc1936665ec2bd107e",
-      "bytes": 57021
+      "sha256": "d600475555b002d412473c0e3d819c7731c529e2a62f28019aa1f8ff373a1b12",
+      "bytes": 61060
     },
     {
       "project": "toolbox",
@@ -1260,21 +1348,57 @@
     },
     {
       "project": "toolbox",
+      "path": "modules/nativeToolDebug.js",
+      "sha256": "4521b8414cd6dc3e5f150f62bc5055eccb5d6755e2fd54e7d78128029cb2a211",
+      "bytes": 1085
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/nativeToolLoop.js",
+      "sha256": "4e3c4ba19f1b0136ec56f83f62e4b6dd136b3b599dc1c56e673295434df0e733",
+      "bytes": 4912
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/nativeToolResultMedia.js",
+      "sha256": "5d8e9d10cede00c28a62fa20e1c55a1b4a71e947472a17a1a04e3bb11f42b153",
+      "bytes": 3202
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/pluginBridgeRegistry.js",
+      "sha256": "1069aba3b4e92778b8cf2bea0e2b2f97173a1023f791ced3710ec95928ac0e72",
+      "bytes": 15621
+    },
+    {
+      "project": "toolbox",
       "path": "modules/reasoningContentAdapter.js",
-      "sha256": "270a9237b27c410a6dfa5697897a135a8e9550f44dd39bfc6d844088f55a6be1",
-      "bytes": 4235
+      "sha256": "1573b587951563f09891ed19506a774f18bece618bba960c13302403f0abda7f",
+      "bytes": 4383
     },
     {
       "project": "toolbox",
       "path": "modules/roleDivider.js",
-      "sha256": "e36f2fb222fd01ec64f1e77f4b42853ed08968fb678411c9f69b0fa38f88c777",
-      "bytes": 21055
+      "sha256": "28e91527889e959df536d06d8ed978d28e0d7f1f5fd9719b0c187dc66a135bb0",
+      "bytes": 34348
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/safeFilePath.js",
+      "sha256": "f23dd603b2da4df749b413e98495fd93b26a3a225e53ef46a16daaebe6fd87a2",
+      "bytes": 3592
     },
     {
       "project": "toolbox",
       "path": "modules/sarPromptManager.js",
       "sha256": "6abc9a29b65af8fb2da5d22109bb792ed045b5f6a39fcfb5639979d1c874731c",
       "bytes": 5637
+    },
+    {
+      "project": "toolbox",
+      "path": "modules/streamUsageOption.js",
+      "sha256": "d6be2dd84cd4805ebef9709b69f75662bf141f18fffeed31e55b801ea72b9082",
+      "bytes": 3224
     },
     {
       "project": "toolbox",
@@ -1302,6 +1426,12 @@
     },
     {
       "project": "toolbox",
+      "path": "modules/toolResultBatch.js",
+      "sha256": "16031e5fded27c3288f83d21182487b04043d6cdec7ac2a085beb4022348e948",
+      "bytes": 8463
+    },
+    {
+      "project": "toolbox",
       "path": "modules/toolboxManager.js",
       "sha256": "3a41e0ecce85a51952737432c20e3055f4c4fcfacc4493d5b753238f2a1d036a",
       "bytes": 6602
@@ -1314,33 +1444,39 @@
     },
     {
       "project": "toolbox",
+      "path": "modules/vcpLoop/handoffGate.js",
+      "sha256": "fe2ed0d7d6c2a62aa372fc79cb43f7e5ebf7c31a4bee2f2ab4874623d0c9a76f",
+      "bytes": 3224
+    },
+    {
+      "project": "toolbox",
       "path": "modules/vcpLoop/toolCallParser.js",
-      "sha256": "874fc9d0a562e98aaeb55dd4b206ca66f39f99e590e4332390e08f5419efdaad",
-      "bytes": 11625
+      "sha256": "29802990b073557812376830ed7dd823d6ea9d8874362889c8a81027a2b61209",
+      "bytes": 26287
     },
     {
       "project": "toolbox",
       "path": "modules/vcpLoop/toolExecutor.js",
-      "sha256": "cee7cc384a232c45dd093a6cd7a38c40b360e3d79bbbc5ed9e2037e9e8333df5",
-      "bytes": 30836
+      "sha256": "d2e2a22f2f8bed5c0906ef23ac7dca80fc523199c2f98af61fa79fcf4416a5fd",
+      "bytes": 31596
     },
     {
       "project": "toolbox",
       "path": "modules/vcpLoop/toolMarkerFuzzyMatcher.js",
-      "sha256": "4c8f30684294ef772ae3c035a37a3baf4cb176e75cff40a781c9a65c9af0ce16",
-      "bytes": 3919
+      "sha256": "2f0369e7d269243f508129487a529228d3bacf707bc26ebf1e58afeaf3804c33",
+      "bytes": 3921
     },
     {
       "project": "toolbox",
       "path": "preprocessor_order.json",
-      "sha256": "b208e5933218e72ad9365f9d2d7a154c4f4b0d01f300debbb6588c5185fc8ba1",
-      "bytes": 222
+      "sha256": "961ba7ea7a70f6918b9a7640ff0c6f0687e9d4347d4b8e0ae06611393949a056",
+      "bytes": 241
     },
     {
       "project": "toolbox",
       "path": "rag_params.json",
-      "sha256": "08a10fbf013c1feaf478a1748aead5d3e046c708d6d5acd55f0f94e49e7067a0",
-      "bytes": 5985
+      "sha256": "57d43c53b75b002418bc72799fb1028da70f57cecbe785fd9037016bd3ea76f1",
+      "bytes": 6166
     },
     {
       "project": "toolbox",
@@ -1351,32 +1487,38 @@
     {
       "project": "toolbox",
       "path": "routes/admin/rag.js",
-      "sha256": "784db47cdacc5c68a1bafb27d2ab3953995444984673660af980546186f9a29d",
-      "bytes": 15926
+      "sha256": "8a2bc6bab03496e84a7f42bb4a1b50647a797d93873e0479fc86a79e4b3293ff",
+      "bytes": 16410
     },
     {
       "project": "toolbox",
       "path": "routes/dailyNotesRoutes.js",
-      "sha256": "16440613bc30920cf341a20e48ad55a355daa67889e113f81da367e937e1ea51",
-      "bytes": 48886
+      "sha256": "a266f51e413a0927ddc9e031d965d78de0c71a2c3dbe07185d47c3ebb066d5d2",
+      "bytes": 50239
+    },
+    {
+      "project": "toolbox",
+      "path": "routes/memorySearch.js",
+      "sha256": "29367bc00b6587282b8b2c72255445e1361144531233d7c28d2d3b6f531476ed",
+      "bytes": 2513
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/Cargo.lock",
-      "sha256": "a15ed6b57e0cf87ee38f5794d113652bf5df816ff47cb928a793c7031fd41265",
-      "bytes": 61058
+      "sha256": "6345370356a0fc30de6dbb40b4a4d8bbebd9eca94e503780f4ac7c1d163c6e82",
+      "bytes": 61260
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/Cargo.toml",
-      "sha256": "bf00152df1801297b8f53f104115fee17d388a29de94b9079ea85bbb9fd3b356",
-      "bytes": 1642
+      "sha256": "4b7e1b341e29ba5ddd9714bd05c1238bec439ee01613d7fed171346927e16214",
+      "bytes": 1655
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/README.md",
-      "sha256": "6be42d8ee5d518776344b4ae326275aee6ef6bf6b4e2bd24359796edf44c3053",
-      "bytes": 52231
+      "sha256": "9693b6ee0c8fd01126c9274bcdaf73aa0ff8a031db84d363b90d66634e5ee1a3",
+      "bytes": 58754
     },
     {
       "project": "toolbox",
@@ -1429,32 +1571,38 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine.rs",
-      "sha256": "b6ca7331eddff082131c39abde7a95bec4c9a09fa2be543c5826b17d79579853",
-      "bytes": 17935
+      "sha256": "f75de852c66dee514abd68c8ae049e60c38953b62c4145240450c39de17103ba",
+      "bytes": 18704
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/engine_tests.rs",
-      "sha256": "573a294158b76ccfdd5da98f64c7971abf63640a4aa3fa23a906712d69519b13",
-      "bytes": 12220
+      "sha256": "408b4ed73f5c51bd558fb389ec9d2b797ba1e5dcd015609f2dec30b0cbea21c6",
+      "bytes": 16719
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/bq.rs",
-      "sha256": "cc1ea1b8981350e6fc2828533fa78d362314d3712536382724a4df83a7799216",
-      "bytes": 52676
+      "sha256": "03bd8edbd4935200124c58de9327b2ce026e62d2055468b55be24cb8dd3b6281",
+      "bytes": 54698
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver.rs",
-      "sha256": "12ccea70fdf3d621fa950bb9a80345ba536356dc93e59267f0ad16b6437935fb",
-      "bytes": 153607
+      "sha256": "06edb30d98cf52553473215069b8031bab14985d2e267c9eb2bd9e7107b05555",
+      "bytes": 153902
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/asymmetric.rs",
+      "sha256": "afe794c7b2c76a803e79b2d835fd511b97456cd047e5a1481ea5a92554b20ef5",
+      "bytes": 9266
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm.rs",
-      "sha256": "7858aa1145422a3ce3aca0363582d63034b06a1925bcb30465595cfcaa888013",
-      "bytes": 75710
+      "sha256": "5917e5cc788c09698dfcfec499e2ae3d5e6ddb996eadec5db700676a4e26ca7b",
+      "bytes": 80689
     },
     {
       "project": "toolbox",
@@ -1465,8 +1613,8 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic.rs",
-      "sha256": "0f16623febe599e5630a8ab235f5aeda99a1997d314c93080a0183ab93db5a36",
-      "bytes": 39501
+      "sha256": "13ee58f55dfb21d60622c488504d891ad9f1328814b5170600e534e2def32607",
+      "bytes": 38527
     },
     {
       "project": "toolbox",
@@ -1477,14 +1625,20 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/dynamic_tests.rs",
-      "sha256": "c3cdc4fe3275f65e1ff4a5f7114634a5c7bda13195453daeffcd98ac9fc4af80",
-      "bytes": 15811
+      "sha256": "1e4d2647a04935769e13344aa201becb6b0f6b039f8e6f2f7536ef4b72a246cc",
+      "bytes": 19280
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/filter_tests.rs",
       "sha256": "fc36115dfe540b4f66e4dbdd8413055d72545f9f0fbc936fd0c9882328c414f5",
       "bytes": 1690
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/flat.rs",
+      "sha256": "264b4b6e2a59b3f0f7b1e70f277719f64069dac90134b9a3be3649b2ed39a971",
+      "bytes": 12581
     },
     {
       "project": "toolbox",
@@ -1501,8 +1655,8 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/corrected_sm/production.rs",
-      "sha256": "c49c1612e50ea92b923dc5e2ae4497a1817bd9a6022662b97cb9887ba5cc8efb",
-      "bytes": 13726
+      "sha256": "ae8d656d3dba5293c1ff98345fc7d2ee48c5c69e7e785b4d439410b926076077",
+      "bytes": 13952
     },
     {
       "project": "toolbox",
@@ -1518,9 +1672,93 @@
     },
     {
       "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/beam.rs",
+      "sha256": "2157145353c4a724dbcef1de7eac392d8babd69c4cd741a3ca4f80ccfd1b608f",
+      "bytes": 11491
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/beam_tests.rs",
+      "sha256": "3519cba9e582c3bddbd56ddbc714bcc1a3168e369731434b69be2b5244d9a134",
+      "bytes": 8163
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/connectivity.rs",
+      "sha256": "28e7db87b56fa73287c72525209408bfb39ec7df237ac9bda7039a426783559c",
+      "bytes": 4326
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/mod.rs",
+      "sha256": "89243bf17ded41bce820d574d3db692caa84a0a6a64835dada3c8347c794a796",
+      "bytes": 4658
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/routing.rs",
+      "sha256": "aabaa1f994ae96f38e98a1567b6804f2d219a9bb0ec3b737fcf7397d83d863b4",
+      "bytes": 1123
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/search.rs",
+      "sha256": "58285840a0020ccb0b7153315b96929e9b291adf261d6159b6806e7c3dfe587f",
+      "bytes": 1124
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped.rs",
+      "sha256": "7b525e8e1bfe86b8830e67ca30fb3b96ef478107cd603d45d3e2a4784b8a01b1",
+      "bytes": 61164
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped_convert_tests.rs",
+      "sha256": "94607cae53fc3d7fd03d4b025210f2af34ad0ab1fe3130ff0d015a7c46791574",
+      "bytes": 11104
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped_geometry.rs",
+      "sha256": "9ef131dbb0345219e65c4020d0f4737bb10c32873ec4138a9b8ac86ba925b41e",
+      "bytes": 36709
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped_graph.rs",
+      "sha256": "64f53a528caf191fb962739e56fb70f161d28202416615c00598ac71633634f2",
+      "bytes": 20641
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/hyperbolic/warped_snapshot.rs",
+      "sha256": "77d178ffe4f20614061e6e4e7b598d6c578fecece4744a71ac13e4b14265afd6",
+      "bytes": 15260
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/quiver/sketch.rs",
+      "sha256": "bc16aa4a1f2913514bef8c251a64ebc0338b5b08773a2e67783b7fc13c741053",
+      "bytes": 8020
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/index/sm_counts.rs",
+      "sha256": "1264bbe09314943e2bdec73b5f6d6ecdc54151a75b30b75520ba4c84392ce98a",
+      "bytes": 9045
+    },
+    {
+      "project": "toolbox",
       "path": "rust-vexus-lite/crates/vcp-tdb-index/src/lib.rs",
-      "sha256": "fdc7b24057a0fc345e556c3ea95f6eaa181d589237d958e75f5088be87902ac6",
-      "bytes": 423
+      "sha256": "d2b0eefcf6bbfe4232f68bdb481c1e84515cad6bdfd8d934e2df2829a2410027",
+      "bytes": 445
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/crates/vcp-tdb-index/src/metric_math.rs",
+      "sha256": "046bda7218d02e5857af66d717813364541291d55309124eebdb9e44d5662147",
+      "bytes": 8499
     },
     {
       "project": "toolbox",
@@ -1531,8 +1769,8 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/index.d.ts",
-      "sha256": "1af797fe79afde3fabe93817a6ffa227a3aca5af794ca6ff1fc575c20ca03cb1",
-      "bytes": 23292
+      "sha256": "37b6cead238b1da55529513c7e55edd3401e2a6fac54fd8a4406f68f512dd97b",
+      "bytes": 24355
     },
     {
       "project": "toolbox",
@@ -1555,92 +1793,110 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/global_chunks.rs",
-      "sha256": "9802d6a57d9d6da6b879d6a8c3e958efbfc7fea2d15cf632cb1bfd0e89665d29",
-      "bytes": 25704
+      "sha256": "c3b96a5aab189ce5160529e246b3cdeaa35dd6af4814cd9b16c51bc278939721",
+      "bytes": 35259
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/index_handle.rs",
-      "sha256": "0333a1165f9d98461fa3de2cd9796e68b59282b84e120a59644be0f9653ff813",
-      "bytes": 3444
+      "sha256": "517e67e8617dc8f872aaa5e5bf13eb93e4c1911f611f8cb131c361e75cc87c75",
+      "bytes": 3672
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/index_lifecycle.rs",
-      "sha256": "b3adb471abe26ca00175d83bfcc163fb883759927bacc68c3ce2956e41ffde83",
-      "bytes": 88204
+      "sha256": "655ab0b9ef60bc4fef46dbb98af02a5cf1c7d10eb50ad50c1e46e4eca333adb6",
+      "bytes": 96482
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/index_maintenance.rs",
-      "sha256": "067c9db6eb24f5ed5efe4c1d10267674c401302fdebe2f8fa021421ebc053f7d",
-      "bytes": 7300
+      "sha256": "cc78bca8561376b03ea1562583138f75efe57352bc048b87a9de21bc4f005e13",
+      "bytes": 7330
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/index_source.rs",
-      "sha256": "0608c6b48b40e78902b40ed4568bbcde08e29e84a3d3f477cc57c43bb53fa098",
-      "bytes": 10167
+      "sha256": "1de2f4a12c8ca242cf46d0a4ccee2dca400b38a842f7041d9faf360a1d566caa",
+      "bytes": 10669
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/ingestion.rs",
-      "sha256": "c71d8b7c64fa720acae04e4ea68012015367c2e758611b0cbd25a21d9d4fcb2c",
-      "bytes": 113633
+      "sha256": "4a86e2ee4306f7c5d98b0530024cedd2ff34d0ab61087c992e96a5a710c1b972",
+      "bytes": 125913
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/knowledge_runtime.rs",
-      "sha256": "305da4b30dbe2b2b715e82c78f9331594c666c305b3567df220c36b392ae849b",
-      "bytes": 227324
+      "sha256": "78ecbc3ddaa39e203859bb2b50f2166012a909a6d8c895b13d46e8be85a6beeb",
+      "bytes": 239256
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/lib.rs",
-      "sha256": "c663749faa3978cf2cae9ca96c0a2989fca8be99fd1a56dbd9c5b07a287e4181",
-      "bytes": 89791
+      "sha256": "e7c73804897c4ca132ddffe08b47a6e01ada78cfa53e47d5a2912653c59dd71d",
+      "bytes": 89830
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/light_memo.rs",
-      "sha256": "05fc03107f16a941e2e25f31b82f87f79617851a569937b72268c0cf9ee47163",
-      "bytes": 19634
+      "sha256": "fda97fb23ff29fac9a9ba8e42b34b7cc51ddc1cd9c2164491c0ed1eb95bafe95",
+      "bytes": 52338
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/memo_artifact_builder.rs",
-      "sha256": "3b913be2e74c185ee7d9bf284891aa962af367984ad86a88ba3485217c8ee8a4",
-      "bytes": 75614
+      "sha256": "26e8fddf4987b78d8b5f29fc17eab6c57163a391396b00f4ce1c41f34e4f0991",
+      "bytes": 77229
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/memo_geometry.rs",
-      "sha256": "58e84f1de998626f0c58becea178fe14f6742b7e5add4833389da5d077ff9c92",
-      "bytes": 65480
+      "sha256": "9d73dfa5962f4bdfbb4a42205877cc45c3f2dff4853fddd443275b5ac95a90bf",
+      "bytes": 79185
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_local_reuse.rs",
+      "sha256": "03f78b439c78ea494600dcabfc9c1e422270b013650505a9efcaf1d90f8a4acd",
+      "bytes": 6251
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_local_reuse_tests.rs",
+      "sha256": "960e1e6dd4fab1f1ee1f322ecc4af507789e9074d330f963449c0dd4ede4f2b9",
+      "bytes": 8043
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/memo_nnls.rs",
+      "sha256": "0416c7de430e82837a441fbca4df899f9fed5fbea978deeea07e4363756957f4",
+      "bytes": 24456
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/memo_pipeline.rs",
-      "sha256": "be592f676878c1414926c64bf3e5cb2158b0b99c1f83399ab6747b611761b5e9",
-      "bytes": 98180
+      "sha256": "9cf45d22d49535f3ea919f4f87a6a9806463da6e802f3f3a6d72694a6b8ce291",
+      "bytes": 156613
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/memo_projection.rs",
-      "sha256": "4a074ec6c316f070b7d7de7513bead4c59b4c42b0240600aa245d68ab017ce87",
-      "bytes": 20585
+      "sha256": "52c0717ed678f4acda7db44c09d7388af56424e4cb142ee23703af686e22fa77",
+      "bytes": 21664
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/memo_sensing.rs",
-      "sha256": "a8ed06ca6c91ca215b788174203bbefaee26aef7ec7babd37ff77b6fe7f9e102",
-      "bytes": 43230
+      "sha256": "56dd74d286d1d2348f26a1c654723388fbea03568dd83d063a80d9ae2544ca8d",
+      "bytes": 51913
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/memo_thinking.rs",
-      "sha256": "425ac8ea04f2d4ab1ae0946ee5ac1da649e14fcd74c25512754212726a02a019",
-      "bytes": 20277
+      "sha256": "ce57b01b0a8d4d43afa5c7441a18509f5b6678d34c1da8dffb2b3ce3d7242e84",
+      "bytes": 21306
     },
     {
       "project": "toolbox",
@@ -1657,8 +1913,8 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/native_rerank.rs",
-      "sha256": "368a05a98e86176c84e26c8df630bc84badaad5e2ec1edf342df8713ecdb0432",
-      "bytes": 21870
+      "sha256": "dbe4286a2c9d9b40157807acf4afef27b2a816ad59477bab692360af0d7e8255",
+      "bytes": 25485
     },
     {
       "project": "toolbox",
@@ -1669,38 +1925,56 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/result_deduplicator.rs",
-      "sha256": "b60959f163b354a07767208386aab1fc40fe149c3381504f4bfa899516d97071",
-      "bytes": 16857
+      "sha256": "07b2f295773a86dac169f41a4f1e98a955eefb19a782cc5902bb81a9e5cdb269",
+      "bytes": 17023
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/retrieval_index.rs",
-      "sha256": "cd17e47f9847f95971bbc09c18d80938f6649827307c7d95fb8d48317990528d",
-      "bytes": 16525
+      "sha256": "4e551e0afa30f3f63de955e132587727f9bd26808a438314f3b3fe590f188e59",
+      "bytes": 21737
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/rivermemo_chart_rotation.rs",
+      "sha256": "8f5af0ac606abdf3617c9fbde1ac9fa42d3837a056a843e564e0a096f0f549b5",
+      "bytes": 2343
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/rivermemo_route_omega.rs",
+      "sha256": "05ca1f6ce92860737155e95c8224aea108b443e3a09e213ad777740d8936ff2b",
+      "bytes": 4602
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/rivermemo_topology_v3.rs",
-      "sha256": "3648f674efbadc3247f8455c21c3793676b39ce0ac1606e763477e28d745e3e2",
-      "bytes": 131644
+      "sha256": "80a0128ce14db3416e5b641331afcb1fed113bac469eaf8f6bad48460e502dac",
+      "bytes": 180813
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/rivermemo_wormhole.rs",
+      "sha256": "7f550ba02414b8b7111069d54f1c21a3523f886c9a8f9f1e06b9c6d68b7770cb",
+      "bytes": 31412
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/schema.rs",
-      "sha256": "8c8111b15b2dcef446bd2b79e445c5f8c60c0df5ef8af8fa02fe0568515de50f",
-      "bytes": 36520
+      "sha256": "0f787155e80b1ee29f4daa60c54adbcac9f269f7e97d50af69ac81ea4314f739",
+      "bytes": 37422
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/storage.rs",
-      "sha256": "1202f0635db28fd83e004daafa3cb8df089ad4490993cfd06cdec1fd33608b2d",
-      "bytes": 51181
+      "sha256": "3c4462e6422d5efcc4546c2d71007b2a581ee2b698791db07ee90adba7423991",
+      "bytes": 52830
     },
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/src/tag_consistency.rs",
-      "sha256": "f61f951dbeb93c204d4979961791001eb054681b5cdd3ce3826541f6f27e6455",
-      "bytes": 55512
+      "sha256": "3b1f1ec43d99c30b9215039349e1d1bb416c1550e7a6d021d80be92381c4d71d",
+      "bytes": 56557
     },
     {
       "project": "toolbox",
@@ -1716,9 +1990,45 @@
     },
     {
       "project": "toolbox",
+      "path": "rust-vexus-lite/src/warped_chunks.rs",
+      "sha256": "720e34e86309e182c7cb828be1031311b5cb4a39ec681bf81667e33b39d38dd4",
+      "bytes": 59840
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/warped_field_snapshot.rs",
+      "sha256": "8208e98c4e955accadd585705c73ff8c0381460b41b78ca2c72743d3dcd83501",
+      "bytes": 18754
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/warped_lifecycle_tests.rs",
+      "sha256": "cb1eb1e5c055d04cdce525924abecdbbf69cbad6d86c1fc1d8079a762701c508",
+      "bytes": 7000
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/src/warped_tag_field.rs",
+      "sha256": "e5ac8f040aac3e5f1b48fd8f0d89106a2adb4421c55bfc7370076987db6129b3",
+      "bytes": 31105
+    },
+    {
+      "project": "toolbox",
       "path": "rust-vexus-lite/test.js",
       "sha256": "5e80dd57405dd81abb8c26a93ff2fe9cddbeaa70ee0757550d4e083f30162efe",
       "bytes": 1947
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/tests/fixtures/rrf_real_output_evidence.json",
+      "sha256": "9d0a42338f129198ce5f0b5f0bd88fcec6befe528f004e99a747dfcb07100d1d",
+      "bytes": 4024814
+    },
+    {
+      "project": "toolbox",
+      "path": "rust-vexus-lite/tests/fixtures/rrf_score_contract.json",
+      "sha256": "bd0c4f0d2415f3edacc658de4ac8002ba83b30ae709f089ccd909e3e82c52d3a",
+      "bytes": 893
     },
     {
       "project": "toolbox",
@@ -1741,8 +2051,8 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/vexus-lite.linux-x64-gnu.node",
-      "sha256": "4e75da75de414a0f392d1f417bf629bdc8c4232e28556491ed925a07b59c6f13",
-      "bytes": 12873296
+      "sha256": "6c50182a8df9ecdfaef027b4d4bde171f70871c96bc8f425094f27ea4878ac5b",
+      "bytes": 13318064
     },
     {
       "project": "toolbox",
@@ -1759,8 +2069,8 @@
     {
       "project": "toolbox",
       "path": "rust-vexus-lite/vexus-lite.win32-x64-msvc.node",
-      "sha256": "aa8adf81c07bc704872a8325ed3c16730f7476b266a17f38c3c1c51e9740a3b4",
-      "bytes": 14564352
+      "sha256": "356a2e540225c1434dc6253a7bc934a3bdab4ff56cd1441eee37a69032e0e656",
+      "bytes": 16192512
     },
     {
       "project": "toolbox",
@@ -1819,20 +2129,20 @@
     {
       "project": "toolbox",
       "path": "tests/dynamicToolRegistry.test.js",
-      "sha256": "fc2534ffee51a7b1c89960d92fc5551557ddc8b2b16a84a9db9a45f38c58cb93",
-      "bytes": 45636
+      "sha256": "9996f0b7c9949b11cea73c944423a2511cbe6e379557198e84272f1314c504dd",
+      "bytes": 50611
     },
     {
       "project": "toolbox",
       "path": "tests/jevClient.test.js",
-      "sha256": "b6331e66d08d70c4b0e279c724bff688c02cf0b27a3ca64aca82980dfd2de409",
-      "bytes": 7215
+      "sha256": "bbc21d5e01cbabb90f9534a6d9b9ddde129b450f581d7c692e26ecd072a9cf7e",
+      "bytes": 8938
     },
     {
       "project": "toolbox",
       "path": "tests/jevContextPrune.test.js",
-      "sha256": "acb76c25031abf7353ccf0bca6539eafc4e649658fce4be01b48aaf54327719b",
-      "bytes": 10930
+      "sha256": "33f64ceb6f27bd76b744a802057094c2ab91ae4555e23cdc10e1996e60bd72e4",
+      "bytes": 12220
     },
     {
       "project": "toolbox",
@@ -1879,8 +2189,14 @@
     {
       "project": "toolbox",
       "path": "tests/jevToolCallExp.test.js",
-      "sha256": "a05173a187550a124359423ec1efc5ec32e6037a85cdb36860c65aea6706b454",
-      "bytes": 32028
+      "sha256": "8be104b5d49aea3bcfb4d895d56f0fd23e72e9d6ca72ddcbfb9cea4aad3db10a",
+      "bytes": 42138
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/jevToolLoop.test.js",
+      "sha256": "92e229106b29b9da60f7323515871f62c19142cd579b441f9622b329a451b4a0",
+      "bytes": 6653
     },
     {
       "project": "toolbox",
@@ -1903,8 +2219,8 @@
     {
       "project": "toolbox",
       "path": "tests/kbmNativeKnnProxy.test.js",
-      "sha256": "70b916d1619efcd14e4e7e107c179e45b8b356b5183462eff849385e48de3205",
-      "bytes": 3767
+      "sha256": "daa687fd42ed94e260d3db818631cb2e734cab2a9d38e0ada35e5eca0e61c1b7",
+      "bytes": 3117
     },
     {
       "project": "toolbox",
@@ -1917,6 +2233,12 @@
       "path": "tests/kbmOfflineWriteSafety.test.js",
       "sha256": "d47d8dd3e3712b1ccc176516b5669ef114a323bbae4893294cde571c48c2db70",
       "bytes": 1356
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/kbmOrphanAssetCleanup.test.js",
+      "sha256": "8d5cc300c12493473cc84a62cc6cfa23e9c30d8ecc7404b840ac35900c588a12",
+      "bytes": 6798
     },
     {
       "project": "toolbox",
@@ -1944,9 +2266,33 @@
     },
     {
       "project": "toolbox",
+      "path": "tests/lightMemoABDiagnostics.test.js",
+      "sha256": "95d44ca5d9588bc000d6920c524050d8ce39f874598cb4fb2b93c2ba972c7b7b",
+      "bytes": 11453
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/lightMemoAdmission.test.js",
+      "sha256": "e568a66b02a046b4824186a8313d038367037c9ea4372c2720674a3ffeba74c7",
+      "bytes": 1822
+    },
+    {
+      "project": "toolbox",
       "path": "tests/lightMemoIdleLifecycle.test.js",
       "sha256": "21e129e4328cb818356039347de12475b62677faf9f2feb167b8386db1a42afe",
       "bytes": 2766
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/lightMemoQueryTokens.test.js",
+      "sha256": "5648a9f6768e3292d6453bf90cc010fb29002a5184036909d4c0f9cc17d23270",
+      "bytes": 4769
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/lightMemoSemanticGroups.test.js",
+      "sha256": "fd8c2ce626ba776ac534b75a8483910509e08048ea40d0e365d0389a67a927f8",
+      "bytes": 2113
     },
     {
       "project": "toolbox",
@@ -1975,26 +2321,32 @@
     {
       "project": "toolbox",
       "path": "tests/memoSingleTrack.test.js",
-      "sha256": "a1da272a97f5f63f9fa9d594fd8269279968f9f974b5b93ae4657911c33a3244",
-      "bytes": 14306
+      "sha256": "96f36ef0a2f912f06ad5e20e5202a99ea2bb5f113f139ed10d3224bd845e2c2c",
+      "bytes": 16755
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/memorySearch.test.js",
+      "sha256": "4cf3aaf783c97d50d42d558b07691d90f54144572dae77a100abb15e9f68c5f2",
+      "bytes": 3190
     },
     {
       "project": "toolbox",
       "path": "tests/memoryThinkingTray.test.js",
-      "sha256": "b2d8999ef43055c6384eb2adbbc91c65665629eb2159d460968995afcb21ec70",
-      "bytes": 8588
+      "sha256": "66d5bd4dcb2be62c20874b94faa568414a1c6736300d242f5fc3ccfedb20d998",
+      "bytes": 12773
     },
     {
       "project": "toolbox",
       "path": "tests/nativeGreenLane.test.js",
-      "sha256": "c2d4d3811e97cd61581016c1f920f9b68bce5662aa2c8f3f28021cb7fd1fd069",
-      "bytes": 4141
+      "sha256": "1cd8c411566fd7ec798f81a67a4cf69faba5119ca747edcc272c710b3e873a2b",
+      "bytes": 4150
     },
     {
       "project": "toolbox",
       "path": "tests/nativeHybridRiverQueryPlan.test.js",
-      "sha256": "5572b3480c6a6814c2753bd9be97fe52a2b01e44b25779da34d27d325dea2ee7",
-      "bytes": 9275
+      "sha256": "a188f5ff7900ed70404a2f7b041d5a5102bced472acea1199a974c853c1527ad",
+      "bytes": 9463
     },
     {
       "project": "toolbox",
@@ -2005,8 +2357,8 @@
     {
       "project": "toolbox",
       "path": "tests/nativeMemoManifestCompatibility.test.js",
-      "sha256": "1e2fb38830a3b12000fbe4d982bd9360e3d7a693ceed23964f1feb7dbe508843",
-      "bytes": 23310
+      "sha256": "41d95fc73a4dacb02474ec57c9f36e28e49f021eb87f4eb457cec411ad77efa7",
+      "bytes": 38739
     },
     {
       "project": "toolbox",
@@ -2017,8 +2369,8 @@
     {
       "project": "toolbox",
       "path": "tests/nativeRerankSearchOptions.test.js",
-      "sha256": "6d72ae3ea163800011eced69a3da2976f0f2a086b76e1035b267a2448fde85fb",
-      "bytes": 3134
+      "sha256": "a11f4e558c52fb84576bef7e29e557ca0273213e85b9d6b04adfdbc55bfee29f",
+      "bytes": 3281
     },
     {
       "project": "toolbox",
@@ -2040,6 +2392,30 @@
     },
     {
       "project": "toolbox",
+      "path": "tests/nativeToolDebug.test.js",
+      "sha256": "4f5e7f1c8b57ce468476b9bd0c3fb8d37bb9119d9f211f462d6500745715d5db",
+      "bytes": 1813
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeToolLoop.test.js",
+      "sha256": "e7b172c01dae43ec01bdb4f8faf996bee66ba7cc6d1a03286f1145eca4a9cc7e",
+      "bytes": 6130
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeToolPassthrough.test.js",
+      "sha256": "acb0df72555efe9a8c7bd156c559a0a2517c38a2900826f59a83ea46c7a0dbf1",
+      "bytes": 11943
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/nativeToolResultMedia.test.js",
+      "sha256": "ed204a6089f8665d47e22de71bb58c5bd0f7700a9dee0d6eeaa312267c945634",
+      "bytes": 3432
+    },
+    {
+      "project": "toolbox",
       "path": "tests/newTagIngestionDerivedInvalidation.test.js",
       "sha256": "8bc3359c0d47084568505d7a2bfb54262e0d1d8e241e35afee70c06d194a6f82",
       "bytes": 3608
@@ -2047,8 +2423,14 @@
     {
       "project": "toolbox",
       "path": "tests/oneRingTemporaryContract.test.js",
-      "sha256": "321ea5ea2db5324a31ae80be7908b303db13fdf0cfc7515935330159fa628340",
-      "bytes": 5631
+      "sha256": "d237a4d30dd65f664b27285220ba2dec33475e27d3b8462fedf3fc69a938657e",
+      "bytes": 5730
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/oneRingUntriggeredPassthrough.test.js",
+      "sha256": "11ae10ae5373dded9e25b3d0d55c5acad2e02be67f2bb860ddd2eb6a3d6b4921",
+      "bytes": 1774
     },
     {
       "project": "toolbox",
@@ -2070,9 +2452,15 @@
     },
     {
       "project": "toolbox",
+      "path": "tests/ragDiaryDateIndex.test.js",
+      "sha256": "1f6a619af43fe9cbaed2ad5cbf916f9aefddcdf4f7bb0872b6dbee3418f08818",
+      "bytes": 2751
+    },
+    {
+      "project": "toolbox",
       "path": "tests/ragGreenLane.test.js",
-      "sha256": "e462490681a084caa69410a42bc2d224a0846c0cc2222c53f76547048c51a8b6",
-      "bytes": 9704
+      "sha256": "7cf8922951ab34818ccffef29939cdc1fd7b8f5a53c883bb6338713cbadd4eed",
+      "bytes": 9804
     },
     {
       "project": "toolbox",
@@ -2091,6 +2479,24 @@
       "path": "tests/ragRefreshSystemBoundary.test.js",
       "sha256": "d2632300dc016b18dc05fe51991d65c15c37a4ac0f4f13e9e8c77931db11c0c8",
       "bytes": 3810
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragTimeDecayModifier.test.js",
+      "sha256": "42b9fe23529b6b38d3d10a2dba42c0099a523cc6e11d1da95f896619a173c19a",
+      "bytes": 1526
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragTimeRetrieval.test.js",
+      "sha256": "58710eded971bb5adc6c2a032688b2994b9d16a4e1d0884fa22a255ed0e3014c",
+      "bytes": 9190
+    },
+    {
+      "project": "toolbox",
+      "path": "tests/ragTimelineParallel.test.js",
+      "sha256": "2257ea7b5b51212591ae421854abcc9e93153728b982cd0c2a1a170f79356579",
+      "bytes": 6378
     },
     {
       "project": "toolbox",
@@ -2113,8 +2519,8 @@
     {
       "project": "toolbox",
       "path": "tests/roleDividerToolResults.test.js",
-      "sha256": "fb3a5fa6a4cf2c4d14b85214191f8870e87ec0201fc547f21734c62aa169a7db",
-      "bytes": 4306
+      "sha256": "52e212edc809cef0dd0f4d9817954b9a47241b82e40ee213ead888c42b829628",
+      "bytes": 9416
     },
     {
       "project": "toolbox",
@@ -2143,8 +2549,8 @@
     {
       "project": "toolbox",
       "path": "tests/tdbKnowledge085.test.js",
-      "sha256": "57102631054aec7d1179ce00170c76daed6cb0e125fe3befb2b810effe7fd224",
-      "bytes": 5398
+      "sha256": "ce54cf7c949245491a1e4002f46e4b242ccd496b816780ea1aebca121b738833",
+      "bytes": 8033
     },
     {
       "project": "toolbox",
@@ -2190,6 +2596,12 @@
     },
     {
       "project": "toolbox",
+      "path": "tests/timelineAutoSync.test.js",
+      "sha256": "96c8292489f97d3cb2bd3ee6a3f555fe10ccb21a80cb7863caf70542ddea9a7f",
+      "bytes": 7955
+    },
+    {
+      "project": "toolbox",
       "path": "tests/timelineRiverMemo.test.js",
       "sha256": "b3304931ee3d70ac39c0453d416e9bfe971e333483f7db1cd71a4e71fea85e0d",
       "bytes": 8698
@@ -2197,8 +2609,8 @@
     {
       "project": "toolbox",
       "path": "tests/unifiedGeometryScheduling.test.js",
-      "sha256": "2b91ea9ccd047356d7d2b9a4829bf60a1646b5483bd2894cbb7df145f49cae1e",
-      "bytes": 6741
+      "sha256": "9c4cbb8f511a5f3719e61cd089e60d8eb15b0a3e3e03ba74ac8a39ead71b8e2b",
+      "bytes": 12681
     },
     {
       "project": "toolbox",
@@ -2297,6 +2709,9 @@
     "express",
     "https-proxy-agent",
     "mime-types",
+    "node-fetch",
+    "node-schedule",
+    "sharp",
     "triviumdb",
     "uuid",
     "vexus-lite-android-arm-eabi",

@@ -230,12 +230,12 @@ it('does not revive a withdrawn original topic, and reports an explicitly cancel
 it('injects stable self, actual speaker, typed group audience and delegation origin without treating the UI label 我 as a name',()=>{
   const {store,source}=fixture(),sent=store.contactPeer(source,'fish','identity','告诉我近况');if(!sent.accepted)throw Error(sent.reason);
   const event=sent.events[0]!,room=store.getConversation(event.conversationId)!,companions=store.listCompanions();
-  const context=buildNativeBotContext({companion:store.getCompanion('fish')!,event,conversation:room,companions,memories:'',files:[]}),body=JSON.parse(context.prompt);
+  const context=buildNativeBotContext({companion:store.getCompanion('fish')!,event,conversation:room,companions,files:[]}),body=JSON.parse(context.prompt);
   expect(body.delivery).toMatchObject({kind:'peer-request',self:{id:'fish',name:'大肥鱼'},speaker:{id:'gpt',name:'GPT'},responsibility:'delegate',audience:{userParticipates:false,userRole:'observer',recipients:[{id:'gpt',name:'GPT'}]},assignment:{requester:{id:'gpt'},originalSender:{id:'user',name:'用户',type:'user'}}});
   expect(context.system).toContain('不要称用户为“本人”');expect(context.system).toContain('第一人称“我”只指你');
   const group=store.createGroup({title:'四位伙伴一起聊',memberIds:['gpt','fish','claude','gemini'],participationMode:'all'});
   const groupEvent=store.enqueue({conversationId:group.id,senderId:'claude',source:'companion',content:'我是Claude，GPT请告诉大肥鱼',recipientIds:['gpt']}).events[0]!;
-  const groupBody=JSON.parse(buildNativeBotContext({companion:store.getCompanion('gpt')!,event:groupEvent,conversation:group,companions,memories:'',files:[]}).prompt);
+  const groupBody=JSON.parse(buildNativeBotContext({companion:store.getCompanion('gpt')!,event:groupEvent,conversation:group,companions,files:[]}).prompt);
   expect(groupBody.delivery.self).toMatchObject({id:'gpt',name:'GPT'});expect(groupBody.delivery.speaker).toMatchObject({id:'claude',name:'Claude'});expect(groupBody.delivery.audience.recipients.map((p:{id:string})=>p.id).sort()).toEqual(['claude','fish','gemini','user']);
 });
 it('runs user → GPT → three group workers → GPT final delivery through authenticated callbacks with no duplicate observer conversation',async()=>{

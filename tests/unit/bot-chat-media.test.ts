@@ -20,7 +20,7 @@ class Memory extends BotMemoryService {
   private tombstones = new Map<string, { sourceEventIds: string[]; sourceMessageIds: string[] }>();
   constructor(root: string) { super({ root, runtime: async () => { throw Error('No actual VCP runtime'); }, embedding: async () => { throw Error('No actual encoder'); } }); }
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-    const prepared: BotMemoryPrepared = { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'fixture', status: 'ready', evidence: '', metadata: {}, events: [], omittedChars: 0 };
+    const prepared: BotMemoryPrepared = { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'fixture', status: 'ready', nativeContext: '', metadata: {}, events: [] };
     this.preparations.set(input.requestId, prepared); return prepared;
   }
   override async resumePrepared(input: Parameters<BotMemoryService['resumePrepared']>[0]) { return this.preparations.get(input.requestId)!; }

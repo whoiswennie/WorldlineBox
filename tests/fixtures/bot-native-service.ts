@@ -10,7 +10,7 @@ export class NativeServiceMemory extends BotMemoryService {
   constructor(root: string) { super({ root, runtime: async () => { throw Error('No VCP subprocess in routing fixture'); }, embedding: async () => { throw Error('No embedding in routing fixture'); } }); }
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-    return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'native-routing-fixture', status: 'ready', evidence: '', metadata: {}, events: [], omittedChars: 0 };
+    return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'native-routing-fixture', status: 'ready', nativeContext: '', metadata: {}, events: [] };
   }
   override async finishTurn() { return { recorded: true }; }
   override async appendHistory() { return { appended: [] }; }

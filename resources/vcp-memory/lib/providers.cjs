@@ -43,7 +43,8 @@ function resolveProviders(config = {}) {
     const embeddingConfig = object(config.embedding, 'embedding');
     const legacyUrl = value(config.API_URL);
     const legacyKey = value(config.API_Key, config.API_KEY);
-    const chatURL = validUrl(value(chatConfig.baseURL, config.CHAT_API_URL, legacyUrl, DEFAULT_CHAT_URL), 'CHAT_API_URL');
+    const managed = config.WORLDLINEBOX_VCP_MANAGED === '1';
+    const chatURL = value(chatConfig.baseURL, config.CHAT_API_URL, legacyUrl, managed ? undefined : DEFAULT_CHAT_URL);
     const chatApi = apiName(value(chatConfig.api, config.CHAT_API_TYPE, 'openai-completions'));
     if (!APIS.includes(chatApi)) throw new ProviderError(`Unsupported chat API "${chatApi}"; supported: ${APIS.join(', ')}`, 'UNSUPPORTED_API');
     const explicitChat = Boolean(config.chat || config.CHAT_API_URL || config.CHAT_API_KEY || config.CHAT_MODEL || config.CHAT_API_TYPE);
@@ -78,7 +79,7 @@ function resolveProviders(config = {}) {
     return {
         chat: route(chatConfig, 'CHAT', chatURL, chatApi,
             value(chatConfig.apiKey, config.CHAT_API_KEY, legacyKey),
-            value(chatConfig.model, config.CHAT_MODEL, DEFAULT_CHAT_MODEL)),
+            value(chatConfig.model, config.CHAT_MODEL, managed ? undefined : DEFAULT_CHAT_MODEL)),
         embedding,
         embeddingQuery: { ...embedding, baseURL: embeddingQueryURL ? validUrl(embeddingQueryURL, 'EMBEDDING_QUERY_API_URL') : null },
         maxBodyBytes: integer(config.PROVIDER_MAX_BODY_BYTES, 33554432, 'PROVIDER_MAX_BODY_BYTES'),
@@ -257,7 +258,8 @@ async function startProviderRouter(config = {}) {
             if (body.stream === true) throw new ProviderError('Memory provider router supports non-stream requests only', 'UNSUPPORTED_OPTION');
             const embedding = req.url.endsWith('/embeddings');
             const route = req.url === '/query/v1/embeddings' ? resolved.embeddingQuery : embedding ? resolved.embedding : resolved.chat;
-            if (!route.baseURL) throw new ProviderError('Embedding provider is not configured. DeepSeek does not supply this route; set EMBEDDING_API_URL and EMBEDDING_MODEL for a local or remote embedding provider.', 'MISSING_EMBEDDING_PROVIDER', 503);
+            if (!route.baseURL) throw new ProviderError(embedding ? 'Embedding service is unavailable' : 'The companion chat provider is unavailable',
+                embedding ? 'MISSING_EMBEDDING_PROVIDER' : 'MISSING_CHAT_PROVIDER', 503);
             let upstream;
             if (embedding) {
                 if (body.input === undefined) throw new ProviderError('Embedding input is required', 'INVALID_REQUEST');

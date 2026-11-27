@@ -3,8 +3,23 @@
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { createHash, randomUUID } = require('node:crypto');
 
-const PLACEHOLDER_REGEX = /\[\[VCPTimeLine::([^:\]\r\n]+?)(?::([^:\]\r\n]+?))?(?::([^:\]\r\n]+?))?\]\]/g;
+const DAY_MS = 86400000;
+const DEFAULT_AUTO_SYNC = Object.freeze({
+    enabled: false,
+    agents: Object.freeze([]),
+    cron: '30 0 * * *',
+    currentMonthMinIntervalDays: 7,
+    runOnStartupDelayMs: 120000
+});
+
+function hash(value) {
+    return createHash('sha256').update(value).digest('hex');
+}
+
+const TimelinePlaceholderProcessor = require('../RAGDiaryPlugin/TimelinePlaceholderProcessor');
+const PLACEHOLDER_REGEX = /\[\[VCPTimeLine(Summary|Recall)?::([^:\]\r\n]+?)(?::([^:\]\r\n]+?))?(?::([^:\]\r\n]+?))?\]\]/g;
 const HEADER_REGEX = /^\[?\s*(\d{4})[.-](\d{1,2})[.-](\d{1,2})(?:\.\d+)?\s*\]?\s*-\s*(.+?)\s*$/;
 const MONTH_FILE_REGEX = /^(\d{4})-(\d{2})\.md$/i;
 
@@ -13,6 +28,7 @@ const DEFAULT_CONFIG = Object.freeze({
     defaultExpandK: 3,
     defaultThreshold: 0.5,
     model: '',
+    modelTimeoutMs: 120000,
     maxContextTokens: 60000,
     maxOutputTokens: 4000,
     maxConcurrentTasks: 3,
@@ -32,6 +48,10 @@ class VCPTimeLine {
         this.config = { ...DEFAULT_CONFIG };
         this.generationLocks = new Map();
         this.generationStatuses = new Map();
+        this.summaryWrites = Promise.resolve();
+        this.autoSyncTask = null;
+        this.autoSyncJob = null;
+        this.autoSyncTimer = null;
     }
 
     async initialize(config = {}, dependencies = {}) {
@@ -39,7 +59,9 @@ class VCPTimeLine {
         this.projectBasePath = config.PROJECT_BASE_PATH || this.projectBasePath;
         this.dailyNoteRoot = process.env.KNOWLEDGEBASE_ROOT_PATH || path.join(this.projectBasePath, 'dailynote');
         this.contextBridge = dependencies.contextBridge || null;
+        this.isTimelineManagedByRag = dependencies.isTimelineManagedByRag || (() => false);
         this.config = await this.readConfig();
+        this.startAutoSync();
         console.log(`[VCPTimeLine] Initialized. root=${this.dailyNoteRoot}, contextBridge=${!!this.contextBridge}`);
     }
 
@@ -63,6 +85,7 @@ class VCPTimeLine {
             defaultExpandK: this.normalizePositiveInteger(raw.defaultExpandK, DEFAULT_CONFIG.defaultExpandK, 1, 100),
             defaultThreshold: this.normalizeThreshold(raw.defaultThreshold, DEFAULT_CONFIG.defaultThreshold),
             model: String(raw.model || '').trim(),
+            modelTimeoutMs: this.normalizePositiveInteger(raw.modelTimeoutMs ?? DEFAULT_CONFIG.modelTimeoutMs, DEFAULT_CONFIG.modelTimeoutMs, 100, 600000),
             maxContextTokens: this.normalizePositiveInteger(raw.maxContextTokens, DEFAULT_CONFIG.maxContextTokens, 1024),
             maxOutputTokens: this.normalizePositiveInteger(raw.maxOutputTokens, DEFAULT_CONFIG.maxOutputTokens, 128),
             maxConcurrentTasks: this.normalizePositiveInteger(raw.maxConcurrentTasks, DEFAULT_CONFIG.maxConcurrentTasks, 1, 20),
@@ -74,8 +97,151 @@ class VCPTimeLine {
                 : [...DEFAULT_CONFIG.ignoreFolders],
             summaryPrompt: String(raw.summaryPrompt || '').trim(),
             aliases: this._normalizeStringArrayMap(raw.aliases),
-            agentFolders: this._normalizeStringArrayMap(raw.agentFolders)
+            agentFolders: this._normalizeStringArrayMap(raw.agentFolders),
+            autoSync: this.normalizeAutoSync(raw.autoSync)
         };
+    }
+
+    normalizeAutoSync(raw = {}) {
+        raw = raw || {};
+        const agents = new Set();
+        for (const name of Array.isArray(raw.agents) ? raw.agents : []) {
+            try {
+                agents.add(this.safeAgentName(name));
+            } catch {
+                console.warn('[VCPTimeLine] Ignoring invalid autoSync agent name');
+            }
+        }
+        return {
+            enabled: raw.enabled === true,
+            agents: [...agents],
+            cron: String(raw.cron || '').trim() || DEFAULT_AUTO_SYNC.cron,
+            maxConcurrentAgents: Math.min(agents.size, 3),
+            currentMonthMinIntervalDays: this.normalizePositiveInteger(
+                raw.currentMonthMinIntervalDays, DEFAULT_AUTO_SYNC.currentMonthMinIntervalDays, 1, 366
+            ),
+            runOnStartupDelayMs: this.normalizePositiveInteger(
+                raw.runOnStartupDelayMs, DEFAULT_AUTO_SYNC.runOnStartupDelayMs, 0, 2147483647
+            )
+        };
+    }
+
+    startAutoSync() {
+        if (this.autoSyncJob || !this.config.enabled || !this.config.autoSync?.enabled || !this.config.autoSync.agents.length) return;
+        const { cron, runOnStartupDelayMs } = this.config.autoSync;
+        const tz = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai';
+        const run = () => {
+            if (this.autoSyncJob) {
+                void this.runAutoSync(new Date(), tz)
+                    .catch(error => console.warn('[VCPTimeLine] Auto sync failed:', error.message));
+            }
+        };
+        try {
+            new Intl.DateTimeFormat('en', { timeZone: tz });
+            this.autoSyncJob = require('node-schedule').scheduleJob({ rule: cron, tz }, run);
+            if (!this.autoSyncJob) throw new Error('无效的巡检 Cron');
+            this.autoSyncTimer = setTimeout(run, runOnStartupDelayMs);
+        } catch (error) {
+            console.warn('[VCPTimeLine] Auto sync not scheduled:', error.message);
+        }
+    }
+
+    async shutdown() {
+        clearTimeout(this.autoSyncTimer);
+        this.autoSyncTimer = null;
+        this.autoSyncJob?.cancel();
+        this.autoSyncJob = null;
+        await this.autoSyncTask?.catch(() => {});
+        await this.summaryWrites;
+    }
+
+    getAutoSyncStatePath() {
+        return path.join(__dirname, 'auto_sync_state.json');
+    }
+
+    async runAutoSync(now = new Date(), tz = process.env.DEFAULT_TIMEZONE || 'Asia/Shanghai') {
+        const config = this.config.autoSync;
+        if (this.autoSyncTask || !this.config.enabled || !config?.enabled) return;
+        const task = this.syncRecentMonths(now, tz, config);
+        this.autoSyncTask = task;
+        try {
+            await task;
+        } finally {
+            this.autoSyncTask = null;
+        }
+    }
+
+    async syncRecentMonths(now, tz, config) {
+        const parts = new Intl.DateTimeFormat('en', { timeZone: tz, year: 'numeric', month: '2-digit' }).formatToParts(now);
+        const year = Number(parts.find(part => part.type === 'year').value);
+        const month = Number(parts.find(part => part.type === 'month').value);
+        const current = `${year}-${String(month).padStart(2, '0')}`;
+        const previous = new Date(Date.UTC(year, month - 2, 1)).toISOString().slice(0, 7);
+        const statePath = this.getAutoSyncStatePath();
+        let state = {};
+        try {
+            state = JSON.parse(await fsp.readFile(statePath, 'utf8'));
+        } catch (error) {
+            if (error.code !== 'ENOENT') throw error;
+        }
+
+        let stateWrites = Promise.resolve();
+        const saveProgress = (agent, month, patch) => {
+            const write = stateWrites.then(async () => {
+                const months = Object.hasOwn(state, agent) ? state[agent] : {};
+                const next = {
+                    ...state,
+                    [agent]: { ...months, [month]: { ...months[month], ...patch } }
+                };
+                await this.writeJsonAtomic(statePath, next);
+                state = next;
+            });
+            stateWrites = write.catch(() => {});
+            return write;
+        };
+        const getProgress = (agent, month) => Object.hasOwn(state, agent) ? state[agent][month] : undefined;
+        const agents = config.agents.values();
+        const worker = async () => {
+            for (const agent of agents) {
+                try {
+                    await this.syncAgentMonths(agent, previous, current, now, config, getProgress, saveProgress);
+                } catch (error) {
+                    console.warn(`[VCPTimeLine] Auto sync failed for ${agent}:`, error.message);
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(config.maxConcurrentAgents, config.agents.length) }, worker));
+    }
+
+    async syncAgentMonths(agent, previous, current, now, config, getProgress, saveProgress) {
+        const memories = await this.discoverMemories(agent, previous, current);
+        for (const key of [previous, current]) {
+            const notes = memories.get(key);
+            if (!notes?.length) continue; // Preserve existing artifacts when the month is empty.
+            const status = getProgress(agent, key) ?? {};
+            const inputDigest = hash(JSON.stringify([...notes].sort()));
+            try {
+                let [file] = await this.listTimelineFiles(agent, [key]);
+                const lastGenerated = status.generatedAt ?? (file ? (await fsp.stat(file.fullPath)).mtimeMs : 0);
+                const due = key === previous || now.getTime() - lastGenerated >= config.currentMonthMinIntervalDays * DAY_MS;
+                if (!file || (status.inputDigest !== inputDigest && due)) {
+                    await this.generateTimelines(agent, { overwrite: true }, new Map([[key, notes]]));
+                    await saveProgress(agent, key, { inputDigest, generatedAt: now.getTime() });
+                    [file] = await this.listTimelineFiles(agent, [key]);
+                }
+                if (!file) continue;
+                const store = await this.readSummaryStore();
+                if (!store[agent]?.[key] || status.summarySourceHash !== hash(file.content)) {
+                    await this.generateSummaries(agent, { months: [key], overwrite: true }, source =>
+                        saveProgress(agent, key, { summarySourceHash: hash(source.content) })
+                    );
+                }
+            } catch (error) {
+                if (error.code !== 'TIMELINE_GENERATION_IN_PROGRESS') {
+                    console.warn(`[VCPTimeLine] Auto sync failed for ${agent}/${key}:`, error.message);
+                }
+            }
+        }
     }
 
     _normalizeStringArrayMap(raw) {
@@ -146,7 +312,12 @@ class VCPTimeLine {
     }
 
     async saveConfig(raw) {
-        const config = this.normalizeConfig(raw);
+        // Older admin clients send only the fields displayed in their form.
+        const config = this.normalizeConfig({
+            autoSync: this.config.autoSync,
+            modelTimeoutMs: this.config.modelTimeoutMs,
+            ...raw
+        });
         await this.writeJsonAtomic(this.getConfigPath(), config);
         this.config = config;
         return config;
@@ -223,25 +394,7 @@ class VCPTimeLine {
     }
 
     parsePlaceholder(match) {
-        let k = this.config.defaultExpandK;
-        let threshold = this.config.defaultThreshold;
-        const values = [match[2], match[3]].filter(value => value !== undefined).map(value => String(value).trim());
-
-        if (values.length === 1) {
-            const raw = values[0];
-            const numeric = Number(raw);
-            if (/^\d+$/.test(raw) && numeric >= 1) k = Math.floor(numeric);
-            else if (Number.isFinite(numeric) && numeric >= 0.01 && numeric <= 0.99) threshold = numeric;
-        } else if (values.length >= 2) {
-            const parsedK = Number(values[0]);
-            const parsedThreshold = Number(values[1]);
-            if (/^\d+$/.test(values[0]) && parsedK >= 1) k = Math.floor(parsedK);
-            if (Number.isFinite(parsedThreshold) && parsedThreshold >= 0.01 && parsedThreshold <= 0.99) {
-                threshold = parsedThreshold;
-            }
-        }
-
-        return { placeholder: match[0], agentName: match[1].trim(), k, threshold };
+        return TimelinePlaceholderProcessor.parsePlaceholder(match, this.config);
     }
 
     findLatestRealMessage(messages, role) {
@@ -261,8 +414,8 @@ class VCPTimeLine {
         const userText = this.contextBridge.sanitize(this.findLatestRealMessage(messages, 'user'), 'user');
         const aiText = this.contextBridge.sanitize(this.findLatestRealMessage(messages, 'assistant'), 'assistant');
         const [userVector, aiVector] = await Promise.all([
-            userText ? this.contextBridge.embedText(userText) : null,
-            aiText ? this.contextBridge.embedText(aiText) : null
+            userText ? this.contextBridge.embedText(userText, { contextRole: 'user' }) : null,
+            aiText ? this.contextBridge.embedText(aiText, { contextRole: 'assistant' }) : null
         ]);
         return {
             queryVector: this.contextBridge.weightedAverage([userVector, aiVector], [0.7, 0.3]),
@@ -271,12 +424,13 @@ class VCPTimeLine {
         };
     }
 
-    async listTimelineFiles(agentName) {
+    async listTimelineFiles(agentName, months) {
         const dir = this.getTimelineDir(agentName, false);
         try {
             const names = await fsp.readdir(dir);
             const files = [];
             for (const name of names.filter(item => MONTH_FILE_REGEX.test(item)).sort()) {
+                if (Array.isArray(months) && !months.includes(name.slice(0, -3))) continue;
                 const fullPath = path.join(dir, name);
                 const content = await fsp.readFile(fullPath, 'utf8');
                 files.push({ month: name.slice(0, -3), name, fullPath, content });
@@ -289,26 +443,38 @@ class VCPTimeLine {
     }
 
     async buildInjection(agentName, queryContext, k, threshold) {
-        const { queryVector, userText = '', aiText = '' } = queryContext || {};
-        const [store, files] = await Promise.all([this.readSummaryStore(), this.listTimelineFiles(agentName)]);
+        const [summary, recall] = await Promise.all([
+            this.buildSummaryInjection(agentName),
+            this.buildRecallInjection(agentName, queryContext, k, threshold)
+        ]);
+        return [summary, recall].filter(Boolean).join('\n\n');
+    }
+
+    async buildSummaryInjection(agentName) {
+        const store = await this.readSummaryStore();
         const agentSummaries = store[agentName] || {};
         const summaryLines = Object.keys(agentSummaries).sort().map(month => `- ${month}：${agentSummaries[month]}`).filter(Boolean);
-        const sections = [
+        return [
             `## ${agentName}的所有时间线（月）`,
             summaryLines.length > 0 ? summaryLines.join('\n') : '（暂无月度时间线摘要）'
-        ];
+        ].join('\n\n');
+    }
 
+    async buildRecallInjection(agentName, queryContext, k, threshold) {
+        const { queryVector, userText = '', aiText = '' } = queryContext || {};
+        const sections = [];
         const canRetrieve = typeof this.contextBridge?.retrieveDiary === 'function';
         const canSearch = typeof this.contextBridge?.searchDiary === 'function';
         if (
             !queryVector ||
             !this.contextBridge ||
             (!canRetrieve && !canSearch) ||
-            files.length === 0 ||
             k < 1
         ) {
-            return sections.join('\n\n');
+            return '';
         }
+        const files = await this.listTimelineFiles(agentName);
+        if (files.length === 0) return '';
 
         // Timeline 文档已经位于 dailynote/<Agent>timeline，由 KnowledgeBaseManager 自动建立向量索引。
         // 此处只复用 RAG 生成的 queryVector 搜索现有 chunk，绝不重新向量化 Timeline 文档。
@@ -381,43 +547,53 @@ class VCPTimeLine {
     }
 
     async processMessages(messages) {
+        // RAG 已基于原始声明统一调度并回填，绝不扫描其召回正文。
+        if (this.isTimelineManagedByRag?.()) return messages;
         if (!this.config.enabled || !Array.isArray(messages)) return messages;
 
-        // 整个上下文只接受第一个可信声明：system，或正文以“[系统”开头的 user。
-        // 先确定唯一声明，再以单次正则替换清除其余声明，避免注入内容被递归展开。
-        let declaration = null;
-        for (let index = 0; index < messages.length && !declaration; index++) {
+        // 三种入口共用可信规则，每种仅接受第一个可信声明。
+        // 单次替换清除其余声明，不递归展开注入内容。
+        const declarations = new Map();
+        for (let index = 0; index < messages.length; index++) {
             const message = messages[index];
             const text = this.extractText(message?.content);
             const trusted = message?.role === 'system'
                 || (message?.role === 'user' && /^\s*\[系统/.test(text));
             if (!trusted) continue;
 
-            const match = new RegExp(PLACEHOLDER_REGEX.source).exec(text);
-            if (match) declaration = { index, ...this.parsePlaceholder(match) };
+            for (const match of text.matchAll(new RegExp(PLACEHOLDER_REGEX.source, PLACEHOLDER_REGEX.flags))) {
+                const declaration = this.parsePlaceholder(match);
+                if (!declarations.has(declaration.kind)) {
+                    declarations.set(declaration.kind, { index, ...declaration });
+                }
+            }
         }
 
-        let injection = '';
-        if (declaration) {
-            const queryContext = await this.buildQueryContext(messages);
-            injection = await this.buildInjection(
-                this.safeAgentName(declaration.agentName),
-                queryContext,
-                declaration.k,
-                declaration.threshold
-            );
+        const needsQuery = [...declarations.keys()].some(kind => kind !== 'Summary');
+        const queryContext = needsQuery ? await this.buildQueryContext(messages) : null;
+        const injections = new Map();
+        for (const [kind, declaration] of declarations) {
+            const agentName = this.safeAgentName(declaration.agentName);
+            const injection = kind === 'Summary'
+                ? await this.buildSummaryInjection(agentName)
+                : kind === 'Recall'
+                    ? await this.buildRecallInjection(agentName, queryContext, declaration.k, declaration.threshold)
+                    : await this.buildInjection(agentName, queryContext, declaration.k, declaration.threshold);
+            injections.set(kind, injection);
         }
 
-        let accepted = false;
+        const accepted = new Set();
         return messages.map((message, index) => ({
             ...message,
             content: this.replaceText(message.content, text =>
                 text.replace(
                     new RegExp(PLACEHOLDER_REGEX.source, PLACEHOLDER_REGEX.flags),
-                    (...args) => {
-                        if (!accepted && declaration && index === declaration.index && args[0] === declaration.placeholder) {
-                            accepted = true;
-                            return injection;
+                    (placeholder, suffix) => {
+                        const kind = suffix || 'combined';
+                        const declaration = declarations.get(kind);
+                        if (!accepted.has(kind) && declaration && index === declaration.index && placeholder === declaration.placeholder) {
+                            accepted.add(kind);
+                            return injections.get(kind);
                         }
                         return '';
                     }
@@ -521,25 +697,42 @@ class VCPTimeLine {
         if (!key) throw new Error('服务器 Key 未配置');
         if (!this.config.model) throw new Error('VCPTimeLine 模型未配置');
         const { default: fetch } = await import('node-fetch');
-        const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-            body: JSON.stringify({
-                model: this.config.model,
-                stream: false,
-                max_tokens: maxTokens,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ]
-            })
-        });
-        const text = await response.text();
-        if (!response.ok) throw new Error(`模型返回 ${response.status}: ${text.slice(0, 500)}`);
-        const payload = JSON.parse(text);
-        const output = payload?.choices?.[0]?.message?.content;
-        if (typeof output !== 'string' || !output.trim()) throw new Error('模型未返回有效内容');
-        return output.trim();
+        const traceId = randomUUID();
+        const timeoutMs = this.config.modelTimeoutMs;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let stage = 'response_headers';
+        try {
+            const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+                method: 'POST',
+                signal: controller.signal,
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}`, 'X-VCP-Timeline-Trace': traceId },
+                body: JSON.stringify({
+                    model: this.config.model,
+                    stream: false,
+                    max_tokens: maxTokens,
+                    messages: [
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ]
+                })
+            });
+            stage = 'response_body';
+            const text = await response.text();
+            if (!response.ok) throw new Error(`模型返回 ${response.status}: ${text.slice(0, 500)}`);
+            const payload = JSON.parse(text);
+            const output = payload?.choices?.[0]?.message?.content;
+            if (typeof output !== 'string' || !output.trim()) throw new Error('模型未返回有效内容');
+            return output.trim();
+        } catch (error) {
+            if (!controller.signal.aborted) throw error;
+            const waitingFor = stage === 'response_headers' ? '等待 ToolBox 响应头' : '读取 ToolBox 响应正文';
+            throw Object.assign(new Error(`VCPTimeLine 模型请求超时（${timeoutMs} ms，${waitingFor}；诊断 ID：${traceId}）`, { cause: error }), {
+                code: 'TIMELINE_MODEL_TIMEOUT'
+            });
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     async summarizeMonth(agentName, month, memories) {
@@ -637,14 +830,14 @@ class VCPTimeLine {
         };
     }
 
-    async generateTimelines(agentName, options = {}) {
+    async generateTimelines(agentName, options = {}, scannedMemories) {
         agentName = this.safeAgentName(agentName);
         if (this.generationLocks.has(agentName)) throw Object.assign(new Error('该 Agent 已有生成任务运行中'), { code: 'TIMELINE_GENERATION_IN_PROGRESS' });
         const status = this.createStatus(agentName, 'timeline');
         this.generationStatuses.set(agentName, status);
 
         const task = (async () => {
-            const memories = await this.discoverMemories(agentName, options.startMonth, options.endMonth);
+            const memories = scannedMemories ?? await this.discoverMemories(agentName, options.startMonth, options.endMonth);
             const months = [...memories.keys()].sort();
             this.updateStatus(agentName, { phase: 'generating', phaseLabel: '生成月度时间线', total: months.length });
             const dir = this.getTimelineDir(agentName, true);
@@ -679,21 +872,21 @@ class VCPTimeLine {
         return task;
     }
 
-    async generateSummaries(agentName, options = {}) {
+    async generateSummaries(agentName, options = {}, onSaved) {
         agentName = this.safeAgentName(agentName);
         if (this.generationLocks.has(agentName)) throw Object.assign(new Error('该 Agent 已有生成任务运行中'), { code: 'TIMELINE_GENERATION_IN_PROGRESS' });
         this.generationStatuses.set(agentName, this.createStatus(agentName, 'summary'));
 
         const task = (async () => {
-            const files = await this.listTimelineFiles(agentName);
-            const store = await this.readSummaryStore();
-            store[agentName] = store[agentName] || {};
+            const files = await this.listTimelineFiles(agentName, options.months);
+            let summaries = (await this.readSummaryStore())[agentName] || {};
             this.updateStatus(agentName, { phase: 'summarizing', phaseLabel: '生成月度一句话摘要', total: files.length });
             for (let index = 0; index < files.length; index++) {
                 const file = files[index];
-                if (options.overwrite || !store[agentName][file.month]) {
-                    store[agentName][file.month] = await this.generateOneLineSummary(agentName, file.month, file.content);
-                    await this.writeJsonAtomic(this.getSummaryPath(), store);
+                if (options.overwrite || !summaries[file.month]) {
+                    const summary = await this.generateOneLineSummary(agentName, file.month, file.content);
+                    summaries = await this.storeSummary(agentName, file.month, summary, options.overwrite);
+                    if (onSaved) await onSaved(file);
                 }
                 this.updateStatus(agentName, { completed: index + 1, phaseLabel: `已处理 ${file.month}` });
             }
@@ -701,7 +894,7 @@ class VCPTimeLine {
                 running: false, phase: 'completed', phaseLabel: '一句话摘要生成完成',
                 finishedAt: new Date().toISOString()
             });
-            return store[agentName];
+            return summaries;
         })().catch(error => {
             this.updateStatus(agentName, {
                 running: false, phase: 'failed', phaseLabel: '摘要生成失败',
@@ -763,11 +956,20 @@ class VCPTimeLine {
     async saveSummary(agentName, month, summary) {
         agentName = this.safeAgentName(agentName);
         if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new Error('月份必须为 YYYY-MM');
-        const store = await this.readSummaryStore();
-        store[agentName] = store[agentName] || {};
-        store[agentName][month] = String(summary || '').trim();
-        await this.writeJsonAtomic(this.getSummaryPath(), store);
-        return store[agentName];
+        return this.storeSummary(agentName, month, String(summary || '').trim(), true);
+    }
+
+    async storeSummary(agentName, month, summary, overwrite) {
+        const write = this.summaryWrites.then(async () => {
+            const store = await this.readSummaryStore();
+            const existing = Object.hasOwn(store, agentName) ? store[agentName] : {};
+            if (!overwrite && existing[month]) return existing;
+            const summaries = { ...existing, [month]: summary };
+            await this.writeJsonAtomic(this.getSummaryPath(), { ...store, [agentName]: summaries });
+            return summaries;
+        });
+        this.summaryWrites = write.catch(() => {});
+        return write;
     }
 
     registerRoutes(app, adminApiRouter, pluginConfig, projectBasePath) {

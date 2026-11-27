@@ -1,5 +1,24 @@
 import { expect, it } from 'vitest';
 import { buildCallCaptionPages, callCaptionPageAt, callCaptionPlaybackPages } from '../../src/shared/companion-call-captions';
+import { appendCallCaptions, CALL_CAPTION_HISTORY_PAGES, type CallBeat, type CaptionTimeline } from '../../src/renderer/companion-bot/call-caption-timeline';
+
+it('bounds caption history and deduplication across a week of minute-by-minute replies', () => {
+  let timeline: CaptionTimeline = { first: 0, pages: [], snapshotBeats: new Set() };
+  const recent: CallBeat[] = [];
+  const rounds = 7 * 24 * 60;
+  for (let i = 0; i < rounds; i++) {
+    const id = String(i);
+    recent.push({ id, messageId: id, partId: 'cue', sequence: i, text: '这一分钟的对白。', cue: {} });
+    if (recent.length > 80) recent.shift();
+    timeline = appendCallCaptions(timeline, recent);
+    if (timeline.pages.length > CALL_CAPTION_HISTORY_PAGES || timeline.snapshotBeats.size > 80) throw Error('Unbounded caption history');
+  }
+  expect(timeline.first).toBe(rounds - CALL_CAPTION_HISTORY_PAGES);
+  expect(timeline.pages).toHaveLength(CALL_CAPTION_HISTORY_PAGES);
+  expect(timeline.pages[0]!.beat.sequence).toBe(timeline.first);
+  expect(timeline.pages.at(-1)!.beat.sequence).toBe(rounds - 1);
+  expect(appendCallCaptions(timeline, recent).pages).toBe(timeline.pages);
+});
 
 it('preserves all source text and exposes contiguous UTF-16 offsets on grapheme boundaries', () => {
   const text = '  你好👩🏽‍💻！Hello e\u0301 world.\r\n这是下一段，包含🇨🇳和1️⃣。  '.repeat(9);

@@ -1,3 +1,25 @@
+/** 将 IPC 失败 DTO 和被抛出的结构化错误统一为 Error，保留冲突码。 */
+export function normalizeChatRepositoryError(value, fallback = '聊天仓储操作失败') {
+    if (value instanceof Error) return value;
+    const detail = value?.error;
+    const message = typeof detail === 'string' && detail
+        || detail?.message || value?.message
+        || (typeof value === 'string' && value) || fallback;
+    const error = new Error(message, { cause: value });
+    const code = value?.code ?? detail?.code;
+    if (code !== undefined) error.code = code;
+    return error;
+}
+
+/** 兼容既有无返回值保存；明确失败绝不能被解释成成功。 */
+export function assertChatRepositorySuccess(value, fallback) {
+    if (value instanceof Error || value?.success === false
+        || (value?.error !== undefined && value.error !== null && value.error !== false)) {
+        throw normalizeChatRepositoryError(value, fallback);
+    }
+    return value;
+}
+
 /**
  * Electron-free contract for chat history persistence. The adapter is the
  * only place where agent/group IPC naming is selected; callers depend on the
@@ -5,20 +27,43 @@
  */
 export function createChatRepository(electronAPI) {
     if (!electronAPI) throw new TypeError('ChatRepository requires an IPC adapter');
+    const saveListeners = new Set();
     const method = (name) => {
         if (typeof electronAPI[name] !== 'function') throw new Error(`Missing chat repository capability: ${name}`);
         return electronAPI[name].bind(electronAPI);
     };
+    const invoke = async (name, ...args) => {
+        try {
+            return assertChatRepositorySuccess(await method(name)(...args));
+        } catch (error) {
+            throw normalizeChatRepositoryError(error);
+        }
+    };
     return Object.freeze({
         getHistory(itemId, itemType, topicId) {
-            return itemType === 'group'
-                ? method('getGroupChatHistory')(itemId, topicId)
-                : method('getChatHistory')(itemId, topicId);
+            return invoke(itemType === 'group' ? 'getGroupChatHistory' : 'getChatHistory', itemId, topicId);
         },
-        saveHistory(itemId, itemType, topicId, history) {
-            return itemType === 'group'
-                ? method('saveGroupChatHistory')(itemId, topicId, history)
-                : method('saveChatHistory')(itemId, topicId, history);
+        persistAssistant(scope, message) {
+            return invoke('topicAdmissionPersistAssistant', scope, message);
+        },
+        async saveHistory(itemId, itemType, topicId, history, options) {
+            const result = await invoke(itemType === 'group' ? 'saveGroupChatHistory' : 'saveChatHistory',
+                itemId, topicId, history, options);
+            if (Array.isArray(history)) {
+                for (const listener of saveListeners) {
+                    try {
+                        listener({ itemId, itemType, topicId, history, count: history.length, options });
+                    } catch (listenerError) {
+                        console.error('[ChatRepository] Error in onDidSaveHistory listener:', listenerError);
+                    }
+                }
+            }
+            return result;
+        },
+        onDidSaveHistory(listener) {
+            if (typeof listener !== 'function') return () => {};
+            saveListeners.add(listener);
+            return () => saveListeners.delete(listener);
         }
     });
 }

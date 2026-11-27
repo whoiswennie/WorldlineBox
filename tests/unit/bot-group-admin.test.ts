@@ -14,7 +14,7 @@ class Memory extends BotMemoryService{
   constructor(root:string){super({root,runtime:async()=>{throw Error('No native VCP in group administration test.');},embedding:async()=>{throw Error('No embedding inference.');}});}
   override async withdrawnSources(){return{revision:'0',sourceEventIds:[],sourceMessageIds:[]};}
   override async appendHistory(){return{appended:[]};}
-  override async prepareTurn(input:Parameters<BotMemoryService['prepareTurn']>[0]):Promise<BotMemoryPrepared>{return{requestId:input.requestId,scope:input.scope,inputHash:'group-admin',messages:input.messages,metadata:{},events:[],evidence:'',status:'ready',omittedChars:0};}
+  override async prepareTurn(input:Parameters<BotMemoryService['prepareTurn']>[0]):Promise<BotMemoryPrepared>{return{requestId:input.requestId,scope:input.scope,inputHash:'group-admin',messages:input.messages,metadata:{},events:[],nativeContext:'',status:'ready'};}
   override async finishTurn(){return{recorded:true};}
 }
 class Brain extends BotDshBrain{

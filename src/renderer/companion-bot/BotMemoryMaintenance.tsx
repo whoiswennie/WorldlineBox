@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { WorldlineBoxBotApi } from '../../shared/companion-bot';
+import { COMPANION_IDLE_MAINTENANCE, VCP_DREAM_SCHEDULE } from '../../shared/companion-bot-maintenance';
 import type { BotMaintenanceCandidates, BotMaintenanceDiagnostics, BotMaintenanceJob,
-  BotMaintenanceKind, BotMaintenanceList, BotMaintenanceSettings, BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
+  BotMaintenanceKind, MaintenanceBriefInput, MemoMasterMode, BotMaintenanceList, BotMaintenanceSettings, BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
 import type { BotMemoryWorkspaceRequest } from '../../shared/companion-bot-memory';
 import { formatBotReplyDuration } from './BotReplyTiming';
 import './bot-memory-maintenance.css';
@@ -36,6 +37,7 @@ const phases: Record<string, [string, string]> = {
   continuing: ['正在续接未完成的方案', 'Continuing the unfinished plan'],
   waiting_checkpoint: ['正在保存增量处理进度，稍后自动继续', 'Saving incremental progress; continuing automatically'], no_new_versions: ['没有新增或变化的日记', 'No new or changed notes'], 'related-memory': ['按需联想的相关旧记忆', 'Related historical memories'],
   'output-continuation': ['输出进度已保存，正在自动续接', 'Output saved; continuing automatically'],
+  planner_retired: ['旧版维护方案已停止', 'Previous maintenance plan retired'],
   source_withdrawn: ['来源资料已撤回，旧方案已停止', 'Sources withdrawn; the old plan is stopped'],
   cancelled: ['已停止未执行部分', 'Remaining work cancelled'], failed: ['处理未完成', 'Processing did not complete'], blocked: ['需要检查后继续', 'Needs review before continuing'], conflict: ['来源变化，需要重新核对', 'Source changed; verify again'],
   snapshot: ['来源快照', 'Source snapshot'], plan: ['候选计划', 'Candidate plan'], receipt: ['执行回执', 'Execution receipt'], scheduled: ['后台条件检查', 'Background eligibility check'], error: ['异常记录', 'Error record'],
@@ -43,16 +45,23 @@ const phases: Record<string, [string, string]> = {
   'mutation-request': ['已批准的写入请求', 'Approved write request'], 'mutation-receipt': ['真实写入回执', 'Actual write receipt'], 'mutation-error': ['写入未完成', 'Write did not complete'],
 };
 const kinds = (kind: BotMaintenanceKind, zh: boolean) => kind === 'dream' ? text(zh, '梦境', 'Dream') : text(zh, '整理', 'Organization');
+const modes: Record<MemoMasterMode, [string, string]> = { scan: ['只读健康检查', 'Health scan'], organize: ['日常整理', 'Organize'], track: ['事件追踪', 'Event tracking'], deepclean: ['深度清理', 'Deep clean'] };
+const jobTitle = (job: BotMaintenanceJob, zh: boolean) => {
+  if (job.mode && job.survey) return label(modes, job.mode, zh) + ' · ' + text(zh, '第' + job.survey.page + '批', 'Batch ' + job.survey.page);
+  if (job.trigger === 'idle') return job.kind === 'dream' ? text(zh, '闲时梦境', 'Idle dream') : text(zh, '闲时整理', 'Idle organization');
+  if (job.trigger === 'night' || job.automatic && job.kind === 'dream') return text(zh, '夜间梦境', 'Nightly dream');
+  return kinds(job.kind, zh) + ' · ' + (job.automatic ? text(zh, '后台', 'Background') : text(zh, '手动', 'Manual'));
+};
 const actionName = (type: string, zh: boolean) => ({ organize: ['合并整理日记', 'Organize notes'], update: ['更新日记', 'Update a note'],
   insight: ['保存梦境感悟', 'Save a dream insight'], archive: ['归档冗余日记', 'Archive redundant notes'] } as Record<string, [string, string]>)[type]?.[zh ? 0 : 1] ?? text(zh, '候选方案', 'Candidate');
 const label = (map: Record<string, [string, string]>, value: string, zh: boolean) => map[value]?.[zh ? 0 : 1] ?? text(zh, '状态未提供', 'Status not provided');
 const stamp = (value: string | undefined, locale: Locale) => value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString(locale, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 const errorText = (error: unknown, zh: boolean) => error instanceof Error ? error.message.slice(0, 1000) : text(zh, '操作未完成，请重新读取核实。', 'The operation did not complete. Reload to verify.');
 function Status({ value, zh }: { value: string; zh: boolean }) { return <span className="bot-maintenance-status" data-state={value}>{label(states, value, zh)}</span>; }
-const jobStatus = (job: BotMaintenanceJob) => job.status === 'review' && job.autoReview ? 'auto_' + job.autoReview.state : job.status;
+const jobStatus = (job: BotMaintenanceJob) => job.kind === 'organize' && job.status === 'review' && job.autoReview ? 'auto_' + job.autoReview.state : job.status;
 function AutoReviewProgress({ job, locale }: { job: BotMaintenanceJob; locale: Locale }) {
   const progress = job.autoReview, zh = locale === 'zh-CN';
-  if (!progress) return null;
+  if (job.kind !== 'organize' || !progress) return null;
   const description = progress.state === 'running' ? text(zh, `正在审阅第 ${progress.currentPosition} / ${progress.total} 项`, `Reviewing item ${progress.currentPosition} of ${progress.total}`)
     : progress.state === 'waiting' ? text(zh, `暂时中断，将于 ${stamp(progress.retryAt, locale)} 重试`, `Interrupted; retry at ${stamp(progress.retryAt, locale)}`)
       : progress.state === 'queued' ? progress.busyJobId ? text(zh, '正在处理此前的任务，本任务已排队', 'Processing an earlier task; this task is queued') : text(zh, '已加入全局模型审阅队列', 'Queued for global model review')
@@ -97,6 +106,12 @@ export function BotMemoryMaintenance({ api, conversationId, companionId, locale 
   const [page, setPage] = useState<BotMaintenanceList>({ items: [] }), [cursor, setCursor] = useState<string>(), [previous, setPrevious] = useState<Array<string | undefined>>([]);
   const [loading, setLoading] = useState(false), [selected, setSelected] = useState(''), [job, setJob] = useState<BotMaintenanceJob>(), [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [notice, setNotice] = useState(''), [noticeVersion, setNoticeVersion] = useState(0);
+  const [mode, setMode] = useState<MemoMasterMode>('organize'), [draftBrief, setDraftBrief] = useState<MaintenanceBriefInput>({});
+  const [confirmDeep, setConfirmDeep] = useState<{ brief?: MaintenanceBriefInput }>();
+  const draft = (): MaintenanceBriefInput | undefined => {
+    const entries = Object.entries(draftBrief).filter(([, value]) => value?.trim());
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  };
   const alive = useRef(true), listRevision = useRef(0), detailRevision = useRef(0), mutation = useRef(false), requestIds = useRef(new Map<string, string>());
   const retire = useCallback(() => { alive.current = false; ++listRevision.current; ++detailRevision.current; }, []);
   useEffect(() => { alive.current = true; return retire; }, [retire]);
@@ -128,11 +143,11 @@ export function BotMemoryMaintenance({ api, conversationId, companionId, locale 
   }); return () => { unsubscribe?.(); if (timer !== undefined) window.clearTimeout(timer); }; }, [api, conversationId, load, readJob, selected]);
   const choose = (id: string) => { setSelected(id); setJob(undefined); setError(''); setNotice(''); void readJob(id); };
   const refresh = () => { void load(true); if (selected) void readJob(selected, true); };
-  const act = async (action: 'run' | 'cancel' | 'retry', kind?: BotMaintenanceKind, nextCursor?: string) => {
+  const act = async (action: 'run' | 'cancel' | 'retry', kind?: BotMaintenanceKind, nextCursor?: string, requestedMode?: MemoMasterMode, requestedBrief?: MaintenanceBriefInput) => {
     if (mutation.current || action !== 'run' && !job) return;
     mutation.current = true; setBusy(true); setError(''); setNotice('');
-    const key = `${action}:${action === 'run' ? `${kind}:${nextCursor ?? 'first'}` : job!.id}`, requestId = requestIds.current.get(key) ?? crypto.randomUUID(); requestIds.current.set(key, requestId);
-    const input: BotMemoryMaintenanceRequest = action === 'run' ? { type: 'memory.maintenance.run', ...scope, kind: kind!, requestId, ...(nextCursor ? { cursor: nextCursor } : {}) }
+    const key = `${action}:${action === 'run' ? `${kind}:${requestedMode ?? ''}:${nextCursor ?? 'first'}:${JSON.stringify(requestedBrief ?? {})}` : job!.id}`, requestId = requestIds.current.get(key) ?? crypto.randomUUID(); requestIds.current.set(key, requestId);
+    const input: BotMemoryMaintenanceRequest = action === 'run' ? { type: 'memory.maintenance.run', ...scope, kind: kind!, requestId, ...(requestedMode ? { mode: requestedMode } : {}), ...(requestedBrief && { brief: requestedBrief }), ...(nextCursor ? { cursor: nextCursor } : {}) }
       : action === 'cancel' ? { type: 'memory.maintenance.cancel', ...scope, jobId: job!.id, requestId } : { type: 'memory.maintenance.retry', ...scope, jobId: job!.id, requestId };
     try { const value = object(await call(input)); if (typeof value.id !== 'string' || typeof value.status !== 'string' || !value.metrics) throw new Error(text(zh, '未取得完成回执，请重新读取核实。', 'No complete receipt. Reload to verify.'));
       if (!alive.current) return; ++detailRevision.current; requestIds.current.delete(key); setSelected(value.id); setJob(value as unknown as BotMaintenanceJob);
@@ -142,66 +157,105 @@ export function BotMemoryMaintenance({ api, conversationId, companionId, locale 
   };
   return <section className="bot-memory-maintenance" aria-label={text(zh, '整理与梦境', 'Organization and dreams')}>
     <div className="bot-maintenance-body"><aside className="bot-maintenance-jobs"><div className="bot-maintenance-left-scroll"><header className="bot-maintenance-list-heading"><span>{text(zh, '维护任务', 'Maintenance tasks')}</span><button disabled={loading} onClick={() => void load()}>{text(zh, '刷新', 'Refresh')}</button></header>
-      <div className="bot-maintenance-toolbar-actions"><button className="is-primary" disabled={busy} onClick={() => void act('run', 'organize')}>{text(zh, '生成整理方案', 'Plan organization')}</button><button disabled={busy} onClick={() => void act('run', 'dream')}>{text(zh, '生成梦境候选', 'Dream candidates')}</button></div>
+      <label className="bot-maintenance-mode">{text(zh, '日记维护模式', 'Diary maintenance mode')}<select value={mode} onChange={event => { setMode(event.target.value as MemoMasterMode); setConfirmDeep(undefined); }}>{Object.keys(modes).map(key => <option key={key} value={key}>{label(modes, key, zh)}</option>)}</select></label>
+      <details className="bot-maintenance-brief"><summary>{text(zh, '指定项目或日期', 'Limit by project or date')}</summary>
+        <label>{text(zh, '项目或关注点', 'Project or focus')}<input value={draftBrief.topic ?? ''} maxLength={1200} onChange={event => setDraftBrief({ ...draftBrief, topic: event.target.value })} /></label>
+        <label>{text(zh, '时间描述', 'Time period')}<input placeholder={text(zh, '例如最近三个月', 'e.g. last three months')} value={draftBrief.period ?? ''} maxLength={160} onChange={event => setDraftBrief({ ...draftBrief, period: event.target.value })} /></label>
+        <label>{text(zh, '起始日期', 'From')}<input type="date" value={draftBrief.fromDate ?? ''} max={draftBrief.toDate || undefined} onChange={event => setDraftBrief({ ...draftBrief, fromDate: event.target.value })} /></label>
+        <label>{text(zh, '结束日期', 'Through')}<input type="date" value={draftBrief.toDate ?? ''} min={draftBrief.fromDate || undefined} onChange={event => setDraftBrief({ ...draftBrief, toDate: event.target.value })} /></label>
+      </details>
+      <div className="bot-maintenance-toolbar-actions"><button className="is-primary" disabled={busy} onClick={() => mode === 'deepclean' ? setConfirmDeep({ brief: draft() }) : void act('run', 'organize', undefined, mode, draft())}>{mode === 'organize' ? text(zh, '生成整理方案', 'Plan organization') : text(zh, '开始', 'Start ') + label(modes, mode, zh)}</button><button disabled={busy} onClick={() => void act('run', 'dream')}>{text(zh, '生成梦境候选', 'Dream candidates')}</button></div>
+      {confirmDeep && <div className="bot-maintenance-safety"><p>{text(zh, '将逐批复查本伙伴在当前会话与所选范围内的可召回日记。你可以逐项审阅变更。', 'Review all searchable notes for this companion in this conversation within the requested scope, one batch at a time. You approve each proposed change.')}</p><button onClick={() => setConfirmDeep(undefined)}>{text(zh, '取消', 'Cancel')}</button><button disabled={busy} onClick={() => { setConfirmDeep(undefined); void act('run', 'organize', undefined, 'deepclean', confirmDeep.brief); }}>{text(zh, '确认深度清理', 'Confirm deep clean')}</button></div>}
       <MaintenanceSettings api={api} call={call} scope={scope} locale={locale} notify={notify} />
-      <div className="bot-maintenance-job-list" aria-busy={loading}>{loading ? <Empty title={text(zh, '正在读取…', 'Loading…')} /> : !page.items.length ? <Empty title={text(zh, '还没有维护任务', 'No maintenance tasks')} hint={text(zh, '可以手动生成方案，或启用后台计划。', 'Start a plan manually or enable the background schedule.')} /> : page.items.map(item => <button key={item.id} className="bot-maintenance-job" aria-current={selected === item.id} onClick={() => choose(item.id)} data-maintenance-job={item.id}><div><strong>{kinds(item.kind, zh)} · {item.automatic ? text(zh, '后台', 'Background') : text(zh, '手动', 'Manual')}</strong><Status value={jobStatus(item)} zh={zh} /></div><p>{label(phases, item.phase, zh)}</p><p><time>{stamp(item.createdAt, locale)}</time> · {formatBotReplyDuration(item.elapsedMs, locale)}</p></button>)}</div>
+      <div className="bot-maintenance-job-list" aria-busy={loading}>{loading ? <Empty title={text(zh, '正在读取…', 'Loading…')} /> : !page.items.length ? <Empty title={text(zh, '还没有维护任务', 'No maintenance tasks')} hint={text(zh, '可以手动生成整理方案或梦境候选。', 'Start an organization plan or generate dream candidates.')} /> : page.items.map(item => <button key={item.id} className="bot-maintenance-job" aria-current={selected === item.id} onClick={() => choose(item.id)} data-maintenance-job={item.id}><div><strong>{jobTitle(item, zh)}</strong><Status value={jobStatus(item)} zh={zh} /></div><p>{label(phases, item.phase, zh)}</p><p><time>{stamp(item.createdAt, locale)}</time> · {formatBotReplyDuration(item.elapsedMs, locale)}</p></button>)}</div>
       </div>
       <Pagination previous={!!previous.length} next={!!page.nextCursor} page={previous.length + 1} busy={loading} locale={locale} onPrevious={() => { setCursor(previous.at(-1)); setPrevious(value => value.slice(0, -1)); }} onNext={() => { setPrevious(value => [...value, cursor]); setCursor(page.nextCursor); }} />
     </aside><section className="bot-maintenance-detail" aria-busy={detailLoading}>{detailLoading ? <Empty title={text(zh, '正在读取任务…', 'Loading task…')} /> : !job ? <Empty title={text(zh, '选择一个任务查看方案', 'Select a task to inspect its plan')} hint={text(zh, '来源、候选和诊断记录都按需读取。', 'Sources, candidates, and diagnostics load on demand.')} /> : <>
-      <header className="bot-maintenance-detail-heading"><div><h3>{kinds(job.kind, zh)}<span> · </span><Status value={jobStatus(job)} zh={zh} /></h3><p role="status">{label(phases, job.phase, zh)} · <JobClock key={job.id} job={job} locale={locale} /></p></div><div className="bot-maintenance-job-actions">
-        {job.nextCursor && job.phase !== 'source_withdrawn' && ['review', 'completed'].includes(job.status) && <button disabled={busy} onClick={() => void act('run', job.kind, job.nextCursor)}>{text(zh, '继续下一批', 'Continue with the next batch')}</button>}
+      <header className="bot-maintenance-detail-heading"><div><h3>{jobTitle(job, zh)}<span> · </span><Status value={jobStatus(job)} zh={zh} /></h3><p role="status">{label(phases, job.phase, zh)} · <JobClock key={job.id} job={job} locale={locale} /></p></div><div className="bot-maintenance-job-actions">
+        {job.survey?.nextJobId && <button onClick={() => choose(job.survey!.nextJobId!)}>{text(zh, '查看下一批进度', 'View next batch')}</button>}
+        {job.survey && job.survey.page > 1 && <button onClick={() => choose(job.survey!.rootId)}>{text(zh, '查看首批报告', 'View first report')}</button>}
+        {!job.survey && job.nextCursor && job.phase !== 'source_withdrawn' && job.phase !== 'planner_retired' && ['review', 'completed'].includes(job.status) && <button disabled={busy} onClick={() => void act('run', job.kind, job.nextCursor)}>{text(zh, '继续下一批', 'Continue with the next batch')}</button>}
         {['queued', 'running', 'review', 'applying'].includes(job.status) && <button disabled={busy} onClick={() => void act('cancel')}>{text(zh, '取消待处理部分', 'Cancel remaining work')}</button>}
-        {job.phase !== 'source_withdrawn' && ['failed', 'blocked', 'cancelled'].includes(job.status) && <button disabled={busy} onClick={() => void act('retry')}>{text(zh, '重试未完成部分', 'Retry unfinished work')}</button>}
+        {job.phase !== 'source_withdrawn' && job.phase !== 'planner_retired' && ['failed', 'blocked', 'cancelled'].includes(job.status) && <button disabled={busy} onClick={() => void act('retry')}>{text(zh, '重试未完成部分', 'Retry unfinished work')}</button>}
       </div></header>
       <AutoReviewProgress job={job} locale={locale} />
+      {job.brief && <p className="bot-maintenance-guidance">{text(zh, job.brief.requestedBy === 'user' ? '你的盘点委托' : '伙伴提交的盘点委托', job.brief.requestedBy === 'user' ? 'Your brief' : 'Companion request')}{' · '}{[job.brief.topic, job.brief.period, job.brief.fromDate && text(zh, '自 ', 'From ') + job.brief.fromDate, job.brief.toDate && text(zh, '至 ', 'Through ') + job.brief.toDate].filter(Boolean).join(' · ')}</p>}
+      {job.survey?.progress && <p className="bot-maintenance-guidance" role="status">{text(zh,
+        `全程已检查 ${job.survey.progress.examined} 篇，共 ${job.survey.progress.pages} 批；${job.survey.progress.complete ? '已到末页' : '后续批次将在后台继续'}。待核查 ${job.survey.progress.deferred} 项。`,
+        `${job.survey.progress.examined} entries examined across ${job.survey.progress.pages} batches. ${job.survey.progress.complete ? 'Last page reached.' : 'Further batches continue in the background.'} ${job.survey.progress.deferred} entries need follow-up.`)}</p>}
       {job.error && <div className="bot-memory-alert" role="alert">{job.error}</div>}
       <dl className="bot-maintenance-facts">{([[text(zh, job.metrics.incremental ? '新增/变化' : '已检查', job.metrics.incremental ? 'New/changed' : 'Examined'), job.metrics.examined], [text(zh, '选为来源', 'Selected sources'), job.metrics.selected], ...(job.metrics.context ? [[text(zh, '相关旧记忆', 'Related memories'), job.metrics.context] as const] : []), [text(zh, '留待后续', 'Deferred'), job.metrics.deferred], [text(zh, '候选', 'Candidates'), job.metrics.candidates], [text(zh, '已应用', 'Applied'), job.metrics.applied], [text(zh, '已驳回', 'Rejected'), job.metrics.rejected]] as const).map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value}</dd></div>)}</dl>
-      <JobPlan key={job.id} job={job} call={call} scope={scope} locale={locale} changed={refresh} regenerate={() => act('run', job.kind)} />
+      <JobPlan key={job.id} job={job} call={call} scope={scope} locale={locale} changed={refresh} regenerate={async () => {
+        const brief = job.brief && { topic: job.brief.topic, period: job.brief.period, fromDate: job.brief.fromDate, toDate: job.brief.toDate };
+        if (job.mode === 'deepclean') setConfirmDeep({ brief }); else await act('run', job.kind, undefined, job.mode, brief);
+      }} />
     </>}</section></div>
     <div className="bot-maintenance-toasts">{notice && <MaintenanceToast key={noticeVersion} message={notice} kind="success" locale={locale} dismiss={dismissNotice} />}{error && <MaintenanceToast message={error} kind="error" locale={locale} dismiss={dismissError} retry={() => { setError(''); refresh(); }} />}</div>
   </section>;
 }
 
 function MaintenanceSettings({ api, call, scope, locale, notify }: { api: WorldlineBoxBotApi; call: Call; scope: Scope; locale: Locale; notify(kind: 'success' | 'error', message: string): void }) {
-  const zh = locale === 'zh-CN', [value, setValue] = useState<BotMaintenanceSettings>(), [draft, setDraft] = useState<BotMaintenanceSettings>(), [busy, setBusy] = useState(false);
-  const alive = useRef(true), locked = useRef(false), dirty = useRef(false), revision = useRef(0);
+  const zh = locale === 'zh-CN', [value, setValue] = useState<BotMaintenanceSettings>(), [busy, setBusy] = useState(false);
+  const alive = useRef(true), locked = useRef(false), revision = useRef(0);
   const retire = useCallback(() => { alive.current = false; ++revision.current; }, []);
-  const load = useCallback(async () => { const current = ++revision.current; try { const next = object(await call({ type: 'memory.maintenance.settings.get', ...scope })); if (typeof next.enabled !== 'boolean' || !['never', 'lossless'].includes(String(next.autoApply))) throw new Error(text(zh, '未取得后台设置。', 'No background settings returned.')); if (alive.current && current === revision.current) { setValue(next as unknown as BotMaintenanceSettings); if (!dirty.current) setDraft(next as unknown as BotMaintenanceSettings); } } catch (reason) { if (alive.current && current === revision.current) notify('error', errorText(reason, zh)); } }, [call, scope, zh, notify]);
-  // Synchronize the external settings receipt; draft edits stay local and are not overwritten.
+  const load = useCallback(async () => {
+    const current = ++revision.current;
+    try {
+      const next = object(await call({ type: 'memory.maintenance.settings.get', ...scope }));
+      if (typeof next.enabled !== 'boolean') throw new Error(text(zh, '未取得梦境设置。', 'Could not load dream settings.'));
+      if (alive.current && current === revision.current) setValue(next as unknown as BotMaintenanceSettings);
+    } catch (reason) { if (alive.current && current === revision.current) notify('error', errorText(reason, zh)); }
+  }, [call, scope, zh, notify]);
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { alive.current = true; void load(); let timer: number | undefined; const off = api.onEvent?.(event => { if (event.type !== 'changed' || event.conversationId && event.conversationId !== scope.conversationId || timer !== undefined) return; timer = window.setTimeout(() => { timer = undefined; void load(); }, 500); }); return () => { retire(); off?.(); if (timer !== undefined) window.clearTimeout(timer); }; }, [api, scope, load, retire]);
-  const save = async () => { if (!draft || locked.current) return; locked.current = true; setBusy(true); notify('error', '');
-    try { const next = object(await call({ type: 'memory.maintenance.settings.update', ...scope, settings: { enabled: draft.enabled, kind: draft.kind, autoApply: draft.autoApply, intervalHours: draft.intervalHours, idleMinutes: draft.idleMinutes, minNotes: draft.minNotes } }));
-      if (typeof next.enabled !== 'boolean' || !['never', 'lossless'].includes(String(next.autoApply))) throw new Error(text(zh, '设置结果待核实，请重新打开查看。', 'The settings outcome is unconfirmed. Reopen to verify.'));
-      if (alive.current) { ++revision.current; dirty.current = false; setValue(next as unknown as BotMaintenanceSettings); setDraft(next as unknown as BotMaintenanceSettings); notify('success', text(zh, '后台设置已保存。', 'Background settings saved.')); }
-    } catch (reason) { if (alive.current) notify('error', errorText(reason, zh)); } finally { locked.current = false; if (alive.current) setBusy(false); }
-  };
-  const valid = draft && Number.isInteger(draft.intervalHours) && draft.intervalHours >= 1 && draft.intervalHours <= 720 && Number.isInteger(draft.idleMinutes) && draft.idleMinutes >= 1 && draft.idleMinutes <= 1440 && Number.isInteger(draft.minNotes) && draft.minNotes >= 4 && draft.minNotes <= 1000;
-  const toggleReview = async () => {
-    if (!value || locked.current) return; locked.current = true; setBusy(true);
+  const update = async (key: 'enabled' | 'autoReview') => {
+    if (!value || locked.current) return;
+    locked.current = true;
+    setBusy(true);
     try {
-      const next = object(await call({ type: 'memory.maintenance.settings.update', ...scope, settings: { autoReview: !value.autoReview } }));
-      if (typeof next.autoReview !== 'boolean') throw new Error(text(zh, '自动审阅开关结果未确认，请重新读取设置。', 'Review setting was not confirmed. Reload settings.'));
-      if (alive.current) { ++revision.current; setValue(next as unknown as BotMaintenanceSettings); setDraft(current => current ? { ...current, autoReview: next.autoReview as boolean } : current); notify('success', text(zh, next.autoReview ? '已开启全局模型逐项审阅，结论与应用结果会保留记录。' : '已关闭自动审阅，后续候选交由人工处理。', next.autoReview ? 'Global-model review enabled; decisions and receipts are retained.' : 'Automatic review disabled; remaining candidates await manual review.')); }
+      const checked = !value[key];
+      const next = object(await call({ type: 'memory.maintenance.settings.update', ...scope, settings: { [key]: checked } }));
+      if (next[key] !== checked || typeof next.enabled !== 'boolean') throw new Error(text(zh, '未取得设置回执，请重新读取。', 'Could not confirm the change. Reload settings.'));
+      if (alive.current) {
+        ++revision.current;
+        setValue(next as unknown as BotMaintenanceSettings);
+        const message = key === 'enabled' ? text(zh, checked ? '已开启闲时整理与夜间梦境。' : '已关闭闲时整理与夜间梦境。', checked ? 'Idle organization and nightly dreams enabled.' : 'Idle organization and nightly dreams disabled.')
+          : text(zh, checked ? '整理方案将交由模型逐项审阅。' : '整理方案将交由人工审阅。', checked ? 'Model review enabled for organization plans.' : 'Organization plans now await human review.');
+        notify('success', message);
+      }
     } catch (reason) { if (alive.current) notify('error', errorText(reason, zh)); }
     finally { locked.current = false; if (alive.current) setBusy(false); }
   };
-  return <><div className="bot-maintenance-auto-review"><div><strong>{text(zh, '自动审阅', 'Automatic review')}</strong><small>{text(zh, '全局模型逐项审查，通过后自动应用；疑问转人工。', 'Global model reviews each item and applies approvals; uncertain cases stay for manual review.')}</small></div><button type="button" role="switch" aria-label={text(zh, '自动审阅', 'Automatic review')} aria-checked={!!value?.autoReview} disabled={busy || !value} onClick={() => void toggleReview()}><span /></button></div><details className="bot-maintenance-settings"><summary>{text(zh, '周期后台计划', 'Background schedule')}<span>{value ? value.enabled ? text(zh, '已启用', 'Enabled') : text(zh, '未启用', 'Disabled') : text(zh, '读取中', 'Loading')}</span></summary>
-    <button className="bot-maintenance-settings-refresh" type="button" onClick={() => void load()}>{text(zh, '重新读取设置', 'Reload settings')}</button>{draft && <form onChange={() => { dirty.current = true; }} onSubmit={event => { event.preventDefault(); if (valid) void save(); }}><div className="bot-maintenance-settings-form">
-      <label className="is-toggle"><input type="checkbox" checked={draft.enabled} disabled={busy} onChange={event => setDraft({ ...draft, enabled: event.target.checked })} />{text(zh, '启用周期后台维护', 'Enable background maintenance')}</label>
-      <label>{text(zh, '后台类型', 'Background mode')}<select aria-label={text(zh, '后台类型', 'Background mode')} value={draft.kind} disabled={busy} onChange={event => setDraft({ ...draft, kind: event.target.value as BotMaintenanceKind })}><option value="organize">{text(zh, '整理', 'Organization')}</option><option value="dream">{text(zh, '梦境', 'Dream')}</option></select></label>
-      <label>{text(zh, '应用策略', 'Application policy')}<select aria-label={text(zh, '应用策略', 'Application policy')} value={draft.autoApply} disabled={busy} onChange={event => setDraft({ ...draft, autoApply: event.target.value as 'never' | 'lossless' })}><option value="never">{text(zh, '全部逐项批准', 'Review every candidate')}</option><option value="lossless">{text(zh, '仅无损整理可自动应用', 'Auto-apply lossless organization only')}</option></select></label>
-      {(['intervalHours', 'idleMinutes', 'minNotes'] as const).map((key, index) => <label key={key}>{[text(zh, '最短间隔（小时）', 'Minimum interval (hours)'), text(zh, '空闲至少（分钟）', 'Minimum idle time (minutes)'), text(zh, '合批目标（日记数）', 'Batch target (notes)')][index]}<input type="number" aria-label={[text(zh, '最短间隔（小时）', 'Minimum interval (hours)'), text(zh, '空闲至少（分钟）', 'Minimum idle time (minutes)'), text(zh, '合批目标（日记数）', 'Batch target (notes)')][index]} min={[1, 1, 4][index]} max={[720, 1440, 1000][index]} value={draft[key]} disabled={busy} onChange={event => setDraft({ ...draft, [key]: Number(event.target.value) })} /></label>)}
-    </div><div className="bot-maintenance-settings-footer"><p>{text(zh, '关闭软件时暂停；错过计划时间会在下次启动并空闲后补跑，中断进度会保留。后台仅处理新增或正文变化的日记，按需关联旧记忆；达到维护间隔时少量日记也会处理，中断任务会续接，不设每日次数或累计用量额度。改写、归档和梦境感悟在审阅批准后应用，并保留完整记录。', 'Work pauses while the app is closed. Overdue work resumes on the next launch when idle, with progress preserved. Background work processes remaining batches and continues incomplete output, without daily or cumulative usage quotas. Rewrites, archiving, and dream insights follow recorded review approval.')}<br />{value?.enabled ? `${text(zh, '最早检查时间：', 'Earliest check: ')}${stamp(value.nextEligibleAt, locale)}` : text(zh, '未开启后台计划，仍可手动生成候选。', 'Background scheduling is off; manual planning remains available.')}{value?.blockedReason && <><br />{value.blockedReason}</>}</p><button className="is-primary" type="submit" disabled={busy || !valid}>{busy ? text(zh, '保存中…', 'Saving…') : text(zh, '保存后台设置', 'Save schedule')}</button></div></form>}
-  </details></>;
+  const clockHour = (hour: number) => String(hour).padStart(2, '0') + ':00';
+  const { windowStart, windowEnd, frequencyHours, checkMinutes, probability } = VCP_DREAM_SCHEDULE;
+  const quietMinutes = COMPANION_IDLE_MAINTENANCE.quietMs / 60000;
+  const night = `${clockHour(windowStart)}–${clockHour(windowEnd)}`, chance = Math.round(probability * 100);
+  return <>
+    <div className="bot-maintenance-auto-review"><div><strong>{text(zh, '整理方案的模型审阅', 'Model review for organization')}</strong><small>{text(zh, '模型逐项核对日常整理的来源，证据明确时应用修改，有疑问时交由你决定。梦境建议由你审批。', 'The model checks sources before applying ordinary diary changes. You decide uncertain items and dream proposals.')}</small></div><button type="button" role="switch" aria-label={text(zh, '整理方案的模型审阅', 'Model review for organization')} aria-checked={!!value?.autoReview} disabled={busy || !value} onClick={() => void update('autoReview')}><span /></button></div>
+    <details className="bot-maintenance-settings"><summary>{text(zh, '闲时整理与夜间梦境', 'Idle organization and nightly dreams')}<span>{value ? value.enabled ? text(zh, '已启用', 'Enabled') : text(zh, '未启用', 'Disabled') : text(zh, '读取中', 'Loading')}</span></summary>
+      <div className="bot-maintenance-settings-form"><label className="is-toggle"><input type="checkbox" aria-label={text(zh, '启用自动记忆整理', 'Enable automatic memory organization')} checked={!!value?.enabled} disabled={busy || !value} onChange={() => void update('enabled')} />{text(zh, '启用自动记忆整理', 'Enable automatic memory organization')}</label></div>
+      <div className="bot-maintenance-settings-footer"><p>{text(zh, `有新日记时，这位伙伴在所有聊天中约 ${quietMinutes} 分钟没有收到输入或处理前台请求，就可以开始闲时整理。继续输入会让整理暂停。`, `New journal entries can be organized once this companion has had about ${quietMinutes} minutes without input or foreground work across all chats. Typing again pauses planning.`)}</p>
+      <p>{text(zh, `应用运行时，在本地时间 ${night} 每 ${checkMinutes} 分钟检查一次。符合条件时有 ${chance}% 的概率入梦，两次成功入梦至少间隔 ${frequencyHours} 小时。`, `While the app is running, it checks every ${checkMinutes} minutes from ${night} local time. Each eligible check has a ${chance}% chance of starting a dream, with at least ${frequencyHours} hours between successful dreams.`)}</p>
+      <p>{text(zh, '关闭应用会保留进度。重新打开后，伙伴会在空闲时接续，多晚积累的新日记合并处理一次。', 'Progress is saved when the app closes. On reopening, the companion resumes when idle and handles entries from missed nights in one run.')}</p>
+      <p>{text(zh, '普通整理依照审阅设置执行。梦境、深度清理与事件追踪的修改由你逐项批准。', 'Ordinary organization follows your review setting. You approve each change from dreams, deep cleaning and event tracking.')}</p>
+      {value?.enabled && <p>{text(zh, '下次检查', 'Next check')} · {stamp(value.nextEligibleAt, locale)}{value.blockedReason && <><br />{value.blockedReason}</>}</p>}
+      </div><button className="bot-maintenance-settings-refresh" type="button" disabled={busy} onClick={() => void load()}>{text(zh, '重新读取设置', 'Reload settings')}</button>
+    </details>
+  </>;
 }
 
 function JobPlan({ job, call, scope, locale, changed, regenerate }: { job: BotMaintenanceJob; call: Call; scope: Scope; locale: Locale; changed(): void; regenerate(): Promise<void> }) {
-  const zh = locale === 'zh-CN', [tab, setTab] = useState<'candidates' | 'diagnostics'>('candidates');
+  const zh = locale === 'zh-CN', [tab, setTab] = useState<'candidates' | 'diagnostics' | 'report'>(job.survey || job.kind === 'dream' && job.narrative ? 'report' : 'candidates');
+  const reportTitle = job.kind === 'dream' ? text(zh, '梦境叙事', 'Dream narrative') : text(zh, '本批报告', 'Batch report');
+  if (job.phase === 'planner_retired') return <><p role="status">{text(zh, '该版本已停止执行。可用当前日记重新创建任务。过往操作回执可在诊断中查阅。', 'This plan is retired. Create a new task from the current diaries. Past operation receipts are available in diagnostics.')}</p><Diagnostics job={job} call={call} scope={scope} locale={locale} /></>;
   if (job.phase === 'source_withdrawn') return <div className="bot-maintenance-safety" role="status"><strong>{text(zh, '来源资料已撤回', 'Sources withdrawn')}</strong>{text(zh, '旧候选和诊断正文已停止显示。请依据当前可用日记生成新方案。', 'Old candidates and diagnostic text are no longer displayed. Generate a fresh plan from the currently available notes.')}</div>;
-  return <div className="bot-maintenance-plan"><nav className="bot-maintenance-detail-tabs" aria-label={text(zh, '任务内容', 'Task contents')}><button aria-pressed={tab === 'candidates'} onClick={() => setTab('candidates')}>{text(zh, '候选方案', 'Candidates')}</button><button aria-pressed={tab === 'diagnostics'} onClick={() => setTab('diagnostics')}>{text(zh, '梦境与诊断', 'Dreams and diagnostics')}</button></nav>
-    <p className="bot-maintenance-guidance"><strong>{job.kind === 'dream' ? text(zh, '梦境不是用户事实。', 'Dreams are not user facts. ') : text(zh, '候选不等于已改写。', 'A candidate is not an applied change. ')}</strong>{job.metrics.incremental ? text(zh, '仅处理新增或变化的日记，按需联想相关旧记忆；已分析版本和待审来源不会重复排队。', 'Processes new or changed notes with related historical context; analyzed versions and pending reviews are not queued again.') : text(zh, '每批最多检查24篇；请逐项核对来源后批准。', 'Batches contain at most 24 notes; check sources before approving each action.')}</p>
-    {tab === 'candidates' ? <CandidateList job={job} call={call} scope={scope} locale={locale} changed={changed} regenerate={regenerate} /> : <div className="bot-maintenance-diagnostics-scroll"><Diagnostics job={job} call={call} scope={scope} locale={locale} /></div>}
+  return <div className="bot-maintenance-plan"><nav className="bot-maintenance-detail-tabs" aria-label={text(zh, '任务内容', 'Task contents')}>
+    {(job.survey || job.narrative) && <button aria-pressed={tab === 'report'} onClick={() => setTab('report')}>{reportTitle}</button>}
+    {job.mode !== 'scan' && <button aria-pressed={tab === 'candidates'} onClick={() => setTab('candidates')}>{text(zh, '候选方案', 'Candidates')}</button>}
+    <button aria-pressed={tab === 'diagnostics'} onClick={() => setTab('diagnostics')}>{text(zh, '梦境与诊断', 'Dreams and diagnostics')}</button></nav>
+    {job.survey ? <p className="bot-maintenance-guidance">{job.mode === 'scan' ? text(zh, '只读检查会逐批生成健康报告。', 'This read-only scan produces a health report for each batch.') : text(zh, '建议由你逐项批准。撤回状态标注所引用的证据时，含该标注的日记也会退出召回。', 'You approve each change. Withdrawing evidence used by an annotation also removes the annotated entry from recall.')}</p> :
+    <p className="bot-maintenance-guidance"><strong>{job.kind === 'dream' ? text(zh, '梦境不是用户事实。', 'Dreams are not user facts. ') : text(zh, '候选不等于已改写。', 'A candidate is not an applied change. ')}</strong>{job.kind === 'dream' ? text(zh, '逐项核对梦境中引用的日记，只有你批准的修改会写入记忆。', 'Check each proposal against the cited diaries. Only changes you approve enter memory.') : job.metrics.incremental ? text(zh, '仅处理新增或变化的日记，按需联想相关旧记忆；已分析版本和待审来源不会重复排队。', 'Processes new or changed notes with related historical context; analyzed versions and pending reviews are not queued again.') : text(zh, '每批最多检查20篇；请逐项核对来源后批准。', 'Batches contain at most 20 notes; check sources before approving each action.')}</p>}
+    {tab === 'report' ? <article className="bot-maintenance-dream-narrative" aria-label={reportTitle}>{job.narrative || text(zh, '报告生成后将在此显示。', 'The report will appear here when ready.')}</article> : tab === 'candidates' ? <CandidateList job={job} call={call} scope={scope} locale={locale} changed={changed} regenerate={regenerate} /> : <div className="bot-maintenance-diagnostics-scroll"><Diagnostics job={job} call={call} scope={scope} locale={locale} /></div>}
   </div>;
 }
 
@@ -213,7 +267,7 @@ function CandidateList({ job, call, scope, locale, changed, regenerate }: { job:
   const item = page.items.find(value => value.id === selected), index = page.items.findIndex(value => value.id === selected);
   const closeReader = () => { const id = selected; setSelected(''); window.requestAnimationFrame(() => list.current?.querySelector<HTMLButtonElement>(`[data-maintenance-candidate="${CSS.escape(id)}"] button`)?.focus()); };
   return <div ref={list} className="bot-maintenance-review-workbench" data-reading={!!item}><aside className="bot-review-candidate-list" hidden={!!item}><header><strong>{text(zh, '候选方案', 'Candidates')}</strong><span>{page.items.length} {text(zh, '项', 'items')}</span></header>{error && <p className="bot-memory-alert" role="alert">{error}</p>}<div className="bot-maintenance-candidates" aria-busy={loading}>{loading && !page.items.length ? <Empty title={text(zh, '正在读取候选…', 'Loading candidates…')} /> : !page.items.length ? <Empty title={text(zh, '还没有候选方案', 'No candidates yet')} hint={text(zh, '任务完成扫描后，会在这里列出可审阅方案。', 'Reviewable candidates appear here after scanning.')} /> : page.items.map(item => <article className="bot-maintenance-candidate" key={item.id} data-maintenance-candidate={item.id}>
-    <button className="bot-maintenance-candidate-open" aria-expanded={selected === item.id} aria-current={selected === item.id ? 'true' : undefined} onClick={() => setSelected(item.id)}><div><strong>{actionName(item.type, zh)}</strong><Status value={item.status === 'pending' && item.autoReview ? 'auto_' + item.autoReview.state : item.status} zh={zh} /></div><p>{item.title}</p><footer><span>{item.sourceCount} {text(zh, '篇来源', 'sources')}</span><span>{item.uncertaintyCount} {text(zh, '处不确定', 'uncertainties')}</span></footer></button>
+    <button className="bot-maintenance-candidate-open" aria-expanded={selected === item.id} aria-current={selected === item.id ? 'true' : undefined} onClick={() => setSelected(item.id)}><div><strong>{actionName(item.type, zh)}</strong><Status value={job.kind === 'organize' && item.status === 'pending' && item.autoReview ? 'auto_' + item.autoReview.state : item.status} zh={zh} /></div><p>{item.title}</p><footer><span>{item.sourceCount} {text(zh, '篇来源', 'sources')}</span><span>{item.uncertaintyCount} {text(zh, '处不确定', 'uncertainties')}</span></footer></button>
   </article>)}</div><Pagination previous={!!previous.length} next={!!page.nextCursor} page={previous.length + 1} busy={loading} locale={locale} onPrevious={() => { setSelected(''); setLoading(true); setCursor(previous.at(-1)); setPrevious(value => value.slice(0, -1)); }} onNext={() => { setSelected(''); setLoading(true); setPrevious(value => [...value, cursor]); setCursor(page.nextCursor); }} /></aside>
   {item && <BotMaintenanceCandidateReview key={`${item.id}:${item.revision}`} summary={item} call={call} scope={scope} locale={locale} changed={changed} regenerate={regenerate} close={closeReader} position={index + 1} count={page.items.length} hasPrevious={index > 0} hasNext={index < page.items.length - 1} navigate={direction => setSelected(page.items[index + direction]!.id)} />}
   </div>;

@@ -56,7 +56,7 @@ it('contacts in the real peer channel and permits only the recipient to publish 
   expect(() => store.enqueue({ conversationId: target.id, senderId: 'alice', source: 'companion', recipientIds: ['bob'], content: '无宿主来源的越权投递' })).toThrow('发送者');
   expect(() => store.enqueue({ conversationId: target.id, senderId: 'alice', source: 'companion', recipientIds: ['bob'], content: '旧例外也不能跨入', contactSourceEventId: event.id, causationId: event.id, correlationId: event.correlationId })).toThrow('发送者');
   const context = JSON.parse(buildNativeBotContext({ companion: store.getCompanion('bob')!, event: delivered.events[0]!, conversation: peer,
-    companions: [store.getCompanion('alice')!, store.getCompanion('bob')!], memories: '', files: [] }).prompt);
+    companions: [store.getCompanion('alice')!, store.getCompanion('bob')!], files: [] }).prompt);
   expect(context.peerContact).toBeDefined();
   expect(context.room.members).toEqual(['alice', 'bob']);
   expect(JSON.stringify(context)).not.toContain('无关私聊秘密');

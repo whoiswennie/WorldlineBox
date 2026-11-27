@@ -254,7 +254,9 @@ if (asarFiles.some(entry => /^\/?\.vite\/vcp-memory(?:-host)?(?:\/|$)/u.test(Str
 }
 if (existsSync(path.join(resourcesPath, 'vcp-memory-host'))) throw new Error('Retired companion memory host must not ship with the Super Agent runtime.');
 await verifyBotMemory({ packageRoot: path.join(resourcesPath, 'vcp-memory'), projectRoot,
-  nodePath: await resolveBotMemoryNode(projectRoot) });
+  nodePath: packagePlatform === 'win32'
+    ? path.join(resourcesPath, 'resources', 'portable-tools', 'win32-x64', 'node', 'node.exe')
+    : await resolveBotMemoryNode(projectRoot) });
 await verifyBotStickers(path.join(resourcesPath,'bot-stickers'));
 const normalizedAsarFiles = new Set(
   asarFiles.map(entry => entry.replaceAll('\\', '/').replace(/^\/?(?:\.\/)?/u, '')),

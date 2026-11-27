@@ -1,7 +1,6 @@
 {
   "sourceProject": "VCPChat",
-  "revision": "2af26aaddcf82163c9f3e88b55d53518cb9db059",
-  "capturedAt": "2026-11-02T01:22:11.3252376Z",
+  "revision": "ea8942cfbe275bbe7fca1cbf1222f6c0ca0b3fe4",
   "files": [
     {
       "source": "modules/chat/chatContext.js",
@@ -12,8 +11,8 @@
     {
       "source": "modules/chat/chatRepository.js",
       "target": "upstream/chat/modules/chat/chatRepository.js",
-      "sha256": "fca84ba02feb6a65a41612b9d5ccc435b69db496368a82a6d9edfc287cfef275",
-      "bytes": 1109
+      "sha256": "63e05a979243eac92e7e407a45289db6bb95051db242c57f68760979aad4f043",
+      "bytes": 3149
     },
     {
       "source": "modules/chat/memoryChatRepository.js",
@@ -24,32 +23,32 @@
     {
       "source": "modules/chat/chatHistoryMutationAuthority.js",
       "target": "upstream/chat/modules/chat/chatHistoryMutationAuthority.js",
-      "sha256": "cc150d4f0d8aa4c38150f05410c0182389a5906221c6970791dcc17a33aa6e77",
-      "bytes": 3336
+      "sha256": "e7173c2496d90854158d104ee8cad6da619b2a40d1d41af8263fdb723ca7a8a7",
+      "bytes": 9085
     },
     {
       "source": "modules/chat/chatHistoryPersistence.js",
       "target": "upstream/chat/modules/chat/chatHistoryPersistence.js",
-      "sha256": "d4fc74b6387b04816aa4bb2e7ed5e8e97cd700c3e590342fb5c6d74bf55a9010",
-      "bytes": 6167
+      "sha256": "9a5ebf95b0afc08f13d84fb2f3b0fac2a7e373e846081318944bfc36b90e9f71",
+      "bytes": 7255
     },
     {
       "source": "modules/chat/contextCompactionState.js",
       "target": "upstream/chat/modules/chat/contextCompactionState.js",
-      "sha256": "a570c0d917ec5c63455fdf5b451ca5511b2e1973ce9b8e4f858c40ab323267c3",
-      "bytes": 10948
+      "sha256": "3bd076300d333f8330157e4ec25e5c993bda8e7d97cce2a3d249a8526789673c",
+      "bytes": 11559
     },
     {
       "source": "modules/chat/contextCompactionService.js",
       "target": "upstream/chat/modules/chat/contextCompactionService.js",
-      "sha256": "8e0312e971142929c04f7c642dd2e5ac213af67f2e3ce20a3dc7babf688fa80a",
-      "bytes": 9468
+      "sha256": "f1d426c117aa5e5ad388943d5f9c71088849ec4e25a6a1e5bbfd5817591454b9",
+      "bytes": 24147
     },
     {
       "source": "modules/chat/contextCompactionPrompts.js",
       "target": "upstream/chat/modules/chat/contextCompactionPrompts.js",
-      "sha256": "9829987f9663012cbe1ed6efc91025d0b901ae8a5e69f105105e847488f294ad",
-      "bytes": 12481
+      "sha256": "5d0217666c85d9e1daef16eefbe1b663271dfab469b7432339e636ae26a72b23",
+      "bytes": 15360
     },
     {
       "source": "modules/chat/contextCompactionFidelity.js",
@@ -72,8 +71,8 @@
     {
       "source": "modules/chat/singleChatRequestOrchestrator.js",
       "target": "upstream/chat/modules/chat/singleChatRequestOrchestrator.js",
-      "sha256": "3fffddffb8acc72ba9c017f41bc19eb0641be764ac4e308f06f93516f53f6de9",
-      "bytes": 18411
+      "sha256": "8312ab1d00dabfa4c206e9c9083d7f7d3707bae095926b0f8223389c9e31d6a4",
+      "bytes": 2188
     },
     {
       "source": "modules/renderer/side-chat/branch-tree.js",
@@ -90,26 +89,26 @@
     {
       "source": "modules/renderer/toolRequestScanner.js",
       "target": "upstream/chat/modules/renderer/toolRequestScanner.js",
-      "sha256": "f184d81d44350feb7bc8900687e32cc453fc3b4b98e4b2ade3ee1e0020df0b96",
-      "bytes": 16325
+      "sha256": "b7d014125b9f2d32f01a4fac1f92dc780b23bfd6e814d0db0a0437a48faa5224",
+      "bytes": 17382
     },
     {
       "source": "modules/renderer/toolResultRegions.js",
       "target": "upstream/chat/modules/renderer/toolResultRegions.js",
-      "sha256": "e7b5382e0d0b7b52f20f991954b26dab71f1ecda44fd9813e8b2b82d76cf8f58",
-      "bytes": 9206
+      "sha256": "d77b55492184cf5e9998f61f494f078d5db750d6f16cce529310e350ba1f922c",
+      "bytes": 12663
     },
     {
       "source": "modules/renderer/markdownCodeDomainScanner.js",
       "target": "upstream/chat/modules/renderer/markdownCodeDomainScanner.js",
-      "sha256": "9da5cc185d3b4c61b33d7bccf6b0fa325c73eafc96eec63e210565fc539108eb",
-      "bytes": 8748
+      "sha256": "9141a5b9af6c8db624764c5356175a01eee99f8d9e1f447984200c1fe250b9f1",
+      "bytes": 9224
     },
     {
       "source": "modules/contextSanitizer.js",
       "target": "upstream/chat/modules/contextSanitizer.js",
-      "sha256": "ddbef2472d52fb641b25d64690bde04bfc074294a8457561b5b1ed6eeacd057f",
-      "bytes": 18585
+      "sha256": "c67453fcb4a21ed3f7756e4d0951ef0c908a7b6ee296f05b3457050f3e8bd7dd",
+      "bytes": 18683
     },
     {
       "source": "modules/tavernRulesEngine.js",
@@ -156,8 +155,8 @@
     {
       "source": "tests/chat-history-mutation-authority.test.mjs",
       "target": "upstream/chat/tests/chat-history-mutation-authority.test.mjs",
-      "sha256": "768a243f432a04fef7c60b5881918a28b2a78d0c0ba5c8d1a42c8826b965ffdd",
-      "bytes": 2206
+      "sha256": "b8b3b3cdc26e9383557cde9377ed8eae393758d3d8b22442832cb1eb17513496",
+      "bytes": 15664
     },
     {
       "source": "tests/chat-context.test.mjs",
@@ -186,19 +185,86 @@
     {
       "source": "modules/fileManager.js",
       "target": "upstream/chat/modules/fileManager.js",
-      "sha256": "59166ac880b56004e4c2c097d79c65d9c7d71df99762dcc9897568d81a0fc313",
-      "bytes": 25751
+      "sha256": "60b29f595ef56ede53a0b785f63dd6fc41be8bd93799458a7c49a97884a9c770",
+      "bytes": 25082
     },
     {
       "source": "modules/services/pdfAttachmentService.js",
       "target": "upstream/chat/modules/services/pdfAttachmentService.js",
-      "sha256": "95e5a0ce235d56e633b72c8e616aeb8a21425ef0bb6baee11559e27712c84fed",
-      "bytes": 20073
+      "sha256": "73878eeea9be514c130b9dbce4aee62d9b368315aa678b509998e5fc246577eb",
+      "bytes": 19356
+    },
+    {
+      "source": "modules/chat/chatContextPipeline.js",
+      "target": "upstream/chat/modules/chat/chatContextPipeline.js",
+      "sha256": "baf8714b9adb1355e7c4302d5f8d7ba280667509b7cb5593cb3c2cf65da51440",
+      "bytes": 21336
+    },
+    {
+      "source": "modules/chat/contextCompactionStream.js",
+      "target": "upstream/chat/modules/chat/contextCompactionStream.js",
+      "sha256": "48f2cbaa53e7a7650311e41e73469cbd4888c427e89b9b1d15287700a383194f",
+      "bytes": 4972
+    },
+    {
+      "source": "modules/utils/vcpServerRoutes.mjs",
+      "target": "upstream/chat/modules/utils/vcpServerRoutes.mjs",
+      "sha256": "5d576001843969e6dbc6ba30b2c0f8a69b6f063271663c84163ba60f3695a407",
+      "bytes": 168
+    },
+    {
+      "source": "modules/renderer/toolBatchRegions.js",
+      "target": "upstream/chat/modules/renderer/toolBatchRegions.js",
+      "sha256": "17e33d727b860190c184971a32cd5b4545c416c4fab91065edf717d4fbc32c5c",
+      "bytes": 2002
+    },
+    {
+      "source": "modules/services/pdfRasterizer.js",
+      "target": "upstream/chat/modules/services/pdfRasterizer.js",
+      "sha256": "0d28e7cbadf7e35650d1b9c458189327e897fb40782eb3302a7cec95f8b7aab8",
+      "bytes": 1808
+    },
+    {
+      "source": "modules/chat/hostedToolHistory.js",
+      "target": "upstream/chat/modules/chat/hostedToolHistory.js",
+      "sha256": "6b94bb0a511d3e7a87b1ea1273a85bcd5209078b2a082e1bb84d5499f7ca05ad",
+      "bytes": 5537
+    },
+    {
+      "source": "modules/ui-system/side-pane/portrait-features.js",
+      "target": "upstream/chat/modules/ui-system/side-pane/portrait-features.js",
+      "sha256": "45c4bf574ab79d658b0c3b0abfb74fc88f2a3a4cce8d2520d7fa14ec5e9f8fdb",
+      "bytes": 1051
+    },
+    {
+      "source": "modules/emotion/emotionPrompt.js",
+      "target": "upstream/chat/modules/emotion/emotionPrompt.js",
+      "sha256": "2940ef5065ca8c9f04ec7e9e7d330fec7b4492533dc821681cc75344dbfc70ec",
+      "bytes": 2195
+    },
+    {
+      "source": "modules/utils/vcpServerRoutes.js",
+      "target": "upstream/chat/modules/utils/vcpServerRoutes.js",
+      "sha256": "ec30c2f1006b8a88d9303424b7729737e21e7afbb80495beb7f0a1630dcaf473",
+      "bytes": 1887
+    },
+    {
+      "source": "modules/emotion/emotionVocabulary.js",
+      "target": "upstream/chat/modules/emotion/emotionVocabulary.js",
+      "sha256": "baa790f472e236ee802dac908a19dff47577d7af3765d579d628e3f5054610b0",
+      "bytes": 7604
+    },
+    {
+      "source": "modules/emotion/portraitVariants.js",
+      "target": "upstream/chat/modules/emotion/portraitVariants.js",
+      "sha256": "1e66d28ab7f43e78cedaa5f83e697879874c51ef791ad58dcef0d036edac1d5d",
+      "bytes": 2648
     }
   ],
   "adapterFiles": [
     "upstream/chat/modules/chat/package.json",
     "upstream/chat/modules/renderer/package.json"
   ],
-  "notes": "All source/test files are byte-identical. Generated package boundaries enable original renderer ES modules under a CommonJS CLI. No AppData or credentials copied."
+  "notes": "All source/test files are byte-identical. Generated package boundaries enable original renderer ES modules under a CommonJS CLI. No AppData or credentials copied.",
+  "sourceDate": "2026-11-26T23:31:05+08:00"
 }

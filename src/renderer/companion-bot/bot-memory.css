@@ -51,3 +51,7 @@
 .bot-memory-activity p{margin:5px 0 0;overflow-wrap:anywhere}
 .bot-memory-activity button{padding:3px 6px;font-size:11px;white-space:nowrap}
 .bot-memory-activity .is-warning{color:var(--ui-status-danger-content)}
+
+.bot-memory-reference-import { padding: 6px 12px; font-size: 12px; color: var(--ui-content-secondary); }
+.bot-memory-reference-import summary { cursor: pointer; }
+.bot-memory-reference-import input { margin-right: 8px; max-width: 75%; }

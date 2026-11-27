@@ -12,7 +12,6 @@ export interface BotMemoryCatalog {
  * source messages and encoding jobs, not a semantic accuracy score. */
 export interface BotMemoryActivity {
   originals: { archived: number; pending: number };
-  capture: { queued: number; running: number; failed: number; empty: number; withNotes: number; unknownDone: number };
 }
 export interface BotMemoryFullNote extends BotMemoryCatalogItem { content: string; sourceEventId?: string; sourceMessageIds?: string[] }
 export type BotMemoryRecallMode = 'passive' | 'semantic' | 'history';
@@ -20,11 +19,13 @@ export interface BotMemoryRecallReport {
   requestId: string; query: string; mode: BotMemoryRecallMode; createdAt: string; totalMs: number;
   stages: Array<{ name: string; durationMs?: number; status: string; source?: string; parentId?: string | number; id?: string | number }>;
   hits: Array<{ rank: number; source?: string; date?: string; text: string; score?: number; scores?: Record<string, number> }>;
-  evidence?: string; coverage?: unknown; raw?: unknown; notice?: string;
+  presentation?: 'ranked' | 'formatted' | 'empty' | 'unavailable';
+  evidence?: string; evidenceTruncated?: boolean; coverage?: unknown; raw?: unknown; notice?: string;
 }
 type MemoryScope = { conversationId: string; companionId: string };
 export type BotMemoryWorkspaceRequest = BotMemoryMaintenanceRequest | MemoryScope & (
   { type: 'memory.catalog'; query?: string; tag?: string; cursor?: string; limit?: number }
+  | { type: 'memory.knowledge.put'; library: string; fileName: string; content: string }
   | { type: 'memory.remember'; content: string; requestId: string; tags?: string[] }
   | { type: 'memory.note'; id: string }
   | { type: 'memory.update'; id: string; expectedChecksum: string; content: string; tags?: string[] }

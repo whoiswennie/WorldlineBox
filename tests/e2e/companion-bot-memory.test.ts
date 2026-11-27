@@ -1,10 +1,16 @@
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type Page } from '@playwright/test';
 import type { BotRequest, WorldlineBoxBotApi } from '../../src/shared/companion-bot';
 import type { BotMemoryCatalog, BotMemoryFullNote, BotMemoryRecallReport } from '../../src/shared/companion-bot-memory';
 import { DEFAULT_BOT_COMPANION_ID } from '../../src/shared/builtin-bot-companions';
+import { LOCAL_TEXT_EMBEDDING_MODEL_ID } from '../../src/shared/embedding/global-profile';
 import { electronLaunchEnv, removeCompanionTestDirectory, resolveElectronLaunchOptions } from './electron-test-helpers';
 import { enableCallVisualFixture } from './fixtures/call-visual-binding';
 
@@ -17,7 +23,256 @@ async function memory<T>(page: Page, input: BotRequest): Promise<T> {
   return result.memory as T;
 }
 
-test('maximized companion workspace keeps one chat summary after using the desktop pet and memory', async ({}, testInfo) => {
+async function memoryEvidenceDirectory() {
+  const suffix = process.env.WORLDLINEBOX_E2E_MEMORY_EVIDENCE_SUFFIX;
+  if (suffix && !/^[a-zA-Z0-9_-]+$/u.test(suffix)) throw Error('Invalid memory evidence suffix');
+  const directory = path.resolve('artifacts/superagent-bot-development/ui', ...(suffix ? [`memory-${suffix}`] : []));
+  await mkdir(directory, { recursive: true });
+  return directory;
+}
+
+test('opens the companion workspace with an exclusively locked legacy index and retires it on the next launch', async () => {
+  test.skip(process.platform !== 'win32', 'Uses a Windows exclusive file handle.');
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-vcp-locked-upgrade-'));
+  const companionRoot = path.join(profile, 'companion-bot-v2'), legacy = path.join(companionRoot, 'memory');
+  const caches = ['capture-plans', 'capture-results'].map(name => path.join(companionRoot, 'memory-encoder', name));
+  for (const directory of [legacy, ...caches]) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'old.sqlite'), 'legacy fixture');
+  }
+  const lockedFile = path.join(legacy, 'old.sqlite');
+  const lock = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+    "$ErrorActionPreference='Stop'; $file=[IO.File]::Open($env:WLB_TEST_LOCKED_INDEX,'Open','ReadWrite','None'); try { [Console]::WriteLine('locked'); [Console]::Out.Flush(); $null=[Console]::ReadLine() } finally { $file.Dispose() }"],
+  { env: { ...process.env, WLB_TEST_LOCKED_INDEX: lockedFile }, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = once(lock, 'close');
+  let application: Awaited<ReturnType<typeof electron.launch>> | undefined;
+  const open = async () => {
+    application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+      WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
+    }) });
+    const page = await application.firstWindow();
+    await page.locator('[data-application-module="companions"]').click();
+    await expect(page.locator('.bot-chat-header h2')).toHaveText('大肥鱼');
+    const state = await request(page, { type: 'state' });
+    expect(state.ok).toBe(true);
+  };
+  try {
+    const ready = await Promise.race([once(lock.stdout, 'data'), closed.then(() => { throw Error('Legacy file handle closed before acquisition'); })]);
+    expect(String(ready[0]).trim()).toBe('locked');
+    await open();
+    await expect.poll(() => caches.some(directory => existsSync(directory))).toBe(false);
+    expect(existsSync(lockedFile)).toBe(true);
+    const retirementReceipt = path.join(companionRoot, '.vcp-v5-legacy-memory-retired');
+    expect(existsSync(retirementReceipt)).toBe(false);
+    await application!.close(); application = undefined;
+    lock.stdin.end('\n'); await closed;
+    await open();
+    await expect.poll(() => existsSync(legacy)).toBe(false);
+    await expect.poll(() => existsSync(retirementReceipt)).toBe(true);
+    await application!.close(); application = undefined;
+    // Simulate an installation that already retired its index, before work
+    // caches had their own retirement receipt. Only this isolated fixture is edited.
+    const workReceipt = path.join(companionRoot, '.vcp-v5-legacy-work-retired');
+    await rm(workReceipt, { force: true });
+    const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+    const oldWork: string[] = [];
+    for (const [segments, eventId] of [
+      [['memory-encoder', '.worldlinebox-brain'], 'capture-v3-memory-fixture'],
+      [['memory-maintenance', digest('audience'), 'maintenance-' + digest('job'), '.worldlinebox-brain'], 'memory-maintenance-fixture'],
+      [['memory-review', digest('review'), '.worldlinebox-brain'], 'memory-review-fixture'],
+    ] as const) {
+      const directory = path.toNamespacedPath(path.join(companionRoot, ...segments));
+      const filename = path.join(directory, digest(eventId) + '.json');
+      await mkdir(directory, { recursive: true }); await writeFile(filename, JSON.stringify({ eventId }));
+      oldWork.push(filename);
+    }
+    const unrelated = path.join(companionRoot, 'memory-review', 'my-notes.txt');
+    await writeFile(unrelated, '其他文件');
+    const currentWork = path.join(companionRoot, 'vcp-maintenance-v2', 'plans', 'fixture');
+    await mkdir(currentWork, { recursive: true });
+    await writeFile(path.join(currentWork, 'draft.txt'), '当前记忆维护的任务上下文');
+    await open();
+    await expect.poll(() => existsSync(workReceipt)).toBe(true);
+    expect(oldWork.filter(name => existsSync(name))).toEqual([]);
+    expect(await readFile(unrelated, 'utf8')).toBe('其他文件');
+    expect(await readFile(path.join(currentWork, 'draft.txt'), 'utf8')).toBe('当前记忆维护的任务上下文');
+  } finally {
+    if (lock.exitCode === null) lock.kill();
+    await closed.catch(() => undefined);
+    if (application) await application.close();
+    await removeCompanionTestDirectory(profile);
+  }
+});
+
+test('reopens a legacy transcript on a fresh native lane only where the retired memory body was sent', async () => {
+  test.setTimeout(90_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-vcp-transcript-upgrade-'));
+  const file = path.join(profile, 'companion-bot-v2', 'bot.sqlite');
+  const launch = () => electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+    WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
+  }) });
+  let app: Awaited<ReturnType<typeof launch>> | undefined, db: DatabaseSync | undefined;
+  try {
+    app = await launch();
+    const firstPage = await app.firstWindow();
+    await firstPage.waitForFunction(() => Reflect.has(window, 'worldlinebox'));
+    const state = await request(firstPage, { type: 'state' });
+    const room = state.snapshot!.conversations.find(item => item.kind === 'direct' && item.memberIds.includes(DEFAULT_BOT_COMPANION_ID))!;
+    await app.close(); app = undefined;
+    db = new DatabaseSync(file);
+    const owner = DEFAULT_BOT_COMPANION_ID, at = new Date().toISOString();
+    const persisted = db.prepare('SELECT scope_id,domain_id,revision FROM bot_conversations WHERE id=?').get(room.id)!;
+    const revision = Number(persisted.revision), scopeId = String(persisted.scope_id), domainId = String(persisted.domain_id);
+    db.prepare('INSERT OR IGNORE INTO bot_lanes(id,conversation_id,companion_id,acl_revision) VALUES(?,?,?,?)').run('fixture-inbox', room.id, owner, revision);
+    const inboxLane = String(db.prepare('SELECT id FROM bot_lanes WHERE conversation_id=? AND companion_id=?').get(room.id, owner)!.id);
+    for (const name of ['submitted', 'ordinary', 'unsent']) {
+      const event = 'old-event-' + name, topic = 'old-topic-' + name, message = 'old-message-' + name, lane = 'old-native-' + name;
+      const human = '人类原文 ' + name;
+      db.prepare('INSERT INTO bot_native_topics(id,conversation_id,acl_revision,title,created_at,updated_at) VALUES(?,?,?,?,?,?)')
+        .run(topic, room.id, revision, name, at, at);
+      db.prepare('INSERT INTO bot_topic_bindings(topic_id,conversation_id,companion_id,native_lane_id,lane_epoch) VALUES(?,?,?,?,?)').run(topic, room.id, owner, lane, 1);
+      db.prepare(`INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at)
+        VALUES(?,?,?,'user','用户','user',?,'done','message',?,?)`).run(message, event, room.id, human, event, at);
+      db.prepare(`INSERT INTO bot_inbox(id,lane_id,conversation_id,companion_id,source,source_instance_id,source_message_id,sender_id,sender_type,sender_name,
+        scope_id,domain_id,acl_revision,kind,content,payload_json,correlation_id,source_record_id,reply_message_id,status,occurred_at,received_at,dsh_event_id)
+        VALUES(?,?,?,?,'user','local',?,'user','user','用户',?,?,?,'message',?,'{}',?,?,?,?,?,?,?)`)
+        .run(event, inboxLane, room.id, owner, message, scopeId, domainId, revision, human, event, message,
+          'old-reply-' + name, name === 'unsent' ? 'failed' : 'done', at, at, name === 'unsent' ? null : event);
+      db.prepare('INSERT INTO bot_topic_events VALUES(?,?,?)').run(event, room.id, topic);
+      const saved = { message: { content: human }, ...(name === 'ordinary' ? {} : { memoryEvidence:
+        JSON.stringify({ kind: 'passive-memory-evidence', items: [{ text: '只存在于旧日记的内容', origin: 'vcp-rag-result' }] }) }) };
+      const meta = db.prepare('INSERT INTO bot_metadata VALUES(?,?)');
+      meta.run('native-input:' + event, JSON.stringify({ system: '旧伙伴设定', prompt: JSON.stringify(saved) }));
+      if (name === 'unsent') meta.run('native-dispatch:' + event, 'unsent');
+    }
+    db.prepare('DELETE FROM bot_metadata WHERE key=?').run('vcp-v5-retired-evidence-removed');
+    db.exec('PRAGMA user_version=22'); db.close(); db = undefined;
+    app = await launch();
+    const reopened = await app.firstWindow();
+    await reopened.waitForFunction(() => Reflect.has(window, 'worldlinebox'));
+    expect((await request(reopened, { type: 'state' })).ok).toBe(true);
+    db = new DatabaseSync(file, { readOnly: true });
+    expect(db.prepare('SELECT 1 FROM bot_metadata WHERE key=?').get('vcp-v5-retired-evidence-removed')).toBeTruthy();
+    const binding = db.prepare('SELECT native_lane_id FROM bot_topic_bindings WHERE topic_id=?');
+    expect(binding.get('old-topic-submitted')!.native_lane_id).toMatch(/^topic-vcp5-/u);
+    for (const name of ['ordinary', 'unsent']) expect(binding.get('old-topic-' + name)!.native_lane_id).toBe('old-native-' + name);
+    expect(db.prepare('SELECT native_lane_id FROM bot_retired_memory_events WHERE event_id=?').get('old-event-submitted')!.native_lane_id).toBe('old-native-submitted');
+    expect(db.prepare('SELECT content FROM bot_messages WHERE id=?').get('old-message-submitted')!.content).toBe('人类原文 submitted');
+    for (const name of ['submitted', 'ordinary', 'unsent']) {
+      const saved = db.prepare('SELECT value FROM bot_metadata WHERE key=?').get('native-input:old-event-' + name)!;
+      const native = JSON.parse(String(saved.value));
+      expect(native.system).toBe('旧伙伴设定');
+      expect(JSON.parse(native.prompt)).toEqual({ message: { content: '人类原文 ' + name } });
+    }
+  } finally { db?.close(); if (app) await app.close(); removeCompanionTestDirectory(profile); }
+});
+
+test('cold-starts idle diary organization while the companion workspace remains closed', async () => {
+  test.setTimeout(300_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'wlb-vcp-idle-reopen-'));
+  // Keep a daytime window on CI while using the unmodified real clock and
+  // normal companion quiet period. Etc/GMT signs express hours west of UTC.
+  const west = ((new Date().getUTCHours() - 12 + 36) % 24) - 12;
+  const tz = west ? 'Etc/GMT' + (west > 0 ? '+' : '') + west : 'UTC';
+  const launch = () => electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
+    WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: profile, WORLDLINEBOX_E2E_LOCALE: 'zh-CN', TZ: tz,
+  }) });
+  let application: Awaited<ReturnType<typeof launch>> | undefined, database: DatabaseSync | undefined;
+  try {
+    application = await launch();
+    const page = await application.firstWindow();
+    await page.waitForFunction(() => Reflect.has(window, 'worldlinebox'));
+    const initial = await request(page, { type: 'state' });
+    const room = initial.snapshot!.conversations.find(item => item.kind === 'direct' && item.memberIds.includes(DEFAULT_BOT_COMPANION_ID))!;
+    const scope = { conversationId: room.id, companionId: DEFAULT_BOT_COMPANION_ID };
+    await memory(page, { type: 'memory.maintenance.settings.update', ...scope, settings: { enabled: false } });
+    await memory(page, { type: 'memory.remember', ...scope, requestId: 'idle-reopen-note', content: '隔离测试日记：周日去南门取书。', tags: ['阅读', '约定'] });
+    await expect.poll(async () => (await memory<BotMemoryCatalog>(page, { type: 'memory.catalog', ...scope })).items[0]?.indexState,
+      { timeout: 45000 }).toBe('indexed');
+    expect((await request(page, { type: 'chat.activity', conversationId: room.id })).ok).toBe(true);
+    await memory(page, { type: 'memory.maintenance.settings.update', ...scope, settings: { enabled: true } });
+    await application.close(); application = undefined;
+    // A previously sent chat message is the input to the normal DeepMemo projection.
+    // Seed the host publication journal while the fixture app is closed. The worker
+    // must build its own searchable history when the UI subsequently asks for it.
+    const keyword = 'WLBDEEPHISTORY', original = 'WLBDEEPHISTORY 蓝色雨伞放在南门的取书柜。';
+    const messageId = 'fixture-sent-history-message', created = Date.now();
+    database = new DatabaseSync(path.join(profile, 'companion-bot-v2', 'bot.sqlite'));
+    database.prepare(`INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at)
+      VALUES(?,?,?,'user','用户','user',?,'sent','message',?,?)`).run(messageId, messageId, room.id, original, messageId, new Date(created).toISOString());
+    database.prepare('INSERT INTO bot_history_projection(message_id,conversation_id,timestamp) VALUES(?,?,?)').run(messageId, room.id, created);
+    database.close(); database = undefined;
+    database = new DatabaseSync(path.join(profile, 'companion-bot-v2', 'bot.sqlite'), { readOnly: true });
+    const stored = database.prepare(`SELECT id,trigger_kind,kind,phase,status FROM bot_maintenance_jobs
+      WHERE automatic=1 AND json_extract(scope_json,'$.companionId')=? ORDER BY sequence DESC LIMIT 1`);
+    expect(stored.get(scope.companionId)).toBeUndefined();
+    // Observe only the persisted journal after relaunch. No companion IPC,
+    // navigation, model settings or user input can trigger the startup probe.
+    application = await launch();
+    const reopened = await application.firstWindow();
+    await reopened.waitForFunction(() => Reflect.has(window, 'worldlinebox'));
+    await expect(reopened.locator('.bot-workspace')).toHaveCount(0);
+    await expect.poll(() => stored.get(scope.companionId), { timeout: 160_000, intervals: [1000] }).toMatchObject({
+      trigger_kind: 'idle', kind: 'dream', phase: 'waiting_executor', status: 'queued',
+    });
+    await expect(reopened.locator('.bot-workspace')).toHaveCount(0);
+    const idleJobId = String(stored.get(scope.companionId)!.id);
+    await reopened.locator('[data-application-module="companions"]').click();
+    await reopened.getByRole('button', { name: '稍后设置', exact: true }).click();
+    await reopened.getByRole('button', { name: '记忆', exact: true }).click();
+    const dialog = reopened.getByRole('dialog', { name: '记忆工作台', exact: true });
+    await expect(dialog.locator('.bot-memory-row-open').first()).toContainText('周日去南门取书', { timeout: 45_000 });
+    await dialog.getByRole('button', { name: '召回试查', exact: true }).click();
+    await dialog.getByRole('button', { name: '原话关键词', exact: true }).click();
+    await dialog.getByRole('textbox', { name: '想回想什么？', exact: true }).fill(keyword);
+    await dialog.getByRole('button', { name: '开始试查', exact: true }).click();
+    const output = dialog.locator('.bot-memory-recall-output');
+    await expect(output.getByRole('heading', { name: '原话来源 · VCPChat DeepMemo' })).toBeVisible({ timeout: 45_000 });
+    await expect(output.locator('article pre')).toContainText(original);
+    await expect(output.getByText('这次没有返回匹配记录', { exact: true })).toHaveCount(0);
+    await expect(output.locator('.bot-memory-rank, .bot-memory-result-heading h3 span')).toHaveCount(0);
+    const record = (await memory<{ reports: BotMemoryRecallReport[] }>(reopened, { type: 'memory.recall.records', ...scope })).reports[0]!;
+    expect(record).toMatchObject({ mode: 'history', query: keyword, presentation: 'formatted' });
+    expect(record.evidence).toContain(original);
+    expect(record.stages.some(item => item.name.includes('DeepMemo'))).toBe(true);
+    const evidenceDirectory = await memoryEvidenceDirectory();
+    await reopened.screenshot({ path: path.join(evidenceDirectory, 'deepmemo-original.png') });
+    await dialog.getByRole('textbox', { name: '想回想什么？', exact: true }).fill('WLBABSENTNOHISTORY');
+    await dialog.getByRole('button', { name: '开始试查', exact: true }).click();
+    await expect(output.getByText('这次没有返回匹配记录', { exact: true })).toBeVisible({ timeout: 45_000 });
+    await expect(output.getByRole('heading', { name: '原话来源 · VCPChat DeepMemo' })).toHaveCount(0);
+    const miss = (await memory<{ reports: BotMemoryRecallReport[] }>(reopened, { type: 'memory.recall.records', ...scope })).reports[0]!;
+    expect(miss).toMatchObject({ mode: 'history', query: 'WLBABSENTNOHISTORY', presentation: 'empty' });
+    await dialog.getByRole('button', { name: '整理与梦境', exact: true }).click();
+    const idle = dialog.locator(`[data-maintenance-job="${idleJobId}"]`);
+    await expect(idle.locator('strong')).toHaveText('闲时梦境');
+    await idle.click();
+    const heading = dialog.locator('.bot-maintenance-detail-heading h3');
+    await expect(heading).toContainText('闲时梦境');
+    const displayedJobs: Array<{ mode: string; title: string }> = [];
+    for (const [mode, name] of [['scan', '只读健康检查'], ['track', '事件追踪'], ['deepclean', '深度清理']] as const) {
+      await dialog.getByRole('combobox', { name: '日记维护模式', exact: true }).selectOption(mode);
+      await dialog.getByRole('button', { name: '开始' + name, exact: true }).click();
+      if (mode === 'deepclean') await dialog.getByRole('button', { name: '确认深度清理', exact: true }).click();
+      const title = name + ' · 第1批';
+      await expect(heading).toContainText(title);
+      await expect(dialog.locator('.bot-maintenance-job').getByText(title, { exact: true })).toHaveCount(1);
+      displayedJobs.push({ mode, title });
+    }
+    await reopened.screenshot({ path: path.join(evidenceDirectory, 'maintenance-job-list.png') });
+    const proof = path.join(evidenceDirectory, 'deepmemo-and-maintenance-jobs.json');
+    await writeFile(proof, JSON.stringify({ keyword, original, report: record, miss, idleJobId, idleTitle: '闲时梦境', displayedJobs }, null, 2) + '\n');
+    await test.info().attach('deepmemo-and-maintenance-jobs.json', { contentType: 'application/json', path: proof });
+  } finally {
+    database?.close();
+    if (application) await application.close();
+    removeCompanionTestDirectory(profile);
+  }
+});
+
+test('maximized companion workspace keeps one chat summary after using the desktop pet and memory', async () => {
+  const testInfo = test.info();
   test.skip(process.platform !== 'win32', 'Requires the Windows caption buttons.');
   test.setTimeout(90_000);
   const profile = await mkdtemp(path.join(tmpdir(), 'wlb-companion-maximize-'));
@@ -111,10 +366,7 @@ test('memory workspace manages real local VCP notes and inspects original recall
   const prefix = 'wlb-bot-memory-app-', profile = await mkdtemp(path.join(tmpdir(), prefix));
   const resolved = path.resolve(profile);
   if (path.dirname(resolved) !== path.resolve(tmpdir()) || !path.basename(resolved).startsWith(prefix)) throw Error('Unexpected owned memory test profile');
-  const evidenceSuffix = process.env.WORLDLINEBOX_E2E_MEMORY_EVIDENCE_SUFFIX;
-  if (evidenceSuffix && !/^[a-zA-Z0-9_-]+$/u.test(evidenceSuffix)) throw Error('Invalid memory evidence suffix');
-  const evidence = path.resolve('artifacts/superagent-bot-development/ui', ...(evidenceSuffix ? [`memory-${evidenceSuffix}`] : []));
-  await mkdir(evidence, { recursive: true });
+  const evidence = await memoryEvidenceDirectory();
   const application = await electron.launch({ ...resolveElectronLaunchOptions(), env: electronLaunchEnv({
     WORLDLINEBOX_E2E: '1', WORLDLINEBOX_E2E_PERF_OFFSCREEN: '1', WORLDLINEBOX_E2E_USER_DATA_PATH: resolved, WORLDLINEBOX_E2E_LOCALE: 'zh-CN',
   }) });
@@ -171,6 +423,10 @@ test('memory workspace manages real local VCP notes and inspects original recall
     const shortText = '本地测试：傍晚的饮品偏好\n隔离测试事实：傍晚以后喝无咖啡因的麦茶，白天喝咖啡的安排没有改变。';
     await memory(page, { type: 'memory.remember', ...scope, content: longText });
     await memory(page, { type: 'memory.remember', ...scope, content: shortText });
+    await expect.poll(async () => {
+      const catalog = await memory<BotMemoryCatalog>(page, { type: 'memory.catalog', ...scope, limit: 24 });
+      return catalog.items.map(item => item.indexState);
+    }, { timeout: 45000, message: 'Wait for both durable diary writes to receive their native index receipts' }).toEqual(['indexed', 'indexed']);
     const catalog = await memory<BotMemoryCatalog>(page, { type: 'memory.catalog', ...scope, limit: 24 });
     expect(catalog.total).toBe(2); expect(catalog.items.every(item => item.indexState === 'indexed')).toBe(true);
     const long = catalog.items.find(item => item.content?.startsWith('本地测试：雨天'))!, short = catalog.items.find(item => item.id !== long.id)!;
@@ -182,12 +438,14 @@ test('memory workspace manages real local VCP notes and inspects original recall
     expect(next.items).toHaveLength(1); expect(next.items[0]!.id).not.toBe(first.items[0]!.id); expect(next.nextCursor).toBeUndefined();
     const note = await memory<BotMemoryFullNote>(page, { type: 'memory.note', ...scope, id: long.id });
     expect(note.content).toBe(longText); expect(note.content.length).toBeGreaterThan(long.content!.length);
-    const memoryRoot = path.join(resolved, 'companion-bot-v2', 'memory');
+    const memoryRoot = path.join(resolved, 'companion-bot-v2', 'vcp-memory-v5');
     const homes = (await readdir(memoryRoot, { withFileTypes: true })).filter(item => item.isDirectory() && /^[a-f0-9]{64}$/.test(item.name));
     expect(homes).toHaveLength(1);
-    const config = JSON.parse(await readFile(path.join(memoryRoot, homes[0]!.name, 'config.json'), 'utf8')) as { VECTORDB_DIMENSION: number };
-    expect(config.VECTORDB_DIMENSION).toBe(768);
+    const config = JSON.parse(await readFile(path.join(memoryRoot, homes[0]!.name, 'config.json'), 'utf8'));
+    expect(config).toMatchObject({ VECTORDB_DIMENSION: 768, WhitelistEmbeddingModel: LOCAL_TEXT_EMBEDDING_MODEL_ID, LOCAL_EMBEDDING_ENABLED: false });
+    expect(config).not.toHaveProperty('EMBEDDING_API_KEY');
     const open = async () => {
+      await page.getByRole('button', { name: '稍后设置', exact: true }).click();
       await page.getByRole('button', { name: '记忆', exact: true }).click();
       await expect(page.getByRole('dialog', { name: '记忆工作台', exact: true })).toBeVisible();
     };
@@ -220,6 +478,29 @@ test('memory workspace manages real local VCP notes and inspects original recall
     await row(short.id).locator('.bot-memory-row-open').click(); await expect(dialog.locator('.bot-memory-fulltext')).toContainText('麦茶');
     expect(await dialog.boundingBox()).toEqual(panel);
     await dialog.getByRole('button', { name: '召回试查', exact: true }).click(); expect(await dialog.boundingBox()).toEqual(panel);
+    await dialog.getByRole('button', { name: '整理与梦境', exact: true }).click();
+    const modes = dialog.getByRole('combobox', { name: '日记维护模式', exact: true });
+    await expect(modes.locator('option')).toHaveText(['只读健康检查', '日常整理', '事件追踪', '深度清理']);
+    await modes.selectOption('deepclean');
+    const brief = dialog.locator('details.bot-maintenance-brief');
+    await brief.locator('summary').click();
+    await brief.getByLabel('项目或关注点', { exact: true }).fill('看展');
+    await brief.getByLabel('起始日期', { exact: true }).fill('2026-10-01');
+    await brief.getByLabel('结束日期', { exact: true }).fill('2026-11-27');
+    await dialog.getByRole('button', { name: '开始深度清理', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: '确认深度清理', exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: '确认深度清理', exact: true })).toHaveCount(0);
+    const schedule = dialog.locator('details.bot-maintenance-settings');
+    await schedule.locator('summary').click();
+    const automatic = schedule.getByRole('checkbox', { name: '启用自动记忆整理', exact: true });
+    await expect(automatic).toBeChecked();
+    await expect(schedule).toContainText('重新打开后，伙伴会在空闲时接续');
+    await expect(schedule).toContainText('由你逐项批准');
+    await automatic.click(); await expect(automatic).not.toBeChecked();
+    await expect.poll(async () => (await memory<{ enabled: boolean }>(page, { type: 'memory.maintenance.settings.get', ...scope })).enabled).toBe(false);
+    await automatic.click(); await expect(automatic).toBeChecked();
+    await expect.poll(async () => (await memory<{ enabled: boolean }>(page, { type: 'memory.maintenance.settings.get', ...scope })).enabled).toBe(true);
     await dialog.getByRole('button', { name: '日记', exact: true }).click();
     await dialog.getByRole('button', { name: '关闭记忆工作台', exact: true }).click();
     await page.evaluate(() => localStorage.setItem('worldlinebox.theme-prefs.v1', JSON.stringify({ version: 1, theme: 'dark' })));
@@ -255,6 +536,14 @@ test('memory workspace manages real local VCP notes and inspects original recall
     const beforeRecall = await memory<{ historyMessages: number }>(page, { type: 'memory.inspect', ...scope });
     const reports: BotMemoryRecallReport[] = [];
     await dialog.getByRole('button', { name: '召回试查', exact: true }).click();
+    const reference = dialog.locator('.bot-memory-reference-import');
+    await reference.locator('summary').click();
+    const fileName = '馆内指南.md', content = '南门服务台负责登记参观预约。';
+    await reference.getByLabel('参考文档').setInputFiles({ name: fileName, mimeType: 'text/markdown', buffer: Buffer.from(content) });
+    await reference.getByRole('button', { name: '导入', exact: true }).click();
+    await expect(reference.getByRole('status')).toContainText(fileName + ' 已保存');
+    expect(await readFile(path.join(memoryRoot, homes[0]!.name, 'knowledge', 'Companion', fileName), 'utf8')).toBe(content);
+    await reference.locator('summary').click();
     for (const mode of ['passive', 'semantic'] as const) {
       await dialog.getByRole('button', { name: mode === 'passive' ? '被动召回' : '语义查找', exact: true }).click();
       await dialog.getByRole('textbox', { name: '想回想什么？', exact: true }).fill('这次本地测试周六下雨，最后约在哪里看展，几点见面？');

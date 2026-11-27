@@ -137,8 +137,9 @@ export interface BotSnapshot {
 }
 export interface BotHistoryPage { items: BotMessage[]; hasMore: boolean; nextBefore?: number }
 export const botRequestSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('chat.activity'), conversationId: id }),
   ...botMemoryMaintenanceSchemas,
-  z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional(), surface: z.literal('call').optional(), callAfter: z.number().int().nonnegative().optional() }),
+  z.strictObject({ type: z.literal('state'), conversationId: id.optional(), before: z.number().int().positive().optional(), surface: z.literal('call').optional(), callAfter: z.number().int().nonnegative().optional(), callReplyIds: z.array(id).max(80).optional() }),
   z.strictObject({ type: z.literal('call.reserve'), conversationId: id, sessionId: z.uuid() }),
   z.strictObject({ type: z.literal('call.release'), conversationId: id, sessionId: z.uuid() }),
   z.strictObject({ type: z.literal('call.open'), conversationId: id, sessionId: z.uuid().optional() }),
@@ -192,6 +193,9 @@ export const botRequestSchema = z.discriminatedUnion('type', [
 
 
   z.strictObject({ type: z.literal('memory.search'), conversationId: id, companionId: id, query: z.string().trim().min(1).max(4000) }),
+  z.strictObject({ type: z.literal('memory.knowledge.put'), conversationId: id, companionId: id,
+    library: z.string().trim().min(1).max(100), fileName: z.string().trim().max(240).regex(/^[^/\\]+\.(?:md|txt|html|json)$/iu),
+    content: z.string().min(1).max(2 * 1024 * 1024) }),
   z.strictObject({ type: z.literal('memory.remember'), conversationId: id, companionId: id, content: z.string().trim().min(1).max(24000), requestId: id.optional(), tags: z.array(z.string().trim().min(1).max(64)).max(12).optional() }),
   z.strictObject({ type: z.literal('memory.inspect'), conversationId: id, companionId: id }),
   z.strictObject({ type: z.literal('memory.list'), conversationId: id, companionId: id }),
@@ -199,7 +203,7 @@ export const botRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('memory.note'), conversationId: id, companionId: id, id }),
   z.strictObject({ type: z.literal('memory.update'), conversationId: id, companionId: id, id, expectedChecksum: z.string().regex(/^[a-f0-9]{32}$/), content: z.string().trim().min(1).max(24000), tags: z.array(z.string().trim().min(1).max(64)).max(12).optional() }),
   z.strictObject({ type: z.literal('memory.organize'), conversationId: id, companionId: id,
-    sources: z.array(z.strictObject({ id, expectedChecksum: z.string().regex(/^[a-f0-9]{32}$/) })).min(2).max(16),
+    sources: z.array(z.strictObject({ id, expectedChecksum: z.string().regex(/^[a-f0-9]{32}$/) })).min(2).max(20),
     content: z.string().trim().min(1).max(24000), tags: z.array(z.string().trim().min(1).max(64)).max(12).optional() }),
   z.strictObject({ type: z.literal('memory.recall'), conversationId: id, companionId: id, query: z.string().trim().min(1).max(4000), mode: z.enum(['passive', 'semantic', 'history']) }),
   z.strictObject({ type: z.literal('memory.recall.records'), conversationId: id, companionId: id, limit: z.number().int().min(1).max(20).optional() }),

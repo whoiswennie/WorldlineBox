@@ -15,7 +15,7 @@ class Memory extends BotMemoryService {
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
     this.prepared++;
     return { requestId: input.requestId, inputHash: 'fixture', scope: input.scope, messages: input.messages,
-      metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0 };
+      metadata: {}, events: [], nativeContext: '', status: 'ready' };
   }
   override async finishTurn() { return { recorded: true }; }
   override async appendHistory() { return { ok: true }; }

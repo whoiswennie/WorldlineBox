@@ -64,15 +64,200 @@ async function fixture() {
   };
   return { home, host, rt, seed };
 }
-it('runs the preserved DreamWaveEngine against only verified owned sources and retains original wave roles/scores', async () => {
+it('upgrades busy-state probes on populated ledgers and leaves complete history out of turn readiness', async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), 'bot-maintenance-host-')); roots.push(home);
+  const old = new BotHost(home);
+  try {
+    old.db.exec(`DROP INDEX managed_unfinished_operations;
+      DROP INDEX maintenance_unreadable_operations;
+      CREATE TEMP TABLE prior(id TEXT PRIMARY KEY);
+      WITH RECURSIVE seq(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM seq WHERE i<5000)
+        INSERT INTO prior SELECT CAST(i AS TEXT) FROM seq;
+      INSERT INTO history_receipts(id,hash,episode,state) SELECT id,'old',0,'done' FROM prior;
+      INSERT INTO mutations(id,hash,state,created_at) SELECT id,'old','indexed','2026-01-01' FROM prior;
+      INSERT INTO managed_operations(operation_id,kind,fingerprint,state,plan_json,created_at,updated_at)
+        SELECT id,'update','old','indexed','{}','','' FROM prior;
+      INSERT INTO maintenance_operations(operation_id,kind,fingerprint,plan,state) SELECT id,'insight','old','{}','indexed' FROM prior;`);
+  } finally { old.close(); }
+  const host = new BotHost(home); hosts.push(host);
+  const plan = (s: { source: string }) => host.db.prepare(`EXPLAIN QUERY PLAN ${s.source}`).all().map((row: { detail: string }) => row.detail).join('\n');
+  expect(plan(host.unfinishedMutation)).toMatch(/SEARCH mutations USING COVERING INDEX mutations_state/);
+  expect(plan(host.managed.unfinishedOperation)).toMatch(/USING COVERING INDEX managed_unfinished_operations/);
+  expect(plan(host.managed.unknownOperation)).toMatch(/SEARCH managed_operations USING COVERING INDEX managed_unfinished_operations/);
+  expect(plan(host.maintenance.unreadableOperation)).toMatch(/USING COVERING INDEX maintenance_unreadable_operations/);
+  expect(host.status()).toMatchObject({ pending: 0, operationsPending: 0, indexed: 5000, historyMessages: 5000 });
+  expect(host.turnPending()).toBe(false);
+  const mutation = host.db.prepare("UPDATE mutations SET state=? WHERE id='1'");
+  for (const state of ['pending','writing','failed','withdrawing','unknown']) {
+    mutation.run(state); expect(host.turnPending()).toBe(true);
+  }
+  mutation.run('indexed');
+  const operation = host.db.prepare("UPDATE managed_operations SET state=? WHERE operation_id='1'");
+  for (const state of ['indexed','conflict','withdrawn']) {
+    operation.run(state); expect(host.turnPending()).toBe(false);
+  }
+  operation.run('new-unfinished-state'); expect(host.turnPending()).toBe(true);
+  expect(() => host.managed.assertReadable()).not.toThrow();
+  operation.run('unknown'); expect(() => host.managed.assertReadable()).toThrowError(expect.objectContaining({ code: 'MEMORY_OUTCOME_UNKNOWN' }));
+  for (const state of ['partial','unknown']) {
+    host.db.prepare("UPDATE maintenance_operations SET state=? WHERE operation_id='1'").run(state);
+    expect(() => host.maintenance.assertReadable()).toThrowError(expect.objectContaining({ code: 'MEMORY_OUTCOME_UNKNOWN' }));
+  }
+});
+it('runs the preserved DreamWaveEngine across verified diaries in the same audience and retains original wave roles/scores', async () => {
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
-  const f = await fixture(), a = await f.seed('a', '用户的博物馆计划，尚未预约。'), b = await f.seed('b', '伙伴讨论博物馆路线，尚未执行。'), outside = await f.seed('outside', '本批不允许进入梦境的日记。');
+  const f = await fixture(), a = await f.seed('a', '用户的博物馆计划，尚未预约。'), b = await f.seed('b', '伙伴讨论博物馆路线，尚未执行。'), outside = await f.seed('outside', '上个月的博物馆经历。');
+  f.rt.index.set('Other/foreign.txt', { path: 'Other/foreign.txt', exists: true });
   const wave = await f.host.maintenance.dreamRecall(f.rt, { sources: [a, b].map(note => ({ id: note.id, expectedChecksum: note.checksum })), expectedSourceRevision: '0' });
   expect(wave).toMatchObject({ engine: 'DreamWaveEngine', namespace: 'Companion', examined: 2 }); expect(f.rt.nativeQueries).toHaveBeenCalled();
   const hits = Object.values(wave.groups).flat() as Array<{ id: string; score?: number }>;
-  expect(hits.some(hit => hit.id === a.id)).toBe(true); expect(hits.every(hit => [a.id, b.id].includes(hit.id))).toBe(true); expect(hits.some(hit => hit.id === outside.id)).toBe(false);
-  expect(hits.filter(hit => hit.score !== undefined).every(hit => [0.81, 0.8].some(score => Math.abs(score - hit.score!) < 1e-9))).toBe(true);
+  expect(hits.some(hit => hit.id === a.id)).toBe(true); expect(hits.every(hit => [a.id, b.id, outside.id].includes(hit.id))).toBe(true); expect(hits.some(hit => hit.id === outside.id)).toBe(true);
+  expect(wave.dreamPrompt).toContain(outside.id); expect(wave.dreamPrompt).not.toContain('{{DreamTreeBlock}}');
+  expect(hits.filter(hit => hit.score !== undefined).every(hit => [0.81, 0.8, 0.79].some(score => Math.abs(score - hit.score!) < 1e-9))).toBe(true);
   expect(wave.omitted.filteredCandidates).toBeGreaterThan(0); expect(JSON.stringify(wave)).not.toContain(f.home);
+});
+
+it('filters out-of-period native chunks before association metadata, ranking and original previews', async () => {
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const f = await fixture();
+    vi.setSystemTime(new Date('2024-03-01T04:00:00Z'));
+    const hidden = await f.seed('early', '日历范围外不可注入的记录。');
+    vi.setSystemTime(new Date('2024-03-02T04:00:00Z'));
+    const a = await f.seed('dated-seed', '潮汐日记开始。');
+    vi.setSystemTime(new Date('2024-03-03T04:00:00Z'));
+    const b = await f.seed('dated-evidence', '记录次日的潮位。');
+    const runtime = { ...f.rt, runtimeDir: path.resolve('resources/vcp-memory/upstream/toolbox'), runtimeConfig: { PROJECT_BASE_PATH: f.home },
+      kb: { ...f.rt.kb, config: { ...f.rt.kb.config, rootPath: path.join(f.home,'dailynote') }, listDistinctDiaries: async () => ['Companion'],
+        getChunksByFilePaths: async (paths: string[]) => [{ sourceFile: paths[0], vector: new Float32Array(768).fill(0.1), chunkId: 1 }] } };
+    const range = { fromDate: '2024-03-02', toDate: '2024-03-03', expectedSourceRevision: '0' };
+    const associate = (sources: unknown[]) => require('./lib/diary-associations.cjs').associateDiaries(f.host.maintenance, runtime, { sources, ...range });
+    const found = await associate([a]);
+    expect(found.queries[0].totalChunksFound).toBe(2);
+    expect(found.items).toEqual([expect.objectContaining({ id: b.id, diaryDate: '2024-03-03', seedIds: [a.id] })]);
+    expect(JSON.stringify(found)).not.toContain(hidden.id);
+    await expect(associate([hidden])).rejects.toMatchObject({ code: 'MEMORY_NOTE_UNAVAILABLE' });
+  } finally { vi.useRealTimers(); }
+});
+
+it('samples the whole owned diary timeline and requires a recent seed even after an earlier maintenance pass', async () => {
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  const f = await fixture(), today = Date.now();
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    vi.setSystemTime(today - 60 * 86400_000);
+    for (let index = 0; index < 25; index++) await f.seed(`middle-${index}`, `两个月前的独立日记和讨论内容，第${index}篇。`);
+    vi.setSystemTime(today);
+    const empty = await f.host.maintenance.dreamRecall(f.rt, { expectedSourceRevision: '0' });
+    expect(empty.examined).toBe(25); expect(empty.sources).toEqual([]);
+    const fresh = await f.seed('recent-beyond-24', '近期的新日记唤起之前的讨论。');
+    const foreign = path.join(f.home, 'dailynote/Companion/unmanaged.txt');
+    await writeFile(foreign, '没有受管来源的日记也不能成为种子。');
+    const wave = await f.host.maintenance.dreamRecall(f.rt, { expectedSourceRevision: '0' });
+    expect(wave.examined).toBe(26);
+    expect(wave.groups['recent.seeds']).toEqual([expect.objectContaining({ id: fresh.id, checksum: fresh.checksum })]);
+    expect(wave.groups['mid.seeds']).toHaveLength(2);
+    expect(wave.sources).toContainEqual({ id: fresh.id, checksum: fresh.checksum, role: 'seed' });
+    expect(wave.dreamPrompt).toContain('（中期）'); expect(JSON.stringify(wave)).not.toContain('unmanaged.txt');
+  } finally { vi.useRealTimers(); }
+});
+
+it('keeps pending dream context versioned and respects claims, retries and historical recovery', async () => {
+  const f = await fixture(), work = f.host.maintenanceWork;
+  const original = await f.seed('dream-seed', '梦境种子。'), borrowed = await f.seed('dream-borrowed', '另一条还在排队的日记。');
+  const occupied = await f.seed('dream-other-job', '另一项维护已占用的日记。'), replaced = await f.seed('dream-changed', '关联凭据中的版本已经过期。');
+  const claim = { kind: 'dream', jobId: 'dream-context', limit: 1 }, batch = work.claim(claim);
+  expect(batch.items.map((n: { id: string }) => n.id)).toEqual([original.id]);
+  const indexHit = (note: { id: string; checksum: string }) => ({ ...note, fullPath: f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(note.id).note_path });
+  const future = Date.now() + 600000;
+  f.host.db.prepare("UPDATE maintenance_work SET available_at=?,error='deferred' WHERE kind='dream' AND note_id=?").run(future, borrowed.id);
+  work.seed({ records: [{ kind: 'organize', jobId: 'other-review', sources: [occupied], reserved: [occupied.id] }] });
+  const retrieval = { engine: 'DreamWaveEngine', sourceRevision: batch.revision, groups: { 'recent.resonanceL1': [indexHit(borrowed), indexHit(occupied), { ...indexHit(replaced), checksum: '0'.repeat(32) }] } };
+  const related = work.associate({ ...claim, retrieval });
+  expect(related.items).toEqual([{ id: borrowed.id, checksum: borrowed.checksum }]);
+  work.release(claim); expect(work.claim(claim).state).toBe('processing');
+  const sources = [...batch.items, ...related.items], state = () => f.host.db.prepare("SELECT state,available_at,error FROM maintenance_work WHERE kind='dream' AND note_id=?").get(borrowed.id);
+  work.complete({ ...claim, sources, reserved: [borrowed.id] }); expect(state().state).toBe('review');
+  work.complete({ ...claim, sources }); expect(state()).toEqual({ state: 'pending', available_at: future, error: 'deferred' });
+
+  const historical = { kind: 'dream', jobId: 'historical-dream', sources: [{ ...borrowed, contextOnly: true }], reserved: [borrowed.id] };
+  work.seed({ records: [historical] }); expect(state().state).toBe('review');
+  work.complete({ ...historical, reserved: [] }); expect(state()).toEqual({ state: 'pending', available_at: future, error: 'deferred' });
+});
+
+it('takes at most twenty ready seeds from one diary month, preserves a cross-month association and revisits young seeds once on day thirty', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  const firstAt = Date.parse('2025-12-31T15:59:59.123Z'), monthLater = firstAt + 30 * 86400000;
+  try {
+    vi.setSystemTime(firstAt);
+    const f = await fixture(), work = f.host.maintenanceWork;
+    const december = [];
+    for (let n = 1; n <= 21; n++) december.push(await f.seed('december-' + n, '整理十二月的第' + n + '条观测。'));
+    vi.setSystemTime(firstAt + 2000); // Shanghai's date is January 1; UTC is still December 31.
+    const january = await f.seed('january', '一月继续观测。');
+    const first = { kind: 'organize', jobId: 'december-page', limit: 24 }, batch = work.claim(first);
+    const versions = december.map(({ id, checksum }) => ({ id, checksum }));
+    expect(batch.items).toEqual(versions.slice(0, 20));
+    expect(work.claim(first).items).toEqual(batch.items);
+    const context = work.associate({ ...first, retrieval: { engine: 'DailyNoteManager.Associate', sourceRevision: batch.revision,
+      items: [{ id: january.id, checksum: january.checksum, seedIds: [batch.items[0].id] }] } });
+    expect(context.items).toEqual([{ id: january.id, checksum: january.checksum }]);
+    expect(work.complete({ ...first, sources: [...batch.items, ...context.items], reserved: [batch.items[1].id] })).toEqual({
+      mode: 'incremental-v1', hasReady: true, maturityAt: monthLater });
+    const second = { ...first, jobId: 'december-last' }, remainder = work.claim(second);
+    expect(remainder.items).toEqual(versions.slice(20));
+    work.complete({ ...second, sources: remainder.items });
+    const januaryJob = { ...first, jobId: 'january-page' }, jan = work.claim(januaryJob);
+    expect(jan.items).toEqual(context.items);
+    work.release({ ...januaryJob, reason: '索引传输中断。' });
+    expect(work.stats(first)).toMatchObject({ settling: 20, retrying: 1, maturityAt: monthLater, retryAt: Date.now() + 300000 });
+    expect(work.claim(januaryJob).items).toEqual(jan.items);
+    work.complete({ ...januaryJob, sources: jan.items });
+    vi.setSystemTime(monthLater - 1);
+    expect(work.stats(first)).toMatchObject({ ready: 0, settling: 21, retrying: 0 });
+    vi.setSystemTime(monthLater);
+    const mature = { ...first, jobId: 'settled-december' }, recheck = work.claim(mature);
+    expect(recheck.items).toEqual(versions.filter(source => source.id !== batch.items[1].id));
+    expect(work.complete({ ...mature, sources: recheck.items })).toEqual({ mode: 'incremental-v1', hasReady: false, maturityAt: monthLater + 2000 });
+    vi.setSystemTime(monthLater + 2000);
+    const last = { ...first, jobId: 'settled-january' };
+    expect(work.claim(last).items).toEqual(jan.items);
+    expect(work.complete({ ...last, sources: jan.items })).toEqual({ mode: 'incremental-v1', hasReady: false });
+    expect(work.stats(first)).toMatchObject({ ready: 0, retrying: 0, settling: 0 });
+    const query = f.host.db.prepare(`EXPLAIN QUERY PLAN SELECT w.note_id FROM maintenance_work w JOIN mutations m ON m.id=w.note_id
+      WHERE w.kind='organize' AND w.state='pending' AND w.diary_month=? AND w.available_at<=? AND ${work.eligible()} ORDER BY w.available_at,w.sequence LIMIT 20`).all('2025-12',Date.now());
+    expect(JSON.stringify(query)).toContain('maintenance_work_month');
+  } finally { vi.useRealTimers(); }
+});
+
+it('replays historical analysis and keeps an explicitly decided version out of the thirty-day reconsideration queue', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    const birth = Date.parse('2025-11-17T06:30:01.579Z');
+    vi.setSystemTime(birth);
+    const f = await fixture(), work = f.host.maintenanceWork;
+    const judged = await f.seed('prior-rejection', '该候选已经被用户驳回。'), exempt = await f.seed('young-when-seen', '初次分析时日记尚在沉淀。');
+    const awaiting = await f.seed('prior-pending-review', '旧版审批尚未处理。');
+    const newDay = await f.seed('new-version', '保持近期日记。');
+    const old = { kind: 'organize', jobId: 'imported-plan', analyzedAt: new Date(birth + 2 * 86400000).toISOString(),
+      sources: [{ ...judged, fromCandidate: true }, exempt, { ...awaiting, fromCandidate: true }], reserved: [awaiting.id] };
+    const state = (id: string) => f.host.db.prepare("SELECT state,available_at FROM maintenance_work WHERE note_id=? AND kind='organize'").get(id);
+    vi.setSystemTime(birth + 3 * 86400000);
+    work.seed({ records: [old] });
+    expect(state(judged.id)).toEqual({ state: 'reviewed', available_at: 0 });
+    expect(state(exempt.id)).toEqual({ state: 'pending', available_at: birth + 30 * 86400000 });
+    expect(state(awaiting.id)).toMatchObject({ state: 'review' });
+    work.complete({ ...old, reserved: [] });
+    expect(state(awaiting.id)).toEqual({ state: 'reviewed', available_at: 0 });
+    vi.setSystemTime(birth + 34 * 86400000);
+    work.seed({ records: [{ ...old, reserved: [] }] });
+    const next = { kind: 'organize', jobId: 'after-missed-maturity', limit: 20 };
+    const batch = work.claim(next);
+    expect(batch.items.map((row: { id: string }) => row.id).sort()).toEqual([exempt.id,newDay.id].sort());
+    work.complete({ ...next, sources: batch.items });
+    expect(work.claim({ ...next, jobId: 'same-version-again' }).items).toEqual([]);
+  } finally { vi.useRealTimers(); }
 });
 
 it('claims each unchanged indexed version once per maintenance kind and persists coverage across reopening', async () => {
@@ -153,7 +338,10 @@ it('reserves semantically related historical context and pending reviews across 
   const fresh = await f.seed('new-seed', '用户改为博物馆，尚未订票。');
   const batch = work.claim({ kind: 'organize', jobId: 'with-context', limit: 24 }); expect(batch.items.map((n: { id: string }) => n.id)).toEqual([fresh.id]);
   const oldPath = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(old.id).note_path;
-  const related = work.associate({ kind: 'organize', jobId: 'with-context', retrieval: { result: { content: [{ type: 'text', text: `[路径: ${pathToFileURL(path.join(f.home, 'dailynote', oldPath)).href}]\n[路径: file:///C:/outside/Companion/private.txt]` }] } } });
+  expect(() => work.associate({ kind: 'organize', jobId: 'with-context', retrieval: { result: { content: [{ type: 'text', text: `[路径: ${pathToFileURL(path.join(f.home, 'dailynote', oldPath)).href}]\n[路径: file:///C:/outside/Companion/private.txt]` }] } } })).toThrow('current native retrieval');
+  const related = work.associate({ kind: 'organize', jobId: 'with-context', retrieval: {
+    engine: 'DailyNoteManager.Associate', sourceRevision: batch.revision, items: [{ ...old, seedIds: [fresh.id] }],
+  } });
   expect(related.items).toEqual([{ id: old.id, checksum: old.checksum }]);
   work.complete({ kind: 'organize', jobId: 'with-context', sources: [...batch.items, ...related.items], reserved: [old.id, fresh.id] });
   expect(work.claim({ kind: 'organize', jobId: 'duplicate-plan', limit: 24 }).items).toEqual([]);
@@ -166,8 +354,9 @@ it('restores omitted historical context without turning it into new maintenance 
   const f = await fixture(), old = await f.seed('omitted-context', '只作关联背景的旧记忆。'), work = f.host.maintenanceWork;
   work.seed({ records: [{ kind: 'organize', sources: [old] }] });
   await f.seed('omitted-new', '本批新日记。'); const batch = work.claim({ kind: 'organize', jobId: 'omit-context', limit: 24 });
-  const oldPath = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(old.id).note_path;
-  expect(work.associate({ kind: 'organize', jobId: 'omit-context', retrieval: { results: [{ fullPath: oldPath }] } }).items).toHaveLength(1);
+  expect(work.associate({ kind: 'organize', jobId: 'omit-context', retrieval: {
+    engine: 'DailyNoteManager.Associate', sourceRevision: batch.revision, items: [{ ...old, seedIds: [batch.items[0].id] }],
+  } }).items).toHaveLength(1);
   work.complete({ kind: 'organize', jobId: 'omit-context', sources: batch.items });
   expect(work.stats({ kind: 'organize' }).ready).toBe(0); expect(f.host.db.prepare("SELECT state FROM maintenance_work WHERE kind='organize' AND note_id=?").get(old.id).state).toBe('reviewed');
 });
@@ -180,7 +369,9 @@ it('does not leave unchanged surviving sources claimed after another source is w
 it('releases obsolete pending reviews after withdrawal without requeueing their historical context', async () => {
   const f = await fixture(), old = await f.seed('review-context', '旧记忆只作背景。'), work = f.host.maintenanceWork; work.seed({ records: [{ kind: 'organize', sources: [old] }] });
   const fresh = await f.seed('review-new', '本批新增日记。'), batch = work.claim({ kind: 'organize', jobId: 'review-expired', limit: 24 });
-  const oldPath = f.host.db.prepare('SELECT note_path FROM mutations WHERE id=?').get(old.id).note_path, related = work.associate({ kind: 'organize', jobId: 'review-expired', retrieval: { results: [{ fullPath: oldPath }] } });
+  const related = work.associate({ kind: 'organize', jobId: 'review-expired', retrieval: {
+    engine: 'DailyNoteManager.Associate', sourceRevision: batch.revision, items: [{ ...old, seedIds: [fresh.id] }],
+  } });
   work.complete({ kind: 'organize', jobId: 'review-expired', sources: [...batch.items, ...related.items], reserved: [old.id, fresh.id] });
   const withdrawn = await f.seed('unrelated-withdrawal', '随后撤回的独立日记。'); f.host.stageWithdrawal({ noteIds: [withdrawn.id] });
   expect(work.claim({ kind: 'organize', jobId: 'after-review-expired', limit: 24 }).items).toEqual([{ id: fresh.id, checksum: fresh.checksum }]);

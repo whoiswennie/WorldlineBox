@@ -5,6 +5,7 @@ import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 import { BotStore } from '../../src/main/companion-bot/store';
 import { BotHistoryProjector } from '../../src/main/companion-bot/history-projection';
+import { BotTopics } from '../../src/main/companion-bot/topics';
 import type { BotMemoryMessage, BotMemoryScope } from '../../src/main/companion-bot/memory-service';
 
 const cleanups: Array<() => void> = [];
@@ -84,13 +85,48 @@ it('archives finite bounded pages and yields cancellation without committing an 
   expect((await projector.project(f.scope)).projected).toBe(70);
   expect(f.saved.size).toBe(70); expect(f.memory.appendHistory.mock.calls.every(call => call[1].length <= 32)).toBe(true);
 });
-it('reserves durable queue shares for projection and capture under a continuous stream of response jobs', () => {
+it('reserves durable queue shares for projection and diary mutations under a continuous stream of response jobs', () => {
   const f = fixture(), kinds: string[] = [];
   for (let i = 0; i < 12; i++) {
-    for (const kind of ['response', 'projection', 'capture'] as const) f.store.enqueueMemoryJob({ id: `${kind}-${i}`, kind, payload: { scope: f.scope } });
+    for (const kind of ['response', 'projection', 'mutation'] as const) f.store.enqueueMemoryJob({ id: `${kind}-${i}`, kind, payload: { scope: f.scope } });
     const claim = f.store.claimMemoryJob({ workerId: 'background', now: 1000 })!; kinds.push(claim.job.kind);
     f.store.settleMemoryJob({ id: claim.job.id, leaseToken: claim.leaseToken, status: 'done' });
     if (i === 5) f.reopen();
   }
-  expect(kinds).toEqual(['response', 'projection', 'response', 'capture', 'response', 'projection', 'response', 'capture', 'response', 'projection', 'response', 'capture']);
+  expect(kinds).toEqual(['response', 'projection', 'response', 'mutation', 'response', 'projection', 'response', 'mutation', 'response', 'projection', 'response', 'mutation']);
+});
+it('reads an older sparse topic directly and yields between pages of a busy topic', async () => {
+  const f = fixture(), topics = new BotTopics(f.store), conversationId = f.scope.conversationId;
+  const small = topics.create(conversationId, 'small'), large = topics.create(conversationId, 'large');
+  const other = topics.create(conversationId, 'unrelated');
+  const write = (topic: typeof small, content: string) => {
+    const sent = f.store.enqueue({ conversationId, senderId: 'user', content });
+    topics.bind(sent.events, topic);
+    return sent.message.id;
+  };
+  const oldest = write(small, '很早的话题'), expected = [];
+  for (let i = 0; i < 33; i++) expected.push(write(large, '话题正文' + i));
+  for (let i = 0; i < 55; i++) write(other, '其他话题' + i);
+  const read = (topicId: string) => f.store.recentMemoryMessages(conversationId, {
+    throughSourceSequence: Number.MAX_SAFE_INTEGER, topicId, companionId: f.scope.companionId,
+  }, new AbortController().signal);
+  expect((await read(small.id)).map(m => m.id)).toEqual([oldest]);
+  let yielded = false;
+  setImmediate(() => { yielded = true; });
+  expect((await read(large.id)).map(m => m.id)).toEqual(expected);
+  expect(yielded).toBe(true);
+});
+it('keeps OneRing responses in audience order through backoff while another audience progresses', () => {
+  const f = fixture(), scope = f.scope;
+  const put = (id: string, companionId: string) => f.store.enqueueMemoryJob({ id, kind: 'response', payload: { scope: { ...scope, companionId } } });
+  put('first', 'alice');
+  const first = f.store.claimMemoryJob({ workerId: 'vcp' })!;
+  f.store.settleMemoryJob({ id: 'first', leaseToken: first.leaseToken, status: 'retry', retryDelayMs: 10000 });
+  put('second', 'alice'); put('independent', 'bob');
+  expect(f.store.claimMemoryJob({ workerId: 'vcp' })?.job.id).toBe('independent');
+  expect(f.store.claimMemoryJob({ workerId: 'vcp' })).toBeUndefined();
+  const retried = f.store.claimMemoryJob({ workerId: 'vcp', now: Date.now() + 11000 })!;
+  expect(retried.job.id).toBe('first');
+  f.store.settleMemoryJob({ id: 'first', leaseToken: retried.leaseToken, status: 'done' });
+  expect(f.store.claimMemoryJob({ workerId: 'vcp' })?.job.id).toBe('second');
 });

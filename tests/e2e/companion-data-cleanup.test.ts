@@ -32,7 +32,7 @@ test('profile clears only WorldlineBox companion history and VCP memory through 
         db.prepare("INSERT INTO bot_messages(id,event_id,conversation_id,sender_id,sender_name,sender_type,content,status,kind,correlation_id,created_at) VALUES('clear-ui','clear-event',?,'user','User','user','应被清空的旧聊天','sent','message','cleanup-ui',?)").run(input.roomId,new Date().toISOString());
       }finally{db.close();}
       const scope={companionId:input.companionId,conversationId:input.roomId,securityDomainId:domain};
-      const memoryHome=path.join(root,'memory',createHash('sha256').update(JSON.stringify([scope.companionId,scope.securityDomainId])).digest('hex'));
+      const memoryHome=path.join(root,'vcp-memory-v5',createHash('sha256').update(JSON.stringify([scope.companionId,scope.securityDomainId])).digest('hex'));
       await fs.mkdir(memoryHome,{recursive:true});await fs.writeFile(path.join(memoryHome,'worldlinebox-scope.json'),JSON.stringify(scope));await fs.writeFile(path.join(memoryHome,'old-diary.txt'),'应被清空的日记');
       await fs.mkdir(path.join(root,'workspaces','keep-dsh'),{recursive:true});await fs.writeFile(path.join(root,'workspaces','keep-dsh','KEEP.txt'),'DSH_WORKSPACE');
       return memoryHome;

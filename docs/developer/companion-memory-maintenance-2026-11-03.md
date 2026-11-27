@@ -1,6 +1,6 @@
 # 伙伴记忆整理与梦境
 
-本功能延续 App 主脑 + VCP Memory + 独立 DSH 执行器的边界。原始实现的触发时机、日记与摘要区别见[冻结源码研究](companion-memory-source-research-2026-11-03.md)。本文描述用户后续授权后已经实装的项目适配；机制测试与最终成品、真实模型语义验收分别记录，不能相互替代。
+本文记录 2026 年 11 月 3 日版维护流程及当时的验收结果。11 月 27 日起，伙伴在普通会话中自主写 DailyNote，定时做梦使用原生 AgentDream 的时间窗和概率规则。当前实现及验证命令见[新版记忆集成说明](../../resources/vcp-memory/INTEGRATION.md)。早期版本的研究见[冻结源码研究](companion-memory-source-research-2026-11-03.md)。
 
 ## 流程与职责
 
@@ -83,3 +83,5 @@ Windows 成品完成完整 Forge 构建和发布检查，再以正式 Vite／For
 布局实测为原生隐藏 offscreen 窗口且确有 paint。1440px 窗口下，标签栏底边和两栏顶边同为 y=160px，左栏 242px；提示出现／消失及周期设置展开／收起时，左右面板坐标与高度都不变。850px 窗口中按钮改为单列，左右仍独立滚动；1,528px 长正文位于 298px 内部滚动区，无横向溢出。提示避开可见操作按钮。以上是实际几何与像素检查，不是持续帧率或数月运行结论。[亮色](../../artifacts/superagent-bot-development/ui/memory-maintenance-light.png)、[深色](../../artifacts/superagent-bot-development/ui/memory-maintenance-dark.png)、[窄窗长正文](../../artifacts/superagent-bot-development/ui/memory-maintenance-narrow-dark.png)
 
 首次协议模式错误、宿主终态重试缺口、归档目录断言错误，以及预检截图中的遮挡和窄窗断字均保留原始记录。首轮最终成品两项虽通过，但成功附件因测试配置路径错误缺失一份，已在不改产品的情况下复跑两项补全并保留原件；没有将丢失材料冒称为已留存。详细历史边界见上述完整证据 JSON。
+
+单个伙伴清理会清空该伙伴与用户的一对一聊天，以及该伙伴在各受众下的原生日记、索引与维护记录。群聊和伙伴间私聊的共同原文及附件保留，其他成员的独立记忆、来源撤回状态和做梦设置均保留。共享会话中，该伙伴的原话归档从清理后的新消息继续。全部伙伴清理由单独入口执行。

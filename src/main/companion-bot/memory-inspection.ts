@@ -45,8 +45,38 @@ function scores(value: Row): Record<string, number> {
   return output;
 }
 
+function formattedResponse(result: unknown): string | undefined {
+  if (typeof result === 'string') return result;
+  const value = row(result);
+  if (!value) return;
+  if (typeof value.result === 'string') return value.result;
+  const content = row(value.result)?.content ?? value.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.flatMap(part => {
+    const block = row(part); return block?.type === 'text' && typeof block.text === 'string' ? [block.text] : [];
+  }).join('\n');
+}
+
+function deepMemoPresentation(query: string, text?: string): BotMemoryRecallReport['presentation'] {
+  if (!text?.trim()) return 'unavailable';
+  return text === `[DeepMemo] 未找到与关键词“${query.trim()}”相关的回忆。` ? 'empty' : 'formatted';
+}
+
+/** Previously saved history inspections wrapped DeepMemo's string in a JSON envelope. */
+export function restoreMemoryInspection(report: BotMemoryRecallReport): BotMemoryRecallReport {
+  if (report.mode !== 'history' || report.presentation) return report;
+  let evidence: string | undefined;
+  if (report.evidence) {
+    try { evidence = formattedResponse(JSON.parse(report.evidence)); } catch { /* A saved preview may end mid-envelope. */ }
+  }
+  const rawResult = row(report.raw)?.result, truncated = row(row(rawResult)?.result);
+  const preview = !evidence && truncated?.omitted === 'long-diagnostic-text' && typeof truncated.text === 'string' ? truncated.text : undefined;
+  evidence ??= formattedResponse(rawResult) ?? preview;
+  return { ...report, evidence, evidenceTruncated: Boolean(preview), presentation: deepMemoPresentation(report.query, evidence) };
+}
+
 export function buildBotMemoryInspection(input: { requestId: string; query: string; mode: BotMemoryRecallMode; totalMs: number;
-  result: unknown; telemetry?: unknown; preparationMs?: number }): BotMemoryRecallReport {
+  result: unknown; telemetry?: unknown; preparationMs?: number; passiveEvidence?: string }): BotMemoryRecallReport {
   const result = row(input.result) ?? {}, telemetry = row(input.telemetry) ?? {};
   const trace = row(telemetry.vcp), chat = row(telemetry.chat), spans = [
     ...(Array.isArray(trace?.spans) ? trace.spans : []), ...(Array.isArray(chat?.spans) ? chat.spans : []),
@@ -72,17 +102,20 @@ export function buildBotMemoryInspection(input: { requestId: string; query: stri
     durationMs: finite(row(span.hostTiming)?.durationMs), status: String(span.status ?? 'not-provided'),
     source: short(span.source, 600), id: finite(span.id), parentId: finite(span.parentId) }));
   if (input.preparationMs !== undefined) stages.unshift({ name: 'host.context.prepare', durationMs: input.preparationMs, status: 'completed', source: 'WorldlineBox stopwatch', id: undefined, parentId: undefined });
-  let evidence: string | undefined;
-  if (typeof input.result === 'string') evidence = short(input.result, 24000);
-  else if (typeof result.content === 'string') evidence = short(result.content, 24000);
-  else if (Array.isArray(result.messages)) evidence = result.messages.flatMap(value => {
+  let evidence = input.passiveEvidence ?? formattedResponse(input.result);
+  if (evidence === undefined && Array.isArray(result.messages)) evidence = result.messages.flatMap(value => {
     const message = row(value); return message?.role === 'system' && typeof message.content === 'string' ? [message.content] : [];
-  }).join('\n').slice(0, 24000);
-  else evidence = short(JSON.stringify(input.result), 24000);
+  }).join('\n');
+  const finalRankingAvailable = input.mode === 'semantic'
+    ? spans.some(span => span.stage === 'lightmemo.final-candidates' && Array.isArray(row(span.input)?.candidates))
+    : input.mode === 'passive' && Array.isArray(result.events) && result.events.some(value => row(value)?.type === 'RAG_RETRIEVAL_DETAILS' && Array.isArray(row(value)?.results));
+  const presentation = input.mode === 'history' ? deepMemoPresentation(input.query, evidence)
+    : hits.length ? 'ranked' : finalRankingAvailable ? 'empty' : evidence?.trim() ? 'formatted' : 'unavailable';
+  const excerpt = short(evidence, 24000);
   const report: BotMemoryRecallReport = { requestId: input.requestId, query: input.query, mode: input.mode, createdAt: new Date().toISOString(), totalMs: input.totalMs,
-    stages, hits, evidence, coverage: { returnedCandidates: candidates.length, displayedCandidates: hits.length,
+    stages, hits, presentation, evidence: excerpt, evidenceTruncated: excerpt !== evidence, coverage: { returnedCandidates: finalRankingAvailable ? candidates.length : undefined, displayedCandidates: hits.length,
       displayedStages: stages.length, internalStageCount: spans.length, passiveResultBasis: input.mode === 'passive' ? 'VCP RAG broadcast, up to 20 per event' : undefined,
-      finalRankingAvailable: input.mode === 'semantic' ? spans.some(span => span.stage === 'lightmemo.final-candidates') : input.mode === 'passive' && Array.isArray(result.events),
+      finalRankingAvailable,
       textPreviewLimitCodePoints: 4000, stageTiming: 'nested inclusive boundaries; do not add durations', scoring: 'original fields and original order; missing fields are not provided' },
     raw: boundedMemoryDiagnostic({ result: input.result, telemetry }),
     notice: '试查使用当前伙伴与受众的原 VCP 链路，不生成聊天回复、不保存试查问题为对话记忆。分数保留原量纲；阶段耗时可相互包含，不能相加。' };
@@ -91,7 +124,9 @@ export function buildBotMemoryInspection(input: { requestId: string; query: stri
     report.coverage = { ...row(report.coverage), rawOmitted: true };
   }
   if (Buffer.byteLength(JSON.stringify(report), 'utf8') > 384 * 1024) {
-    report.evidence = short(report.evidence, 4000);
+    const shorter = short(report.evidence, 4000);
+    report.evidenceTruncated ||= shorter !== report.evidence;
+    report.evidence = shorter;
     report.hits = report.hits.map(hit => ({ ...hit, text: short(hit.text, 1000) ?? '' }));
     report.coverage = { ...row(report.coverage), textPreviewLimitCodePoints: 1000, capacityExcerpt: true };
   }

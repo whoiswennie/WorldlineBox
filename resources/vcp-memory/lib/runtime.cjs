@@ -11,6 +11,8 @@ const { spawn } = require('node:child_process');
 const { TelemetryCollector, attachKnowledge, attachPlugin, attachCold, requestSummary } = require('./telemetry.cjs');
 const { waitForIndex } = require('./index-wait.cjs');
 const { prepareManagedIngestionScheduler } = require('./ingestion-scheduler.cjs');
+const { enableSingletonChunkRecovery } = require('./warped-chunk-recovery.cjs');
+const { atomicJson } = require('./workspace.cjs');
 
 const TOOLS = Object.freeze({
   DailyNote: 'Plugin/DailyNote/dailynote.js',
@@ -25,7 +27,7 @@ const ADVANCED = Object.freeze({
   timeline: ['readConfig', 'saveConfig', 'listAgents', 'getAgentDetail', 'listTimelineFiles', 'generateTimelines', 'generateSummaries', 'saveTimelineFile', 'saveSummary', 'discoverMemories'],
   oneringMemo: ['readMemo', 'updateMemoText', 'listAgentNames', 'generateMemo', 'startGeneration', 'getGenerationStatus', 'isGenerating'],
   knowledge: ['listDistinctDiaries', 'getDiaryChunkCount', 'getDiaryDateIndex', 'getMemoryProfile', 'getTagConsistencyPreviewStatus', 'startTagConsistencyPreview', 'previewTagConsistency', 'applyTagConsistencyPreview', 'requestActiveFullTraining', 'recomputeGeometry', 'getEPAAnalysis', 'getTagMemoArtifactSnapshot', 'getTagMemoV10ArtifactSnapshot', 'getRiverMemoArtifactSnapshot'],
-  cold: ['listLibraries', 'search', 'reachable', 'subgraph', 'queryTql', 'compactLibrary', 'closeLibrary', 'getMemoryProfile'],
+  cold: ['listLibraries', 'search', 'reachable', 'subgraph', 'queryTql', 'pelorusRequest', 'compactLibrary', 'closeLibrary', 'getMemoryProfile'],
   rag: ['getCacheStats', 'getDiaryContent', 'getSingleEmbeddingCached'],
   dream: ['triggerDream', 'getDreamConfig', 'getDreamAgents', 'getDreamLogs', 'tryTriggerDreamFromSleep'],
 });
@@ -137,6 +139,22 @@ class MemoryRuntime {
     this.kb = this._require('KnowledgeBaseManager.js');
     this.modules.set('KnowledgeBaseManager', this.kb);
     this.kb.config.apiUrl = process.env.MEMORY_DOCUMENT_API_URL || this.kb.config.apiUrl;
+    if (this.runtimeConfig.WORLDLINEBOX_VCP_MANAGED === '1') {
+      // A new notebook has vectors before its tags have sufficient joint
+      // coverage. V5 can raise here while preparing the observation, before
+      // its built-in degraded readout. Keep the same scoped query vector and
+      // mark that readout explicitly for the RAG formatter and diagnostics.
+      const nativeQuery = this.kb.executeNativeRiverQuery.bind(this.kb);
+      this.kb.executeNativeRiverQuery = async (query, options) => {
+        try { return await nativeQuery(query, options); }
+        catch (error) {
+          if (!/warped insufficient joint coverage/i.test(error.message) || options.fallbackToLegacy === false) throw error;
+          const results = await this.kb.searchKnn(options.diaryNames, query.vector, options.topK, options);
+          return { results, diagnostics: { reason: 'insufficient-joint-coverage', degraded: true, retrievalEngine: 'warped_ann' } };
+        }
+      };
+      enableSingletonChunkRecovery(this.kb);
+    }
     attachKnowledge(this.telemetry, this.kb);
     await this.kb.initialize();
     attachKnowledge(this.telemetry, this.kb);
@@ -146,7 +164,11 @@ class MemoryRuntime {
     attachCold(this.telemetry, this.cold);
     await this.cold.initialize();
     this.jev = this._require('modules/jevClient.js');
-    Object.assign(this.dependencies, { knowledgeBaseManager: this.kb, vectorDBManager: this.kb, tdbKnowledgeManager: this.cold, jevClient: this.jev });
+    Object.assign(this.dependencies, {
+      knowledgeBaseManager: this.kb, vectorDBManager: this.kb, tdbKnowledgeManager: this.cold, jevClient: this.jev,
+      getTimelineService: () => this.modules.get('VCPTimeLine'),
+      isTimelineManagedByRag: () => true,
+    });
     this.dailyNote.setDependencies(this.dependencies);
     this.rag = this._require('Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js');
     this.modules.set('RAGDiaryPlugin', this.rag);
@@ -155,7 +177,8 @@ class MemoryRuntime {
     Object.assign(this.dependencies, {
       contextBridge: this.rag.getContextBridge(),
       aiMemoBridge: this.rag.getAIMemoBridge(),
-      getSingleEmbedding: text => this.rag.getSingleEmbeddingCached(text),
+      getSingleEmbedding: this.rag.getSingleEmbeddingCached.bind(this.rag),
+      getBatchEmbeddings: this.rag.getBatchEmbeddingsCached.bind(this.rag),
     });
     this.cold.search = async (queryText, options = {}) => {
       if (!this.cold.initialized) return [];
@@ -185,11 +208,40 @@ class MemoryRuntime {
       MemoryThinkingTray: 'Plugin/MemoryThinkingTray/MemoryThinkingTray.js',
     }[name];
     if (!relative) throw new Error(`Unknown context plugin: ${name}`);
-    if (name === 'OneRing' || name === 'VCPTimeLine') await this._ensureModelBridge();
+    let pluginConfig = this.runtimeConfig;
+    if (name === 'OneRing' || name === 'VCPTimeLine') {
+      if (this.runtimeConfig.WORLDLINEBOX_VCP_MANAGED === '1') {
+        // Summary plugins send text completions only. Route them directly to
+        // the companion model, so background jobs cannot execute diary tools
+        // or recursively alter the foreground conversation's RAG context.
+        pluginConfig = { ...this.runtimeConfig, PORT: new URL(process.env.MEMORY_CHAT_API_URL).port,
+          Key: process.env.MEMORY_CHAT_API_KEY, ONERING_USER_NAME: this.runtimeConfig.ONERING_USER_NAME || '用户' };
+      } else await this._ensureModelBridge();
+    }
+    if (name === 'OneRing') {
+      // The memo expander clones the message array after OneRing attaches its
+      // durable turn receipt. Carry that receipt through the clone for replies.
+      const memo = this._require('Plugin/OneRing/OneRingMemo.js');
+      const injectMemo = memo.injectMemo;
+      memo.injectMemo = messages => transferMetadata(messages, injectMemo(messages));
+    }
+    if (this.runtimeConfig.WORLDLINEBOX_VCP_MANAGED === '1' && ['OneRing', 'VCPTimeLine'].includes(name)) {
+      const file = path.join(this.runtimeDir, 'Plugin', name, name === 'OneRing' ? 'OneRingConfig.json' : 'config.json');
+      const saved = fs.existsSync(file) ? JSON.parse(await fsp.readFile(file, 'utf8')) : {};
+      const model = this.runtimeConfig.CHAT_MODEL || '';
+      const effective = name === 'OneRing'
+        ? { ...saved, memo: { ...saved.memo, model, autoGenerate: Boolean(model) } }
+        : { ...saved, model, autoSync: { ...saved.autoSync, enabled: Boolean(model), agents: ['Companion'] } };
+      if (JSON.stringify(saved) !== JSON.stringify(effective)) atomicJson(file, effective);
+    }
     const plugin = this._require(relative);
+    if (name === 'VCPTimeLine' && this.diaryAuthors) {
+      const validAuthors = plugin._getValidAuthorNames.bind(plugin);
+      plugin._getValidAuthorNames = agent => agent === 'Companion' ? new Set([...validAuthors(agent), ...this.diaryAuthors()]) : validAuthors(agent);
+    }
     this.modules.set(name, plugin);
     attachPlugin(this.telemetry, name, plugin);
-    await plugin.initialize(this.runtimeConfig, this.dependencies);
+    await plugin.initialize(pluginConfig, this.dependencies);
     this.pluginHost.messagePreprocessors.set(name, plugin);
     return plugin;
   }
@@ -234,11 +286,34 @@ class MemoryRuntime {
 
   async callTool(name, args = {}, context = {}) {
     await this.start({ vectors: false });
-    if (name === 'SemanticGroupEditor') return this._stdioTool('Plugin/SemanticGroupEditor/SemanticGroupEditor.js', args);
+    if (name === 'DailyNoteSearcher' && this.runtimeConfig.WORLDLINEBOX_VCP_MANAGED === '1') {
+      const root = { dailynote: process.env.KNOWLEDGEBASE_ROOT_PATH, knowledge: process.env.TDB_KNOWLEDGE_ROOT_PATH };
+      const selected = args.root_path || 'dailynote';
+      if (!Object.hasOwn(root, selected)) throw new TypeError('Expected dailynote or knowledge root');
+      if (args.folder) await this._require('modules/safeFilePath.js').safeFilePath(root[selected], args.folder, { singleSegment: true });
+      args = { ...args, root_path: root[selected] };
+    }
+    if (name === 'SemanticGroupEditor') {
+      await this.start({ vectors: true });
+      const entry = 'Plugin/SemanticGroupEditor/SemanticGroupEditor.js';
+      if (args.command === 'QueryGroups' && !Object.keys(args).some(key => /^command\d+$/.test(key))) return this._stdioTool(entry, args);
+      await this.rag.semanticGroups._ready;
+      await this.rag.semanticGroups.shutdown();
+      try {
+        const result = await this._stdioTool(entry, args);
+        if (result.status !== 'error') {
+          await this.rag.semanticGroups.synchronizeFromEditFile();
+          await this.rag.semanticGroups.loadGroups();
+          await this.modules.get('LightMemo')?.loadSemanticGroups();
+          this.rag.cacheManager.clear('query');
+        }
+        return result;
+      } finally { this.rag.semanticGroups.resumeStatsFlush(); }
+    }
     if (name === 'DailyNoteManager' && args.command === 'associate') await this.start({ vectors: true });
     const plugin = await this._tool(name);
     if (name === 'LightMemo' || name === 'AgentDream' || name === 'DailyNoteManager' && args.command === 'associate') await this.sync();
-    const result = await plugin.processToolCall(args, context);
+    const result = name === 'LightMemo' ? await this.runLightMemo(plugin, args) : await plugin.processToolCall(args, context);
     if (name === 'MagiAgent' && args.command === 'start_meeting') {
       const match = JSON.stringify(result).match(/magi-session-\d+/);
       if (match) this.pendingMagi.add(match[0]);
@@ -258,7 +333,90 @@ class MemoryRuntime {
     delete args.diaryNames; delete args.topK;
     delete args.sync; delete args.timeoutMs;
     if (!args.folder && !args.maid && !args.knowledge_base) args.search_all_knowledge_bases = true;
-    return (await this._tool('LightMemo')).processToolCall(args);
+    return this.runLightMemo(await this._tool('LightMemo'), args);
+  }
+
+  async runLightMemo(plugin, args) {
+    const result = await plugin.processToolCall(args);
+    if (this.runtimeConfig.WORLDLINEBOX_VCP_MANAGED !== '1' || args.fallback === 'none' ||
+        !/warped insufficient joint coverage/i.test(result?.plugin_error || '')) return result;
+    const retry = await plugin.processToolCall({ ...args, engineMode: 'knn' });
+    return { ...retry, retrievalFallback: { engine: 'knn', reason: 'insufficient-joint-coverage' } };
+  }
+
+  async retrieve({ query, diaries, k = 10, engine = 'rivermemo', fallback = 'knn', coreTags = [], candidateK }) {
+    if (typeof query !== 'string' || !query.trim() || !Array.isArray(diaries) || !diaries.length
+        || diaries.some(name => typeof name !== 'string' || !name.trim())) throw new TypeError('A query and explicit diary names are required');
+    if (!Number.isSafeInteger(k) || k < 1 || k > 1000 || candidateK !== undefined &&
+        (!Number.isSafeInteger(candidateK) || candidateK < 1 || candidateK > 10000)) throw new RangeError('Invalid retrieval limit');
+    if (!Array.isArray(coreTags) || coreTags.some(tag => typeof tag !== 'string')) throw new TypeError('Expected a core tag list');
+    await this.start({ vectors: true });
+    const bridge = this.dependencies.contextBridge;
+    const queryVector = await bridge.embedText(query);
+    if (!queryVector || queryVector.length !== this.kb.config.dimension || !queryVector.every(Number.isFinite)) {
+      throw new Error('The built-in embedding service returned an invalid query vector');
+    }
+    return bridge.retrieveDiary({ queryText: query, diaryNames: diaries, queryVector, k, engine, fallback, coreTags, candidateK });
+  }
+
+  async inspectContext({ messages, threshold = 0.7 }) {
+    if (!Array.isArray(messages) || !Number.isFinite(threshold) || threshold < -1 || threshold > 1) throw new TypeError('Invalid semantic context');
+    await this.start({ vectors: true });
+    const manager = this.rag.contextVectorManager;
+    const bridge = this.dependencies.contextBridge;
+    const snapshot = await manager.updateContext(messages, { allowApi: true });
+    const summary = role => {
+      const vector = bridge.getAggregatedVector(role);
+      return vector ? { vector: Array.from(vector), logicDepth: bridge.computeLogicDepth(vector), semanticWidth: bridge.computeSemanticWidth(vector) } : null;
+    };
+    return { user: summary('user'), assistant: summary('assistant'), segments: manager.segmentContext(messages, threshold, snapshot.snapshotVectorByHash) };
+  }
+
+  async putKnowledgeDocument({ library, fileName, content }) {
+    if (typeof content !== 'string' || !content.trim() || !/\.(md|txt|json|html)$/i.test(fileName)) throw new TypeError('Expected a text document');
+    await this.start({ vectors: true });
+    if (!this.cold.initialized) throw new Error('Cold knowledge library is unavailable');
+    const root = process.env.TDB_KNOWLEDGE_ROOT_PATH;
+    const { safeFilePath } = this._require('modules/safeFilePath.js');
+    const directory = await safeFilePath(root, library, { singleSegment: true });
+    const target = await safeFilePath(directory, fileName, { singleSegment: true });
+    await fsp.mkdir(directory, { recursive: true });
+    const temporary = target + '.' + crypto.randomUUID() + '.tmp';
+    try {
+      await fsp.writeFile(temporary, content, { flag: 'wx' });
+      await fsp.rename(temporary, target);
+    } finally { await fsp.rm(temporary, { force: true }); }
+    return { library, fileName, indexStatus: 'queued' };
+  }
+
+  async readColdLibrary(operation, { library, query, k = 8 }) {
+    if (typeof query !== 'string' || !query.trim()) throw new TypeError('A library query is required');
+    await this.start({ vectors: true });
+    if (!this.cold.initialized || !this.cold.listLibraries().includes(library)) throw new Error('Cold library is unavailable');
+    let pelorusSearch;
+    if (operation === 'cold.pelorusSearch') {
+      if (!Number.isSafeInteger(k) || k < 1 || k > 100) throw new RangeError('Invalid Pelorus result count');
+      const vector = await this.dependencies.contextBridge.embedText(query);
+      if (!vector || vector.length !== this.kb.config.dimension || !vector.every(Number.isFinite)) throw new Error('Invalid query embedding');
+      pelorusSearch = JSON.stringify({ operation: 'search', vector: Array.from(vector), options: { top_k: k, exact: true } });
+    }
+    // The upstream administrative queryTql dispatcher can select tqlMut.
+    // Expose only the native read API for model-issued queries.
+    return this.cold._withLibraryQueue(library, async () => {
+      const handle = this.cold.getOrOpenLibrary(library);
+      this.cold._beginLibraryUse(handle);
+      try {
+        if (!pelorusSearch) return handle.db.tql(query);
+        try { return JSON.parse(handle.db.pelorusRequest(pelorusSearch)); }
+        catch (error) {
+          if (error.code !== 'TDB_IMMUTABLE_ARTIFACT' || !/Pelorus index is missing or requires rebuild/i.test(error.message)) throw error;
+          // VCP's fixed-curvature profile admits our unit-normalized vectors.
+          // Keep the first build and retry within the same native library lease.
+          handle.db.pelorusRequest(JSON.stringify({ operation: 'build', config: { curvature: 0.25, navigation: 'geometry_bq2' } }));
+          return JSON.parse(handle.db.pelorusRequest(pelorusSearch));
+        }
+      } finally { this.cold._endLibraryUse(handle); }
+    });
   }
 
   async preprocess(messages, options = {}) {
@@ -290,6 +448,9 @@ class MemoryRuntime {
       current = transferMetadata(current, next);
     }
     if (options.tray !== false) await run(await this._contextPlugin('MemoryThinkingTray'));
+    // The V5 RAG plugin resolves all three timeline declarations together
+    // with its diary query. Provide the initialized service before RAG runs.
+    if (options.timeline !== false && /\[\[VCPTimeLine(?:Summary|Recall)?::/.test(carrier)) await this._contextPlugin('VCPTimeLine');
     if (this.vectorReady) await run(this.rag);
     else if (/\{\{[^}]*日记本/.test(carrier)) {
       // Reuse the full upstream plugin's direct-only fast path, including
@@ -302,9 +463,19 @@ class MemoryRuntime {
       }
       await run(this.directRag);
     }
-    if (options.timeline !== false && carrier.includes('[[VCPTimeLine::')) await run(await this._contextPlugin('VCPTimeLine'));
     if (options.oneRing !== false && /\[\[OneRing(?:Memo)?::/.test(carrier)) await run(await this._contextPlugin('OneRing'));
-    if (options.folding === true || (this.vectorReady && options.folding !== false)) await run(await this._contextPlugin('ContextFoldingV2'));
+    if (options.folding === true || (this.vectorReady && options.folding !== false)) {
+      const before = current;
+      await run(await this._contextPlugin('ContextFoldingV2'));
+      // V5 folding may JSON-clone the messages to replace old assistant text.
+      // It preserves order/count, but JSON loses OneRing's private source marks.
+      if (current !== before && before.length === current.length) current.forEach((message, index) => {
+        for (const key of ['__oneRingInjectedFromDb', '__oneRingTimelineMeta']) {
+          const descriptor = Object.getOwnPropertyDescriptor(before[index], key);
+          if (descriptor?.enumerable === false && !Object.hasOwn(message, key)) Object.defineProperty(message, key, descriptor);
+        }
+      });
+    }
     if (processingContext) {
       const next = this._require('modules/messageProcessor.js').applyDetectorsToMessages(current, processingContext);
       current = transferMetadata(current, next);
@@ -316,7 +487,14 @@ class MemoryRuntime {
       current = transferMetadata(current, next);
     }
     this.lastMessages = current;
-    return { messages: current, metadata: { oneRing: current.__oneRingMeta || null }, events: this.events.slice() };
+    const injectedHistory = current.flatMap((message, index) => {
+      const injected = Object.getOwnPropertyDescriptor(message, '__oneRingInjectedFromDb');
+      const timeline = Object.getOwnPropertyDescriptor(message, '__oneRingTimelineMeta');
+      return injected?.enumerable === false && injected.value === true && timeline?.enumerable === false
+        ? [{ index, timeline: timeline.value }] : [];
+    });
+    return { messages: current, metadata: { oneRing: current.__oneRingMeta || null, injectedHistory },
+      injectedHistoryIndices: injectedHistory.map(item => item.index), events: this.events.slice() };
   }
 
   async _expandVariables(messages, options) {
@@ -465,7 +643,8 @@ class MemoryRuntime {
       case 'dream': object = await this._tool('AgentDream'); break;
     }
     if (typeof object?.[method] !== 'function') throw new Error(`Upstream capability unavailable: ${target}.${method}`);
-    return object[method](...args);
+    const result = await object[method](...args);
+    return result instanceof Map ? Object.fromEntries(result) : result;
   }
 
   async _stdioTool(relative, args) {
@@ -601,12 +780,7 @@ class MemoryRuntime {
     }
   }
 
-  async close() {
-    if (this.closed || this.closing) return;
-    this.closing = true;
-    const errors = [];
-    // Original folding/memo APIs deliberately return before summaries finish.
-    // A short-lived CLI must keep their DBs/transports alive until they settle.
+  async drainSummaries() {
     const folding = this.modules.get('ContextFoldingV2');
     const memo = this.modules.has('OneRing') ? this._require('Plugin/OneRing/OneRingMemo.js') : null;
     const backgroundDeadline = Date.now() + (Number(this.config.MEMORY_BACKGROUND_DRAIN_TIMEOUT_MS) || 120000);
@@ -615,10 +789,75 @@ class MemoryRuntime {
       const foldingBusy = folding && (folding.summaryQueue.length || folding.activeSummaryCount || folding.pendingHashes.size);
       const memoBusy = memo && memo.listAgentNames().some(name => memo.isGenerating(name));
       if (!foldingBusy && !memoBusy) break;
-      if (Date.now() > backgroundDeadline) { errors.push('Background memory summaries did not finish before the drain timeout'); break; }
+      if (Date.now() > backgroundDeadline) throw new Error('Background memory summaries did not finish before the drain timeout');
       folding?._processSummaryQueue();
       await delay(25);
     }
+  }
+
+  async clearDerivedContext(companionId) {
+    const { safeFilePath } = this._require('modules/safeFilePath.js');
+    const timeline = this._require('Plugin/VCPTimeLine/VCPTimeLine.js');
+    // An active auto-sync may already be writing a monthly artifact. Stop
+    // scheduling, then wait for all writers before issuing deletion receipts.
+    await timeline.shutdown();
+    await Promise.allSettled([...timeline.generationLocks.values()]);
+    await this.drainSummaries();
+    this.rag?.foldingStore?.db?.exec('DELETE FROM folding_entries');
+    const groups = this.rag.semanticGroups;
+    await groups._ready;
+    await groups.shutdown();
+    // Group vocabulary and vectors have no upstream per-word source ledger.
+    // Reset the projection as a unit before the withdrawal fence is lifted.
+    try {
+      const groupDirectory = 'Plugin/RAGDiaryPlugin';
+      const empty = { config: {}, groups: {} };
+      for (const file of ['semantic_groups.edit.json', 'semantic_groups.json']) {
+        atomicJson(await safeFilePath(this.runtimeDir, groupDirectory + '/' + file), empty);
+      }
+      const vectors = await safeFilePath(this.runtimeDir, groupDirectory + '/semantic_vectors');
+      for (const file of await fsp.readdir(vectors)) {
+        if (/^[a-f\d-]+\.json$/i.test(file)) await fsp.unlink(await safeFilePath(vectors, file, { singleSegment: true }));
+      }
+      groups.groupVectorCache.clear();
+      await groups.loadGroups();
+      await this.modules.get('LightMemo')?.loadSemanticGroups();
+    } finally { groups.resumeStatsFlush(); }
+    const memoName = encodeURIComponent(companionId).replace(/%/g, '_') + '.json';
+    const memo = await safeFilePath(this.runtimeDir, 'Plugin/OneRing/memo/' + memoName);
+    await fsp.rm(memo, { force: true });
+    for (const name of ['timeline_summaries.json', 'auto_sync_state.json']) {
+      const file = await safeFilePath(this.runtimeDir, 'Plugin/VCPTimeLine/' + name);
+      await fsp.rm(file, { force: true });
+    }
+    const indexedRaw = await this.kb.nativeKnowledgeRuntime.listIndexedFilePaths(this.kb.dbPath);
+    const indexed = typeof indexedRaw === 'string' ? JSON.parse(indexedRaw) : indexedRaw;
+    for (const agent of new Set(['Companion', companionId])) {
+      const folder = agent + 'timeline';
+      const directory = await safeFilePath(this.kb.config.rootPath, folder, { singleSegment: true });
+      const names = new Set(fs.existsSync(directory) ? await fsp.readdir(directory) : []);
+      // A previous interrupted withdrawal can have removed the files before
+      // their native deletion receipts arrived. Reconcile those rows too.
+      for (const relative of indexed || []) {
+        const parts = relative.replaceAll('\\', '/').split('/');
+        if (parts.length === 2 && parts[0].toLowerCase() === folder.toLowerCase()) names.add(parts[1]);
+      }
+      const paths = [];
+      for (const name of names) {
+        if (/^\d{4}-(?:0[1-9]|1[0-2])\.md$/i.test(name)) paths.push(await safeFilePath(directory, name, { singleSegment: true }));
+      }
+      if (paths.length) await this.kb.runExternalFileMutation('WorldlineBoxTimelineWithdrawal', async () => {
+        for (const file of paths) await fsp.rm(file, { force: true });
+        return { status: 'success', mutationPaths: { deletes: paths, upserts: [] } };
+      }, { waitForIndex: true, timeoutMs: 30000 });
+    }
+  }
+
+  async close() {
+    if (this.closed || this.closing) return;
+    this.closing = true;
+    const errors = [];
+    try { await this.drainSummaries(); } catch (error) { errors.push(error.message); }
     if (this.pendingMagi.size) {
       const deadline = Date.now() + (Number(this.config.MEMORY_MAGI_DRAIN_TIMEOUT_MS) || 10 * 60 * 1000);
       while (this.pendingMagi.size && Date.now() < deadline) {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import { BotService } from '../../src/main/companion-bot/service';
+import { BotTopics } from '../../src/main/companion-bot/topics';
 import { BotDshBrain, BotDshOutputLimitError, BotDshTurnFailedError, type BotDshRun, type BotDshResult } from '../../src/main/companion-bot/dsh-brain';
 import { BotMemoryService, type BotMemoryPrepared } from '../../src/main/companion-bot/memory-service';
 import { BotMediaService } from '../../src/main/companion-bot/media-service';
@@ -16,10 +17,10 @@ class Memory extends BotMemoryService {
   override async withdrawnSources() { return { revision: '0', sourceEventIds: [], sourceMessageIds: [] }; }
   override async appendHistory() { return { appended: [] }; }
   override async prepareTurn(input: Parameters<BotMemoryService['prepareTurn']>[0]): Promise<BotMemoryPrepared> {
-    return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'native', evidence: '已核验的VCP证据', metadata: {}, events: [], status: 'ready', omittedChars: 0 };
+    return { requestId: input.requestId, scope: input.scope, messages: input.messages, inputHash: 'native', nativeContext: 'VCP原生上下文', metadata: {}, events: [], status: 'ready' };
   }
   override async finishTurn() { return { recorded: true }; }
-  override async resumePrepared(input:Parameters<BotMemoryService['resumePrepared']>[0]):Promise<BotMemoryPrepared>{return {requestId:input.requestId,scope:input.scope,messages:[],inputHash:'native',evidence:'已核验的VCP证据',metadata:{},events:[],status:'ready',omittedChars:0};}
+  override async resumePrepared(input:Parameters<BotMemoryService['resumePrepared']>[0]):Promise<BotMemoryPrepared>{return {requestId:input.requestId,scope:input.scope,messages:[],inputHash:'native',nativeContext:'VCP原生上下文',metadata:{},events:[],status:'ready'};}
 }
 class Brain extends BotDshBrain {
   calls: BotDshRun[] = [];
@@ -50,13 +51,14 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'wlb-native-service-')), brain = new Brain();
   const media = new BotMediaService({ root: path.join(root, 'media'), builtinRoot: path.join(root, 'builtins') });
-  const service = new BotService({ root, brain, media, memory: new Memory(path.join(root, 'memory')),
+  const memory = new Memory(path.join(root, 'memory'));
+  const service = new BotService({ root, brain, media, memory,
     model: () => ({ apiFormat: 'openai_chat', baseUrl: 'http://127.0.0.1:9', model: 'fixture', apiKey: 'test-only' }), onEvent: () => undefined });
   const snapshot = (await service.handle({ type: 'state' })).snapshot!, room = snapshot.conversations[0]!;
   cleanups.push(async () => { await service.shutdown(); await rm(root, { recursive: true, force: true }); });
   let sequence = 0;
   const send = (content: string) => service.handle({ type: 'message.send', conversationId: room.id, content, requestId: 'native-' + ++sequence });
-  return { root, brain, service, room, send };
+  return { root, brain, service, room, send, memory };
 }
 async function until(check: () => boolean | Promise<boolean>) {
   const end = Date.now() + 5000;
@@ -113,9 +115,28 @@ it('routes a follow-up to the selected native DSH session without replaying the 
   expect(f.brain.calls[0]!.laneId).toBe(f.brain.calls[1]!.laneId);
   expect(f.brain.calls[0]!.cwd).toBe(f.brain.calls[1]!.cwd);
   expect(f.brain.calls[1]!.prompt).not.toContain('第一轮的私有上下文');
-  expect(f.brain.calls[1]!.prompt).toContain('已核验的VCP证据');
+  expect(JSON.parse(f.brain.calls[1]!.prompt)).not.toHaveProperty('memoryEvidence');
+  expect(f.brain.calls[1]!.memoryContext).toBe('VCP原生上下文');
   expect(f.brain.calls[1]).toMatchObject({ role: 'worker', workerAccess: 'full', tools: [] });
   expect(f.service.store.getMessage(second.replyMessageIds![0]!)!.content).toBe('原生最终正文');
+});
+it.each(['unsent', 'attempted'])('handles a legacy frozen user envelope at the %s delivery boundary', async dispatch => {
+  const f = await fixture(), prepare = f.memory.prepareTurn.bind(f.memory);
+  f.memory.prepareTurn = async input => {
+    f.service.store.setMetadata('native-input:' + input.requestId, JSON.stringify({ system: '', prompt: JSON.stringify({ memoryEvidence: 'RETIRED_DIARY', files: [] }) }));
+    f.service.store.setMetadata('native-dispatch:' + input.requestId, dispatch);
+    return prepare(input);
+  };
+  const sent = await f.send('只保留真实的新问题'), reply = () => f.service.store.getMessage(sent.replyMessageIds![0]!);
+  await until(() => ['sent', 'failed'].includes(reply()?.status ?? ''));
+  if (dispatch === 'attempted') {
+    expect(reply()?.status).toBe('failed'); expect(reply()?.error).toContain('请发送新问题'); expect(f.brain.calls).toHaveLength(0);
+  } else {
+    const call = f.brain.calls[0]!;
+    expect(reply()?.status).toBe('sent'); expect(call.prompt).toContain('只保留真实的新问题'); expect(call.prompt).not.toContain('RETIRED_DIARY');
+    expect(f.service.store.getMetadata('native-input:' + call.eventId)).not.toContain('memoryEvidence');
+    expect(call.memoryContext).toBe('VCP原生上下文');
+  }
 });
 it('creates a new topic explicitly and reconnects earlier native history without changing the companion workspace',async()=>{
   const f=await fixture(),first=await f.send('先前项目');await until(()=>f.service.store.getMessage(first.replyMessageIds![0]!)?.status==='sent');
@@ -126,18 +147,21 @@ it('creates a new topic explicitly and reconnects earlier native history without
   const third=await f.send('追问先前项目');await until(()=>f.service.store.getMessage(third.replyMessageIds![0]!)?.status==='sent');
   expect(f.brain.calls[0]?.laneId).not.toBe(f.brain.calls[1]?.laneId);expect(f.brain.calls[2]?.laneId).toBe(f.brain.calls[0]?.laneId);
 });
-it('queues new input above the composer, steers it exactly once into the pinned task and captures the actual supplemental input',async()=>{
+it('queues new input above the composer, steers it exactly once into the pinned task and preserves the original supplemental input',async()=>{
   const f=await fixture();let finish!:(text:Partial<BotDshResult>)=>void;f.brain.execute=()=>new Promise(resolve=>{finish=resolve;});
   const first=await f.send('正在执行的项目');await until(()=>!!finish);
+  const target = new BotTopics(f.service.store).reference(f.brain.calls[0]!.eventId)!.id;
   const second=await f.send('包含用户新要求的补充');
   const pending=(await f.service.handle({type:'state',conversationId:f.room.id})).snapshot!.chatRuntime!;
   expect(pending.queued[0]?.messageId).toBe(second.messageId);expect(pending.hiddenMessageIds).toContain(second.replyMessageIds![0]);
+  const rows = () => f.service.store.historyProjectionPage(f.room.id, { after: 0, through: f.service.store.historyProjectionHead(f.room.id), limit: 32 });
+  expect(rows().find(item => item.message.id === second.messageId)?.awaitingTopic).toBe(true);
   await f.service.handle({type:'message.guide',conversationId:f.room.id,messageId:second.messageId!});await f.service.handle({type:'message.guide',conversationId:f.room.id,messageId:second.messageId!});
   expect(f.brain.guidance).toHaveLength(1);expect(f.brain.guidance[0]?.laneId).toBe(f.brain.calls[0]?.laneId);expect(f.brain.guidance[0]?.input.text).toContain('包含用户新要求的补充');
   finish({text:'已按补充完成'});await until(()=>f.service.store.getMessage(first.replyMessageIds![0]!)?.status==='sent');
   expect(f.brain.calls).toHaveLength(1);expect(f.service.store.eventForReply(second.replyMessageIds![0]!)?.status).toBe('cancelled');
-  const capture=f.service.store.taskTransaction(sql=>sql.prepare("SELECT payload_json FROM bot_memory_jobs WHERE kind='capture' ORDER BY created_at DESC LIMIT 1").get()) as {payload_json:string};
-  expect(capture.payload_json).toContain('包含用户新要求的补充');
+  expect(f.service.store.getMessage(second.messageId!)?.content).toBe('包含用户新要求的补充');
+  expect(rows().find(item => item.message.id === second.messageId)).toMatchObject({ topicId: target, awaitingTopic: false });
 });
 it('projects real native deliveries onto the reply and preserves process separately from final text', async () => {
   const f = await fixture();

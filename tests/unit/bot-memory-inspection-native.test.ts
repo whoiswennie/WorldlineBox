@@ -101,7 +101,7 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
     };
     const service = new BotMemoryService({ root, runtime: async () => ({ nodePath, packageRoot }), requestTimeoutMs: 60000,
       embedding: async () => ({ baseUrl: base + '/document', queryBaseUrl: base + '/query', apiKey: secret, model: 'inspection-fixture64', dimension: 64, modelSignature: 'inspection-native-64-v1' }),
-      chat: async () => ({ baseUrl: base, apiKey: secret, model: 'chat-must-not-be-called' }), onLog: message => logs.push(message),
+      onLog: message => logs.push(message),
       createSession: options => {
         const actual = client.createSession(options); sessions.push(actual);
         return { closed: actual.closed, close: () => actual.close(), request: async (operation, payload = {}, options) => {
@@ -134,7 +134,9 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
       const final = originalStages(observed[1]!).findLast(span => span.stage === 'lightmemo.final-candidates'); expect(final).toBeDefined();
       const finalCandidates = row(final!.input).candidates; expect(Array.isArray(finalCandidates)).toBe(true);
       assertOriginalRanking(semantic, (finalCandidates as unknown[]).map(row)); expect(semantic.hits.some(hit => hit.text.includes('SQLite'))).toBe(true);
-      expect(history.evidence).toContain('INSPECTHISTORY2026'); expect(history.hits).toEqual([]); expect(row(history.coverage).finalRankingAvailable).toBe(false);
+      expect(history.presentation).toBe('formatted'); expect(history.evidence).toBe(row(row(observed[2]!.output).result).result);
+      expect(history.evidence).toContain('INSPECTHISTORY2026'); expect(history.evidence).toContain('主题:');
+      expect(history.hits).toEqual([]); expect(row(history.coverage).finalRankingAvailable).toBe(false);
       expect(passive.stages.some(stage => stage.name === 'plugin.RAGDiaryPlugin.processMessages')).toBe(true);
       expect(history.stages.some(stage => stage.name === 'chat.DeepMemo.processToolCall')).toBe(true);
       for (const [index, report] of [passive, semantic, history].entries()) {

@@ -1,5 +1,7 @@
+import { VCP_DREAM_SCHEDULE } from '../../shared/companion-bot-maintenance';
 import { createHash } from 'node:crypto';
-import type { BotMaintenanceJob, BotMaintenanceSettings, BotMaintenanceCandidateDetail, BotMaintenanceCandidateSummary, BotMaintenanceStatus, BotMaintenanceCandidateStatus, BotMaintenanceReviewRecord } from '../../shared/companion-bot-maintenance';
+import type { BotMaintenanceJob, MaintenanceBrief, MaintenanceBriefInput, MemoMasterMode, BotMaintenanceSettings, BotMaintenanceCandidateDetail, BotMaintenanceCandidateSummary, BotMaintenanceStatus, BotMaintenanceCandidateStatus, BotMaintenanceReviewRecord } from '../../shared/companion-bot-maintenance';
+import { freezeMaintenanceBrief } from './memory-maintenance-brief';
 import type { BotMemoryScope } from './memory-service';
 import type { BotMemoryMaintenancePlan, BotMemoryMaintenanceSnapshot } from './memory-maintenance';
 import type { BotStore, BotTaskSql } from './store';
@@ -12,28 +14,112 @@ export const maintenanceOwner = (scope: BotMemoryScope) => hash([scope.companion
 export const maintenanceDomain = (scope: BotMemoryScope) => hash([scope.companionId, scope.securityDomainId]);
 const parse = <T>(value: unknown): T => JSON.parse(String(value)) as T;
 const optional = (value: unknown) => value == null ? undefined : String(value);
+function inDreamWindow(date: Date, start: number = VCP_DREAM_SCHEDULE.windowStart, end: number = VCP_DREAM_SCHEDULE.windowEnd) {
+  const hour = date.getHours();
+  return start <= end ? hour >= start && hour < end : hour >= start || hour < end;
+}
 const terminal = new Set<BotMaintenanceStatus>(['completed', 'cancelled', 'failed', 'blocked']);
+const runningDream = `SELECT 1 FROM bot_memory_jobs m JOIN bot_maintenance_jobs j ON j.id=json_extract(m.payload_json,'$.jobId')
+  WHERE m.kind='maintenance' AND m.status='running' AND m.lease_until>? AND json_extract(m.payload_json,'$.operation')='plan'
+  AND j.automatic=1 AND (j.kind='dream' OR j.trigger_kind='idle') AND j.status='running' AND j.plan_json IS NULL LIMIT 1`;
+const companionDreamPending = `SELECT 1 FROM bot_maintenance_jobs WHERE json_extract(scope_json,'$.companionId')=?
+  AND automatic=1 AND (kind='dream' OR trigger_kind='idle') AND plan_json IS NULL AND status IN('queued','running') LIMIT 1`;
 export interface MaintenanceRecord { job: BotMaintenanceJob; scope: BotMemoryScope; snapshot?: BotMemoryMaintenanceSnapshot; plan?: BotMemoryMaintenancePlan; epoch: number; cursor?: string }
 
 /** Operational review journal only. Source notes remain in VCP; proposals and
  * diagnostic text are never indexed as companion memory. */
 export class BotMaintenanceStore {
+  private lastReviewOwner = '';
   constructor(readonly store: BotStore) {
     store.taskTransaction(sql => { for (const statement of [
+      `CREATE TABLE IF NOT EXISTS bot_maintenance_dream_clock(companion_id TEXT PRIMARY KEY,success_at INTEGER NOT NULL)`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_settings(owner_key TEXT PRIMARY KEY,domain_key TEXT NOT NULL,scope_json TEXT NOT NULL,settings_json TEXT NOT NULL,next_due INTEGER NOT NULL,last_activity INTEGER NOT NULL,dirty INTEGER NOT NULL DEFAULT 0,planned INTEGER NOT NULL DEFAULT 0)`,
-      `CREATE INDEX IF NOT EXISTS bot_maintenance_settings_due ON bot_maintenance_settings(next_due,owner_key)`,
+      `CREATE INDEX IF NOT EXISTS bot_maintenance_dream_selection ON bot_maintenance_settings(json_extract(scope_json,'$.companionId'),last_activity DESC,owner_key DESC) WHERE json_extract(settings_json,'$.enabled')=1`,
+      `CREATE INDEX IF NOT EXISTS bot_maintenance_review_enabled ON bot_maintenance_settings(owner_key) WHERE json_extract(settings_json,'$.autoReview')=1`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_jobs(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,owner_key TEXT NOT NULL,domain_key TEXT NOT NULL,scope_json TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,phase TEXT NOT NULL,automatic INTEGER NOT NULL,epoch INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,source_version INTEGER NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,started_at TEXT,finished_at TEXT,error TEXT,snapshot_json TEXT,plan_json TEXT,metrics_json TEXT NOT NULL,narrative TEXT,next_cursor TEXT)`,
       `CREATE INDEX IF NOT EXISTS bot_maintenance_jobs_owner ON bot_maintenance_jobs(owner_key,sequence DESC)`,
       `CREATE INDEX IF NOT EXISTS bot_maintenance_jobs_domain ON bot_maintenance_jobs(domain_key,status)`,
+      `CREATE INDEX IF NOT EXISTS bot_maintenance_active_dream ON bot_maintenance_jobs(sequence) WHERE automatic=1 AND kind='dream' AND status IN('queued','running')`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_candidates(job_id TEXT NOT NULL REFERENCES bot_maintenance_jobs(id),id TEXT NOT NULL,position INTEGER NOT NULL,status TEXT NOT NULL,revision TEXT NOT NULL,candidate_json TEXT NOT NULL,receipt_json TEXT,updated_at TEXT NOT NULL,PRIMARY KEY(job_id,id))`,
+      `CREATE INDEX IF NOT EXISTS bot_maintenance_pending_review ON bot_maintenance_candidates(job_id,position) WHERE status='pending'`,
+      `CREATE INDEX IF NOT EXISTS bot_maintenance_queued_review ON bot_memory_jobs(json_extract(payload_json,'$.jobId'),json_extract(payload_json,'$.candidateId')) WHERE kind='maintenance' AND status IN('queued','running') AND json_extract(payload_json,'$.operation')='review'`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_diagnostics(sequence INTEGER PRIMARY KEY AUTOINCREMENT,job_id TEXT NOT NULL REFERENCES bot_maintenance_jobs(id),phase TEXT NOT NULL,text TEXT NOT NULL,created_at TEXT NOT NULL)`,
       `CREATE INDEX IF NOT EXISTS bot_maintenance_diagnostics_job ON bot_maintenance_diagnostics(job_id,sequence)`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_requests(owner_key TEXT NOT NULL,request_id TEXT NOT NULL,fingerprint TEXT NOT NULL,PRIMARY KEY(owner_key,request_id))`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_tool_receipts(owner_key TEXT NOT NULL,request_id TEXT NOT NULL,fingerprint TEXT NOT NULL,result_json TEXT NOT NULL,PRIMARY KEY(owner_key,request_id))`,
+      `CREATE TABLE IF NOT EXISTS bot_maintenance_maturity(owner_key TEXT NOT NULL,due_at INTEGER NOT NULL,ready_at INTEGER NOT NULL,PRIMARY KEY(owner_key,due_at))`,
+      `CREATE INDEX IF NOT EXISTS bot_maintenance_maturity_ready ON bot_maintenance_maturity(ready_at,owner_key)`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_changes(owner_key TEXT NOT NULL,change_id TEXT NOT NULL,PRIMARY KEY(owner_key,change_id))`,
       `CREATE TABLE IF NOT EXISTS bot_maintenance_reviews(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,job_id TEXT NOT NULL,candidate_id TEXT NOT NULL,revision TEXT NOT NULL,actor TEXT NOT NULL,record_json TEXT NOT NULL)`,
       `CREATE INDEX IF NOT EXISTS bot_maintenance_reviews_candidate ON bot_maintenance_reviews(job_id,candidate_id,sequence DESC)`,
-    ]) sql.prepare(statement).run(); });
+    ]) sql.prepare(statement).run();
+      const settingsColumns = sql.prepare('PRAGMA table_info(bot_maintenance_settings)').all().map(value => row(value).name);
+      if (!settingsColumns.includes('dream_planned')) sql.prepare('ALTER TABLE bot_maintenance_settings ADD COLUMN dream_planned INTEGER NOT NULL DEFAULT -1').run();
+      if (!settingsColumns.includes('dream_ready_at')) sql.prepare('ALTER TABLE bot_maintenance_settings ADD COLUMN dream_ready_at INTEGER NOT NULL DEFAULT 0').run();
+      if (!settingsColumns.includes('idle_organize_version')) sql.prepare('ALTER TABLE bot_maintenance_settings ADD COLUMN idle_organize_version INTEGER NOT NULL DEFAULT 0').run();
+      const jobColumns = sql.prepare('PRAGMA table_info(bot_maintenance_jobs)').all().map(value => row(value).name);
+      if (!jobColumns.includes('trigger_kind')) sql.prepare('ALTER TABLE bot_maintenance_jobs ADD COLUMN trigger_kind TEXT').run();
+      if (!jobColumns.includes('memo_mode')) sql.prepare('ALTER TABLE bot_maintenance_jobs ADD COLUMN memo_mode TEXT').run();
+      if (!jobColumns.includes('survey_json')) sql.prepare('ALTER TABLE bot_maintenance_jobs ADD COLUMN survey_json TEXT').run();
+      if (!jobColumns.includes('brief_json')) sql.prepare('ALTER TABLE bot_maintenance_jobs ADD COLUMN brief_json TEXT').run();
+      sql.prepare(`CREATE INDEX IF NOT EXISTS bot_maintenance_idle_pending ON bot_maintenance_settings(dream_ready_at,owner_key)
+        WHERE dirty>0 AND dirty>dream_planned AND json_extract(settings_json,'$.enabled')=1`).run();
+      sql.prepare(`CREATE INDEX IF NOT EXISTS bot_maintenance_saved_dream ON bot_maintenance_jobs(owner_key,source_version DESC)
+        WHERE automatic=1 AND kind='dream' AND plan_json IS NOT NULL`).run();
+      sql.prepare(`CREATE INDEX IF NOT EXISTS bot_maintenance_auto_companion ON bot_maintenance_jobs(json_extract(scope_json,'$.companionId'))
+        WHERE automatic=1 AND (kind='dream' OR trigger_kind='idle') AND plan_json IS NULL AND status IN('queued','running')`).run();
+      sql.prepare(`CREATE INDEX IF NOT EXISTS bot_maintenance_running_plan ON bot_memory_jobs(lease_until,json_extract(payload_json,'$.jobId'))
+        WHERE kind='maintenance' AND status='running' AND json_extract(payload_json,'$.operation')='plan'`).run();
+      this.retirePreviousPlanner(sql);
+    });
+  }
+  private retirePreviousPlanner(sql: BotTaskSql): void {
+    const marker = 'maintenance-native-submission-v2';
+    if (sql.prepare('SELECT 1 FROM bot_metadata WHERE key=?').get(marker)) return;
+    // A previously frozen DSH turn can already contain the old planning role,
+    // including when its vector retrieval used the current native engine.
+    const previous = sql.prepare(`WITH frozen AS (
+      SELECT id FROM bot_maintenance_jobs WHERE
+        (snapshot_json IS NOT NULL AND CASE WHEN json_valid(snapshot_json) THEN json_extract(snapshot_json,'$.format') END IS NOT 'worldlinebox-memory-maintenance-snapshot-v2')
+        OR (plan_json IS NOT NULL AND CASE WHEN json_valid(plan_json) THEN json_extract(plan_json,'$.format') END IS NOT 'worldlinebox-memory-maintenance-v2')
+    ) SELECT id,domain_key,owner_key,kind,status,automatic,source_version FROM bot_maintenance_jobs j WHERE phase<>'source_withdrawn'
+      AND (id IN frozen OR json_extract(survey_json,'$.rootId') IN frozen)`).all().map(row);
+    const reason = '旧版维护方案已停止。可基于当前日记创建新的任务。';
+    const now = stamp();
+    const dreamOwners = new Map<string, number>();
+    for (const job of previous) {
+      if (job.automatic && job.kind === 'dream') {
+        const owner = String(job.owner_key);
+        const pending = job.status === 'completed' || job.status === 'cancelled' ? -1 : Number(job.source_version);
+        dreamOwners.set(owner, Math.max(dreamOwners.get(owner) ?? -1, pending));
+      }
+      sql.prepare(`UPDATE bot_maintenance_jobs SET phase='planner_retired',status=CASE WHEN status='completed' THEN status ELSE 'cancelled' END,
+        next_cursor=NULL,error=?,finished_at=COALESCE(finished_at,?),updated_at=? WHERE id=?`).run(reason, now, now, job.id);
+      sql.prepare(`UPDATE bot_memory_jobs SET status='done',error=?,lease_token=NULL,lease_until=NULL,updated_at=?
+        WHERE kind='maintenance' AND status IN ('queued','running') AND json_extract(payload_json,'$.jobId')=?`).run(reason, now, job.id);
+      if (job.kind === 'organize' && job.status !== 'completed') {
+        const key = `maintenance-work-release:${job.domain_key}:${job.id}`;
+        sql.prepare('INSERT OR REPLACE INTO bot_metadata(key,value) VALUES(?,?)').run(key, JSON.stringify({ jobId: job.id, kind: job.kind, retired: true, reason }));
+      }
+    }
+    // Saving the old dream had advanced its watermark before the proposals
+    // were reviewed. Reopen only that scope/version unless a completed dream
+    // (or a separately frozen current plan) already covers it.
+    for (const [owner, pending] of dreamOwners) {
+      const covered = row(sql.prepare(`SELECT MAX(source_version) AS version FROM bot_maintenance_jobs
+        WHERE owner_key=? AND kind='dream' AND automatic=1 AND plan_json IS NOT NULL
+          AND (status='completed' OR (phase<>'planner_retired' AND status<>'cancelled'))
+          AND EXISTS(SELECT 1 FROM json_each(plan_json,'$.sources') s WHERE json_extract(s.value,'$.role')='seed')`).get(owner)).version;
+      if (covered !== null) sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=? WHERE owner_key=? AND dream_planned<0').run(covered, owner);
+      if (pending < 0 || (covered !== null && Number(covered) >= pending)) continue;
+      sql.prepare(`UPDATE bot_maintenance_settings SET dream_planned=MAX(0,dirty-1),dirty=MAX(1,dirty),
+        idle_organize_version=CASE WHEN idle_organize_version<=? THEN 0 ELSE idle_organize_version END
+        WHERE owner_key=? AND dirty<=? AND (dream_planned<0 OR dream_planned>=dirty)`).run(pending, owner, pending);
+    }
+    sql.prepare('INSERT INTO bot_metadata(key,value) VALUES(?,?)').run(marker, now);
+  }
+  private ensureCurrent(job: BotMaintenanceJob): void {
+    if (job.phase === 'planner_retired') throw new Error('旧版维护方案已停止，请基于当前日记创建新的任务。');
   }
   assertScope(scope: BotMemoryScope): void {
     const room = this.store.getConversation(scope.conversationId);
@@ -43,16 +129,20 @@ export class BotMaintenanceStore {
     this.assertScope(scope);
     return this.store.taskTransaction(sql => {
       const owner = maintenanceOwner(scope), found = sql.prepare('SELECT settings_json FROM bot_maintenance_settings WHERE owner_key=?').get(owner);
-      if (found) return parse<BotMaintenanceSettings>(row(found).settings_json);
-      const settings: BotMaintenanceSettings = { enabled: true, kind: 'organize', intervalHours: 24, idleMinutes: 15, minNotes: 12, autoApply: 'never', nextEligibleAt: new Date(now + 86400000).toISOString(), lastActivityAt: new Date(now).toISOString() };
-      sql.prepare('INSERT INTO bot_maintenance_settings(owner_key,domain_key,scope_json,settings_json,next_due,last_activity) VALUES(?,?,?,?,?,?)').run(owner, maintenanceDomain(scope), JSON.stringify(scope), JSON.stringify(settings), now + 86400000, now);
+      const clock = Number(this.store.getMetadata('vcp-dream-next-check'));
+      const nextDue = clock || now + VCP_DREAM_SCHEDULE.checkMinutes * 60000;
+      if (!clock) this.store.setMetadata('vcp-dream-next-check', String(nextDue));
+      const nextEligibleAt = new Date(nextDue).toISOString();
+      if (found) return { ...parse<BotMaintenanceSettings>(row(found).settings_json), nextEligibleAt };
+      const settings: BotMaintenanceSettings = { enabled: true, autoReview: true, nextEligibleAt, lastActivityAt: new Date(now).toISOString() };
+      sql.prepare('INSERT INTO bot_maintenance_settings(owner_key,domain_key,scope_json,settings_json,next_due,last_activity,dream_planned) VALUES(?,?,?,?,?,?,0)').run(owner, maintenanceDomain(scope), JSON.stringify(scope), JSON.stringify(settings), nextDue, now);
       return settings;
     });
   }
   hasSettings(scope: BotMemoryScope): boolean {
     return this.store.taskTransaction(sql => !!sql.prepare('SELECT 1 FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner(scope)));
   }
-  updateSettings(scope: BotMemoryScope, patch: Partial<Pick<BotMaintenanceSettings, 'enabled' | 'kind' | 'intervalHours' | 'idleMinutes' | 'minNotes' | 'autoApply' | 'autoReview'>>): BotMaintenanceSettings {
+  updateSettings(scope: BotMemoryScope, patch: Partial<Pick<BotMaintenanceSettings, 'enabled' | 'autoReview'>>): BotMaintenanceSettings {
     const current = this.settings(scope), settings = { ...current, ...patch };
     this.store.taskTransaction(sql => sql.prepare('UPDATE bot_maintenance_settings SET settings_json=? WHERE owner_key=?').run(JSON.stringify(settings), maintenanceOwner(scope)));
     return settings;
@@ -62,60 +152,215 @@ export class BotMaintenanceStore {
     this.store.taskTransaction(sql => {
       let increment = 0;
       if (changeId) increment = sql.prepare('INSERT OR IGNORE INTO bot_maintenance_changes VALUES(?,?)').run(maintenanceOwner(scope), changeId).changes;
+      if (increment) this.scheduleMaturity(scope, now + 30 * 86400000);
       const lastActivityAt = options?.preserveIdle ? current.lastActivityAt : new Date(now).toISOString();
-      sql.prepare('UPDATE bot_maintenance_settings SET last_activity=?,settings_json=?,dirty=dirty+? WHERE owner_key=?').run(Date.parse(lastActivityAt), JSON.stringify({ ...current, lastActivityAt }), increment, maintenanceOwner(scope));
+      sql.prepare(`UPDATE bot_maintenance_settings SET last_activity=?,settings_json=?,dirty=dirty+?,
+        dream_ready_at=CASE WHEN ?>0 AND dirty<=MAX(0,dream_planned) THEN ? ELSE dream_ready_at END WHERE owner_key=?`)
+        .run(Date.parse(lastActivityAt), JSON.stringify({ ...current, lastActivityAt }), increment, increment, now, maintenanceOwner(scope));
     });
   }
-  due(now = Date.now()): BotMemoryScope | undefined {
+  scheduleMaturity(scope: BotMemoryScope, dueAt: number): void {
+    if (!Number.isFinite(dueAt)) return;
+    // Coalesce writes made during the same hour. Always run after the last
+    // possible maturation in that hour, including after a long offline period.
+    const due = Math.ceil(dueAt / 3600000) * 3600000;
+    this.store.taskTransaction(sql => sql.prepare('INSERT OR IGNORE INTO bot_maintenance_maturity(owner_key,due_at,ready_at) VALUES(?,?,?)').run(maintenanceOwner(scope), due, due));
+  }
+  private scheduleMatureOrganization(sql: BotTaskSql, now: number, isIdle: (id: string) => boolean): BotMemoryScope | undefined {
+    const due = sql.prepare(`SELECT m.owner_key,m.due_at,s.scope_json FROM bot_maintenance_maturity m
+      JOIN bot_maintenance_settings s ON s.owner_key=m.owner_key WHERE m.ready_at<=? AND json_extract(s.settings_json,'$.enabled')=1
+      ORDER BY m.ready_at,m.owner_key LIMIT 8`).all(now).map(row);
+    for (const item of due) {
+      const scope = parse<BotMemoryScope>(item.scope_json), room = this.store.getConversation(scope.conversationId);
+      if (!room || room.securityDomainId !== scope.securityDomainId || !room.memberIds.includes(scope.companionId) || this.store.getMetadata('conversation-dissolved:' + scope.conversationId)) {
+        sql.prepare('DELETE FROM bot_maintenance_maturity WHERE owner_key=?').run(item.owner_key); continue;
+      }
+      sql.prepare('UPDATE bot_maintenance_maturity SET ready_at=? WHERE owner_key=? AND due_at<=?').run(now + 60000, item.owner_key, now);
+      if (!isIdle(scope.companionId) || this.store.getMetadata('companion-enabled:' + scope.companionId) === '0' || sql.prepare(companionDreamPending).get(scope.companionId)) continue;
+      const job = this.enqueue(scope, 'organize', 'mature-diaries:' + now, true, undefined, 'idle');
+      this.store.setMetadata('maintenance-maturity:' + job.id, String(now));
+      this.diagnostic(scope, job.id, 'scheduled', { trigger: 'idle', reason: 'diary-maturity', through: new Date(now).toISOString() });
+      return scope;
+    }
+  }
+  recordForeground(companionId: string, now = Date.now()): void {
+    this.store.taskTransaction(sql => sql.prepare(`INSERT INTO bot_metadata(key,value) VALUES(?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE CAST(value AS INTEGER)<CAST(excluded.value AS INTEGER)`).run('vcp-dream-foreground:' + companionId, String(now)));
+  }
+  lastForegroundAt(companionId: string): number {
+    return Number(this.store.getMetadata('vcp-dream-foreground:' + companionId) || 0);
+  }
+  /** Daytime catch-up coalesces all outstanding versions per audience. Move
+   * temporarily ineligible owners behind the other due owners in the index. */
+  async scheduleIdleDream({ now = Date.now(), isIdle, onScheduled, stopped }: {
+    now?: number; isIdle: (companionId: string) => boolean; onScheduled: (scope: BotMemoryScope) => void; stopped?: () => boolean;
+  }): Promise<void> {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (stopped?.()) return;
+    const scheduled = this.store.taskTransaction(sql => {
+      if (sql.prepare(runningDream).get(now)) return;
+      if (Number(this.store.getMetadata('vcp-dream-last-attempt') || 0) + VCP_DREAM_SCHEDULE.agentGapSeconds * 1000 > now) return;
+      const mature = this.scheduleMatureOrganization(sql, now, isIdle);
+      if (mature || inDreamWindow(new Date(now))) return mature;
+      const due = sql.prepare(`SELECT owner_key,scope_json,dirty,dream_planned,idle_organize_version FROM bot_maintenance_settings
+        WHERE dirty>0 AND dirty>dream_planned AND json_extract(settings_json,'$.enabled')=1 AND dream_ready_at<=?
+        ORDER BY dream_ready_at,owner_key LIMIT 8`).all(now).map(row);
+      const postpone = sql.prepare('UPDATE bot_maintenance_settings SET dream_ready_at=? WHERE owner_key=?');
+      for (const candidate of due) {
+        const owner = String(candidate.owner_key), scope = parse<BotMemoryScope>(candidate.scope_json);
+        if (Number(candidate.dream_planned) < 0) {
+          // Older builds shared 'planned' with manual organization. Only a
+          // successfully stored automatic dream covers this owner's versions.
+          const last = sql.prepare(`SELECT CASE WHEN EXISTS(SELECT 1 FROM json_each(plan_json,'$.sources') s
+            WHERE json_extract(s.value,'$.role')='seed') THEN source_version ELSE 0 END AS source_version
+            FROM bot_maintenance_jobs WHERE owner_key=? AND automatic=1
+            AND kind='dream' AND phase<>'planner_retired' AND plan_json IS NOT NULL ORDER BY source_version DESC LIMIT 1`).get(owner);
+          const previous = last ? Number(row(last).source_version) : 0;
+          sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=? WHERE owner_key=?').run(previous, owner);
+          if (previous >= Number(candidate.dirty)) continue;
+        }
+        const valid = sql.prepare(`SELECT 1 FROM bot_members m JOIN bot_conversations c ON c.id=m.conversation_id
+          JOIN bot_companions a ON a.id=m.member_id WHERE m.member_id=? AND m.conversation_id=? AND c.domain_id=?`)
+          .get(scope.companionId, scope.conversationId, scope.securityDomainId);
+        const cooldown = this.cooldownRemaining(scope, now);
+        if (!valid || this.store.getMetadata('conversation-dissolved:' + scope.conversationId)
+          || this.store.getMetadata('companion-enabled:' + scope.companionId) === '0' || cooldown
+          || sql.prepare(companionDreamPending).get(scope.companionId) || !isIdle(scope.companionId)) {
+          postpone.run(now + Math.max(60000, cooldown), owner);
+          continue;
+        }
+        // A failed/cancelled attempt retains the version but yields the next
+        // check to older outstanding owners, including after app restart.
+        postpone.run(now + VCP_DREAM_SCHEDULE.checkMinutes * 60000, owner);
+        const remaining = Number(candidate.idle_organize_version), organizing = remaining > Math.max(0, Number(candidate.dream_planned));
+        const job = organizing ? this.enqueue(scope, 'organize', 'idle-organization:' + now, true, undefined, 'idle', remaining)
+          : this.enqueue(scope, 'dream', 'idle-dream:' + now, true, undefined, 'idle');
+        this.diagnostic(scope, job.id, 'scheduled', { trigger: 'idle', sourceVersion: candidate.dirty, checkedAt: new Date(now).toISOString() });
+        return scope;
+      }
+    });
+    if (scheduled) onScheduled(scheduled);
+  }
+  /** All audience scopes share one clock and one probability roll per companion.
+   * The most recently active enabled audience supplies that companion's diary. */
+  async scheduleDreams({ now = Date.now(), random = Math.random, onScheduled, stopped }: {
+    now?: number; random?: () => number; onScheduled: (scope: BotMemoryScope) => void; stopped?: () => boolean;
+  }): Promise<void> {
+    const lastId = this.store.taskTransaction(sql => {
+      const nextCheck = Number(this.store.getMetadata('vcp-dream-next-check'));
+      if (now < nextCheck) return;
+      this.store.setMetadata('vcp-dream-next-check', String(now + VCP_DREAM_SCHEDULE.checkMinutes * 60000));
+      if (!nextCheck || !inDreamWindow(new Date(now))) return;
+      if (sql.prepare(runningDream).get(now)) return;
+      const last = sql.prepare('SELECT id FROM bot_companions ORDER BY id DESC LIMIT 1').get();
+      return last ? String(row(last).id) : undefined;
+    });
+    if (!lastId) return;
+    let cursor = '';
+    let afterAudience: { companion: string; activity: number; owner: string } | undefined;
+    while (cursor !== lastId) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (stopped?.()) return;
+      const scheduled: BotMemoryScope[] = [];
+      this.store.taskTransaction(sql => {
+        const companions = sql.prepare('SELECT id FROM bot_companions WHERE id>? AND id<=? ORDER BY id LIMIT 16').all(cursor, lastId);
+        if (!companions.length) { cursor = lastId; return; }
+        const audience = sql.prepare(`SELECT s.scope_json,s.last_activity,s.owner_key,c.id AS room FROM bot_maintenance_settings s
+          LEFT JOIN bot_members m ON m.conversation_id=json_extract(s.scope_json,'$.conversationId') AND m.member_id=json_extract(s.scope_json,'$.companionId')
+          LEFT JOIN bot_conversations c ON c.id=m.conversation_id AND c.domain_id=json_extract(s.scope_json,'$.securityDomainId')
+            AND NOT EXISTS(SELECT 1 FROM bot_metadata d WHERE d.key='conversation-dissolved:'||c.id AND d.value<>'')
+          WHERE json_extract(s.scope_json,'$.companionId')=? AND json_extract(s.settings_json,'$.enabled')=1
+          AND (s.last_activity,s.owner_key)<(?,?) ORDER BY s.last_activity DESC,s.owner_key DESC LIMIT 16`);
+        const started = performance.now();
+        for (const item of companions) {
+          const companion = String(row(item).id), previous = afterAudience?.companion === companion ? afterAudience : undefined;
+          const items = audience.all(companion, previous?.activity ?? Number.MAX_SAFE_INTEGER, previous?.owner ?? '').map(row);
+          const found = items.find(item => item.room);
+          if (!found && items.length === 16) {
+            // A companion can retain many departed group audiences. Cap this
+            // lookup as well, then resume from the last indexed timestamp/key.
+            const last = items[items.length - 1]!;
+            afterAudience = { companion, activity: Number(last.last_activity), owner: String(last.owner_key) };
+            break;
+          }
+          afterAudience = undefined;
+          cursor = companion;
+          if (found && this.store.getMetadata('companion-enabled:' + cursor) !== '0') {
+            const scope = parse<BotMemoryScope>(found.scope_json);
+            if (!this.cooldownRemaining(scope, now) && !sql.prepare(companionDreamPending).get(scope.companionId) && random() < VCP_DREAM_SCHEDULE.probability) {
+              const job = this.enqueue(scope, 'dream', 'scheduled-dream:' + now, true);
+              this.diagnostic(scope, job.id, 'scheduled', { ...VCP_DREAM_SCHEDULE, checkedAt: new Date(now).toISOString() });
+              scheduled.push(scope);
+            }
+          }
+          if (performance.now() - started >= 4) break;
+        }
+      });
+      scheduled.forEach(onScheduled);
+    }
+  }
+  private cooldownRemaining(scope: BotMemoryScope, now: number): number {
     return this.store.taskTransaction(sql => {
-      const found = sql.prepare(`SELECT s.scope_json FROM bot_maintenance_settings s WHERE s.next_due<=? AND json_extract(s.settings_json,'$.enabled')=1
-        AND s.last_activity<=?-json_extract(s.settings_json,'$.idleMinutes')*60000
-        AND NOT EXISTS(SELECT 1 FROM bot_memory_jobs m WHERE m.domain_key=s.domain_key AND (m.status='running' OR m.status='queued' AND m.available_at<=?))
-        AND NOT EXISTS(SELECT 1 FROM bot_maintenance_jobs j WHERE j.domain_key=s.domain_key AND j.status IN('running','applying'))
-        AND NOT EXISTS(SELECT 1 FROM bot_inbox i WHERE i.companion_id=json_extract(s.scope_json,'$.companionId') AND i.domain_id=json_extract(s.scope_json,'$.securityDomainId') AND i.status IN('queued','running'))
-        ORDER BY s.next_due,s.owner_key LIMIT 1`).get(now, now, now);
-      return found ? parse<BotMemoryScope>(row(found).scope_json) : undefined;
+      const success = sql.prepare('SELECT success_at FROM bot_maintenance_dream_clock WHERE companion_id=?').get(scope.companionId);
+      return success ? Math.max(0, Number(row(success).success_at) + VCP_DREAM_SCHEDULE.frequencyHours * 3600000 - now) : 0;
     });
   }
-  defer(scope: BotMemoryScope, milliseconds: number, reason?: string, lastRun = false): void {
-    const settings = this.settings(scope), next = Date.now() + milliseconds;
-    this.store.taskTransaction(sql => sql.prepare('UPDATE bot_maintenance_settings SET next_due=?,settings_json=? WHERE owner_key=?').run(next,
-      JSON.stringify({ ...settings, nextEligibleAt: new Date(next).toISOString(), blockedReason: reason, ...(lastRun ? { lastRunAt: stamp() } : {}) }), maintenanceOwner(scope)));
+  dreamExecutionDelay(scope: BotMemoryScope, now = Date.now(), { allowDaytime = false, trigger = 'night' }: { allowDaytime?: boolean; trigger?: 'night' | 'idle' } = {}): number {
+    const last = Number(this.store.getMetadata('vcp-dream-last-attempt') || 0);
+    const waiting = !allowDaytime && (trigger === 'idle' || !inDreamWindow(new Date(now)));
+    return Math.max(this.cooldownRemaining(scope, now), last + VCP_DREAM_SCHEDULE.agentGapSeconds * 1000 - now, waiting ? 60000 : 0);
   }
-  enqueue(scope: BotMemoryScope, kind: 'organize' | 'dream', requestId: string, automatic = false, cursor?: string): BotMaintenanceJob {
+  recordDreamAttemptFinished(now = Date.now()): void {
+    this.store.setMetadata('vcp-dream-last-attempt', String(now));
+  }
+  recordDreamSuccess(scope: BotMemoryScope, now = Date.now()): void {
+    this.store.taskTransaction(sql => {
+      this.recordDreamAttemptFinished(now);
+      sql.prepare('INSERT INTO bot_maintenance_dream_clock(companion_id,success_at) VALUES(?,?) ON CONFLICT(companion_id) DO UPDATE SET success_at=MAX(success_at,excluded.success_at)').run(scope.companionId, now);
+      sql.prepare("UPDATE bot_maintenance_settings SET settings_json=json_set(settings_json,'$.lastRunAt',?) WHERE owner_key=?").run(new Date(now).toISOString(), maintenanceOwner(scope));
+    });
+  }
+  enqueue(scope: BotMemoryScope, kind: 'organize' | 'dream', requestId: string, automatic = false, cursor?: string, trigger: 'night' | 'idle' = 'night', capturedVersion?: number, mode?: MemoMasterMode, survey?: BotMaintenanceJob['survey'], brief?: MaintenanceBriefInput, requestedBy: MaintenanceBrief['requestedBy'] = 'user'): BotMaintenanceJob {
+    if ((mode || brief) && kind !== 'organize') throw new Error('MemoMaster 模式仅可用于日记维护。');
     this.settings(scope);
     return this.store.taskTransaction(sql => {
-      this.command(sql, scope, requestId, ['run', kind, automatic, cursor]);
+      this.command(sql, scope, requestId, ['run', kind, automatic, cursor, ...(mode && mode !== 'organize' ? [mode, survey] : []), ...(brief ? [brief, requestedBy] : [])]);
       const id = `maintenance-${hash([maintenanceOwner(scope), requestId])}`, existing = sql.prepare('SELECT id FROM bot_maintenance_jobs WHERE id=?').get(id);
       if (existing) return this.get(scope, id).job;
-      const at = stamp(), version = row(sql.prepare('SELECT dirty FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner(scope))).dirty;
-      sql.prepare(`INSERT INTO bot_maintenance_jobs(id,owner_key,domain_key,scope_json,kind,status,phase,automatic,source_version,created_at,updated_at,metrics_json) VALUES(?,?,?,?,?,'queued','queued',?,?,?,?,?)`)
-        .run(id, maintenanceOwner(scope), maintenanceDomain(scope), JSON.stringify(scope), kind, automatic ? 1 : 0, version, at, at, JSON.stringify({ examined: 0, selected: 0, deferred: 0, candidates: 0, applied: 0, rejected: 0 }));
-      // Retain old cursor receipts for legacy tasks. Incremental selection uses
-      // its native work queue and never interprets a historical catalog cursor.
-      const next = cursor !== undefined ? cursor : this.store.getMetadata(`maintenance-scan-cursor:${maintenanceOwner(scope)}:${kind}`);
+      const at = stamp(), version = capturedVersion ?? row(sql.prepare('SELECT dirty FROM bot_maintenance_settings WHERE owner_key=?').get(maintenanceOwner(scope))).dirty;
+      sql.prepare(`INSERT INTO bot_maintenance_jobs(id,owner_key,domain_key,scope_json,kind,status,phase,automatic,source_version,created_at,updated_at,metrics_json,trigger_kind) VALUES(?,?,?,?,?,'queued','queued',?,?,?,?,?,?)`)
+        .run(id, maintenanceOwner(scope), maintenanceDomain(scope), JSON.stringify(scope), kind, automatic ? 1 : 0, version, at, at, JSON.stringify({ examined: 0, selected: 0, deferred: 0, candidates: 0, applied: 0, rejected: 0 }), automatic ? trigger : null);
+      const isSurvey = !!brief || mode && mode !== 'organize';
+      if (mode || brief) sql.prepare('UPDATE bot_maintenance_jobs SET memo_mode=?,survey_json=?,brief_json=? WHERE id=?').run(mode ?? 'organize',
+        isSurvey ? JSON.stringify(survey ?? { rootId: id, page: 1 }) : null, brief ? JSON.stringify(freezeMaintenanceBrief(brief, requestedBy)) : null, id);
+      const next = isSurvey ? cursor : undefined;
       this.store.setMetadata(`maintenance-input:${id}`, JSON.stringify({ cursor: next || undefined }));
       this.queue(scope, id, 'plan', requestId);
       return this.get(scope, id).job;
     });
   }
-  planTool(scope: BotMemoryScope, kind: 'organize' | 'dream', requestId: string): unknown {
+  planTool(scope: BotMemoryScope, kind: 'organize' | 'dream', requestId: string, mode?: MemoMasterMode, brief?: MaintenanceBriefInput): unknown {
     this.assertScope(scope);
+    if ((mode || brief) && kind !== 'organize') throw new Error('MemoMaster 模式仅可用于日记维护。');
     return this.store.taskTransaction(sql => {
-      const previous = this.toolReceipt(scope, kind, requestId); if (previous.found) return previous.result;
-      const existing = this.list(scope).items.find(job => ['queued', 'running', 'applying'].includes(job.status));
-      const result = existing ? { accepted: false, job: existing, reason: '当前受众已有未完成维护，请先查看进展或审阅候选。' }
-        : { accepted: true, job: this.enqueue(scope, kind, requestId) };
-      sql.prepare('INSERT INTO bot_maintenance_tool_receipts VALUES(?,?,?,?)').run(maintenanceOwner(scope), requestId, hash(['plan', kind]), JSON.stringify(result));
+      const previous = this.toolReceipt(scope, kind, requestId, mode, brief); if (previous.found) return previous.result;
+      const requested = brief ? freezeMaintenanceBrief(brief, 'companion') : undefined;
+      const existing = this.list(scope).items.find(job => ['queued', 'running', 'applying'].includes(job.status)
+        && (!mode && !brief || job.kind === kind && (job.mode ?? 'organize') === (mode ?? 'organize'))
+        && (requested ? job.brief?.topic === requested.topic && job.brief?.period === requested.period && job.brief?.fromDate === requested.fromDate && job.brief?.toDate === requested.toDate : !job.brief));
+      const result = mode === 'deepclean' ? { accepted: false, approvalRequired: true, mode, ...(requested && { brief: requested }), reason: '深度清理由用户在当前会话的记忆工作台明确发起。' }
+        : existing ? { accepted: false, job: existing, reason: '当前受众已有未完成维护，请先查看进展或审阅候选。' }
+        : { accepted: true, job: this.enqueue(scope, kind, requestId, false, undefined, undefined, undefined, mode, undefined, brief, 'companion') };
+      sql.prepare('INSERT INTO bot_maintenance_tool_receipts VALUES(?,?,?,?)').run(maintenanceOwner(scope), requestId, hash(['plan', kind, ...(mode && mode !== 'organize' ? [mode] : []), ...(brief ? [brief] : [])]), JSON.stringify(result));
       return result;
     });
   }
-  toolReceipt(scope: BotMemoryScope, kind: 'organize' | 'dream', requestId: string): { found: boolean; result?: unknown } {
+  toolReceipt(scope: BotMemoryScope, kind: 'organize' | 'dream', requestId: string, mode?: MemoMasterMode, brief?: MaintenanceBriefInput): { found: boolean; result?: unknown } {
     this.assertScope(scope);
     return this.store.taskTransaction(sql => {
       const value = sql.prepare('SELECT fingerprint,result_json FROM bot_maintenance_tool_receipts WHERE owner_key=? AND request_id=?').get(maintenanceOwner(scope), requestId);
       if (!value) return { found: false };
-      const r = row(value); if (r.fingerprint !== hash(['plan', kind])) throw new Error('维护工具回执参数不匹配。');
+      const r = row(value); if (r.fingerprint !== hash(['plan', kind, ...(mode && mode !== 'organize' ? [mode] : []), ...(brief ? [brief] : [])])) throw new Error('维护工具回执参数不匹配。');
       return { found: true, result: parse(r.result_json) };
     });
   }
@@ -124,7 +369,7 @@ export class BotMaintenanceStore {
     if (previous && row(previous).fingerprint !== fingerprint) throw new Error('维护请求标识已用于其他参数。');
     sql.prepare('INSERT OR IGNORE INTO bot_maintenance_requests VALUES(?,?,?)').run(maintenanceOwner(scope), requestId, fingerprint);
   }
-  private queue(scope: BotMemoryScope, jobId: string, operation: 'plan' | 'apply' | 'review' | 'reconcile', key: string, candidateId?: string, approval: 'review' | 'lossless' | 'model' = 'review'): void {
+  private queue(scope: BotMemoryScope, jobId: string, operation: 'plan' | 'apply' | 'review' | 'reconcile', key: string, candidateId?: string, approval: 'review' | 'model' = 'review'): void {
     this.store.enqueueMemoryJob({ kind: 'maintenance', key: `${jobId}:${operation}:${key}`, payload: { scope, jobId, operation, ...(candidateId ? { candidateId, approval } : {}) } });
   }
   get(scope: BotMemoryScope, id: string): MaintenanceRecord {
@@ -139,14 +384,22 @@ export class BotMaintenanceStore {
     });
   }
   private summary(r: Row): BotMaintenanceJob {
+    const survey = r.survey_json ? parse<NonNullable<BotMaintenanceJob['survey']>>(r.survey_json) : undefined;
+    if (survey) {
+      const progress = this.store.getMetadata('maintenance-survey-progress:' + survey.rootId);
+      if (progress) survey.progress = parse(progress);
+    }
     return { id: String(r.id), kind: String(r.kind) as BotMaintenanceJob['kind'], status: String(r.status) as BotMaintenanceStatus, phase: String(r.phase), automatic: !!r.automatic,
+      ...(r.memo_mode ? { mode: r.memo_mode as MemoMasterMode } : {}), ...(survey && { survey }),
+      ...(r.brief_json ? { brief: parse<MaintenanceBrief>(r.brief_json) } : {}),
+      ...(r.automatic && (r.kind === 'dream' || r.trigger_kind === 'idle') ? { trigger: r.trigger_kind === 'idle' ? 'idle' : 'night' } : {}),
       createdAt: String(r.created_at), updatedAt: String(r.updated_at), startedAt: optional(r.started_at), finishedAt: optional(r.finished_at),
       elapsedMs: r.started_at ? Math.max(0, Date.parse(String(r.finished_at ?? stamp())) - Date.parse(String(r.started_at))) : 0,
       attempts: Number(r.attempts), error: optional(r.error), metrics: parse(r.metrics_json), narrative: optional(r.narrative), nextCursor: optional(r.next_cursor), autoReview: this.automaticReviewProgress(r) };
   }
   private automaticReviewProgress(job: Row): BotMaintenanceJob['autoReview'] {
     return this.store.taskTransaction(sql => {
-      if (job.status === 'cancelled' || job.phase === 'source_withdrawn') return;
+      if (job.kind === 'dream' || job.memo_mode && job.memo_mode !== 'organize' || job.status === 'cancelled' || job.phase === 'source_withdrawn') return;
       const setting = sql.prepare("SELECT 1 FROM bot_maintenance_settings WHERE owner_key=? AND json_extract(settings_json,'$.autoReview')=1").get(job.owner_key);
       if (!setting) return;
       const cycle = Number(this.store.getMetadata(`maintenance-review-cycle:${job.owner_key}`) || '0');
@@ -171,7 +424,7 @@ export class BotMaintenanceStore {
     this.assertScope(scope); const before = cursor ? Number(cursor) : Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(before) || before < 1) throw new Error('维护分页游标无效。');
     return this.store.taskTransaction(sql => {
-      const rows = sql.prepare(`SELECT sequence,id,owner_key,domain_key,kind,status,phase,automatic,created_at,updated_at,started_at,finished_at,attempts,error,metrics_json,narrative,next_cursor FROM bot_maintenance_jobs WHERE owner_key=? AND sequence<? ORDER BY sequence DESC LIMIT ?`).all(maintenanceOwner(scope), before, limit + 1).map(row);
+      const rows = sql.prepare(`SELECT sequence,id,owner_key,domain_key,kind,status,phase,automatic,trigger_kind,memo_mode,survey_json,brief_json,created_at,updated_at,started_at,finished_at,attempts,error,metrics_json,narrative,next_cursor FROM bot_maintenance_jobs WHERE owner_key=? AND sequence<? ORDER BY sequence DESC LIMIT ?`).all(maintenanceOwner(scope), before, limit + 1).map(row);
       return { items: rows.slice(0, limit).map(r => this.summary(r)), nextCursor: rows.length > limit ? String(rows[limit - 1]!.sequence) : undefined };
     });
   }
@@ -190,7 +443,8 @@ export class BotMaintenanceStore {
     this.diagnostic(scope, id, 'snapshot', snapshot);
   }
   savePlan(scope: BotMemoryScope, id: string, plan: BotMemoryMaintenancePlan): void {
-    this.get(scope, id); if (plan.sources.length > 48) throw new Error('维护来源不属于当前扫描批次。');
+    const { job } = this.get(scope, id); if (plan.sources.length > 48) throw new Error('维护来源不属于当前扫描批次。');
+    if (job.mode && job.mode !== plan.mode || job.mode === 'scan' && plan.candidates.length || hash(job.brief ?? null) !== hash(plan.brief ?? null)) throw new Error('维护任务的委托、模式或只读约束与报告不符。');
     const json = JSON.stringify(plan);
     this.store.taskTransaction(sql => {
       sql.prepare('UPDATE bot_maintenance_jobs SET plan_json=?,status=?,phase=?,narrative=?,next_cursor=?,metrics_json=?,updated_at=?,finished_at=?,error=? WHERE id=?').run(json, plan.candidates.length ? 'review' : 'completed', plan.candidates.length ? 'pending_review' : plan.scan.incremental && !plan.scan.examined ? 'no_new_versions' : 'completed', plan.narrative, plan.scan.nextCursor ?? null,
@@ -198,30 +452,79 @@ export class BotMaintenanceStore {
         plan.validationIssues?.length ? `${plan.validationIssues.length} 项候选的原文证据未通过核对，已隔离；其余 ${plan.candidates.length} 项继续审阅，相关原件未改动。` : null, id);
       for (let index = 0; index < plan.candidates.length; index++) { const candidate = plan.candidates[index]!; const revision = hash([plan.id, candidate]);
         sql.prepare("INSERT OR IGNORE INTO bot_maintenance_candidates VALUES(?,?,?,'pending',?,?,NULL,?)").run(id, candidate.id, index, revision, JSON.stringify(candidate), stamp()); }
-      this.store.setMetadata(`maintenance-scan-cursor:${maintenanceOwner(scope)}:${plan.kind}`, plan.scan.nextCursor ?? '');
-      const cycleKey = `maintenance-scan-cycle:${maintenanceOwner(scope)}:${plan.kind}`;
-      const previous = parse<{ deferred?: boolean; version?: number }>(this.store.getMetadata(cycleKey) || '{}');
-      const sourceVersion = Number(row(sql.prepare('SELECT source_version FROM bot_maintenance_jobs WHERE id=?').get(id)).source_version);
-      const deferred = plan.scan.deferred.some(item => !('retryable' in item) || item.retryable !== false);
-      // A later page cannot erase an earlier page's deferred source. The
-      // initial cycle version also keeps notes created while paging dirty.
-      const cycle = { deferred: deferred || !!(plan.scan.cursor && previous.deferred), version: plan.scan.cursor && previous.version !== undefined ? previous.version : sourceVersion };
-      if (plan.scan.nextCursor) this.store.setMetadata(cycleKey, JSON.stringify(cycle));
-      else {
-        if (!cycle.deferred) sql.prepare('UPDATE bot_maintenance_settings SET planned=MAX(planned,?) WHERE owner_key=?').run(cycle.version, maintenanceOwner(scope));
-        this.store.setMetadata(cycleKey, '');
+      if (job.survey) {
+        const { rootId, page, progress } = job.survey;
+        if (!progress || progress.pages < page) this.store.setMetadata('maintenance-survey-progress:' + rootId, JSON.stringify({
+          pages: page, examined: (progress?.examined ?? 0) + plan.scan.examined, deferred: (progress?.deferred ?? 0) + plan.scan.deferred.length, complete: !plan.scan.nextCursor,
+        }));
+        if (plan.scan.nextCursor) {
+          if (plan.scan.nextCursor === plan.scan.cursor) throw new Error('维护扫描分页游标未前进。');
+          const brief = job.brief && { topic: job.brief.topic, period: job.brief.period, fromDate: job.brief.fromDate, toDate: job.brief.toDate };
+          const nextJob = this.enqueue(scope, 'organize', rootId + ':page:' + (page + 1), false, plan.scan.nextCursor, undefined, undefined, job.mode, { rootId, page: page + 1 }, brief, job.brief?.requestedBy);
+          sql.prepare('UPDATE bot_maintenance_jobs SET survey_json=? WHERE id=?').run(JSON.stringify({ rootId, page, nextJobId: nextJob.id }), id);
+        }
+        return;
       }
+      const sourceVersion = Number(row(sql.prepare('SELECT source_version FROM bot_maintenance_jobs WHERE id=?').get(id)).source_version);
+      if (job.automatic && job.kind === 'dream' && !plan.scan.deferred.some(item => item.retryable !== false)
+        && plan.sources.some(source => source.role === 'seed')) {
+        sql.prepare('UPDATE bot_maintenance_settings SET dream_planned=MAX(dream_planned,?) WHERE owner_key=?')
+          .run(sourceVersion, maintenanceOwner(scope));
+      }
+      const deferred = plan.scan.deferred.some(item => !('retryable' in item) || item.retryable !== false);
+      if (!deferred && !plan.scan.nextCursor) sql.prepare('UPDATE bot_maintenance_settings SET planned=MAX(planned,?) WHERE owner_key=?').run(sourceVersion, maintenanceOwner(scope));
     });
     this.diagnostic(scope, id, 'plan', plan);
+  }
+  enqueueIdleOrganization(scope: BotMemoryScope, dreamJobId: string): BotMaintenanceJob | undefined {
+    return this.store.taskTransaction(sql => {
+      const { job, plan } = this.get(scope, dreamJobId);
+      if (job.trigger !== 'idle' || job.kind !== 'dream' || !plan || plan.sources.some(source => source.role === 'seed')
+        || plan.scan.deferred.some(item => item.retryable !== false)) return;
+      const version = Number(row(sql.prepare('SELECT source_version FROM bot_maintenance_jobs WHERE id=?').get(dreamJobId)).source_version);
+      if (!version) return;
+      const owner = maintenanceOwner(scope), request = 'idle-organization:' + dreamJobId, id = 'maintenance-' + hash([owner, request]);
+      if (sql.prepare('SELECT 1 FROM bot_maintenance_jobs WHERE id=?').get(id)) return this.get(scope, id).job;
+      const pending = sql.prepare('UPDATE bot_maintenance_settings SET idle_organize_version=MAX(idle_organize_version,?) WHERE owner_key=? AND dream_planned<?').run(version, owner, version);
+      if (pending.changes) return this.enqueue(scope, 'organize', request, true, undefined, 'idle', version);
+    });
+  }
+  finishIdleOrganization(scope: BotMemoryScope, jobId: string, { hasMore, retryAt }: { hasMore: boolean; retryAt?: number }): void {
+    this.store.taskTransaction(sql => {
+      const job = sql.prepare(`SELECT source_version FROM bot_maintenance_jobs WHERE id=? AND owner_key=? AND kind='organize'
+        AND automatic=1 AND trigger_kind='idle' AND plan_json IS NOT NULL`).get(jobId, maintenanceOwner(scope));
+      if (!job) return;
+      const owner = maintenanceOwner(scope), version = Number(row(job).source_version);
+      const through = Number(this.store.getMetadata('maintenance-maturity:' + jobId));
+      if (through > 0) {
+        if (hasMore) sql.prepare('UPDATE bot_maintenance_maturity SET ready_at=? WHERE owner_key=? AND due_at<=?').run(Math.max(Date.now() + 60000, retryAt || 0), owner, through);
+        else sql.prepare('DELETE FROM bot_maintenance_maturity WHERE owner_key=? AND due_at<=?').run(owner, through);
+        return;
+      }
+      if (hasMore) {
+        sql.prepare(`UPDATE bot_maintenance_settings SET idle_organize_version=MAX(idle_organize_version,?),dream_ready_at=?
+          WHERE owner_key=? AND dream_planned<?`).run(version, Math.max(Date.now() + 60000, retryAt || 0), owner, version);
+      } else {
+        sql.prepare(`UPDATE bot_maintenance_settings SET dream_planned=MAX(dream_planned,?),
+          idle_organize_version=CASE WHEN idle_organize_version<=? THEN 0 ELSE idle_organize_version END WHERE owner_key=?`).run(version, version, owner);
+      }
+    });
   }
   historicalVersions(scope: BotMemoryScope, after = 0) {
     this.assertScope(scope);
     return this.store.taskTransaction(sql => {
-      const values = sql.prepare('SELECT id,sequence,kind,plan_json FROM bot_maintenance_jobs WHERE domain_key=? AND sequence>? AND plan_json IS NOT NULL ORDER BY sequence LIMIT 21').all(maintenanceDomain(scope), after).map(row);
+      const values = sql.prepare(`SELECT id,sequence,kind,plan_json FROM bot_maintenance_jobs
+        WHERE domain_key=? AND sequence>? AND phase<>'planner_retired' AND kind='organize' AND survey_json IS NULL
+          AND json_extract(plan_json,'$.format')='worldlinebox-memory-maintenance-v2' AND json_extract(plan_json,'$.scan.incremental')=1
+        ORDER BY sequence LIMIT 21`).all(maintenanceDomain(scope), after).map(row);
       const selected = values.slice(0, 20);
       return { records: selected.map(value => {
         const plan = parse<BotMemoryMaintenancePlan>(value.plan_json), deferred = new Set(plan.scan.deferred.map(source => source.id));
-        return { jobId: String(value.id), kind: value.kind as 'organize' | 'dream', sources: plan.sources.filter(source => !deferred.has(source.id)).map(({ id, checksum }) => ({ id, checksum })), reserved: this.reservedSources(scope, String(value.id)) };
+        const proposed = new Set(plan.candidates.flatMap(candidate => candidate.sourceIds));
+        const sources = plan.sources.filter(source => !deferred.has(source.id)).map(({ id, checksum, role }) => ({
+          id, checksum, ...(role === 'context' ? { contextOnly: true } : {}), ...(proposed.has(id) ? { fromCandidate: true } : {}),
+        }));
+        return { jobId: String(value.id), kind: value.kind as 'organize' | 'dream', analyzedAt: plan.createdAt, sources, reserved: this.reservedSources(scope, String(value.id)) };
       }), after: selected.length ? Number(selected.at(-1)!.sequence) : after, more: values.length > 20 };
     });
   }
@@ -260,21 +563,24 @@ export class BotMaintenanceStore {
       const audit = sql.prepare("SELECT record_json FROM bot_maintenance_reviews WHERE job_id=? AND candidate_id=? AND revision=? AND json_extract(record_json,'$.decision')='approve' ORDER BY sequence DESC LIMIT 1").get(jobId, id, r.revision);
       const approved = audit ? parse<BotMaintenanceReviewRecord>(row(audit).record_json) : undefined;
       const task = sql.prepare("SELECT status,json_extract(payload_json,'$.operation') AS operation FROM bot_memory_jobs WHERE kind='maintenance' AND status IN('queued','running') AND json_extract(payload_json,'$.jobId')=? AND json_extract(payload_json,'$.candidateId')=? AND json_extract(payload_json,'$.operation') IN('apply','reconcile') ORDER BY sequence DESC LIMIT 1").get(jobId, id);
-      return { ...this.candidateSummary(r), content: candidate.content, tags: candidate.tags, reason: candidate.reason, uncertainties: candidate.uncertainties, quotes: candidate.quotes,
+      return { ...this.candidateSummary(r), content: candidate.content, tags: candidate.tags, ...(candidate.crystal && { crystal: candidate.crystal }), reason: candidate.reason, uncertainties: candidate.uncertainties, quotes: candidate.quotes,
         approval: approved ? { actor: approved.actor, approvedAt: approved.createdAt } : undefined,
         execution: task ? { operation: row(task).operation as 'apply' | 'reconcile', state: row(task).status as 'queued' | 'running' } : undefined,
         sources: plan.sources.filter(source => candidate.sourceIds.includes(source.id)).map(({ id, checksum, createdAt, tags }) => ({ id, checksum, createdAt, tags })), receipt: r.receipt_json ? parse(r.receipt_json) : undefined };
     });
   }
-  review(scope: BotMemoryScope, jobId: string, id: string, revision: string, decision: 'approve' | 'reject', requestId: string, approval: 'review' | 'lossless' | 'model' = 'review', audit?: Partial<BotMaintenanceReviewRecord>): BotMaintenanceCandidateDetail {
+  review(scope: BotMemoryScope, jobId: string, id: string, revision: string, decision: 'approve' | 'reject', requestId: string, approval: 'review' | 'model' = 'review', audit?: Partial<BotMaintenanceReviewRecord>): BotMaintenanceCandidateDetail {
     return this.store.taskTransaction(sql => {
       this.command(sql, scope, requestId, ['review', jobId, id, revision, decision, approval]);
-      if (this.get(scope, jobId).job.status === 'cancelled') throw new Error('维护任务已停止，请先恢复再审阅。');
+      const { job } = this.get(scope, jobId);
+      this.ensureCurrent(job);
+      if (job.status === 'cancelled') throw new Error('维护任务已停止，请先恢复再审阅。');
+      if (job.mode === 'scan' || job.mode && job.mode !== 'organize' && approval !== 'review') throw new Error('此维护模式只接受用户逐项审阅。');
       const candidate = this.candidate(scope, jobId, id);
       if (candidate.revision !== revision) throw new Error('候选版本已改变，请重新读取后审阅。');
       if (candidate.status !== 'pending') { if (decision === 'approve' && ['approved', 'applying', 'applied', 'superseded', 'unknown', 'conflict'].includes(candidate.status) || decision === 'reject' && candidate.status === 'rejected') return candidate; throw new Error('这项候选已经作出其他决定。'); }
       sql.prepare('UPDATE bot_maintenance_candidates SET status=?,updated_at=? WHERE job_id=? AND id=?').run(decision === 'approve' ? 'approved' : 'rejected', stamp(), jobId, id);
-      this.recordReview(scope, jobId, id, requestId, { sources: candidate.sources.map(({ id, checksum }) => ({ id, checksum })), ...audit, decision, candidateRevision: revision, actor: approval === 'model' ? 'model' : approval === 'lossless' ? 'lossless' : 'user', reason: audit?.reason || (approval === 'lossless' ? '已启用的无损整理规则批准。' : decision === 'approve' ? '用户逐项核对后批准。' : '用户驳回此项候选。') });
+      this.recordReview(scope, jobId, id, requestId, { sources: candidate.sources.map(({ id, checksum }) => ({ id, checksum })), ...audit, decision, candidateRevision: revision, actor: approval === 'model' ? 'model' : 'user', reason: audit?.reason || (decision === 'approve' ? '用户逐项核对后批准。' : '用户驳回此项候选。') });
       if (decision === 'approve') { this.store.setMetadata(`maintenance-approval:${jobId}:${id}`, approval); this.queue(scope, jobId, 'apply', requestId + ':' + id, id, approval); this.progress(scope, jobId, 'queued', 'queued'); }
       this.refreshCounts(sql, jobId); return this.candidate(scope, jobId, id);
     });
@@ -302,14 +608,25 @@ export class BotMaintenanceStore {
   }
   queueAutomaticReview(scope?: BotMemoryScope): BotMemoryScope | undefined {
     return this.store.taskTransaction(sql => {
+      let reviewOwner: string;
+      if (scope) reviewOwner = maintenanceOwner(scope);
+      else {
+        // New plans and review receipts wake their own owner directly. The idle
+        // recovery poll checks one opted-in owner per turn, including after restart.
+        const next = sql.prepare(`SELECT owner_key FROM bot_maintenance_settings
+          WHERE owner_key>? AND json_extract(settings_json,'$.autoReview')=1 ORDER BY owner_key LIMIT 1`);
+        const value = next.get(this.lastReviewOwner) || (this.lastReviewOwner && next.get(''));
+        if (!value) return;
+        reviewOwner = this.lastReviewOwner = String(row(value).owner_key);
+      }
       const found = sql.prepare(`SELECT j.id,j.scope_json,c.id AS candidate_id,c.revision FROM bot_maintenance_candidates c JOIN bot_maintenance_jobs j ON j.id=c.job_id
-        JOIN bot_maintenance_settings s ON s.owner_key=j.owner_key WHERE c.status='pending' AND j.status<>'cancelled' AND j.phase<>'source_withdrawn'
-        AND json_extract(s.settings_json,'$.autoReview')=1 AND (? IS NULL OR j.owner_key=?)
+        JOIN bot_maintenance_settings s ON s.owner_key=j.owner_key WHERE c.status='pending' AND j.kind='organize' AND COALESCE(j.memo_mode,'organize')='organize' AND j.status<>'cancelled' AND j.phase<>'source_withdrawn'
+        AND json_extract(s.settings_json,'$.autoReview')=1 AND j.owner_key=?
         AND NOT EXISTS(SELECT 1 FROM bot_memory_jobs m WHERE m.kind='maintenance' AND m.status IN('queued','running') AND json_extract(m.payload_json,'$.jobId')=j.id AND json_extract(m.payload_json,'$.candidateId')=c.id AND json_extract(m.payload_json,'$.operation')='review')
         AND NOT EXISTS(SELECT 1 FROM bot_maintenance_reviews r WHERE r.job_id=j.id AND r.candidate_id=c.id AND r.revision=c.revision AND r.actor='model'
           AND json_extract(r.record_json,'$.decision')<>'retry'
           AND COALESCE(json_extract(r.record_json,'$.cycle'),0)=CAST(COALESCE((SELECT value FROM bot_metadata WHERE key='maintenance-review-cycle:'||j.owner_key),'0') AS INTEGER))
-        ORDER BY j.sequence,c.position LIMIT 1`).get(scope ? maintenanceOwner(scope) : null, scope ? maintenanceOwner(scope) : null);
+        ORDER BY j.sequence,c.position LIMIT 1`).get(reviewOwner);
       if (!found) return;
       const value = row(found), owner = parse<BotMemoryScope>(value.scope_json);
       const cycle = this.store.getMetadata(`maintenance-review-cycle:${maintenanceOwner(owner)}`) || '0';
@@ -324,27 +641,28 @@ export class BotMaintenanceStore {
   }
   resumeCandidate(scope: BotMemoryScope, jobId: string, id: string, revision: string, requestId: string): BotMaintenanceCandidateDetail {
     return this.store.taskTransaction(sql => {
+      this.ensureCurrent(this.get(scope, jobId).job);
       this.command(sql, scope, requestId, ['resume', jobId, id, revision]);
       const candidate = this.candidate(scope, jobId, id);
       if (candidate.revision !== revision) throw new Error('候选版本已改变，请重新读取。');
       if (!candidate.approval || !['approved', 'applying', 'unknown', 'conflict', 'superseded', 'applied'].includes(candidate.status)) throw new Error('这项候选尚未批准，不能继续执行。');
       if (candidate.execution || candidate.status === 'applied' || candidate.status === 'superseded') return candidate;
-      this.queue(scope, jobId, 'reconcile', requestId + ':' + id, id, this.store.getMetadata(`maintenance-approval:${jobId}:${id}`) === 'lossless' ? 'lossless' : 'review');
+      this.queue(scope, jobId, 'reconcile', requestId + ':' + id, id, 'review');
       sql.prepare('UPDATE bot_maintenance_candidates SET updated_at=? WHERE job_id=? AND id=?').run(stamp(), jobId, id);
       this.progress(scope, jobId, 'checking_receipt', 'queued'); return this.candidate(scope, jobId, id);
     });
   }
   continueCandidate(scope: BotMemoryScope, jobId: string, id: string, key: string): void {
     const mode = this.store.getMetadata(`maintenance-approval:${jobId}:${id}`);
-    this.queue(scope, jobId, 'apply', key + ':' + id, id, mode === 'lossless' || mode === 'model' ? mode : 'review');
+    this.queue(scope, jobId, 'apply', key + ':' + id, id, mode === 'model' ? mode : 'review');
     this.candidateResult(scope, jobId, id, 'approved');
   }
   coveringCandidates(scope: BotMemoryScope, jobId: string, id: string) {
     const candidate = this.candidate(scope, jobId, id);
-    return this.store.taskTransaction(sql => sql.prepare("SELECT c.job_id,c.id,j.plan_json,c.receipt_json FROM bot_maintenance_candidates c JOIN bot_maintenance_jobs j ON j.id=c.job_id WHERE j.owner_key=? AND c.status='applied' AND NOT(c.job_id=? AND c.id=?) AND json_extract(c.candidate_json,'$.type')='organize' ORDER BY j.sequence DESC").all(maintenanceOwner(scope), jobId, id).map(row).flatMap(r => {
+    return this.store.taskTransaction(sql => sql.prepare("SELECT c.job_id,c.id,j.plan_json,c.receipt_json FROM bot_maintenance_candidates c JOIN bot_maintenance_jobs j ON j.id=c.job_id WHERE j.owner_key=? AND j.phase<>'planner_retired' AND c.status='applied' AND NOT(c.job_id=? AND c.id=?) AND json_extract(c.candidate_json,'$.type')='organize' ORDER BY j.sequence DESC").all(maintenanceOwner(scope), jobId, id).map(row).flatMap(r => {
       const plan = parse<BotMemoryMaintenancePlan>(r.plan_json), prior = plan.candidates.find(item => item.id === r.id);
       if (!prior || !candidate.sources.every(source => prior.sourceIds.includes(source.id) && plan.sources.some(expected => expected.id === source.id && expected.checksum === source.checksum))) return [];
-      return [{ jobId: String(r.job_id), candidateId: String(r.id), plan, approval: this.store.getMetadata(`maintenance-approval:${r.job_id}:${r.id}`) === 'lossless' ? 'lossless' as const : 'review' as const }];
+      return [{ jobId: String(r.job_id), candidateId: String(r.id), plan, approval: 'review' as const }];
     }));
   }
   private refreshCounts(sql: BotTaskSql, jobId: string): void {
@@ -356,6 +674,7 @@ export class BotMaintenanceStore {
   control(scope: BotMemoryScope, id: string, operation: 'cancel' | 'retry', requestId: string): BotMaintenanceJob {
     return this.store.taskTransaction(sql => {
       this.command(sql, scope, requestId, [operation, id]); const record = this.get(scope, id);
+      this.ensureCurrent(record.job);
       if (operation === 'cancel') { if (record.job.status !== 'completed') this.progress(scope, id, 'cancelled', 'cancelled'); return this.get(scope, id).job; }
       if (!terminal.has(record.job.status)) return record.job;
       if (record.job.phase === 'source_withdrawn') throw new Error('来源已撤回，旧计划不可恢复；请依据当前资料创建新的计划。');
@@ -365,7 +684,7 @@ export class BotMaintenanceStore {
         const selected = sql.prepare("SELECT id FROM bot_maintenance_candidates WHERE job_id=? AND status IN('approved','applying','unknown','conflict') ORDER BY position").all(id).map(row);
         for (const candidate of selected) {
           const approval = this.store.getMetadata(`maintenance-approval:${id}:${candidate.id}`);
-          this.queue(scope, id, 'apply', requestId + ':' + candidate.id, String(candidate.id), approval === 'lossless' || approval === 'model' ? approval : 'review');
+          this.queue(scope, id, 'apply', requestId + ':' + candidate.id, String(candidate.id), approval === 'model' ? approval : 'review');
         }
         if (!selected.length) { this.progress(scope, id, 'pending_review', 'review'); return this.get(scope, id).job; }
       } else this.queue(scope, id, 'plan', requestId);
@@ -378,26 +697,6 @@ export class BotMaintenanceStore {
     this.get(scope, id);
     this.store.taskTransaction(sql => { sql.prepare('UPDATE bot_maintenance_jobs SET epoch=epoch+1 WHERE id=?').run(id); this.store.setMetadata(key, ''); });
   }
-  /** Resume old recoverable failures without replaying unknown effects or
-   * creating a different source snapshot. Due time remains a wall-clock date. */
-  recoverAutomatic(now = Date.now()): BotMemoryScope | undefined {
-    return this.store.taskTransaction(sql => {
-      const found = sql.prepare(`SELECT j.id,j.scope_json,j.attempts FROM bot_maintenance_jobs j
-        JOIN bot_maintenance_settings s ON s.owner_key=j.owner_key
-        WHERE j.automatic=1 AND j.status='blocked' AND j.phase='blocked' AND j.plan_json IS NULL
-          AND json_extract(s.settings_json,'$.enabled')=1
-          AND s.last_activity<=?-json_extract(s.settings_json,'$.idleMinutes')*60000
-          AND (SELECT json_extract(CASE WHEN json_valid(d.text) THEN d.text ELSE '{}' END,'$.code') FROM bot_maintenance_diagnostics d WHERE d.job_id=j.id AND d.phase='error' ORDER BY d.sequence DESC LIMIT 1)
-            IN ('BOT_OUTPUT_LIMIT','DSH_HOST_UNAVAILABLE','BOT_LANE_BUSY','MEMORY_MAINTENANCE_MODEL_FAILED','MEMORY_MAINTENANCE_NO_PROGRESS')
-        ORDER BY j.sequence LIMIT 1`).get(now);
-      if (!found) return;
-      const value = row(found), scope = parse<BotMemoryScope>(value.scope_json), id = String(value.id);
-      this.assertScope(scope);
-      this.queue(scope, id, 'plan', `automatic-recovery:${id}:${value.attempts}`);
-      this.progress(scope, id, 'queued', 'queued');
-      return scope;
-    });
-  }
   diagnostic(scope: BotMemoryScope, jobId: string, phase: string, value: unknown): void {
     this.get(scope, jobId); const text = typeof value === 'string' ? value : JSON.stringify(value);
     this.store.taskTransaction(sql => sql.prepare('INSERT INTO bot_maintenance_diagnostics(job_id,phase,text,created_at) VALUES(?,?,?,?)').run(jobId, phase, text, stamp()));
@@ -406,6 +705,7 @@ export class BotMaintenanceStore {
     this.assertScope(scope);
     this.store.taskTransaction(sql => {
       const jobs = sql.prepare('SELECT id FROM bot_maintenance_jobs WHERE domain_key=?').all(maintenanceDomain(scope));
+      sql.prepare("UPDATE bot_maintenance_tool_receipts SET result_json=? WHERE owner_key=? OR owner_key IN (SELECT owner_key FROM bot_maintenance_settings WHERE domain_key=?)").run(JSON.stringify({ accepted: false, withdrawn: true }), maintenanceOwner(scope), maintenanceDomain(scope));
       for (const raw of jobs) {
         const id = String(row(raw).id);
         sql.prepare("DELETE FROM bot_metadata WHERE key LIKE ?").run(`maintenance-output:${id}:%`);
@@ -418,9 +718,9 @@ export class BotMaintenanceStore {
           const receipt = r.receipt_json ? parse<Record<string, unknown>>(r.receipt_json) : undefined;
           const proof = receipt ? Object.fromEntries(['actionId', 'operationId', 'status'].filter(key => receipt[key] !== undefined).map(key => [key, receipt[key]])) : null;
           sql.prepare("UPDATE bot_maintenance_candidates SET candidate_json=?,receipt_json=?,status=CASE WHEN status IN('applied','rejected') THEN status ELSE 'conflict' END,updated_at=? WHERE job_id=? AND id=?")
-            .run(JSON.stringify({ ...candidate, content: '来源资料已撤回。', tags: [], reason: '旧候选不再可用，请依据当前日记创建新的计划。', sourceIds: [], quotes: [], uncertainties: [] }), proof ? JSON.stringify(proof) : null, stamp(), id, r.id);
+            .run(JSON.stringify({ ...candidate, content: '来源资料已撤回。', tags: [], crystal: undefined, reason: '旧候选不再可用，请依据当前日记创建新的计划。', sourceIds: [], quotes: [], uncertainties: [] }), proof ? JSON.stringify(proof) : null, stamp(), id, r.id);
         }
-        sql.prepare("UPDATE bot_maintenance_jobs SET snapshot_json=NULL,plan_json=NULL,narrative=NULL,error='来源资料已撤回，旧候选已停止。',status=CASE WHEN status IN('completed','cancelled') THEN status ELSE 'blocked' END,phase='source_withdrawn',updated_at=? WHERE id=?").run(stamp(), id);
+        sql.prepare("UPDATE bot_maintenance_jobs SET brief_json=NULL,snapshot_json=NULL,plan_json=NULL,narrative=NULL,error='来源资料已撤回，旧候选已停止。',status=CASE WHEN status IN('completed','cancelled') THEN status ELSE 'blocked' END,phase='source_withdrawn',updated_at=? WHERE id=?").run(stamp(), id);
         sql.prepare("UPDATE bot_maintenance_diagnostics SET text='来源资料已撤回；诊断正文已清除，操作证明保留在任务状态。' WHERE job_id=?").run(id);
       }
     });

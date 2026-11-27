@@ -1,6 +1,6 @@
 'use strict';
 // Scoped adapter for preserved VCP DreamWaveEngine and reviewed maintenance.
-// The upstream engine is unchanged; its data boundary is an owned <=24-note batch.
+// A batch supplies up to 24 seeds. Related notes must belong to the same workspace.
 const fs = require('node:fs/promises');
 const { constants } = require('node:fs');
 const path = require('node:path');
@@ -8,10 +8,42 @@ const crypto = require('node:crypto');
 const hash = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = (code, message) => Object.assign(new Error(message), { code });
 const canonical = value => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+let dreamWaveModule;
+// Run the unmodified upstream bucket scanner with a directory view of the
+// current audience's indexed receipts. It can read dates from owned headers
+// without opening unrelated files or copying the full corpus into RAM.
+function scopedWaveEngine(host, seeds) {
+  const filename = path.join(__dirname, '../upstream/toolbox/Plugin/AgentDream/DreamWaveEngine.js');
+  dreamWaveModule ||= require('node:vm').compileFunction(require('node:fs').readFileSync(filename, 'utf8'),
+    ['require','module','__dirname','process'], { filename });
+  const root = path.join(host.home, 'dailynote'), folder = path.join(root, 'Companion');
+  const paths = new Set(seeds.map(row => row.note_path));
+  const owned = async file => {
+    const relative = path.relative(root, file).replaceAll('\\', '/');
+    if (!paths.has(relative)) throw fail('MEMORY_NOTE_UNAVAILABLE', 'The diary is outside this dream.');
+    return host.managed.physicalInfo(relative);
+  };
+  const files = { promises: {
+    readdir: async directory => path.resolve(directory) === folder ? seeds.map(row => ({ name: path.basename(row.note_path), isFile: () => true })) : [],
+    stat: async file => (await owned(file)).info,
+    open: async file => {
+      const { absolute, info } = await owned(file), handle = await fs.open(absolute, 'r');
+      try { const current = await handle.stat();
+        if (current.ino !== info.ino || current.dev !== info.dev || current.nlink !== 1) throw fail('MEMORY_OUTCOME_UNKNOWN', 'The diary changed while opening its header.');
+        return handle;
+      } catch (error) { await handle.close(); throw error; }
+    },
+  } };
+  const definition = { exports: {} };
+  dreamWaveModule(name => name === 'fs' ? files : require(name), definition, path.dirname(filename), { env: { ...process.env, KNOWLEDGEBASE_ROOT_PATH: root } });
+  return definition.exports;
+}
 class MaintenanceHost {
   constructor(host) {
     this.host = host; this.db = host.db;
-    this.db.exec(`CREATE TABLE IF NOT EXISTS maintenance_operations(operation_id TEXT PRIMARY KEY,kind TEXT NOT NULL,fingerprint TEXT NOT NULL,plan TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT);`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS maintenance_operations(operation_id TEXT PRIMARY KEY,kind TEXT NOT NULL,fingerprint TEXT NOT NULL,plan TEXT NOT NULL,state TEXT NOT NULL,receipt TEXT);
+      CREATE INDEX IF NOT EXISTS maintenance_unreadable_operations ON maintenance_operations(state) WHERE state IN ('partial','unknown');`);
+    this.unreadableOperation = this.db.prepare("SELECT 1 FROM maintenance_operations WHERE state IN ('partial','unknown') LIMIT 1");
     this.db.exec(`CREATE TABLE IF NOT EXISTS maintenance_reconciliations(operation_id TEXT NOT NULL,kind TEXT NOT NULL,revision TEXT NOT NULL,prior_state TEXT NOT NULL,prior_receipt TEXT,result TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(operation_id,kind,revision,prior_state));`);
   }
   fence(payload) {
@@ -19,7 +51,7 @@ class MaintenanceHost {
     this.host.managed.assertSourceRevision(payload);
   }
   assertReadable() {
-    if (this.db.prepare("SELECT 1 FROM maintenance_operations WHERE state IN ('partial','unknown') LIMIT 1").get()) throw fail('MEMORY_OUTCOME_UNKNOWN', 'An approved maintenance operation still needs its original index receipt reconciled before recall.');
+    if (this.unreadableOperation.get()) throw fail('MEMORY_OUTCOME_UNKNOWN', 'An approved maintenance operation still needs its original index receipt reconciled before recall.');
   }
   audit(op, kind, result) {
     this.db.prepare('INSERT OR IGNORE INTO maintenance_reconciliations VALUES(?,?,?,?,?,?,?)').run(op.operation_id, kind, this.host.tombstones().revision, op.state, op.receipt_json || op.receipt || null, JSON.stringify(result), new Date().toISOString());
@@ -78,67 +110,101 @@ class MaintenanceHost {
   }
   dreamRecall(runtime, payload) { return this.host.managed.serial(async () => {
     this.fence(payload); this.host.assertWithdrawalsSettled(); this.host.managed.assertReadable(); this.assertReadable();
-    const sources = await this.sources(payload), byPath = new Map(sources.map(source => [path.resolve(source.actual.absolute).toLowerCase(), source]));
+    const all = this.db.prepare(`SELECT m.id,m.checksum,m.note_path FROM mutations m WHERE m.state='indexed' AND m.note_path LIKE 'Companion/%'
+      AND NOT EXISTS(SELECT 1 FROM tombstones t WHERE t.kind='note' AND t.id=m.id)
+      AND NOT EXISTS(SELECT 1 FROM mutation_sources s JOIN tombstones t ON t.kind=s.kind AND t.id=s.id WHERE s.note_id=m.id)
+      AND NOT EXISTS(SELECT 1 FROM managed_operation_sources s JOIN managed_operations o USING(operation_id) WHERE s.note_id=m.id AND o.state NOT IN('indexed','conflict','withdrawn'))`).all()
+      .filter(row => /^Companion\/[^/\\]+\.(?:txt|md)$/iu.test(row.note_path));
+    const indexedFiles = new Map(all.map(row => [row.note_path, row]));
+    const sources = payload.sources === undefined ? [] : await this.sources(payload);
+    const seedRows = payload.sources === undefined ? all : sources.map(source => {
+      const row = indexedFiles.get(source.row.note_path);
+      if (!row || row.id !== source.id || row.checksum !== source.actual.checksum) throw fail('MEMORY_NOTE_UNAVAILABLE', 'An explicit dream seed is no longer indexed.');
+      return row;
+    });
+    const byPath = new Map(sources.map(source => [path.resolve(source.actual.absolute).toLowerCase(), source]));
     const relative = source => source.row.note_path.replace(/\\/g, '/');
     const byRelative = new Map(sources.map(source => [relative(source), source]));
-    const rows = await runtime.kb.getChunksByFilePaths([...byRelative.keys()]);
-    const allowedFileIds = [...new Set(rows.map(row => Number(row.fileId)).filter(Number.isFinite))];
+    // The batch selects seeds. RiverMemo may follow those seeds to older
+    // indexed notes owned by the same companion and audience.
+    const normalized = value => String(value ?? '').replaceAll('\\', '/');
+    const indexed = rel => indexedFiles.get(rel);
     const bounded = Object.create(runtime.kb);
     let filteredCandidates = 0;
     const filter = items => (Array.isArray(items) ? items : []).filter(item => {
-      const allowed = byRelative.has(String(item.fullPath || item.path || '').replace(/\\/g, '/')); if (!allowed) filteredCandidates++; return allowed;
+      const allowed = indexed(normalized(item.fullPath || item.path)); if (!allowed) filteredCandidates++; return !!allowed;
     });
     bounded.executeNativeRiverQuery = async (query, options) => {
-      const result = await runtime.kb.executeNativeRiverQuery(query, { ...options, diaryNames: ['Companion'], allowedFileIds });
+      const result = await runtime.kb.executeNativeRiverQuery(query, { ...options, diaryNames: ['Companion'] });
       return { ...result, results: filter(result.results) };
     };
-    bounded.getChunksByFilePaths = paths => runtime.kb.getChunksByFilePaths(paths.filter(value => byRelative.has(String(value).replace(/\\/g, '/').replace(/^\//u, ''))));
+    bounded.getChunksByFilePaths = paths => runtime.kb.getChunksByFilePaths(paths.filter(value => indexed(normalized(value))));
     bounded.searchKnn = async (indices, vector, count) => filter(await runtime.kb.searchKnn(['Companion'], vector, count));
-    const Engine = runtime._require('Plugin/AgentDream/DreamWaveEngine.js'), engine = new Engine(bounded);
+    const Engine = scopedWaveEngine(this.host, seedRows), engine = new Engine(bounded);
+    engine._getSeedDiaryDirs = () => ['Companion'];
     engine._getSearchableIndexNames = () => ['Companion'];
-    // Keep upstream elastic 7/90-day bucket semantics, restricting its source
-    // loader rather than scanning/reading every diary in the physical home.
-    engine._getTimelineBuckets = async () => {
-      const parsed = sources.map(source => {
-        const date = /^\[(\d{4}-\d{2}-\d{2})\]/u.exec(source.actual.text)?.[1];
-        const mtime = date ? Date.parse(date + 'T00:00:00+08:00') : Date.parse(source.row.created_at);
-        return { filePath: source.actual.absolute, mtime, size: source.actual.info.size, ageDays: (Date.now() - mtime) / 86400000 };
-      }).sort((a, b) => a.ageDays - b.ageDays);
-      const count = (min, max) => parsed.filter(item => item.ageDays >= min && item.ageDays <= max).length;
-      let recentBoundary = 7, midBoundary = 90;
-      while (count(0, recentBoundary) < 3 && recentBoundary < 30) recentBoundary += 7;
-      recentBoundary = Math.min(30, recentBoundary);
-      while (count(recentBoundary + 1, midBoundary) < 2 && midBoundary < 180) midBoundary += 30;
-      midBoundary = Math.min(180, midBoundary);
-      return { recent: parsed.filter(item => item.ageDays <= recentBoundary), mid: parsed.filter(item => item.ageDays > recentBoundary && item.ageDays <= midBoundary), deep: parsed.filter(item => item.ageDays > midBoundary), recentBoundary, midBoundary };
+    const load = async rel => {
+      let source = byRelative.get(rel);
+      if (!source) {
+        const row = indexed(rel);
+        if (!row) return undefined;
+        [source] = await this.sources({ sources: [{ id: row.id, expectedChecksum: row.checksum }] });
+        byRelative.set(rel, source);
+        byPath.set(path.resolve(source.actual.absolute).toLowerCase(), source);
+      }
+      return source;
     };
-    engine._readContent = async absolute => byPath.get(path.resolve(absolute).toLowerCase())?.actual.text || '';
+    engine._readContent = async absolute => (await load(normalized(path.relative(path.join(this.host.home, 'dailynote'), absolute))))?.actual.text || '';
     engine._hydrateSearchResult = async item => {
-      const source = byRelative.get(String(item.fullPath || '').replace(/\\/g, '/'));
-      return source ? { ...item, filePath: source.actual.absolute, content: source.actual.text } : { content: '' };
+      const source = await load(normalized(item.fullPath));
+      if (!source) return { content: '' };
+      return { ...item, filePath: source.actual.absolute, content: source.actual.text };
     };
     const wave = await engine.generateDreamWave('Companion');
     const groups = {}, omitted = { unowned: 0, empty: 0 };
     for (const [period, value] of Object.entries(wave)) for (const [role, items] of Object.entries(value)) {
       groups[`${period}.${role}`] = [];
+      if (!wave.recent.seeds.length) continue;
       for (const item of items) {
         const source = item.filePath ? byPath.get(path.resolve(item.filePath).toLowerCase()) : byRelative.get(String(item.fullPath || '').replace(/\\/g, '/'));
         if (!source) { omitted.unowned++; continue; }
         if (!item.content && !item.text) { omitted.empty++; continue; }
         const scores = Object.fromEntries(Object.entries(item).filter(([key, value]) => /score|weight|resonance|omega|similarity/iu.test(key) && typeof value === 'number' && Number.isFinite(value)));
-        groups[`${period}.${role}`].push({ id: source.id, checksum: source.actual.checksum, ...(typeof item.score === 'number' ? { score: item.score } : {}), scores,
+        groups[`${period}.${role}`].push({ id: source.id, checksum: source.actual.checksum, fullPath: relative(source), ...(typeof item.score === 'number' ? { score: item.score } : {}), scores,
           ...(item.retrievalEngine ? { retrievalEngine: item.retrievalEngine } : {}) });
       }
     }
     this.fence(payload);
-    return { engine: 'DreamWaveEngine', namespace: 'Companion', sourceRevision: payload.expectedSourceRevision, groups, examined: sources.length, omitted: { ...omitted, filteredCandidates },
-      adaptation: 'Original generateDreamWave with an owned bounded source loader and scoped native retrieval; no dream LLM or diary mutation.' };
+    const template = await fs.readFile(path.join(__dirname, '../upstream/toolbox/Plugin/AgentDream/dreampost.txt'), 'utf8');
+    const now = new Date(), hour = now.getHours();
+    const sections = [
+      ['=== 你今天脑海中闪过的微小片段（近期） ===', [['recent.seeds', '']]],
+      ['=== 这些片段不知为何，唤醒了你记忆中的某些关联脉络（共振桥梁） ===', [['recent.resonanceL1', '[核心共振记忆] '], ['recent.cascadeL2', '[顺藤摸瓜的延展] ']]],
+      ['=== 恍惚间，几个月前的一些记忆也浮现了出来（中期） ===', [['mid.seeds', '[中期记忆] '], ['mid.cascadeL1', '[中期记忆的涟漪] ']]],
+      ['=== 在梦的最深处，这些所有思绪的交汇，指向了被你遗忘在深处的记忆（长远） ===', [['deep.recalls', '[深渊中的召唤] ']]],
+    ];
+    const segments = [], selected = new Map();
+    for (const [title, entries] of sections) {
+      const lines = [];
+      for (const [key, label] of entries) for (const hit of groups[key]) {
+        lines.push(`${label}[来源: ${hit.id}]`);
+        const role = key.endsWith('.seeds') ? 'seed' : 'context';
+        if (!selected.has(hit.id) || role === 'seed') selected.set(hit.id, { id: hit.id, checksum: hit.checksum, role });
+      }
+      if (lines.length) segments.push(title, ...lines);
+    }
+    const month = ['一','二','三','四','五','六','七','八','九','十','十一','十二'][now.getMonth()];
+    const dreamPrompt = template.replaceAll('{{Month}}', month)
+      .replaceAll('{{Day}}', String(now.getDate())).replaceAll('{{TimeOfDay}}', hour < 6 || hour >= 18 ? '夜' : hour < 12 ? '晨' : hour < 14 ? '午' : '日')
+      .replaceAll('{{DreamTreeBlock}}', segments.join('\n'));
+    return { engine: 'DreamWaveEngine', namespace: 'Companion', sourceRevision: payload.expectedSourceRevision, groups, sources: [...selected.values()],
+      dreamPrompt, examined: seedRows.length, omitted: { ...omitted, filteredCandidates } };
   }); }
   plan(payload, kind, sources) {
     if (typeof payload.operationId !== 'string' || !payload.operationId || payload.operationId.length > 512) throw new TypeError('Stable maintenance operation ID is required.');
     const fingerprint = hash(canonical([kind, payload])), prior = this.db.prepare('SELECT * FROM maintenance_operations WHERE operation_id=?').get(payload.operationId);
     if (prior) { if (prior.fingerprint !== fingerprint || prior.kind !== kind) throw fail('MEMORY_CONFLICT', 'Maintenance operation ID already belongs to another input.'); return prior; }
-    const plan = { payload, sources: sources.map(source => ({ id: source.id, checksum: source.actual.checksum, path: source.row.note_path })),
+    const plan = { payload, author: this.host.authorName, sources: sources.map(source => ({ id: source.id, checksum: source.actual.checksum, path: source.row.note_path })),
       archivePath: kind === 'archive' ? `已整理/${sources[0].id}-maintenance-${hash(payload.operationId).slice(0, 16)}${path.extname(sources[0].row.note_path)}` : undefined };
     this.db.prepare('INSERT INTO maintenance_operations VALUES(?,?,?,?,?,NULL)').run(payload.operationId, kind, fingerprint, JSON.stringify(plan), 'prepared');
     return this.db.prepare('SELECT * FROM maintenance_operations WHERE operation_id=?').get(payload.operationId);
@@ -170,7 +236,7 @@ class MaintenanceHost {
         this.db.prepare("UPDATE mutations SET state='pending' WHERE id=? AND state='unknown'").run(id);
       }
       const tags = [...new Set(['梦境感悟', '非用户事实', ...String(payload.tags || '').split(/[,，、\n]/u).map(value => value.trim()).filter(Boolean)])].slice(0, 12);
-      await this.host.remember(runtime, { ...payload, content: body, tags: tags.join(','), sourceMessageIds: [] });
+      await this.host.remember(runtime, { ...payload, content: body, tags: tags.join(','), sourceMessageIds: [] }, plan.author || 'Companion');
       const receipt = await this.host.sync(runtime, { id });
       if (receipt.receipts?.some(value => value.id === id && value.state === 'indexed')) return this.save(op, 'indexed', { ...receipt, state: 'indexed', id, operationId: payload.operationId });
       return this.save(op, 'pending', { ...receipt, state: 'pending', id, operationId: payload.operationId });

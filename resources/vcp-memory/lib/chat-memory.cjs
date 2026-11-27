@@ -5,9 +5,6 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawn } = require('node:child_process');
-const ROOT = path.resolve(__dirname, '..');
-const SOURCE = path.join(ROOT, 'upstream', 'chat');
 const { ChatDataServiceLifecycle } = require('../upstream/chat/modules/services/chatDataService/lifecycle.js');
 const { TelemetryCollector, snapshot } = require('./telemetry.cjs');
 
@@ -156,7 +153,8 @@ class ChatMemory {
         const target = path.join(this.appData, relative);
         await writeIfChanged(target, history); this.pendingHistories.add(target);
         if (!files.has(relative)) { files.add(relative); manifestChanged = this.manifestWritePending = true; }
-        const topic = { id: encodedTopic, name: topicId, createdAt: Number(history[0]?.timestamp) || 0, memoryOriginalTopicId: topicId };
+        const topic = { id: encodedTopic, name: history.findLast(message => message.topicTitle)?.topicTitle || topicId,
+          createdAt: Number(history[0]?.timestamp) || 0, memoryOriginalTopicId: topicId };
         const index = indexes.get(encodedTopic);
         if (index === undefined) { indexes.set(encodedTopic, config.topics.length); config.topics.push(topic); configChanged = true; this.pendingCatalogs.add(storageId); }
         else if (JSON.stringify(config.topics[index]) !== JSON.stringify(topic)) { config.topics[index] = topic; configChanged = true; this.pendingCatalogs.add(storageId); }
@@ -192,7 +190,7 @@ class ChatMemory {
           if (!Array.isArray(history)) throw new TypeError(`Session history is not an array: ${source}`);
           const metadata = await readJson(path.join(ownerDir, topic.name, 'sidechat-metadata.json'), null);
           const createdAt = Number(history.find(message => Number.isFinite(Number(message.timestamp)))?.timestamp) || 0;
-          topics.push({ id: topic.name, name: metadata?.title || metadata?.branchTitle || topicId, createdAt,
+          topics.push({ id: topic.name, name: metadata?.title || metadata?.branchTitle || history.findLast(message => message.topicTitle)?.topicTitle || topicId, createdAt,
             memoryOriginalTopicId: topicId, ...(metadata ? { sideChat: metadata } : {}) });
           const relative = path.join('UserData', storageId, 'topics', topic.name, 'history.json');
           await writeIfChanged(path.join(this.appData, relative), history);
@@ -272,9 +270,14 @@ class ChatMemory {
     const args = structuredClone(rawArgs);
     if (name === 'TopicMemo') {
       const owner = this._owner(args.maid);
-      if (owner) args.maid = owner.name;
+      if (!owner) throw new Error('Topic owner does not exist in this memory domain');
+      args.maid = owner.storageId;
       const topicId = args.topic_id || args.topicId || args.TopicId;
-      if (owner && topicId) args.topic_id = owner.topics.find(topic => [topic.topicId, topic.storageId].includes(topicId))?.storageId || topicId;
+      if (topicId) {
+        const topic = owner.topics.find(topic => [topic.topicId, topic.storageId].includes(topicId));
+        if (!topic) throw new Error('Topic is unavailable for this owner');
+        args.topic_id = topic.storageId;
+      }
       delete args.topicId; delete args.TopicId;
       return this._topicMemo(args);
     }
@@ -294,25 +297,8 @@ class ChatMemory {
   }
 
   async _topicMemo(args) {
-    if (!this.topicModule) {
-      // Adapt only the stdio entry point; execute the preserved original
-      // lookup/formatting functions without spawning Node for every read.
-      const Module = require('node:module');
-      const filename = path.join(SOURCE, 'VCPDistributedServer/Plugin/TopicMemo/TopicMemo.js');
-      const source = await fsp.readFile(filename, 'utf8');
-      if (!/main\(\);\s*$/.test(source)) throw new Error('Unsupported TopicMemo entry point');
-      const loaded = new Module(filename, module);
-      loaded.filename = filename; loaded.paths = Module._nodeModulePaths(ROOT);
-      loaded._compile(source.replace(/main\(\);\s*$/, 'module.exports = { findAgentInfo, findUserName, listTopics, getTopicContent };'), filename);
-      this.topicModule = loaded.exports;
-    }
-    const info = await this.topicModule.findAgentInfo(this.appData, args.maid);
-    if (!info) throw new Error('Topic owner does not exist in this memory domain');
-    const command = args.command || 'ListTopics';
-    if (!['ListTopics', 'GetTopicContent'].includes(command)) throw new Error('Unsupported TopicMemo command');
-    if (command === 'GetTopicContent' && !args.topic_id) throw new Error('topic_id is required');
-    const result = command === 'ListTopics' ? await this.topicModule.listTopics(info)
-      : await this.topicModule.getTopicContent(this.appData, info, args.topic_id, await this.topicModule.findUserName(this.appData));
+    const { executeTopicMemo } = require('../upstream/chat/VCPDistributedServer/Plugin/TopicMemo/TopicMemo.js');
+    const result = await executeTopicMemo(args, { vchatDataDir: this.appData });
     return { status: 'success', result };
   }
 

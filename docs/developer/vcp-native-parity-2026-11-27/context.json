@@ -1,0 +1,223 @@
+{
+  "revision": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+  "files": [
+    {
+      "file": "Plugin/MemoryThinkingTray/MemoryThinkingTray.js",
+      "gitBlob": "e963fd18cf6772e32bd74c4bccfdac865c5c4ec8",
+      "gitSha256": "d075f8365776950dcb423d34978089db113e85cf9255ee57d7c4f72322e372e6",
+      "packagedSha256": "d075f8365776950dcb423d34978089db113e85cf9255ee57d7c4f72322e372e6"
+    },
+    {
+      "file": "Plugin/RAGDiaryPlugin/RAGDiaryPlugin.js",
+      "gitBlob": "a79775ae81d6be11ef2205efc9cab24ba9c7ee29",
+      "gitSha256": "75d8468d6b51d0f19a66baf1d7402ecd8c0b4ffe4bded9116727de762d6d7db1",
+      "packagedSha256": "75d8468d6b51d0f19a66baf1d7402ecd8c0b4ffe4bded9116727de762d6d7db1"
+    },
+    {
+      "file": "Plugin/RAGDiaryPlugin/DirectDiaryTextProcessor.js",
+      "gitBlob": "da7372fd1f7290f36008f6487bdb87aefb0cd22d",
+      "gitSha256": "0d35ac7159b231380a8bb85474ebd62731272dec56226a6d4cb73bd5d9975d7d",
+      "packagedSha256": "0d35ac7159b231380a8bb85474ebd62731272dec56226a6d4cb73bd5d9975d7d"
+    },
+    {
+      "file": "Plugin/OneRing/OneRing.js",
+      "gitBlob": "e33981e8b4be5d1e3d882b5d4341e6fbc36f4d81",
+      "gitSha256": "7f34f32f61fd54a10388a9e2499c83efbb91ccb9fd3f11e933dc219647184ef3",
+      "packagedSha256": "7f34f32f61fd54a10388a9e2499c83efbb91ccb9fd3f11e933dc219647184ef3"
+    },
+    {
+      "file": "preprocessor_order.json",
+      "gitBlob": "6e2070d1daf7b200b755dee0722cc06a8eac0cd4",
+      "gitSha256": "961ba7ea7a70f6918b9a7640ff0c6f0687e9d4347d4b8e0ae06611393949a056",
+      "packagedSha256": "961ba7ea7a70f6918b9a7640ff0c6f0687e9d4347d4b8e0ae06611393949a056"
+    }
+  ],
+  "fixture": {
+    "messages": [
+      {
+        "role": "system",
+        "content": "你是伙伴。\n<---VCP记忆思维区Start--->\n先核对用户提到的地点。\n<---VCP记忆思维区End--->\n{{旅程日记本::Last2}}\n[[OneRing::同伴::VCPChat::Only]]"
+      },
+      {
+        "role": "user",
+        "content": "周末在哪里集合？"
+      },
+      {
+        "role": "assistant",
+        "content": "我记得我们讨论过出发时间。"
+      },
+      {
+        "role": "user",
+        "content": "请把最新约定再告诉我。"
+      }
+    ],
+    "notes": [
+      [
+        "2026-01-02.txt",
+        "[2026-01-02] - 同伴\n原定西门集合。\nTag: 出行, 西门"
+      ],
+      [
+        "2026-01-03.txt",
+        "[2026-01-03] - 同伴\n最新约定：周日上午十点，在南门取书。\nTag: 出行, 南门"
+      ]
+    ]
+  },
+  "order": [
+    "MemoryThinkingTray",
+    "RAGDiaryPlugin",
+    "OneRing"
+  ],
+  "official": [
+    {
+      "role": "system",
+      "content": "你是伙伴。\n\n[2026-01-03] - 同伴\n最新约定：周日上午十点，在南门取书。\nTag: 出行, 南门\n\n---\n\n[2026-01-02] - 同伴\n原定西门集合。\nTag: 出行, 西门\n[OneRing系统已启动，当前Agent同伴，当前客户端VCPChat，当前模式Only，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]"
+    },
+    {
+      "role": "user",
+      "content": "周末在哪里集合？"
+    },
+    {
+      "role": "assistant",
+      "content": "我记得我们讨论过出发时间。"
+    },
+    {
+      "role": "user",
+      "content": "[系统提示:]\n\n先核对用户提到的地点。\n"
+    },
+    {
+      "role": "user",
+      "content": "请把最新约定再告诉我。"
+    }
+  ],
+  "host": [
+    {
+      "role": "system",
+      "content": "你是伙伴。\n\n[2026-01-03] - 同伴\n最新约定：周日上午十点，在南门取书。\nTag: 出行, 南门\n\n---\n\n[2026-01-02] - 同伴\n原定西门集合。\nTag: 出行, 西门\n[OneRing系统已启动，当前Agent同伴，当前客户端VCPChat，当前模式Only，所有上下文OneRing信息来源标记由系统生成无需你自动输出。]"
+    },
+    {
+      "role": "user",
+      "content": "周末在哪里集合？"
+    },
+    {
+      "role": "assistant",
+      "content": "我记得我们讨论过出发时间。"
+    },
+    {
+      "role": "user",
+      "content": "[系统提示:]\n\n先核对用户提到的地点。\n"
+    },
+    {
+      "role": "user",
+      "content": "请把最新约定再告诉我。"
+    }
+  ],
+  "chat": {
+    "revision": "ea8942cfbe275bbe7fca1cbf1222f6c0ca0b3fe4",
+    "entry": "modules/chat/singleChatRequestOrchestrator.js",
+    "gitBlob": "81ad306529acc532948e3ffeeda64ce6605f2b41",
+    "history": [
+      {
+        "id": "old",
+        "role": "user",
+        "content": "已折叠的旧对话正文"
+      },
+      {
+        "id": "checkpoint",
+        "role": "user",
+        "content": "先前约定在西门集合。",
+        "contextCompaction": {
+          "kind": "vchat-context-checkpoint",
+          "version": 1,
+          "checkpoint": "先前约定在西门集合。"
+        }
+      },
+      {
+        "id": "new",
+        "role": "assistant",
+        "content": "已更新，改在南门取书。"
+      },
+      {
+        "id": "last",
+        "role": "user",
+        "content": "现在该去哪里？"
+      }
+    ],
+    "official": [
+      {
+        "role": "system",
+        "content": "你是同伴。"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "先前约定在西门集合。"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "已更新，改在南门取书。"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "现在该去哪里？"
+          }
+        ]
+      }
+    ],
+    "host": [
+      {
+        "role": "system",
+        "content": "你是同伴。"
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "先前约定在西门集合。"
+          }
+        ]
+      },
+      {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "已更新，改在南门取书。"
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "现在该去哪里？"
+          }
+        ]
+      }
+    ],
+    "visibleSha256": "0187c5da704abb90ef8044123c125dc83c64810f13213101072fdf850f1a6a4d"
+  },
+  "normalization": "Compare visible role and content for each message in order; exclude private receipt properties.",
+  "visibleSha256": "9a53d9175528ee9ca290bc0efd1398b171d93bfd0049fd6caa25bfcc0d59c538",
+  "oneRing": {
+    "agentName": "同伴",
+    "frontendSource": "VCPChat",
+    "turnId": "_:VCPChat:1795757409302:6002dd6e89ba3be4:aqr4e9",
+    "requestHash": "6002dd6e89ba3be48795fd1bbf395d4a23d5a82f760585c94f5d3845e0e835c9",
+    "responseMessageIdToUpdate": null,
+    "retryOfTurnId": null
+  }
+}

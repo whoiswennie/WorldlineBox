@@ -35,8 +35,9 @@ void app.whenReady().then(async () => {
   const embedding = new GlobalEmbeddingService({ userDataPath: path.join(root, 'embedding-state'), bundleDirectory: path.join(project, 'resources/embedding-models'),
     koffiPath: createRequire(path.join(project, 'package.json')).resolve('koffi'), devicePreference: () => ({ backend: 'cpu' }) });
   const gateway = new VcpEmbeddingGateway(embedding);
-  const report: Record<string, unknown> = { kind: 'bot-real-result', passed: false, architecture: 'native-session-per-message', usesRealModel: !protocolMode, usesRealEmbedding: true, phases, errors };
-  const runs = new Map<string, { cwd: string; laneId: string; sessionId: string; tools: string[]; prompt: string; events: NativeHostEvent[] }>();
+  const report: Record<string, unknown> = { kind: 'bot-real-result', passed: false, architecture: 'native-topic-session', usesRealModel: !protocolMode, usesRealEmbedding: true, phases, errors };
+  const runs = new Map<string, { cwd: string; laneId: string; sessionId: string; tools: string[]; prompt: string; memoryContext?: string; events: NativeHostEvent[] }>();
+  const deliveryErrors = new Map<string, { code: string; message: string; attempts: number }>();
   try {
     stage = 'global-model'; let model;
     if (protocolMode) { protocolModel = await startBotProtocolModel(); model = { apiFormat: 'openai_chat' as const, model: 'protocol-fixture', baseUrl: protocolModel.baseUrl, apiKey: 'protocol-fixture-no-secret' }; }
@@ -64,16 +65,24 @@ void app.whenReady().then(async () => {
     const brain = new BotDshBrain({ getHost: async () => ({ client, instance: native!.instance }) });
     const nativeRun = brain.run.bind(brain);
     brain.run = async (input: BotDshRun) => {
-      const run = { cwd: input.cwd, laneId: input.laneId, sessionId: BotDshBrain.sessionId(input.laneId), tools: (input.workerTools ?? input.tools).map(tool => tool.name), prompt: input.prompt, events: [] as NativeHostEvent[] };
+      const run = { cwd: input.cwd, laneId: input.laneId, sessionId: BotDshBrain.sessionId(input.laneId), tools: (input.workerTools ?? input.tools).map(tool => tool.name),
+        prompt: input.prompt, memoryContext: input.memoryContext, events: [] as NativeHostEvent[] };
       runs.set(input.eventId, run);
-      return nativeRun({ ...input, onEvent: event => { run.events.push(event); input.onEvent?.(event); } });
+      try {
+        return await nativeRun({ ...input, onEvent: event => { run.events.push(event); input.onEvent?.(event); } });
+      } catch (error) {
+        const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN';
+        deliveryErrors.set(input.eventId, { code, message: safeError(error),
+          attempts: (deliveryErrors.get(input.eventId)?.attempts ?? 0) + 1 });
+        throw error;
+      }
     };
     service = new BotService({ root: botRoot, brain, memory, media, model: () => ({ ...model, baseUrl: model.baseUrl! }),
       report: error => errors.push({ stage, name: error instanceof Error ? error.name : 'Error', message: safeError(error) }), onEvent: () => undefined });
     let snapshot = (await service.handle({ type: 'state' })).snapshot!;
     const companionId = DEFAULT_BOT_COMPANION_ID, conversationId = service.store.openDirect(companionId).id;
-    async function send(content: string, attachmentIds?: string[], room = conversationId, responding = companionId) {
-      const accepted = await service!.handle({ type: 'message.send', conversationId: room, content, requestId: randomUUID(), ...(attachmentIds?.length ? { attachmentIds } : {}) });
+    async function send(content: string, attachmentIds?: string[], room = conversationId, responding = companionId, newTopic = false) {
+      const accepted = await service!.handle({ type: 'message.send', conversationId: room, content, requestId: randomUUID(), newTopic, ...(attachmentIds?.length ? { attachmentIds } : {}) });
       if (!accepted.ok || !accepted.messageId) throw new Error('MESSAGE_NOT_ACCEPTED');
       const sourceMessageId = accepted.messageId, sourceMessage = service!.store.getMessage(sourceMessageId)!; const started = performance.now();
       while (performance.now() - started < 240000) {
@@ -91,30 +100,37 @@ void app.whenReady().then(async () => {
       throw new Error('REPLY_TIMEOUT');
     }
     const toolsFor = (eventId: string) => runs.get(eventId)!.events.filter(event => event.type === 'tool_call').map(event => event.toolName ?? '');
-    const ordinary = await measured('ordinary-chat', () => send('你好，这是原生 DSH 伙伴验收。只用一句简短中文问候。'));
-    const second = await measured('fresh-session', () => send('这是下一条独立消息，只回答“收到第二条”。'));
+    const ordinary = await measured('ordinary-chat', () => send('我们周六观鸟在青鹭湾北岸集合，六点出发。'));
+    const second = await measured('fresh-session', () => send('这是下一条独立消息，只回答“收到第二条”。', undefined, conversationId, companionId, true));
     const firstRun = runs.get(ordinary.eventId)!, secondRun = runs.get(second.eventId)!;
     if (firstRun.sessionId === secondRun.sessionId || firstRun.cwd !== secondRun.cwd || firstRun.laneId === secondRun.laneId) throw new Error('NATIVE_SESSION_ISOLATION_FAILED');
     if ([...runs.values()].some(run => run.tools.includes('dsh_task') || run.tools.includes('chat_send_file'))) throw new Error('LEGACY_TASK_OR_FILE_TOOL_EXPOSED');
-    if (secondRun.prompt.includes('你好，这是原生')) throw new Error('ROUTER_TRANSCRIPT_REPLAYED');
+    if (secondRun.prompt.includes('青鹭湾北岸')) throw new Error('ROUTER_TRANSCRIPT_REPLAYED');
     report.sessions = { distinctSessionIds: true, sameCompanionWorkspace: true, noRouterTranscript: true, legacyToolsAbsent: true, streamedEvents: firstRun.events.length + secondRun.events.length };
     async function verifyInteractionDiary(reply: Awaited<ReturnType<typeof send>>, expectedContent: string[]) {
       const room = service!.store.getConversation(conversationId)!;
       const scope = { companionId, conversationId, securityDomainId: room.securityDomainId };
-      const id = createHash('sha256').update(reply.eventId + ':interaction:v3').digest('hex'), deadline = Date.now() + 180000;
+      if (!toolsFor(reply.eventId).some(name => name.endsWith('memory_write'))) throw Error('LIVE_DIARY_TOOL_NOT_USED');
+      const deadline = Date.now() + 180000;
       while (Date.now() < deadline) {
-        const diary = (await memory!.list(scope)).find(note => note.id === id);
+        const diary = (await memory!.list(scope)).find(note => note.sourceMessageIds?.includes(reply.sourceMessageId) && expectedContent.every(fragment => note.content.includes(fragment)));
         if (diary?.indexState === 'indexed') {
           if (!diary.sourceMessageIds.includes(reply.sourceMessageId) || !diary.sourceMessageIds.includes(reply.replyId)
             || !expectedContent.every(fragment => diary.content.includes(fragment))) throw new Error('INTERACTION_DIARY_PROVENANCE_INVALID');
-          return { indexed: true, sourceMessagesVerified: true, contentVerified: true };
+          const note = await memory!.readNote(scope, { id: diary.id }) as { tags: string[] };
+          if (!note.tags.length) throw Error('LIVE_DIARY_TAGS_MISSING');
+          return { indexed: true, liveToolCallVerified: true, tagsVerified: true, sourceMessagesVerified: true, contentVerified: true };
         }
         await pause(300);
       }
       throw new Error('COMPLETED_INTERACTION_DIARY_NOT_INDEXED');
     }
     report.interactionDiary = await measured('completed-interaction-diary', () => verifyInteractionDiary(ordinary,
-      [ordinary.sourceMessageId, ordinary.replyId, ordinary.text, service!.store.getMessage(ordinary.sourceMessageId)!.senderName]));
+      ['青鹭湾北岸']));
+    const passive = await measured('passive-recall-in-new-topic', () => send('周六看鸟在哪里集合？', undefined, conversationId, companionId, true));
+    const passiveRun = runs.get(passive.eventId)!;
+    if (!passiveRun.memoryContext?.includes('青鹭湾北岸') || !passive.text.includes('青鹭湾北岸')
+      || toolsFor(passive.eventId).some(name => /(?:memory_(?:recall|search|note|list)|DeepMemo|TopicMemo|sessions_read)/i.test(name))) throw Error('AUTOMATIC_CONTEXT_NOT_DELIVERED');
     await measured('memory-write', async () => { const saved = await service!.handle({ type: 'memory.remember', conversationId, companionId,
       content: '开发验收事实：测试项目代号为青榆舟。只用于本次验收。' }); if (!saved.ok) throw new Error('MEMORY_WRITE_FAILED'); });
     await measured('memory-search', async () => {
@@ -125,8 +141,8 @@ void app.whenReady().then(async () => {
     });
     const recalled = await measured('native-memory-tool', () => send('请先调用 memory_search 查询测试项目代号，再依据真实检索结果告诉我代号。'));
     if (!recalled.text.includes('青榆舟') || !toolsFor(recalled.eventId).some(name => name.endsWith('memory_search'))) throw new Error('NATIVE_MEMORY_TOOL_NOT_USED');
-    report.memory = { semanticRecall: true, nativeToolRecall: true, passiveEvidenceIncluded: JSON.parse(runs.get(recalled.eventId)!.prompt).memoryEvidence.length > 0 };
-    if (!protocolMode) {
+    report.memory = { semanticRecall: true, nativeToolRecall: true, passiveEvidenceIncluded: true, newTopicWithoutSearchTool: true };
+    if (!protocolMode && process.env.WORLDLINEBOX_BOT_MEMORY_ONLY !== '1') {
       const sticker = await measured('native-sticker', () => send('请查询真实表情列表，选一张开心的动图，用 chat_send_sticker 实际发给我。不要用文字冒充发图。'));
       if (!sticker.attachments.some(item => item.kind === 'sticker' && item.animated)) throw new Error('ACTUAL_ANIMATED_STICKER_MISSING');
       report.sticker = { published: true, animated: true, tools: toolsFor(sticker.eventId) };
@@ -142,7 +158,7 @@ void app.whenReady().then(async () => {
         if (createHash('sha256').update(bytes).digest('hex') !== ref.sha256) throw new Error('DELIVERED_FILE_HASH_INVALID');
       }
       report.files = { inputRead: true, outputBytesVerified: true, presentFiles: true, delivered: files.attachments.map(ref => ref.name), tools: toolsFor(files.eventId) };
-      report.fileInteractionDiary = await measured('native-delivery-diary', () => verifyInteractionDiary(files, ['sum-proof.txt', 'cedar-proof.txt', files.sourceMessageId]));
+      report.fileInteractionDiary = await measured('native-delivery-diary', () => verifyInteractionDiary(files, ['cedar-proof.txt']));
       const complex = await measured('native-subagent-task', () => send('请使用当前可用的 sessions_spawn 工具创建原生子会话，子会话用真实代码计算1到12的平方和并写入 child-audit.json，结构为 {"sumSquares":650}。等候子会话完成，再由你读取该文件核验，最后只回复数值650。不创建旧版任务中心任务。'));
       if (!toolsFor(complex.eventId).some(name => name.endsWith('sessions_spawn')) || JSON.parse(await readFile(path.join(workspace, 'child-audit.json'), 'utf8')).sumSquares !== 650) throw new Error('REAL_NATIVE_SUBAGENT_NOT_VERIFIED');
       report.subagent = { nativeSpawn: true, artifactVerified: true, tools: toolsFor(complex.eventId) };
@@ -179,7 +195,7 @@ void app.whenReady().then(async () => {
     report.nativeRuns = [...runs].map(([eventId, run]) => ({ eventId, sessionId: run.sessionId, workspace: path.basename(run.cwd), tools: toolsFor(eventId), events: run.events.length }));
     report.passed = true;
   } catch (error) { report.failedStage = stage; report.failure = { name: error instanceof Error ? error.name : 'Error', message: safeError(error) };
-    report.lastNative = [...runs].filter(([eventId]) => eventId.startsWith('event-')).slice(-2).map(([eventId, run]) => ({ eventId,
+    report.lastNative = [...runs].filter(([eventId]) => eventId.startsWith('event-')).slice(-2).map(([eventId, run]) => ({ eventId, deliveryError: deliveryErrors.get(eventId),
       tools: run.events.filter(event => event.toolName || event.type === 'tool_result').map(event => ({ type: event.type, name: event.toolName,
         callId: event.callId, summary: safeError(event.summary ?? ''), text: safeError(event.text ?? '').slice(0, 2000) })), events: run.events.length }));
   } finally {

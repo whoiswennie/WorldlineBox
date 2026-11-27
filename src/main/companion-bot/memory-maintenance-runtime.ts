@@ -1,7 +1,7 @@
 import path from 'node:path';
-import type { BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
+import { COMPANION_IDLE_MAINTENANCE, VCP_DREAM_SCHEDULE, type MaintenanceBriefInput, type MemoMasterMode, type BotMemoryMaintenanceRequest } from '../../shared/companion-bot-maintenance';
 import type { BotMemoryJobClaim } from './types';
-import type { BotMemoryScope, BotMemoryService, BotMaintenanceWorkStats, BotMaintenanceWorkBatch, BotMaintenanceWorkProgress } from './memory-service';
+import type { BotMemoryScope, BotMemoryService, BotMaintenanceWorkBatch, BotMaintenanceWorkProgress, BotMaintenanceWorkStats } from './memory-service';
 import type { BotBrain } from './brain-router';
 import { BotDshTurnFailedError, type BotDshCallback, type BotDshModel } from './dsh-brain';
 import { BotMemoryMaintenance, type BotMaintenanceContinuation } from './memory-maintenance';
@@ -13,23 +13,31 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 export interface BotMaintenanceRuntimeOptions {
   store: BotStore; root: string; brain: BotBrain; memory: BotMemoryService; model(): BotDshModel; callback(): Promise<BotDshCallback>;
   changed(conversationId?: string): void; report?(error: unknown): void;
+  companionBusy?(companionId: string): boolean;
 }
-/** Maintenance is a low-priority consumer of the same durable domain queue as
- * capture. Its model never holds the VCP session's RPC/FIFO lock. */
+/** Maintenance consumes the durable audience queue. Its model never holds
+ * the VCP session's RPC lock while a companion is answering. */
 export class BotMaintenanceRuntime {
   readonly journal: BotMaintenanceStore;
   private readonly core: BotMemoryMaintenance;
   private readonly reviewer: BotMemoryMaintenanceReviewer;
   private readonly active = new Map<string, { scope: BotMemoryScope; automatic: boolean; operation: unknown; controller: AbortController; finished: Promise<void> }>();
   private lastPoll = 0;
+  private lastReviewPoll = 0;
+  private awakeSince = Date.now();
   private polling?: Promise<void>;
   private closed = false;
   private closing?: Promise<void>;
   constructor(private readonly options: BotMaintenanceRuntimeOptions) {
+    const workRoot = path.join(options.root, 'vcp-maintenance-v2');
     this.journal = new BotMaintenanceStore(options.store);
     this.core = new BotMemoryMaintenance({ brain: options.brain, memory: options.memory, model: options.model, callback: options.callback,
-      cwd: (scope, operationId) => path.join(options.root, 'memory-maintenance', maintenanceDomain(scope), operationId) });
-    this.reviewer = new BotMemoryMaintenanceReviewer({ brain: options.brain, memory: options.memory, callback: options.callback, root: options.root });
+      dreamer: scope => {
+        const companion = options.store.getCompanion(scope.companionId);
+        return companion && { name: companion.name, persona: companion.persona };
+      },
+      cwd: (scope, operationId) => path.join(workRoot, 'plans', maintenanceDomain(scope), operationId) });
+    this.reviewer = new BotMemoryMaintenanceReviewer({ brain: options.brain, memory: options.memory, callback: options.callback, root: path.join(workRoot, 'reviews') });
   }
   async handle(input: BotMemoryMaintenanceRequest, scope: BotMemoryScope): Promise<unknown> {
     this.journal.assertScope(scope);
@@ -47,7 +55,7 @@ export class BotMaintenanceRuntime {
         if (previous.enabled && !settings.enabled) await this.abortScope(scope, false);
         this.options.changed(scope.conversationId); return settings;
       }
-      case 'memory.maintenance.run': { const job = this.journal.enqueue(scope, input.kind, input.requestId, false, input.cursor); this.options.changed(scope.conversationId); return job; }
+      case 'memory.maintenance.run': { const job = this.journal.enqueue(scope, input.kind, input.requestId, false, input.cursor, undefined, undefined, input.mode, undefined, input.brief); this.options.changed(scope.conversationId); return job; }
       case 'memory.maintenance.list': return this.journal.list(scope, input.cursor, input.limit);
       case 'memory.maintenance.get': return this.journal.get(scope, input.jobId).job;
       case 'memory.maintenance.candidates': return this.journal.candidates(scope, input.jobId, input.cursor, input.limit);
@@ -67,7 +75,7 @@ export class BotMaintenanceRuntime {
         const operation = input.type === 'memory.maintenance.cancel' ? 'cancel' : 'retry', job = this.journal.control(scope, input.jobId, operation, input.requestId);
         if (operation === 'cancel') {
           this.active.get(input.jobId)?.controller.abort(Object.assign(new Error('用户停止维护任务。'), { code: 'MAINTENANCE_CANCEL' }));
-          if (!this.journal.get(scope, input.jobId).plan) await this.releaseBatch(scope, input.jobId, '用户停止本任务，来源保留供后续增量整理。', false);
+          if (!this.journal.get(scope, input.jobId).plan) await this.releaseBatch(scope, input.jobId, '用户停止本任务，来源保留供后续增量整理。');
           else await this.syncReviewedVersions(scope, input.jobId);
         }
         this.options.changed(scope.conversationId); return job;
@@ -76,19 +84,48 @@ export class BotMaintenanceRuntime {
   }
   activity(scope: BotMemoryScope, changeId?: string): void {
     this.journal.activity(scope, changeId);
-    for (const run of this.active.values()) if (run.automatic && maintenanceDomain(run.scope) === maintenanceDomain(scope)) run.controller.abort(Object.assign(new Error('即时聊天优先，后台维护待闲置后继续。'), { code: 'MAINTENANCE_YIELD' }));
+    this.yieldPlanning(scope);
   }
   userMessage(scope: BotMemoryScope, substantive: boolean): void {
-    if (substantive || this.journal.hasSettings(scope)) this.activity(scope);
-    else for (const run of this.active.values()) if (run.automatic && maintenanceDomain(run.scope) === maintenanceDomain(scope)) run.controller.abort(Object.assign(new Error('即时聊天优先，后台维护待闲置后继续。'), { code: 'MAINTENANCE_YIELD' }));
+    if (substantive || this.journal.hasSettings(scope)) this.journal.activity(scope);
+    this.foreground(scope.companionId);
   }
-  tool(scope: BotMemoryScope, input: { operation: 'plan' | 'status'; kind?: 'organize' | 'dream'; jobId?: string }, requestId: string): unknown {
+  awaken(): void {
+    this.awakeSince = Date.now();
+    this.lastPoll = 0;
+    for (const run of this.active.values()) if (run.automatic && run.operation === 'plan') {
+      run.controller.abort(Object.assign(new Error('桌面恢复，稍后核实伙伴是否空闲。'), { code: 'MAINTENANCE_YIELD' }));
+    }
+  }
+  foreground(companionId: string): void {
+    if (this.closed) return;
+    this.journal.recordForeground(companionId);
+    for (const run of this.active.values()) {
+      if (run.scope.companionId === companionId && (run.operation === 'plan' || run.operation === 'review')) {
+        run.controller.abort(Object.assign(new Error('伙伴正在聊天，整理将在空闲后继续。'), { code: 'MAINTENANCE_YIELD' }));
+      }
+    }
+  }
+  private idle(companionId: string, now: number): boolean {
+    return now - this.awakeSince >= COMPANION_IDLE_MAINTENANCE.wakeGraceMs
+      && now - this.journal.lastForegroundAt(companionId) >= COMPANION_IDLE_MAINTENANCE.quietMs
+      && !this.options.companionBusy?.(companionId);
+  }
+  private yieldPlanning(scope: BotMemoryScope): void {
+    const domain = maintenanceDomain(scope);
+    for (const run of this.active.values()) {
+      if ((run.operation === 'plan' || run.operation === 'review') && maintenanceDomain(run.scope) === domain) {
+        run.controller.abort(Object.assign(new Error('聊天优先，维护任务稍后续接。'), { code: 'MAINTENANCE_YIELD' }));
+      }
+    }
+  }
+  tool(scope: BotMemoryScope, input: { operation: 'plan' | 'status'; kind?: 'organize' | 'dream'; mode?: MemoMasterMode; brief?: MaintenanceBriefInput; jobId?: string }, requestId: string): unknown {
     if (input.operation === 'status') {
       const compact = (job: ReturnType<BotMaintenanceStore['get']>['job']) => ({ ...job, narrative: job.narrative?.slice(0, 800), error: job.error?.slice(0, 800) });
       if (input.jobId) return compact(this.journal.get(scope, input.jobId).job);
       const found = this.journal.list(scope, undefined, 6); return { ...found, items: found.items.map(compact) };
     }
-    return this.journal.planTool(scope, input.kind ?? 'organize', requestId);
+    return this.journal.planTool(scope, input.kind ?? (input.mode || input.brief ? 'organize' : 'dream'), requestId, input.mode, input.brief);
   }
   async abortScope(scope: BotMemoryScope, includeManual = true): Promise<void> {
     const runs = [...this.active.values()].filter(run => maintenanceDomain(run.scope) === maintenanceDomain(scope) && (includeManual || run.automatic && run.operation === 'plan'));
@@ -100,42 +137,56 @@ export class BotMaintenanceRuntime {
     this.journal.invalidate(scope); this.options.changed(scope.conversationId);
   }
   poll(): void {
-    if (this.closed || this.polling || Date.now() - this.lastPoll < 60000) return;
+    if (this.closed || this.polling || Date.now() - this.lastPoll < COMPANION_IDLE_MAINTENANCE.checkMs) return;
     this.lastPoll = Date.now();
     this.polling = this.pollOnce().catch(error => this.options.report?.(error)).finally(() => { this.polling = undefined; });
   }
   private async pollOnce(): Promise<void> {
-    if (!this.options.model().apiKey) return;
-    const review = this.journal.queueAutomaticReview();
-    if (review) { this.options.changed(review.conversationId); return; }
-    const recovered = this.journal.recoverAutomatic();
-    if (recovered) { this.options.changed(recovered.conversationId); return; }
-    const scope = this.journal.due(); if (!scope) return;
-    const settings = this.journal.settings(scope);
-    try {
-      await this.initializeIncremental(scope);
-      const work = await this.options.memory.maintenanceWork(scope, { action: 'stats', kind: settings.kind }) as BotMaintenanceWorkStats;
-      if (this.closed) return;
-      if (work.mode !== 'incremental-v1' || !Number.isSafeInteger(work.ready) || work.ready < 0) throw new Error('增量维护队列缺少有效进度。');
-      if (!work.ready) { this.journal.defer(scope, work.retryAt ? Math.max(60000, work.retryAt - Date.now()) : settings.intervalHours * 3600000, work.retrying ? '未完成的日记版本已保留，稍后自动重试。' : undefined); return; }
-      const oldest = Date.parse(work.oldestReadyAt || '');
-      if (work.ready < settings.minNotes && !work.resumable && (!Number.isFinite(oldest) || Date.now() - oldest < settings.intervalHours * 3600000)) { this.journal.defer(scope, 3600000, '新增日记暂待合批；达到维护间隔后少量日记也会处理。'); return; }
-      // Recheck the inexpensive gates after the awaited read, so incoming chat
-      // cannot turn a stale eligibility check into an automatic model call.
-      const due = this.journal.due(); if (!due || maintenanceDomain(due) !== maintenanceDomain(scope)) return;
-      const job = this.journal.enqueue(scope, settings.kind, `automatic:${settings.nextEligibleAt}`, true);
-      this.journal.defer(scope, settings.intervalHours * 3600000, undefined, true); this.options.changed(scope.conversationId);
-      this.journal.diagnostic(scope, job.id, 'scheduled', { policy: 'incremental-safe-idle', minNotes: settings.minNotes, pendingVersions: work.ready });
-    } catch (error) { if (this.closed) return; this.journal.defer(scope, 6 * 3600000, message(error)); throw error; }
+    await new Promise<void>(resolve => setImmediate(resolve));
+    if (this.closed) return;
+    const now = Date.now();
+    if (now - this.lastReviewPoll >= 60000) {
+      this.lastReviewPoll = now;
+      const review = this.journal.queueAutomaticReview();
+      if (review) this.options.changed(review.conversationId);
+    }
+    await this.journal.scheduleDreams({ onScheduled: scope => this.options.changed(scope.conversationId), stopped: () => this.closed });
+    if (!this.closed && now - this.awakeSince >= COMPANION_IDLE_MAINTENANCE.wakeGraceMs) {
+      await this.journal.scheduleIdleDream({ now, isIdle: id => this.idle(id, now), onScheduled: scope => this.options.changed(scope.conversationId), stopped: () => this.closed });
+    }
   }
   async run(claim: BotMemoryJobClaim, parentSignal: AbortSignal): Promise<{ status: 'done' | 'failed' | 'retry'; error?: string; retryDelayMs?: number }> {
     const scope = claim.job.payload.scope as BotMemoryScope, jobId = String(claim.job.payload.jobId), operation = claim.job.payload.operation;
     const original = this.journal.get(scope, jobId);
+    if (original.job.phase === 'planner_retired' || claim.job.payload.approval === 'lossless') return { status: 'done' };
+    if ((operation === 'review' || original.job.survey && operation === 'plan') && this.options.companionBusy?.(scope.companionId)) return { status: 'retry', retryDelayMs: COMPANION_IDLE_MAINTENANCE.checkMs };
     if ((original.job.status === 'cancelled' || original.job.status === 'completed') && operation !== 'reconcile' && !(operation === 'plan' && original.plan?.scan.incremental)) return { status: 'done' };
     if (original.job.automatic && operation === 'plan') {
       const settings = this.journal.settings(scope);
-      if (!settings.enabled) { this.journal.progress(scope, jobId, 'cancelled', 'cancelled'); return { status: 'done' }; }
-      if (Date.now() - Date.parse(settings.lastActivityAt) < settings.idleMinutes * 60000) return { status: 'retry', retryDelayMs: settings.idleMinutes * 60000 };
+      if (!settings.enabled || (original.job.kind !== 'dream' && original.job.trigger !== 'idle')) { this.journal.progress(scope, jobId, 'cancelled', 'cancelled'); return { status: 'done' }; }
+      if (!original.plan) {
+        if ([...this.active.values()].some(run => run.automatic && run.operation === 'plan')) {
+          return { status: 'retry', retryDelayMs: VCP_DREAM_SCHEDULE.agentGapSeconds * 1000 };
+        }
+        const now = Date.now(), trigger = original.job.trigger ?? 'night';
+        // Even a sampled night job must yield to a live turn. A recovered
+        // night job may use the same quiet daytime opportunity as an idle job.
+        if (this.options.companionBusy?.(scope.companionId)) return { status: 'retry', retryDelayMs: COMPANION_IDLE_MAINTENANCE.checkMs };
+        const quietAt = this.journal.lastForegroundAt(scope.companionId) + COMPANION_IDLE_MAINTENANCE.quietMs;
+        if (quietAt > now) return { status: 'retry', retryDelayMs: quietAt - now };
+        const delay = original.job.kind === 'dream'
+          ? this.journal.dreamExecutionDelay(scope, now, { allowDaytime: this.idle(scope.companionId, now), trigger })
+          : Math.max(0, this.awakeSince + COMPANION_IDLE_MAINTENANCE.wakeGraceMs - now);
+        if (delay > 0) return { status: 'retry', retryDelayMs: delay };
+        // Desktop credential resolution can access secure storage. Do this
+        // only for an admitted job, never on the idle timer's polling path.
+        let configured = false;
+        try { configured = !!this.options.model().apiKey; } catch (error) { this.options.report?.(error); }
+        if (!configured) {
+          this.journal.progress(scope, jobId, 'waiting_executor', 'queued', '等待应用的聊天模型可用。');
+          return { status: 'retry', retryDelayMs: 300_000 };
+        }
+      }
     }
     const controller = new AbortController(), signal = AbortSignal.any([parentSignal, controller.signal]);
     let finish!: () => void;
@@ -151,44 +202,45 @@ export class BotMaintenanceRuntime {
         const continuationKey = `maintenance-output:${jobId}:${record.epoch}`;
         const savedContinuation = this.options.store.getMetadata(continuationKey);
         if (!record.plan && record.snapshot?.scan.incremental) {
-          const batch = await this.options.memory.maintenanceWork(scope, { action: 'claim', kind: record.job.kind, jobId, limit: 24 }) as BotMaintenanceWorkBatch;
+          const batch = await this.options.memory.maintenanceWork(scope, { action: 'claim', kind: record.job.kind, jobId, limit: 20 }) as BotMaintenanceWorkBatch;
           if (batch.state !== 'processing') throw Object.assign(new Error('本任务来源已交给其他任务处理，请查看当前方案。'), { code: 'MEMORY_MAINTENANCE_BATCH_CHANGED' });
         }
-        const plan = record.plan ?? await this.core.preparePlan({ scope, kind: record.job.kind, operationId: jobId, contextEpoch: record.snapshot?.contextEpoch ?? 1, admissionAttempt: record.epoch, snapshot: record.snapshot, cursor: record.cursor, signal,
-          selectBatch: async () => {
+        const plan = record.plan ?? await this.core.preparePlan({ scope, kind: record.job.kind, mode: record.job.mode, brief: record.job.brief, operationId: jobId, contextEpoch: record.snapshot?.contextEpoch ?? 1, admissionAttempt: record.epoch, snapshot: record.snapshot, cursor: record.cursor, signal,
+          ...(record.job.kind === 'organize' && !record.job.survey ? { selectBatch: async () => {
             await this.initializeIncremental(scope);
-            return await this.options.memory.maintenanceWork(scope, { action: 'claim', kind: record.job.kind, jobId, limit: 24 }) as BotMaintenanceWorkBatch;
+            return await this.options.memory.maintenanceWork(scope, { action: 'claim', kind: record.job.kind, jobId, limit: 20 }) as BotMaintenanceWorkBatch;
           }, associate: async retrieval => {
             const result = await this.options.memory.maintenanceWork(scope, { action: 'associate', kind: record.job.kind, jobId, retrieval }) as { items: Array<{ id: string; checksum: string }> }; return result.items;
-          }, continuation: savedContinuation ? JSON.parse(savedContinuation) as BotMaintenanceContinuation : undefined,
+          } } : {}), continuation: savedContinuation ? JSON.parse(savedContinuation) as BotMaintenanceContinuation : undefined,
           onContinuation: async checkpoint => { this.options.store.setMetadata(continuationKey, JSON.stringify(checkpoint)); },
           onSnapshot: async snapshot => { signal.throwIfAborted(); this.journal.snapshot(scope, jobId, snapshot); }, onProgress, onDiagnostic });
-        signal.throwIfAborted(); if (!record.plan) this.journal.savePlan(scope, jobId, plan);
-        const remaining = await this.completeBatch(scope, jobId, plan);
+        signal.throwIfAborted();
+        if (!record.plan) this.options.store.taskTransaction(() => {
+          this.journal.savePlan(scope, jobId, plan);
+          if (record.job.automatic && plan.kind === 'dream' && plan.sources.some(source => source.role === 'seed')) {
+            this.journal.recordDreamSuccess(scope);
+          } else if (record.job.trigger === 'idle' && plan.kind === 'dream' && !plan.scan.deferred.some(item => item.retryable !== false)) {
+            // The native wave uses the diaries' actual ages. After a long
+            // absence, inspect unprocessed versions through the organizer.
+            this.journal.enqueueIdleOrganization(scope, jobId);
+          }
+        });
+        const batch = await this.completeBatch(scope, jobId, plan);
+        if (plan.kind === 'organize' && batch?.maturityAt) this.journal.scheduleMaturity(scope, batch.maturityAt);
+        if (record.job.trigger === 'idle' && plan.kind === 'organize' && batch) {
+          const remaining = await this.options.memory.maintenanceWork(scope, { action: 'stats', kind: 'organize' }) as BotMaintenanceWorkStats;
+          this.journal.finishIdleOrganization(scope, jobId, {
+            hasMore: remaining.ready > 0 || remaining.retrying > 0 || remaining.processing > 0, retryAt: remaining.ready ? undefined : remaining.retryAt,
+          });
+        }
         if (record.plan) this.journal.refreshPlanState(scope, jobId);
         this.options.store.setMetadata(continuationKey, '');
-        // Page size bounds an individual model envelope, never the amount of
-        // diary material the background scan is allowed to finish.
-        if (record.job.automatic && plan.scan.nextCursor) this.journal.enqueue(scope, record.job.kind, `automatic-page:${jobId}`, true, plan.scan.nextCursor);
-        // Lossless is an explicit opt-in, deterministic concatenation only.
-        // Dream insights/archives always require individual human review.
-        const settings = this.journal.settings(scope);
-        if (record.job.automatic && !plan.scan.nextCursor) this.journal.defer(scope, remaining?.retryAt ? Math.min(settings.intervalHours * 3600000, Math.max(60000, remaining.retryAt - Date.now())) : settings.intervalHours * 3600000, undefined, true);
-        if (settings.autoApply === 'lossless' && record.job.kind === 'organize') {
-          let cursor: string | undefined;
-          for (;;) {
-            const page = this.journal.candidates(scope, jobId, cursor);
-            for (const candidate of page.items.filter(item => item.type === 'organize')) this.journal.review(scope, jobId, candidate.id, candidate.revision, 'approve', `lossless:${jobId}:${candidate.id}`, 'lossless');
-            if (!page.nextCursor) break;
-            cursor = page.nextCursor;
-          }
-        }
-        if (settings.autoReview) this.journal.queueAutomaticReview(scope);
+        if (record.job.kind === 'organize' && (!record.job.mode || record.job.mode === 'organize') && this.journal.settings(scope).autoReview) this.journal.queueAutomaticReview(scope);
         return { status: 'done' };
       }
       if (operation === 'review') {
         const candidateId = String(claim.job.payload.candidateId), candidate = this.journal.candidate(scope, jobId, candidateId);
-        if (!this.journal.settings(scope).autoReview || candidate.status !== 'pending' || !record.plan) return { status: 'done' };
+        if (record.job.kind === 'dream' || record.job.mode && record.job.mode !== 'organize' || !this.journal.settings(scope).autoReview || candidate.status !== 'pending' || !record.plan) return { status: 'done' };
         this.journal.progress(scope, jobId, 'auto_reviewing', 'review', record.job.error); this.options.changed(scope.conversationId);
         reviewModel = this.options.model();
         const key = `maintenance-output:${jobId}:review:${claim.job.id}`, saved = this.options.store.getMetadata(key);
@@ -218,6 +270,10 @@ export class BotMaintenanceRuntime {
       const candidateId = String(claim.job.payload.candidateId), candidate = this.journal.candidate(scope, jobId, candidateId);
       if (candidate.status === 'applied' || candidate.status === 'rejected' || candidate.status === 'superseded') return { status: 'done' };
       if (!['approved', 'applying', 'unknown', 'conflict'].includes(candidate.status) || !record.plan) throw new Error('这项候选尚未获得批准。');
+      if ((record.job.kind === 'dream' || record.job.mode && record.job.mode !== 'organize') && candidate.approval?.actor !== 'user') {
+        this.journal.candidateResult(scope, jobId, candidateId, 'conflict', { error: '需要这项候选的人工批准记录。' });
+        return { status: 'done' };
+      }
       if (claim.job.payload.approval === 'model') {
         if (this.options.store.getMetadata(`maintenance-approval:${jobId}:${candidateId}`) !== 'model') return { status: 'done' };
         if (!this.journal.settings(scope).autoReview && candidate.status === 'approved') { this.journal.candidateResult(scope, jobId, candidateId, 'pending'); return { status: 'done' }; }
@@ -229,12 +285,9 @@ export class BotMaintenanceRuntime {
         }
       }
       this.journal.candidateResult(scope, jobId, candidateId, 'applying');
-      // Suppress legacy v1 resurrection before admitting any managed effect,
-      // including a write whose acknowledgement could be lost.
-      this.options.store.setMetadata(`memory-capture-backfill-v2-suppressed:${maintenanceDomain(scope)}`, jobId);
       this.options.store.clearMemoryInspections(scope.companionId, scope.securityDomainId);
       const receipt = await this.core.applyCandidate({ scope, plan: record.plan, candidateId, contextEpoch: record.plan.contextEpoch,
-        approval: claim.job.payload.approval === 'lossless' ? 'lossless' : 'review', signal, onProgress, onDiagnostic });
+        approval: 'review', signal, onProgress, onDiagnostic });
       const status = receipt.status === 'indexed' || receipt.status === 'archived' ? 'applied' : receipt.status === 'conflict' || receipt.status === 'withdrawn' ? 'conflict' : 'unknown';
       this.journal.candidateResult(scope, jobId, candidateId, status, receipt);
       if (receipt.error?.code === 'MEMORY_NOTE_UNAVAILABLE') {
@@ -255,7 +308,7 @@ export class BotMaintenanceRuntime {
       if (code === 'MAINTENANCE_REVIEW_DISABLED') return { status: 'done' };
       if (code === 'MAINTENANCE_YIELD') {
         this.journal.progress(scope, jobId, 'waiting_idle', 'queued', message(reason));
-        return { status: 'retry', retryDelayMs: this.journal.settings(scope).idleMinutes * 60000 };
+        return { status: 'retry', retryDelayMs: VCP_DREAM_SCHEDULE.agentGapSeconds * 1000 };
       }
       if (code === 'MAINTENANCE_CANCEL') { if (operation === 'apply') this.journal.candidateResult(scope, jobId, String(claim.job.payload.candidateId), 'unknown', { status: 'unknown', error: '取消时写入回执待核实，恢复后先查同一操作回执。' }); if (operation === 'plan' && !this.journal.get(scope, jobId).plan) await this.releaseBatch(scope, jobId, '任务已停止。'); this.journal.progress(scope, jobId, 'cancelled', 'cancelled'); return { status: 'done' }; }
       if (operation === 'reconcile') {
@@ -308,9 +361,13 @@ export class BotMaintenanceRuntime {
       }
       this.journal.progress(scope, jobId, 'blocked', 'blocked', message(error));
       if (operation === 'plan') await this.releaseBatch(scope, jobId, message(error));
-      if (original.job.automatic && operation !== 'plan') this.journal.defer(scope, this.journal.settings(scope).intervalHours * 3600000, message(error));
       this.options.report?.(error); return { status: 'failed', error: message(error) };
-    } finally { this.active.delete(jobId); finish(); this.options.changed(scope.conversationId); }
+    } finally {
+      this.active.delete(jobId);
+      finish();
+      if (original.job.automatic && original.job.kind === 'dream' && operation === 'plan' && !original.plan) this.journal.recordDreamAttemptFinished();
+      this.options.changed(scope.conversationId);
+    }
   }
   private async initializeIncremental(scope: BotMemoryScope): Promise<void> {
     // One resumable import of successful historical analysis. It records source
@@ -339,32 +396,34 @@ export class BotMaintenanceRuntime {
     const settlements = this.options.store.taskTransaction(sql => sql.prepare("SELECT key,value FROM bot_metadata WHERE key LIKE ? AND value<>'' LIMIT 20").all(`maintenance-work-settle:${maintenanceDomain(scope)}:%`)) as Array<{ key: string; value: string }>;
     for (const settlement of settlements) {
       const record = this.journal.get(scope, settlement.value);
-      if (record.plan) await this.completeBatch(scope, settlement.value, record.plan, true);
+      if (record.job.phase !== 'planner_retired' && record.plan) await this.completeBatch(scope, settlement.value, record.plan);
       this.options.store.setMetadata(settlement.key, '');
     }
   }
-  private async completeBatch(scope: BotMemoryScope, jobId: string, plan: NonNullable<ReturnType<BotMaintenanceStore['get']>['plan']>, includeLegacy = false): Promise<BotMaintenanceWorkProgress | undefined> {
-    if (!plan.scan.incremental && !includeLegacy) return;
+  private async completeBatch(scope: BotMemoryScope, jobId: string, plan: NonNullable<ReturnType<BotMaintenanceStore['get']>['plan']>): Promise<BotMaintenanceWorkProgress | undefined> {
+    if (plan.kind === 'dream' || plan.brief || plan.mode && plan.mode !== 'organize' || !plan.scan.incremental) return;
     const deferred = new Set(plan.scan.deferred.map(source => source.id));
     return await this.options.memory.maintenanceWork(scope, { action: 'complete', kind: plan.kind, jobId, sources: plan.sources.filter(source => !deferred.has(source.id)).map(({ id, checksum }) => ({ id, checksum })), reserved: this.journal.reservedSources(scope, jobId) }) as BotMaintenanceWorkProgress;
   }
   private async syncReviewedVersions(scope: BotMemoryScope, jobId: string): Promise<void> {
+    const { job } = this.journal.get(scope, jobId);
+    if (job.kind === 'dream' || job.survey) return;
     this.options.store.setMetadata(`maintenance-work-settle:${maintenanceDomain(scope)}:${jobId}`, jobId);
     try { await this.initializeIncremental(scope); } catch (error) { this.options.report?.(error); }
   }
-  private async releaseBatch(scope: BotMemoryScope, jobId: string, reason: string, wake = true): Promise<void> {
-    const key = `maintenance-work-release:${maintenanceDomain(scope)}:${jobId}`, kind = this.journal.get(scope, jobId).job.kind;
+  private async releaseBatch(scope: BotMemoryScope, jobId: string, reason: string): Promise<void> {
+    const key = `maintenance-work-release:${maintenanceDomain(scope)}:${jobId}`, { job } = this.journal.get(scope, jobId);
+    if (job.kind === 'dream' || job.survey) return;
+    const kind = job.kind;
     this.options.store.setMetadata(key, JSON.stringify({ kind, jobId, reason }));
     try { await this.options.memory.maintenanceWork(scope, { action: 'release', kind, jobId, reason }); this.options.store.setMetadata(key, ''); }
     catch (error) { this.options.report?.(error); }
-    if (wake && this.journal.settings(scope).enabled) this.journal.defer(scope, Math.min(300000, Math.max(0, Date.parse(this.journal.settings(scope).nextEligibleAt) - Date.now())));
   }
   private async reconcileCandidate(scope: BotMemoryScope, jobId: string, candidateId: string, key: string, signal: AbortSignal): Promise<void> {
     const record = this.journal.get(scope, jobId), candidate = this.journal.candidate(scope, jobId, candidateId);
     if (!record.plan || !candidate.approval) throw new Error('缺少已批准的原始方案，不能继续执行。');
     if (['applied', 'superseded', 'rejected'].includes(candidate.status)) return;
-    const approval = this.options.store.getMetadata(`maintenance-approval:${jobId}:${candidateId}`) === 'lossless' ? 'lossless' as const : 'review' as const;
-    const receipt = await this.core.applyCandidate({ scope, plan: record.plan, candidateId, contextEpoch: record.plan.contextEpoch, approval, inspectOnly: true, signal });
+    const receipt = await this.core.applyCandidate({ scope, plan: record.plan, candidateId, contextEpoch: record.plan.contextEpoch, approval: 'review', inspectOnly: true, signal });
     signal.throwIfAborted(); this.journal.diagnostic(scope, jobId, 'reconciliation', receipt);
     if (receipt.status === 'indexed' || receipt.status === 'archived') { this.journal.candidateResult(scope, jobId, candidateId, 'applied', receipt); return; }
     if (receipt.status === 'conflict' || receipt.status === 'withdrawn') { this.journal.candidateResult(scope, jobId, candidateId, 'conflict', receipt); return; }
@@ -374,8 +433,9 @@ export class BotMaintenanceRuntime {
     const originals = await Promise.all(candidate.sources.map(source => this.options.memory.readNote(scope, { id: source.id }) as Promise<Record<string, unknown>>));
     signal.throwIfAborted();
     const unchanged = originals.every((note, index) => note.checksum === candidate.sources[index]!.checksum);
-    if (unchanged && originals.every(note => note.indexState === 'archived') && candidate.type === 'organize') {
+    if (unchanged && originals.every(note => note.indexState === 'archived') && candidate.type === 'organize' && !candidate.crystal) {
       for (const prior of this.journal.coveringCandidates(scope, jobId, candidateId)) {
+        if (prior.plan.candidates.find(item => item.id === prior.candidateId)?.crystal) continue;
         const proof = await this.core.applyCandidate({ scope, plan: prior.plan, candidateId: prior.candidateId, contextEpoch: prior.plan.contextEpoch, approval: prior.approval, inspectOnly: true, signal });
         if (proof.status !== 'indexed' || typeof proof.receipt?.id !== 'string' || typeof proof.receipt.checksum !== 'string') continue;
         const note = await this.options.memory.readNote(scope, { id: proof.receipt.id }) as Record<string, unknown>;
@@ -398,14 +458,8 @@ export class BotMaintenanceRuntime {
     if (this.closing) return this.closing;
     this.closed = true; for (const run of this.active.values()) run.controller.abort(Object.assign(new Error('应用关闭，维护保留待恢复。'), { code: 'BOT_SUSPEND' }));
     this.closing = (async () => {
+      await this.polling;
       await Promise.allSettled([...this.active.values()].map(run => run.finished));
-      if (this.polling) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        try { await Promise.race([this.polling, new Promise<void>(resolve => { timer = setTimeout(resolve, 2000); })]); }
-        finally { clearTimeout(timer); }
-      }
-      // A remaining read belongs to BotMemoryService and is terminated by its
-      // subsequent close. pollOnce checks closed after both resolve and reject.
     })();
     return this.closing;
   }

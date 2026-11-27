@@ -36,7 +36,7 @@ class MemoryBoundary extends BotMemoryService {
     this.prepared.push(input);
     const withdrawal = await this.withdrawnSources(input.scope);
     if (withdrawal.sourceEventIds.includes(input.requestId)) throw Object.assign(new Error('Withdrawn VCP source'), { code: 'MEMORY_SOURCE_WITHDRAWN' });
-    return { requestId: input.requestId, inputHash: 'fixture', scope: input.scope, messages: input.messages, metadata: {}, events: [], evidence: '', status: 'ready', omittedChars: 0,
+    return { requestId: input.requestId, inputHash: 'fixture', scope: input.scope, messages: input.messages, metadata: {}, events: [], nativeContext: '', status: 'ready',
       sourceMessageIds: input.messages.map(message => message.id) };
   }
   override async finishTurn() { return { recorded: true }; }
@@ -57,11 +57,10 @@ class BrainBoundary extends BotDshBrain {
   stops: Array<Omit<BotDshRun, 'prompt' | 'onEvent'>> = [];
   stopping: (input: Omit<BotDshRun, 'prompt' | 'onEvent'>) => Promise<BotDshCancelAck> = async input => ({ accepted: true,
     result: { text: '', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'cancelled' } });
-  encoder?: (input: BotDshRun) => Promise<string>;
   constructor(readonly handler: (input: BotDshRun) => Promise<string> = async () => '收到') { super({ getHost: async () => { throw new Error('DSH boundary fixture'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
     this.calls.push(input);
-    const text = await (input.laneId.startsWith('memory-encoder-') ? this.encoder?.(input) ?? Promise.resolve('{"notes":[]}') : this.handler(input));
+    const text = await this.handler(input);
     if (input.signal?.aborted) throw new BotDshAbortAcknowledgedError({ text: '', sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'cancelled' });
     input.onEvent?.({ type: 'text', text, sequence: 1, receivedAt: new Date().toISOString() });
     return { text, sessionId: BotDshBrain.sessionId(input.laneId), eventId: input.eventId, status: 'succeeded' };
@@ -151,35 +150,41 @@ it('withdraws raw source messages and published answers before a fresh native co
   expect(service.store.getLane(source.event!.laneId)?.sessionId).not.toBe(BotDshBrain.sessionId(source.event!.laneId));
 });
 
-it('does not run a queued capture again after its source has been withdrawn', async () => {
-  const { service, brain, memory, scope } = await fixture();
-  const source = await send(service, scope.conversationId, '你好', 'greeting');
-  await waitFor(() => service.store.getEvent(source.event!.id)?.status === 'done');
-  const job = service.store.enqueueMemoryJob({ kind: 'capture', key: 'old-capture', payload: { scope, sourceEventId: source.event!.id,
-    messages: [{ id: source.message.id, role: 'user', content: 'old secret', timestamp: Date.now() }], answer: 'old answer', answerMessageId: source.event!.replyMessageId } });
-  memory.deletions.set('note', { revision: '1', sourceEventIds: [source.event!.id], sourceMessageIds: [source.message.id] });
-  await service.handle({ type: 'memory.forget', ...scope, id: 'note' });
-  await waitFor(() => service.store.getMemoryJob(job.id)?.status === 'done');
-  expect(brain.calls.filter(input => input.eventId === 'capture-' + job.id)).toEqual([]);
-  expect(memory.writes.some(write => write.content.includes('old secret'))).toBe(false);
-});
-
-it('preserves source bindings on a pending interaction diary so VCP fences its delayed write after withdrawal', async () => {
-  let release!: () => void, started!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; }), writing = new Promise<void>(resolve => { started = resolve; });
-  const { service, brain, memory, scope } = await fixture();
-  memory.beforeWrite = async input => { if (input.sourceEventId.endsWith(':interaction:v3')) { started(); await gate; } };
+it('rejects a late native diary tool call after its event was withdrawn', async () => {
+  let release!: () => void, late: Awaited<ReturnType<typeof tool>> | undefined;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const brain = new BrainBoundary(async input => {
+    await gate; late = await tool(input, 'memory_write', { content: 'late secret', tags: ['私密'] }, 'late-diary'); return '结束';
+  });
+  const { service, memory, scope } = await fixture(brain);
   try {
-    const source = await send(service, scope.conversationId, '你好', 'greeting');
-    await waitFor(() => service.store.getEvent(source.event.id)?.status === 'done'); await writing;
+    const source = await send(service, scope.conversationId, 'old secret', 'old-source');
+    await waitFor(() => brain.calls.some(call => call.eventId === source.event.id));
     memory.deletions.set('note', { revision: '1', sourceEventIds: [source.event.id], sourceMessageIds: [source.message.id] });
     await service.handle({ type: 'memory.forget', ...scope, id: 'note' });
-    release();
-    await waitFor(() => service.store.taskTransaction(sql => Number((sql.prepare("SELECT COUNT(*) AS n FROM bot_memory_jobs WHERE kind='capture' AND status='done'").get() as { n: number }).n)) === 1);
+    release(); await waitFor(() => late !== undefined);
+    expect(late!.body.ok).toBe(false); expect(memory.attempts).toEqual([]);
+  } finally { release(); }
+});
+
+it('fences an in-flight live diary write by its source event and exact chat messages', async () => {
+  let release!: () => void, writing!: () => void, settled = false;
+  const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { writing = resolve; });
+  const brain = new BrainBoundary(async input => {
+    await tool(input, 'memory_write', { content: '需要撤回的偏好', tags: ['偏好'] }, 'in-flight'); settled = true; return '结束';
+  });
+  const { service, memory, scope } = await fixture(brain);
+  memory.beforeWrite = async () => { writing(); await gate; };
+  try {
+    const source = await send(service, scope.conversationId, '请记住这个偏好', 'diary-source');
+    await started;
     expect(memory.attempts).toHaveLength(1);
-    expect(memory.attempts[0]).toMatchObject({ sourceEventId: source.event.id + ':interaction:v3', sourceRootEventId: source.event.id, sourceMessageIds: [source.message.id, source.event.replyMessageId], waitForIndex: true });
+    expect(memory.attempts[0]).toMatchObject({ sourceEventId: source.event.id + ':in-flight', sourceRootEventId: source.event.id, sourceMessageIds: [source.message.id, source.event.replyMessageId] });
+    memory.deletions.set('note', { revision: '1', sourceEventIds: [source.event.id], sourceMessageIds: [source.message.id] });
+    const withdrawal = service.handle({ type: 'memory.forget', ...scope, id: 'note' });
+    await waitFor(async () => (await memory.withdrawnSources(scope)).sourceMessageIds.includes(source.message.id));
+    release(); await withdrawal; await waitFor(() => settled);
     expect(memory.writes).toEqual([]);
-    expect(brain.calls.some(input => input.laneId.startsWith('memory-encoder-'))).toBe(false);
   } finally { release(); }
 });
 
@@ -209,12 +214,12 @@ it('checks duplicate tool fingerprints while the original effect is still pendin
   const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { writing = resolve; });
   const results: Awaited<ReturnType<typeof tool>>[] = [];
   const brain = new BrainBoundary(async input => {
-    const first = tool(input, 'memory_write', { content: 'original fact' }, 'same-effect');
+    const first = tool(input, 'memory_write', { content: 'original fact', tags: ['事实'] }, 'same-effect');
     await started;
-    const duplicate = tool(input, 'memory_write', { content: 'original fact' }, 'same-effect');
+    const duplicate = tool(input, 'memory_write', { content: 'original fact', tags: ['事实'] }, 'same-effect');
     try {
       const changed = await Promise.race([
-        tool(input, 'memory_write', { content: 'different fact' }, 'same-effect'),
+        tool(input, 'memory_write', { content: 'different fact', tags: ['事实'] }, 'same-effect'),
         new Promise<never>((_resolve, reject) => { const timer = setTimeout(() => reject(new Error('A conflicting tool call waited for the original effect')), 1000); timer.unref(); }),
       ]);
       results.push(changed);

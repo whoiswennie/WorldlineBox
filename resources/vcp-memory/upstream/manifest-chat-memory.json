@@ -1,32 +1,38 @@
 {
   "sourceProject": "VCPChat",
-  "revision": "2af26aaddcf82163c9f3e88b55d53518cb9db059",
-  "capturedAt": "2026-11-02T01:33:03.907Z",
+  "revision": "ea8942cfbe275bbe7fca1cbf1222f6c0ca0b3fe4",
+  "sourceDate": "2026-11-26T23:31:05+08:00",
   "policy": "Original central CDS production engine and TopicMemo; no legacy search executable, private config or AppData.",
   "files": [
     {
       "source": "VCPDistributedServer/Plugin/DeepMemo/DeepMemoService.js",
       "target": "upstream/chat/VCPDistributedServer/Plugin/DeepMemo/DeepMemoService.js",
-      "bytes": 23323,
-      "sha256": "0b7f25b433438ab8e8d8bf406e1369e77f83db550e3ca22d0706f3734964fe67"
+      "bytes": 20879,
+      "sha256": "6ce2ebca2f17dd73ced2c4cb9ec5041dc91fed3b4ece5b5567171cde1318f0e7"
     },
     {
       "source": "VCPDistributedServer/Plugin/DeepMemo/plugin-manifest.json",
       "target": "upstream/chat/VCPDistributedServer/Plugin/DeepMemo/plugin-manifest.json",
-      "bytes": 4858,
-      "sha256": "41649874bb5ec4ae9e8d240bd80a4ff75d286026fba73776811a5baa3d381cde"
+      "bytes": 4782,
+      "sha256": "6d058257fe5320244b5df5726486667e63fbb695d1e02a9f5cc3d0a3a8e75452"
     },
     {
       "source": "VCPDistributedServer/Plugin/TopicMemo/TopicMemo.js",
       "target": "upstream/chat/VCPDistributedServer/Plugin/TopicMemo/TopicMemo.js",
-      "bytes": 8763,
-      "sha256": "1614f5a1d7531af5a22bebcd152c12b2e5597679ed9d50738c5cd401df7c37bf"
+      "bytes": 33934,
+      "sha256": "4c88d2eaec66454390f534ed52f1156287857881d56c9581579b3c513ae74284"
     },
     {
       "source": "VCPDistributedServer/Plugin/TopicMemo/plugin-manifest.json",
       "target": "upstream/chat/VCPDistributedServer/Plugin/TopicMemo/plugin-manifest.json",
-      "bytes": 3627,
-      "sha256": "0c1471936d5a2bbb03294fc2976748fb2f580cf38b6485700bb4bee9194cd065"
+      "bytes": 4604,
+      "sha256": "a7c9e8b26a90fd42c5f86204d0490833d91f31fa57aa9c86eeb7425ea61a7060"
+    },
+    {
+      "source": "VCPDistributedServer/shared/memoryProtocolProjection.js",
+      "target": "upstream/chat/VCPDistributedServer/shared/memoryProtocolProjection.js",
+      "bytes": 5813,
+      "sha256": "efca6b6383620981550878d1bc3fac6ff96d371819ad8d846e6386a0a5aca4e3"
     },
     {
       "source": "modules/services/chatDataService/bin/README.md",
@@ -37,8 +43,8 @@
     {
       "source": "modules/services/chatDataService/bin/win32-x64/vcp_chat_data_service.exe",
       "target": "upstream/chat/modules/services/chatDataService/bin/win32-x64/vcp_chat_data_service.exe",
-      "bytes": 15199232,
-      "sha256": "3fee3dc5ed38e582ab36b1490e15b27a78b4e9e926c5a2a82256370c82b1d61c"
+      "bytes": 15576064,
+      "sha256": "79475deea3338045559b3f8c03849fb7ee7e7ba6755e9405a9e1948271d36b57"
     },
     {
       "source": "modules/services/chatDataService/client.js",
@@ -55,8 +61,8 @@
     {
       "source": "modules/services/chatDataService/lifecycle.js",
       "target": "upstream/chat/modules/services/chatDataService/lifecycle.js",
-      "bytes": 14617,
-      "sha256": "92438f940f17ab3a2571ce472e1d8ec14c712214673e6625a0aebc9e20fe0dd1"
+      "bytes": 16692,
+      "sha256": "f05b37114495dee620c5282c36e7c0eb7737e29ee12d17721b54e0deddda0269"
     },
     {
       "source": "rust_chat_data_service/Cargo.lock",
@@ -73,8 +79,8 @@
     {
       "source": "rust_chat_data_service/README.md",
       "target": "upstream/chat/rust_chat_data_service/README.md",
-      "bytes": 10960,
-      "sha256": "fb3df5bb9e517867b626415044041101e052e02d7fed51adc37d6c0b5325d647"
+      "bytes": 11657,
+      "sha256": "2bbedd4c20cfcf228a7d8f64238ce4ffa8a04035332903bb50773aa3d05f1650"
     },
     {
       "source": "rust_chat_data_service/build-runtime.js",
@@ -109,38 +115,44 @@
     {
       "source": "rust_chat_data_service/src/ingest.rs",
       "target": "upstream/chat/rust_chat_data_service/src/ingest.rs",
-      "bytes": 102121,
-      "sha256": "2355abf2033c52b0df330489685d7673f62fa9ae8dbb52d34bdf97f732604648"
+      "bytes": 103128,
+      "sha256": "ea088dfb19f590a3e5bb8ecf437ffd50cf40eb9eeeba6d498f612f597c5281b2"
     },
     {
       "source": "rust_chat_data_service/src/main.rs",
       "target": "upstream/chat/rust_chat_data_service/src/main.rs",
-      "bytes": 10569,
-      "sha256": "30697b97fa3cae237c5e5c94a54bb1c274dc49d7b1192c37f96e9ab184c92acc"
+      "bytes": 10748,
+      "sha256": "aabc5901f6403b711ec7a76108cc535f368222b7f308977f045fff2559d59a16"
     },
     {
       "source": "rust_chat_data_service/src/protocol.rs",
       "target": "upstream/chat/rust_chat_data_service/src/protocol.rs",
-      "bytes": 37908,
-      "sha256": "f3f0fa6348a271dee353326eb867eae964a999619ed8ea3713b004fc4bdd11b9"
+      "bytes": 39829,
+      "sha256": "2f460774a7cafc818d3147080524de4cc6eb8b4f536c9e8100c626421e671360"
     },
     {
       "source": "rust_chat_data_service/src/search.rs",
       "target": "upstream/chat/rust_chat_data_service/src/search.rs",
-      "bytes": 30786,
-      "sha256": "cb5b96ec2f761ab9f75ea0cd18b05d11d6370c8a1bc46b72ea8f59182a6296a4"
+      "bytes": 37212,
+      "sha256": "af5feee3c3a195cba3ce6d39267fe9f0ead22919d8d3446e752473dbf7a0a606"
+    },
+    {
+      "source": "rust_chat_data_service/src/startup.rs",
+      "target": "upstream/chat/rust_chat_data_service/src/startup.rs",
+      "bytes": 666,
+      "sha256": "77294494841c973a3c94864be50db962c77c198efe982ff60598ba4248eb8c42"
     },
     {
       "source": "rust_chat_data_service/src/storage.rs",
       "target": "upstream/chat/rust_chat_data_service/src/storage.rs",
-      "bytes": 146299,
-      "sha256": "ea17861306cd4b19f38d20cc40dc4a7c8149d3e5488aa61dd165cf6c33a53b63"
+      "bytes": 150707,
+      "sha256": "bea7a5903be98d56cff9ded46ef97ba0993e34d08ebaf6b5c88d333ca9786dba"
     },
     {
       "source": "rust_chat_data_service/src/sync.rs",
       "target": "upstream/chat/rust_chat_data_service/src/sync.rs",
-      "bytes": 171637,
-      "sha256": "e343a24e36030f826d5928612a2905d82b3b82b318b2907d6889927d56d9e04b"
+      "bytes": 174738,
+      "sha256": "d48d6da9ad61fbde43d47f693af4f403815a378bea6fd97228a4a40608f045e1"
     },
     {
       "source": "rust_chat_data_service/src/sync_wire.rs",
@@ -157,8 +169,8 @@
     {
       "source": "tests/deepmemo-central-adapter.test.js",
       "target": "upstream/chat/tests/deepmemo-central-adapter.test.js",
-      "bytes": 15317,
-      "sha256": "4b5226a09dd7cd6acf2d88c2c83aa843f260f7281c47abd32fd3c266da3558d8"
+      "bytes": 15142,
+      "sha256": "0b50b997cc0f764a4c351efee9f7fce0c7de937219e0878349dcd2c794a6170b"
     }
   ]
 }

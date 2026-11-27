@@ -1,6 +1,6 @@
 # Companions and continuous chat
 
-This guide covers the native DSH development branch as of 9 November 2026. See the [implementation and acceptance record](../developer/dsh-native-companion-refactor-2026-11-09.md).
+Companion chat uses native DSH sessions and the RiverMemo V5 integration introduced on 27 November 2026. See the [session implementation record](../developer/dsh-native-companion-refactor-2026-11-09.md) and the [memory integration notes](../../resources/vcp-memory/INTEGRATION.md).
 
 ## Start
 
@@ -28,21 +28,33 @@ In a companion chat, choose **Apps → Cabin World** to open the built-in game. 
 
 ## Memory
 
-Open **Memory** from the chat toolbar to enter the selected companion's **Memory workspace**. **Journal** lists notes and tags by page; select a note to read its full text. You can save a new note, edit a note, or select related notes and write an organized version. Originals are archived after the new note is confirmed available for recall. The brain can also search, inspect historical fragments, write and forget. Automatic encoding runs in the background and may make additional model calls; a finished reply does not imply its memory index is ready.
+Talk to the companion as usual. For example, agree on a meeting place for Saturday in one topic. Once the companion has recorded the plan, asking “Where are we meeting on Saturday?” in a fresh topic of the same chat triggers recall automatically. Each companion keeps a separate memory for each audience. Indexing and retrieval use the bundled multimodal model and require no VCP installation or memory API key. Diary writing, summaries and dreams use the chat connection already configured in Model settings.
 
-In **Try recall**, use a natural-language question with passive or semantic recall, or use exact keywords to look up original messages. Results show VCP's actual order, supplied scores and timing; missing values are not invented. Recent checks stay within the selected companion and audience and do not become new memories.
+Development profiles retire the old experimental memory once. A topic that previously sent experimental diary text to the model keeps its chat window and opens a fresh model session for subsequent messages. Your new diaries and visible conversation history persist across restarts.
+
+Open **Memory** from the chat toolbar to enter the selected companion's **Memory workspace**. **Journal** lists notes and tags by page; select a note to read its full text. You can save a new note, edit a note, or select related notes and write an organized version. Originals are archived after the new note is confirmed available for recall. The brain can also search, inspect historical fragments, write and forget. The companion decides during conversation which experiences to record. Each diary file carries its author and tags. The workspace shows its indexing status.
+
+**Try recall** offers three ways to search. **Passive recall** shows which diary entries VCP would bring into a turn for a single question. Ordinary chat also uses the topic history. **Semantic search** uses LightMemo to find related entries and shows the order and scores the engine supplies. **Original keywords** uses DeepMemo to show matching chat excerpts with their topic, speakers and surrounding messages. The workspace displays measured search times and keeps recent checks within the selected companion and audience. Trying a query does not write a diary entry.
 
 Open **Organization & dreams**. The left column contains **Plan organization**, **Dream candidates** and the task list; expand **Background schedule** only when you need its settings. The right column starts with the selected task and its content. Each column scrolls separately, so expanding settings does not displace the reading area. Floating feedback does not push content down; use task status and actual receipts to confirm completion.
 
-Each batch examines at most 24 notes. Tasks, candidates and diagnostics are paginated; use **Continue with the next batch** when available. Finishing one batch does not mean the entire library was examined. Notes beyond the batch's capacity or awaiting confirmation remain eligible for a later visit. The page reports changed or withdrawn sources; current text is not presented as the original version used by an older plan.
+Dreams sample diaries across the current audience’s entire collection and follow their associations into earlier entries. Manual organization can work in batches. Use **Continue with the next batch** when available. The page identifies sources that have changed or been withdrawn.
 
-Review candidates individually. Read the source notes, quotations and proposed text, then choose **Review and approve** followed by **Confirm this approval**, or **Reject candidate**. Dream narratives, associations and insights are not user facts. Unapproved candidates do not rewrite memory; a saved dream insight is explicitly labelled as not being a user fact.
+In the Memory workspace, select **Health scan**, **Organize**, **Event tracking** or **Deep clean**. A health scan produces a read-only report. Event tracking can append a sourced status annotation to an earlier diary. Deep cleaning requires your confirmation and covers the current companion and audience. Dream proposals have a separate entry.
+
+Ordinary diary organization follows MemoMaster. New companions have model review enabled. An independent review checks the original entries, dates, authors, quotations and reasons for archiving before applying a change. You decide uncertain cases and can turn model review off to review every candidate yourself. Dream proposals always require your approval. A saved dream insight carries an explicit label.
 
 Organization and **Archive redundant notes** retain the originals as read-only notes for full-text reading. Archiving removes old notes from recall; it is different from forgetting and does not withdraw independent facts from the same source. **Source changed** means you should check the source again. **Outcome unconfirmed** or **Partially completed; verify** means completion has not been confirmed. A generated plan or an approval alone does not mean the write succeeded.
 
-Background organization is enabled by default, with a 24-hour wait before its first run and a minimum interval of 24 hours. It generates a reviewable plan only when there is new material, the current audience has been idle for at least 15 minutes, and at least 12 notes are available. New chat takes priority. Settings let you disable background work or change its mode. **Application policy** defaults to **Review every candidate**. **Auto-apply lossless organization only** can automatically combine complete original text; it does not automatically apply model rewrites. Updates, dream insights and separate archive actions still require review.
+Daytime use is enough for automatic maintenance. Once a new or edited diary is indexed, the app records which companion and audience have work pending. The companion can start a dream after about two minutes without input, once its foreground turns have finished. Typing or sending another question gives chat priority. Pending work survives a restart or a computer sleep. Several missed nights create a single catch-up opportunity.
 
-In groups, first choose the companion whose memory you want to view. Forget withdraws the note and related sources from use and isolates prior active context. Affected replies or tasks can stop, and delayed capture work cannot restore withdrawn sources.
+If a long absence puts all eligible entries outside the native dream sampling range, the companion reads the outstanding diary versions in batches and looks up related entries. The organizer groups incoming entries by their original month and finds related entries across months. New entries have a 30-day settling period before redundancy checks. Opening the app after that date gives the companion another opportunity to check them while idle. One batch merges or archives up to 20 originals. A long event can produce a Chronicle for its history and a Crystal for insights, linked by a shared event tag.
+
+At night, AgentDream checks every 15 minutes between 01:00 and 06:00 local time. Each eligible companion has a 60% chance of dreaming on a check. Daytime and nighttime dreams share an eight-hour cooldown after success. You can turn off automatic maintenance or start a plan manually.
+
+You can send another question while a companion is dreaming, writing a diary or building an index. If recall takes too long, the companion answers with the context already available. That turn may miss an older memory. Queued diary writes retain the text, tags and sources and can finish after a restart.
+
+In groups, first choose the companion whose memory you want to view. Forget withdraws the note and related sources from use and isolates prior active context. Affected replies or tasks can stop. Queued diary writes check whether their sources are still available before they proceed.
 
 “This memory has been withdrawn from use” does **not** mean original messages, backups or DSH cold logs were physically erased. Historical text can remain visible. Recall is selective and can miss or misinterpret facts; ask for source lookup when accuracy matters.
 

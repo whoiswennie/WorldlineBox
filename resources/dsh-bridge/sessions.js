@@ -8,9 +8,21 @@ const sessionId = { type: 'string', minLength: 1, maxLength: 200 };
 
 /** DSH persistence supplies discovery; reading another Session never restores
  * its Agent or copies that conversation into the current one automatically. */
-export async function workspaceSessionCatalog(ctx, cwd, signal) {
+export async function workspaceSessionCatalog(ctx, cwd, signal, retiredRoots = []) {
   const stored = await ctx.get('sessionPersistence').list({ signal });
-  const local = stored.filter(row => sameDirectory(row.header.cwd, cwd));
+  const retired = new Set(retiredRoots);
+  if (retired.size) {
+    const children = new Map();
+    for (const { header } of stored) if (header.parentSession) {
+      const parent = String(header.parentSession);
+      if (!children.has(parent)) children.set(parent, []);
+      children.get(parent).push(String(header.id));
+    }
+    // A cooperating child can have its own workspace or wlb-bot- id.
+    // Exclude descendants before any transcript, preview or audience lookup.
+    for (const id of retired) for (const child of children.get(id) ?? []) retired.add(child);
+  }
+  const local = stored.filter(row => !retired.has(String(row.header.id)) && sameDirectory(row.header.cwd, cwd));
   const owned = new Set(local.filter(row => String(row.header.id).startsWith('wlb-bot-')).map(row => String(row.header.id)));
   let changed;
   do {
@@ -42,9 +54,15 @@ export function sessionDiscoveryMetadata(row, events) {
 /** Workspace tools are native Session operations. They do not run a router
  * model, make a task-center record, or synthesize a second assistant answer. */
 export function registerWorkspaceSessions(ctx, record, hooks, toolAgent = record.agent) {
+  const catalogFor = async signal => {
+    const owner = record.callbackOwner ?? record;
+    const retired = owner.bot.checkRetiredSessions ? await hooks.retiredSessions(owner, signal) : [];
+    if (!Array.isArray(retired) || retired.some(id => typeof id !== 'string')) throw new Error('Invalid workspace Session retirement proof.');
+    return workspaceSessionCatalog(ctx, record.agent.session.header.cwd, signal, retired);
+  };
   const validate = async (id, signal) => {
     if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(id)) throw new Error('Invalid native Session id.');
-    const rows = await workspaceSessionCatalog(ctx, record.agent.session.header.cwd, signal);
+    const rows = await catalogFor(signal);
     const target = rows.find(row => String(row.header.id) === id);
     if (!target) throw new Error('This Session is outside the companion workspace.');
     const audience = await targetAudience(target, rows, signal);
@@ -89,7 +107,7 @@ export function registerWorkspaceSessions(ctx, record, hooks, toolAgent = record
       async execute(args, exec) {
         const offset = args.offset ?? 0, limit = args.limit ?? 20;
         if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error('Invalid session page.');
-        const catalog = await workspaceSessionCatalog(ctx, record.agent.session.header.cwd, exec.signal);
+        const catalog = await catalogFor(exec.signal);
         const rows = [];
         for (const row of catalog) if (audienceAllowed(await targetAudience(row, catalog, exec.signal))) rows.push(row);
         const entries = await Promise.all(rows.slice(offset, offset + limit).map(async row => {

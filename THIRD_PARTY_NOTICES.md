@@ -134,3 +134,7 @@ Windows 会面铃声使用项目已有的两首音轨。大肥鱼使用《Let Me
 ## 本地语音识别：SenseVoiceSmall、sherpa-onnx 与 Silero VAD
 
 SenseVoiceSmall 模型由 Alibaba Group / FunAudioLLM 提供，本项目使用 sherpa-onnx 转换仓库固定修订的 INT8 ONNX 权重；模型权重遵循 FunASR Model Open Source License Agreement v1.1，独立于本项目的代码许可。来源为 https://huggingface.co/FunAudioLLM/SenseVoiceSmall 与 https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17 。sherpa-onnx 运行时采用 Apache-2.0，Silero VAD 采用 MIT。来源链接及完整模型、运行时、VAD 许可随发行包放在 `speech-models/LICENSE.source.txt`、`MODEL_LICENSE.txt`、`SHERPA_LICENSE.txt` 和 `SILERO_LICENSE.txt`。
+
+## 内置 VCP 记忆引擎
+
+VCPToolBox 与 VCPChat 的记忆组件由 lioensky 及上游贡献者提供，采用 CC BY-NC-SA 4.0。WorldlineBox 保留原始源码及许可证，通过宿主适配器连接桌面聊天与内置向量模型。随包来源和逐文件校验值位于 `vcp-memory/upstream/manifest*.json`。 [VCPToolBox 源码与许可](https://github.com/lioensky/VCPToolBox/tree/fd1eec0dfe25507c22a42232b4b64cac8c0c7768) · [VCPChat 源码与许可](https://github.com/lioensky/VCPChat/tree/ea8942cfbe275bbe7fca1cbf1222f6c0ca0b3fe4)

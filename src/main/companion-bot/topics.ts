@@ -28,14 +28,16 @@ export class BotTopics {
         let through=0;
         // One-time upgrade of existing Sessions: previously frozen, acknowledged
         // envelopes are authoritative. Never mutate or resend those requests.
-        const prior=sql.prepare(`SELECT i.id,m.value,source.sequence AS source_sequence FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id
+        const prior=sql.prepare(`SELECT m.value,source.sequence AS source_sequence FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id
           JOIN bot_metadata m ON m.key='native-input:'||i.id JOIN bot_messages source ON source.id=i.source_record_id
           WHERE t.topic_id=? AND i.companion_id=? AND i.sequence<? AND i.dsh_event_id IS NOT NULL
+          AND NOT EXISTS(SELECT 1 FROM bot_retired_memory_events r WHERE r.event_id=i.id)
           AND COALESCE((SELECT value FROM bot_metadata WHERE key='native-input-committed:'||i.id),CASE WHEN i.status='done' THEN '1' ELSE '0' END)='1'`)
-          .all(selected.id,event.companionId,event.sequence) as Array<{id:string;value:string;source_sequence:number}>;
+          .all(selected.id,event.companionId,event.sequence) as Array<{value:string;source_sequence:number}>;
         for(const row of prior){const context=JSON.parse(row.value) as {prompt:string};for(const id of this.fileIds(context.prompt))this.store.setMetadata(this.fileKey(event,id),'1');through=Math.max(through,row.source_sequence);}
         const guidance=sql.prepare(`SELECT g.text FROM bot_guidance g JOIN bot_topic_events t ON t.event_id=g.event_id JOIN bot_inbox i ON i.id=g.event_id
-          JOIN bot_messages m ON m.id=g.message_id WHERE t.topic_id=? AND i.companion_id=? AND g.status='accepted' AND m.sequence<=?`)
+          JOIN bot_messages m ON m.id=g.message_id WHERE t.topic_id=? AND i.companion_id=? AND g.status='accepted' AND m.sequence<=?
+          AND NOT EXISTS(SELECT 1 FROM bot_retired_memory_events r WHERE r.event_id=i.id)`)
           .all(selected.id,event.companionId,event.sourceMessageSequence) as Array<{text:string}>;
         for(const row of guidance)for(const id of this.fileIds(row.text))this.store.setMetadata(this.fileKey(event,id),'1');
         saved=String(through);this.store.setMetadata(cursorKey,saved);
@@ -94,7 +96,9 @@ export class BotTopics {
       const lane=this.store.getLane(event.laneId)!;if(this.store.getEventNativeEpoch(event.id)!==undefined&&this.store.getEventNativeEpoch(event.id)!==lane.epoch)throw Error('旧话题上下文已撤回。');
       sql.prepare('INSERT OR IGNORE INTO bot_native_topics(id,conversation_id,acl_revision,title,created_at,updated_at,activity_at) VALUES(?,?,?,?,?,?,?)').run(id,room.id,room.revision,short(event.content),event.receivedAt,event.receivedAt,event.receivedAt);
       sql.prepare('INSERT OR IGNORE INTO bot_topic_events VALUES(?,?,?)').run(event.id,room.id,id);
-      sql.prepare('INSERT OR IGNORE INTO bot_topic_bindings VALUES(?,?,?,?,?)').run(id,room.id,event.companionId,'turn-'+event.id,lane.epoch);
+      const oldLane='turn-'+event.id;
+      const replacement=sql.prepare('SELECT replacement_lane_id FROM bot_retired_memory_lanes WHERE native_lane_id=?').get(oldLane) as {replacement_lane_id:string}|undefined;
+      sql.prepare('INSERT OR IGNORE INTO bot_topic_bindings VALUES(?,?,?,?,?)').run(id,room.id,event.companionId,replacement?.replacement_lane_id??oldLane,lane.epoch);
     });
     const row = this.store.taskTransaction(sql => sql.prepare("SELECT *,EXISTS(SELECT 1 FROM bot_topic_title_sync s WHERE s.topic_id=t.id AND s.status='pending') AS rename_pending FROM bot_native_topics t WHERE id=? AND conversation_id=? AND acl_revision=?").get(id, conversationId, room.revision)) as TopicRow | undefined;
     if (!row) throw Error('话题不存在，或聊天成员已经变化，请开启新话题。');
@@ -172,7 +176,8 @@ export class BotTopics {
           EXISTS(SELECT 1 FROM bot_topic_title_sync s WHERE s.topic_id=t.id AND s.status='pending') AS rename_pending FROM bot_native_topics t WHERE conversation_id=? AND acl_revision=?
           AND NOT EXISTS(SELECT 1 FROM bot_topic_bindings b JOIN bot_lanes l ON l.conversation_id=b.conversation_id AND l.companion_id=b.companion_id WHERE b.topic_id=t.id AND b.lane_epoch<>l.epoch)
           AND EXISTS(SELECT 1 FROM bot_topic_bindings b LEFT JOIN bot_metadata native ON native.key='native-topic-state:'||b.native_lane_id WHERE b.topic_id=t.id
-            AND COALESCE(json_extract(native.value,'$.exists'),EXISTS(SELECT 1 FROM bot_topic_events e JOIN bot_inbox i ON i.id=e.event_id WHERE e.topic_id=t.id AND i.companion_id=b.companion_id AND i.dsh_event_id IS NOT NULL))=1)
+            AND (COALESCE(json_extract(native.value,'$.exists'),EXISTS(SELECT 1 FROM bot_topic_events e JOIN bot_inbox i ON i.id=e.event_id WHERE e.topic_id=t.id AND i.companion_id=b.companion_id AND i.dsh_event_id IS NOT NULL))=1
+              OR EXISTS(SELECT 1 FROM bot_retired_memory_lanes r WHERE r.replacement_lane_id=b.native_lane_id)))
         UNION ALL SELECT 'legacy-'||i.id,i.conversation_id,i.acl_revision,COALESCE(json_extract(native.value,'$.title'),substr(trim(i.content),1,60)),i.received_at,i.received_at,COALESCE(json_extract(native.value,'$.updatedAt'),i.received_at),0,0,0
           FROM bot_inbox i JOIN bot_lanes l ON l.id=i.lane_id LEFT JOIN bot_metadata epoch ON epoch.key='event-native-epoch:'||i.id
           LEFT JOIN bot_metadata native ON native.key='native-topic-state:turn-'||i.id
@@ -217,8 +222,10 @@ export class BotTopics {
     });
   }
   lane(event: BotEvent): string {
-    const row = this.store.taskTransaction(sql => sql.prepare(`SELECT b.native_lane_id FROM bot_topic_events t JOIN bot_topic_bindings b ON b.topic_id=t.topic_id WHERE t.event_id=? AND b.companion_id=?`).get(event.id,event.companionId)) as { native_lane_id: string } | undefined;
-    return row?.native_lane_id ?? 'turn-' + event.id;
+    const row = this.store.taskTransaction(sql => sql.prepare(`SELECT COALESCE((SELECT native_lane_id FROM bot_retired_memory_events WHERE event_id=?),
+      (SELECT b.native_lane_id FROM bot_topic_events t JOIN bot_topic_bindings b ON b.topic_id=t.topic_id WHERE t.event_id=? AND b.companion_id=?),?) AS native_lane_id`)
+      .get(event.id,event.id,event.companionId,'turn-'+event.id)) as { native_lane_id: string };
+    return row.native_lane_id;
   }
   reference(eventId:string):{id:string;title:string}|undefined{
     return this.store.taskTransaction(sql=>sql.prepare('SELECT t.id,t.title FROM bot_topic_events e JOIN bot_native_topics t ON t.id=e.topic_id WHERE e.event_id=?').get(eventId)) as {id:string;title:string}|undefined;
@@ -242,6 +249,7 @@ export class BotTopics {
     });
   }
   assertCurrent(event:BotEvent):void{
+    if(this.store.retiredNativeLane(event.id))throw Error('这个事件使用了已退役的旧版记忆上下文，请在该话题中发送新消息。');
     const row=this.store.taskTransaction(sql=>sql.prepare('SELECT topic_id FROM bot_topic_events WHERE event_id=?').get(event.id)) as {topic_id:string}|undefined;
     if(row)this.readTopic(row.topic_id,event.conversationId);
   }
@@ -264,7 +272,8 @@ export class BotTopics {
   }
   topicEvent(id: string, conversationId: string, companionId: string): BotEvent {
     this.get(id,conversationId);
-    const row = this.store.taskTransaction(sql => sql.prepare(`SELECT i.id FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=? AND i.companion_id=? AND i.dsh_event_id IS NOT NULL ORDER BY i.sequence DESC LIMIT 1`).get(id,companionId)) as { id:string } | undefined;
+    const row = this.store.taskTransaction(sql => sql.prepare(`SELECT i.id FROM bot_topic_events t JOIN bot_inbox i ON i.id=t.event_id WHERE t.topic_id=? AND i.companion_id=? AND i.dsh_event_id IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM bot_retired_memory_events r WHERE r.event_id=i.id) ORDER BY i.sequence DESC LIMIT 1`).get(id,companionId)) as { id:string } | undefined;
     if (!row) throw Error('这位伙伴尚未在此话题中开始会话。');
     return this.store.getEvent(row.id)!;
   }

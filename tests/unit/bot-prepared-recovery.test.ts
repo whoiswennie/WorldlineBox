@@ -22,7 +22,7 @@ class BrainBoundary extends BotDshBrain {
   constructor(private readonly handler: (input: BotDshRun) => Promise<string>) { super({ getHost: async () => { throw new Error('No real DSH Host or LLM in this test'); } }); }
   override async run(input: BotDshRun): Promise<BotDshResult> {
     this.calls.push(input);
-    const text = input.laneId.startsWith('memory-encoder-') ? '{"notes":[]}' : await this.handler(input);
+    const text = await this.handler(input);
     return { text, eventId: input.eventId, sessionId: BotDshBrain.sessionId(input.laneId), status: 'succeeded', inputContextCommitted: true };
   }
   override async close() {}
@@ -40,6 +40,13 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
   if (path.dirname(path.resolve(root)) !== path.resolve(tmpdir()) || !path.basename(root).startsWith('wlb-prepared-recovery-')) throw new Error('Invalid fixture cleanup target');
   const server = createServer(async (request, response) => {
     let body = ''; for await (const chunk of request) body += chunk;
+    if (request.url === '/v1/chat/completions') {
+      // OneRing can generate a short-term summary while other lanes publish.
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: '先前回合已经归档。' }, finish_reason: 'stop' }],
+      }));
+      return;
+    }
     if (!request.url?.endsWith('/v1/embeddings')) { unexpected.push(request.url ?? ''); response.writeHead(404).end(); return; }
     const payload = JSON.parse(body), inputs = Array.isArray(payload.input) ? payload.input : [payload.input];
     response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ object: 'list', model: 'fixture64',
@@ -66,10 +73,20 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
     const bobId = 'zz-late-bob'; service.store.createCompanion({ id: bobId, name: 'Bob', persona: '另一位伙伴' });
     const group = await service.handle({ type: 'conversation.create', title: '恢复测试群', kind: 'group', memberIds: [DEFAULT_BOT_COMPANION_ID, bobId], participationMode: 'all' });
     const conversationId = group.conversationId!;
+    const securityDomainId = service.store.getConversation(conversationId)!.securityDomainId;
+    const scopes = [DEFAULT_BOT_COMPANION_ID, bobId].map(companionId => ({ companionId, conversationId, securityDomainId }));
+    const waitForIdleMemory = async () => {
+      // A completed reply can still have OneRing and projection work queued.
+      // This fixture exercises recovery of a prepared turn; deferred admission
+      // under contention is covered by the foreground-memory tests.
+      await Promise.all(scopes.map(scope => memory.warm(scope)));
+      await waitFor(() => !service.store.listPendingMemory().length
+        && scopes.every(scope => memory.isWarm(scope) && !memory.isBusy(scope)));
+    };
     await service.handle({ type: 'message.send', conversationId, content: 'first', requestId: 'first' });
-    await waitFor(() => brain.calls.filter(call => !call.laneId.startsWith('memory-encoder-')).length === 2
-      && brain.calls.filter(call => !call.laneId.startsWith('memory-encoder-')).every(call => service.store.getEvent(call.eventId)?.status === 'done'));
+    await waitFor(() => brain.calls.length === 2 && brain.calls.every(call => service.store.getEvent(call.eventId)?.status === 'done'));
     const topicId=(await service.handle({type:'state',conversationId})).snapshot!.chatRuntime!.topic!.id;
+    await waitForIdleMemory();
     await service.handle({ type: 'message.send', conversationId, content: 'second', requestId: 'second' });
     await waitFor(() => secondAttempts === 1);
     await waitFor(() => brain.calls.some(call => JSON.parse(call.prompt).identity?.id === bobId && JSON.parse(call.prompt).message?.content === 'second'));
@@ -78,27 +95,30 @@ it.skipIf(!existsSync(nodePath) || !existsSync(path.join(packageRoot, 'node_modu
     await waitFor(() => service.store.getEvent(earlierBob.eventId)?.status === 'done');
     await waitFor(() => secondAttempts === 2);
     const attempts = brain.calls.filter(call => call.eventId === brain.calls.find(item => JSON.parse(item.prompt).message?.content === 'second' && JSON.parse(item.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!.eventId);
+    expect(service.store.getMetadata('native-memory-prepared:' + attempts[0]!.eventId)).toBe('1');
     const original = memory.inputs.find(input => input.requestId === attempts[0]!.eventId)!;
     expect(memory.inputs.filter(input => input.requestId === original.requestId)).toHaveLength(1);
     expect(memory.resumed).toContain(original.requestId);
     expect(attempts[1]!.laneId).toBe(attempts[0]!.laneId); expect(attempts[1]!.eventId).toBe(attempts[0]!.eventId);
     expect(attempts[1]!.prompt).toBe(attempts[0]!.prompt); expect(attempts[1]!.system).toBe(attempts[0]!.system);
+    expect(attempts[1]!.memoryContext).toBe(attempts[0]!.memoryContext);
     const late = service.store.getMessage(service.store.getEvent(earlierBob.eventId)!.replyMessageId)!;
     expect(original.messages.some(message => message.id === late.id)).toBe(false);
     await expect(memory.prepareTurn({ ...original, messages: [...original.messages, { id: late.id, role: 'user', content: late.content,
       timestamp: Date.parse(late.createdAt), senderId: late.senderId, senderName: late.senderName }] })).rejects.toMatchObject({ code: 'MEMORY_CONFLICT' });
     retry.resolve(); await waitFor(() => service.store.getEvent(original.requestId)?.status === 'done');
     expect(service.store.getMessage(service.store.getEvent(original.requestId)!.replyMessageId)?.content).toBe('Alice第二轮已从原始输入恢复');
+    await waitForIdleMemory();
     await service.handle({ type: 'message.send', conversationId, content: 'third', requestId: 'third',topicId });
-    await waitFor(() => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
-    const third = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
+    await waitFor(() => brain.calls.some(call => JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
+    const third = brain.calls.find(call => JSON.parse(call.prompt).message.content === 'third' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
     expect(JSON.parse(third.prompt)).not.toHaveProperty('history');
     expect(third.laneId).toBe(attempts[0]!.laneId);
     expect(memory.inputs.find(input => input.requestId === third.eventId)!.messages.filter(message => message.id === late.id)).toEqual([expect.objectContaining({ content: late.content })]);
     await waitFor(() => service.store.getEvent(third.eventId)?.status === 'done');
     await service.handle({ type: 'message.send', conversationId, content: 'fourth', requestId: 'fourth',topicId });
-    await waitFor(() => brain.calls.some(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
-    const fourth = brain.calls.find(call => !call.laneId.startsWith('memory-encoder-') && JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
+    await waitFor(() => brain.calls.some(call => JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID));
+    const fourth = brain.calls.find(call => JSON.parse(call.prompt).message.content === 'fourth' && JSON.parse(call.prompt).identity.id === DEFAULT_BOT_COMPANION_ID)!;
     expect(JSON.parse(fourth.prompt)).not.toHaveProperty('history');
     expect(fourth.laneId).toBe(third.laneId);
     expect(unexpected).toEqual([]);

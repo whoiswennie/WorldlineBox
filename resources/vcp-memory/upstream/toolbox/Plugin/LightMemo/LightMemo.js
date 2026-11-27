@@ -107,7 +107,10 @@ class LightMemoPlugin {
 
             return this._normalizeToolResult(result);
         } catch (error) {
-            console.error('[LightMemo] Error processing tool call:', error);
+            console.error('[LightMemo] Error processing tool call:', {
+                message: error?.message || String(error),
+                code: error?.code || null
+            });
             // Return an error structure that Plugin.js can understand
             return { plugin_error: error.message || 'An unknown error occurred in LightMemo.' };
         }
@@ -441,6 +444,9 @@ class LightMemoPlugin {
             } else if (typeof r.rerank_score === 'number' && !isNaN(r.rerank_score)) {
                 scoreValue = r.rerank_score;
                 scoreType = r.rerank_failed ? '混合' : 'Rerank';
+            } else if (r.retrievalEngine === 'warped_chunks' && Number.isFinite(r.warpedDistance)) {
+                scoreValue = -r.warpedDistance;
+                scoreType = '双曲 ANN · 负距离';
             } else if (typeof r.hybridScore === 'number' && !isNaN(r.hybridScore)) {
                 scoreValue = r.hybridScore;
                 scoreType = '混合';
@@ -452,7 +458,9 @@ class LightMemoPlugin {
                 scoreType = 'BM25';
             }
 
-            const scoreDisplay = scoreValue > 0
+            const scoreDisplay = scoreType === '双曲 ANN · 负距离'
+                ? `${scoreValue.toFixed(4)} (${scoreType})`
+                : scoreValue > 0
                 ? `${(scoreValue * 100).toFixed(1)}%(${scoreType})`
                 : 'N/A';
 
@@ -463,7 +471,7 @@ class LightMemoPlugin {
             }
             if (r.riverMemo) {
                 const river = r.riverMemo;
-                content += `    [RiverMemo Topology V3: ` +
+                content += `    [RiverMemo V5 · 双曲原生链路: ` +
                     `Ω=${Number(river.omega || 0).toFixed(3)}` +
                     `/${river.regime || 'unknown'}, ` +
                     `角色=${river.role || 'unknown'}, ` +
@@ -1086,6 +1094,25 @@ class LightMemoPlugin {
         return Array.from(expandedTokens);
     }
 
+    /**
+     * _tokenize looks group words up by jieba tokens, so a group word missing from jieba's
+     * dictionary (coined names, slang such as "塔罗会" or "源堡") is split and never matches.
+     * Register such words with jieba so they stay whole tokens.
+     */
+    _registerGroupWords(words) {
+        if (!this.jiebaInstance) return;
+        const lines = [];
+        for (const word of words) {
+            if (typeof word !== 'string') continue;
+            for (const form of new Set([word.trim(), word.trim().toLowerCase()])) {
+                if (form && !/\s/.test(form) && this.jiebaInstance.cut(form, false).length > 1) {
+                    lines.push(`${form} 1000 n`);
+                }
+            }
+        }
+        if (lines.length > 0) this.jiebaInstance.loadDict(Buffer.from(lines.join('\n'), 'utf-8'));
+    }
+
     async loadSemanticGroups() {
         const semanticGroupsPath = path.join(this.projectBasePath, 'Plugin', 'RAGDiaryPlugin', 'semantic_groups.json');
         try {
@@ -1100,6 +1127,7 @@ class LightMemoPlugin {
                         for (const word of lowercasedWords) {
                             this.wordToGroupMap.set(word, lowercasedWords);
                         }
+                        this._registerGroupWords(group.words);
                     }
                 }
             }

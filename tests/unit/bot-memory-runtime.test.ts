@@ -59,7 +59,7 @@ it.skipIf(!existsSync(path.join(packageRoot, 'node_modules', 'better-sqlite3')) 
     const search = await service.tool(scope, 'LightMemo', { query: 'ADR-017 最终用了什么保存消息' });
     expect(JSON.stringify(search)).toContain('SQLite');
     const prepared = await service.prepareTurn({ scope, requestId: 'question-17', messages: [{ id: 'question-17', role: 'user', content: 'ADR-017 最终用了什么保存消息？', timestamp: Date.now() }] });
-    expect(prepared.evidence).toContain('SQLite');
+    expect(prepared.nativeContext).toContain('SQLite');
     expect(prepared.status).toBe('ready');
     expect(prepared.metadata.oneRing).toBeTruthy();
     await expect(service.prepareTurn({ scope, requestId: 'question-17', messages: [{ id: 'late', role: 'assistant', content: '群里较早的回复刚完成', timestamp: Date.now() }] }))

@@ -41,22 +41,19 @@ const report = (overrides: Partial<BotMemoryRecallReport> = {}): BotMemoryRecall
   { rank: 2, text: '原第二顺位，原模块先返回', score: 0.23, scores: { rerank: 0.456 } }, { rank: 1, text: '原第一顺位，原模块后返回', source: '日记原件', date: at },
 ], ...overrides });
 
-it('shows archived originals and honest empty/unknown capture receipts separately from zero journal notes', async () => {
+it('shows topic history receipts independently of companion-authored diaries', async () => {
   await mount(request => request.type === 'memory.catalog' ? Promise.resolve({ ok: true, memory: { items: [], tags: [], total: 0,
-    activity: { originals: { archived: 18, pending: 0 }, capture: { queued: 0, running: 0, failed: 1, empty: 4, withNotes: 0, unknownDone: 2 } } } }) : undefined);
+    activity: { originals: { archived: 18, pending: 0 } } } }) : undefined);
   expect(host.textContent).toContain('已保留 18 条原话');
-  expect(host.textContent).toContain('4 段互动未提炼为日记');
-  expect(host.textContent).toContain('2 段旧互动未记录提炼数量');
-  expect(host.textContent).toContain('1 段互动提炼未完成');
-  expect(host.textContent).toContain('还没有提炼出的日记');
+  expect(host.textContent).toContain('伙伴还没有写日记');
   expect(host.textContent).not.toContain('换个关键词');
   expect(requests.every(request => request.type === 'memory.catalog' && request.limit === 24)).toBe(true);
 });
-it('quietly refreshes pending capture at a bounded rate and cancels polling on unmount', async () => {
+it('quietly refreshes pending history at a bounded rate and cancels polling on unmount', async () => {
   vi.useFakeTimers();
   await mount(request => request.type === 'memory.catalog' ? Promise.resolve({ ok: true, memory: { items: [first], tags: [], total: 1,
-    activity: { originals: { archived: 18, pending: 0 }, capture: { queued: 1, running: 0, failed: 0, empty: 0, withNotes: 0, unknownDone: 0 } } } }) : undefined);
-  expect(host.textContent).toContain('正在后台提炼 1 段互动');
+    activity: { originals: { archived: 18, pending: 1 } } } }) : undefined);
+  expect(host.textContent).toContain('1 条原话正在等待保留。');
   const row = host.querySelector('.bot-memory-row');
   for (let i = 0; i < 15; i++) await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
   expect(requests.filter(request => request.type === 'memory.catalog')).toHaveLength(13);
@@ -69,9 +66,9 @@ it('quietly refreshes pending capture at a bounded rate and cancels polling on u
 it('stops quiet catalog refresh when real receipts show the queue has completed', async () => {
   vi.useFakeTimers(); let count = 0;
   await mount(request => request.type === 'memory.catalog' ? Promise.resolve({ ok: true, memory: { items: [], tags: [], total: 0,
-    activity: { originals: { archived: 18, pending: 0 }, capture: { queued: ++count === 1 ? 1 : 0, running: 0, failed: 0, empty: count === 1 ? 0 : 1, withNotes: 0, unknownDone: 0 } } } }) : undefined);
+    activity: { originals: { archived: 18, pending: ++count === 1 ? 1 : 0 } } } }) : undefined);
   await act(async () => { await vi.advanceTimersByTimeAsync(2500); });
-  expect(host.textContent).toContain('1 段互动未提炼为日记');
+  expect(host.textContent).not.toContain('条原话正在等待保留');
   await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
   expect(count).toBe(2);
 });
@@ -82,7 +79,7 @@ it('keeps the current note mounted during a slow refresh and allows Escape after
   await mount(request => request.type === 'memory.catalog'
     ? ++catalogRequests === 1
       ? Promise.resolve({ ok: true, memory: { items: [first], tags: [], total: 1,
-        activity: { originals: { archived: 18, pending: 0 }, capture: { queued: 0, running: 0, failed: 1, empty: 0, withNotes: 0, unknownDone: 0 } } } })
+        activity: { originals: { archived: 18, pending: 0 } } } })
       : slowRefresh.promise
     : undefined);
   const close = vi.fn();
@@ -215,11 +212,11 @@ it('organizes only selected checksummed originals and waits for indexed and arch
   await act(() => pending.resolve({ ok: true, memory: { id: '3'.repeat(64), checksum, state: 'indexed', archived: [first.id] } }));
   expect(host.querySelector('[role="alert"]')?.textContent).toContain('未取得完整'); expect(host.textContent).not.toContain('原记录已归档');
 });
-it('caps organization selection at sixteen without rendering additional pages', async () => {
-  await mount(request => request.type === 'memory.catalog' ? Promise.resolve({ ok: true, memory: { items: Array.from({ length: 17 }, (_, i) => ({ ...note(), id: String(i), content: `日记${i}` })), tags: [] } }) : undefined);
+it('caps organization selection at twenty without rendering additional pages', async () => {
+  await mount(request => request.type === 'memory.catalog' ? Promise.resolve({ ok: true, memory: { items: Array.from({ length: 21 }, (_, i) => ({ ...note(), id: String(i), content: `日记${i}` })), tags: [] } }) : undefined);
   const choices = [...host.querySelectorAll<HTMLInputElement>('.bot-memory-row>input')];
-  for (const checkbox of choices.slice(0, 16)) await act(() => checkbox.click());
-  expect(choices[16]!.disabled).toBe(true); expect(host.querySelector('.bot-memory-selection')?.textContent).toContain('16/16');
+  for (const checkbox of choices.slice(0, 20)) await act(() => checkbox.click());
+  expect(choices[20]!.disabled).toBe(true); expect(host.querySelector('.bot-memory-selection')?.textContent).toContain('20/20');
 });
 it('discards late catalog and full-note responses when the selected companion changes', async () => {
   const oldNote = deferred<BotResponse>(), oldList = deferred<BotResponse>();
@@ -238,6 +235,17 @@ it('displays original ranks and scores without sorting or inventing missing stag
   expect(host.querySelector('.bot-memory-stages')?.textContent).toContain('未提供'); expect(host.textContent).toContain('不能相加为总耗时');
   await click('原话关键词'); await fill('想回想什么？', '周末'); await click('开始试查');
   expect(requests.filter(item => item.type === 'memory.recall').at(-1)).toMatchObject({ query: '周末', mode: 'history' });
+});
+it('shows a matching DeepMemo transcript directly, and only shows no matches for its confirmed empty result', async () => {
+  const evidence = '[回忆片段1]:\n主题: 周末行程\n小林: 北门集合。';
+  await mount(request => request.type === 'memory.recall' ? Promise.resolve({ ok: true, memory: report({ query: request.query, mode: 'history', hits: [],
+    presentation: request.query === '北门' ? 'formatted' : 'empty', evidence: request.query === '北门' ? evidence : undefined }) }) : undefined);
+  await click('召回试查'); await click('原话关键词'); await fill('想回想什么？', '北门'); await click('开始试查');
+  expect(host.querySelector('.bot-memory-recall-output article h4')?.textContent).toContain('原话来源 · VCPChat DeepMemo');
+  expect(host.querySelector('.bot-memory-recall-output article pre')?.textContent).toBe(evidence);
+  expect(host.querySelector('.bot-memory-result-heading h3 span')).toBeNull(); expect(host.querySelector('.bot-memory-rank')).toBeNull();
+  expect(host.textContent).not.toContain('这次没有返回匹配记录');
+  await fill('想回想什么？', '不相关'); await click('开始试查'); expect(host.textContent).toContain('这次没有返回匹配记录');
 });
 it('keeps many localized recall measurements compact and the original diagnostic records intact', async () => {
   const stages = [

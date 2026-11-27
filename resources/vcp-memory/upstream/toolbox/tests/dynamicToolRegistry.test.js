@@ -1,16 +1,64 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fsSync = require('node:fs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const { execSync } = require('node:child_process');
 const EventEmitter = require('node:events');
 
 const dynamicToolRegistryModule = require('../modules/dynamicToolRegistry.js');
 const { DynamicToolRegistry } = dynamicToolRegistryModule;
 const messageProcessor = require('../modules/messageProcessor.js');
 
-async function makeProjectRoot() {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'vcp-dynamic-tools-'));
+const activeRegistries = new Set();
+const tempProjectRoots = new Set();
+const originalInitialize = DynamicToolRegistry.prototype.initialize;
+DynamicToolRegistry.prototype.initialize = async function wrappedInitialize(...args) {
+  activeRegistries.add(this);
+  return originalInitialize.apply(this, args);
+};
+
+const originalDestroy = DynamicToolRegistry.prototype.destroy;
+DynamicToolRegistry.prototype.destroy = function wrappedDestroy(...args) {
+  activeRegistries.delete(this);
+  if (typeof originalDestroy === 'function') {
+    return originalDestroy.apply(this, args);
+  }
+};
+
+test.afterEach(async () => {
+  const registries = Array.from(activeRegistries);
+  for (const registry of registries) {
+    try {
+      registry.destroy();
+    } catch {
+      // Ignore destroy failures in test teardown.
+    }
+  }
+  await Promise.allSettled(
+    registries.flatMap((registry) => [
+      registry.syncPromise,
+      registry.classificationPromise,
+      registry._configReloadPromise,
+      registry.writePromise
+    ].filter(Boolean))
+  );
+  activeRegistries.clear();
+
+  for (const root of Array.from(tempProjectRoots)) {
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+    } catch {
+      // Ignore transient cleanup failures on Windows.
+    }
+  }
+  tempProjectRoots.clear();
+});
+
+async function makeProjectRoot(prefix = 'vcp-dynamic-tools-') {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  tempProjectRoots.add(root);
   await fs.mkdir(path.join(root, 'ToolConfigs'), { recursive: true });
   return root;
 }
@@ -646,11 +694,14 @@ test('classification uses RAG embedding fallback when no small model or classifi
 
   const state = registry.getAdminState();
   const item = state.records.find((record) => record.pluginName === 'SemanticSearch');
-  assert.ok(item.categories.includes('search'));
+  assert.ok(item.categories.some((category) => category.startsWith('search/')));
   assert.equal(item.classifiedBy, 'rag_embedding_fallback');
 });
 
-test('small model reads private plugin config without leaking api key', async (t) => {
+test('small model migrates private model once but uses only main API credentials', async (t) => {
+  const oldUrl = process.env.API_URL, oldKey = process.env.API_Key;
+  process.env.API_URL = 'https://main.local'; process.env.API_Key = 'main-key';
+  t.after(() => { if (oldUrl === undefined) delete process.env.API_URL; else process.env.API_URL = oldUrl; if (oldKey === undefined) delete process.env.API_Key; else process.env.API_Key = oldKey; });
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
   await fs.mkdir(privateConfigDir, { recursive: true });
@@ -698,13 +749,14 @@ test('small model reads private plugin config without leaking api key', async (t
   await registry.flushClassificationQueue();
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://classifier.local/v1/chat/completions');
-  assert.equal(requests[0].options.headers.Authorization, 'Bearer private-test-key');
+  assert.equal(requests[0].url, 'https://main.local/v1/chat/completions');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer main-key');
 
   const stateConfig = registry.getAdminState().config;
   assert.equal(stateConfig.smallModel.apiKey, undefined);
   assert.equal(stateConfig.smallModel.enabled, true);
-  assert.equal(stateConfig.smallModel.endpoint, 'https://classifier.local/v1/chat/completions');
+  assert.equal(stateConfig.smallModel.endpoint, undefined);
+  assert.equal(stateConfig.smallModel.useMainConfig, undefined);
 
   const saved = await registry.updateConfig({ maxBriefListItems: 12 });
   assert.equal(saved.smallModel.apiKey, undefined);
@@ -712,7 +764,8 @@ test('small model reads private plugin config without leaking api key', async (t
   const diskConfig = JSON.parse(await fs.readFile(configPath, 'utf8'));
   assert.equal(diskConfig.smallModel.apiKey, undefined);
   assert.notEqual(diskConfig.smallModel.endpoint, 'https://classifier.local/v1/chat/completions');
-  assert.notEqual(diskConfig.smallModel.model, 'tiny-classifier');
+  assert.equal(diskConfig.smallModel.model, 'tiny-classifier');
+  assert.equal(diskConfig.version, 2);
 });
 
 test('small model can reuse main upstream config with only model name', async (t) => {
@@ -836,7 +889,10 @@ test('small model classification asks for compact briefs and clamps verbose resp
   assert.ok(record.brief.length <= 70, `brief should be compact, got ${record.brief.length} chars: ${record.brief}`);
 });
 
-test('small model uses independent OpenAI endpoint when main config reuse is disabled', async (t) => {
+test('small model ignores legacy independent endpoint even when reuse flag is false', async (t) => {
+  const oldUrl = process.env.API_URL, oldKey = process.env.API_Key;
+  process.env.API_URL = 'https://main.local'; process.env.API_Key = 'main-key';
+  t.after(() => { if (oldUrl === undefined) delete process.env.API_URL; else process.env.API_URL = oldUrl; if (oldKey === undefined) delete process.env.API_Key; else process.env.API_Key = oldKey; });
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
   await fs.mkdir(privateConfigDir, { recursive: true });
@@ -884,12 +940,12 @@ test('small model uses independent OpenAI endpoint when main config reuse is dis
   await registry.flushClassificationQueue();
 
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, 'https://classifier.local/v1/chat/completions');
-  assert.equal(requests[0].options.headers.Authorization, 'Bearer independent-key');
+  assert.equal(requests[0].url, 'https://main.local/v1/chat/completions');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer main-key');
   assert.equal(requests[0].options.body.model, 'independent-classifier');
 });
 
-test('hot reload picks up public and private dynamic tool config files without leaking secrets', async () => {
+test('hot reload uses JSON settings and ignores stale private env without leaking secrets', async () => {
   const projectRoot = await makeProjectRoot();
   const privateConfigDir = path.join(projectRoot, 'Plugin', 'DynamicToolBridge');
   await fs.mkdir(privateConfigDir, { recursive: true });
@@ -935,9 +991,10 @@ test('hot reload picks up public and private dynamic tool config files without l
 
   assert.equal(state.config.maxBriefListItems, 13);
   assert.equal(state.config.manualOverrides.excludedOriginKeys.includes('local:ReloadSearch'), true);
-  assert.equal(state.config.smallModel.enabled, true);
-  assert.equal(state.config.smallModel.endpoint, 'https://reload.local/v1/chat/completions');
-  assert.equal(state.config.smallModel.model, 'reload-classifier');
+  assert.equal(state.config.smallModel.enabled, false);
+  assert.equal(state.config.smallModel.endpoint, undefined);
+  assert.equal(state.config.smallModel.model, '');
+  assert.equal(state.config.version, 2);
   assert.equal(state.config.smallModel.apiKey, undefined);
   assert.equal(registry.getAdminState().config.smallModel.apiKey, undefined);
 });
@@ -1205,4 +1262,76 @@ test('dynamic fold expansion matches toolbox legacy blocks without descriptions'
 
   assert.match(injection, /LEGACY BASIC USAGE/);
   assert.match(injection, /LEGACY ADVANCED USAGE WITH TERMS THAT DO NOT MATCH QUERY/);
+});
+
+test('config file watcher canonicalizes Windows 8.3 short paths and survives hot reload writes', async () => {
+  const longRoot = await makeProjectRoot('vcp-dynamic-tools-long-8dot3-watch-path-');
+  const privateConfigDir = path.join(longRoot, 'Plugin', 'DynamicToolBridge');
+  await fs.mkdir(privateConfigDir, { recursive: true });
+
+  let watchProjectRoot = longRoot;
+  if (process.platform === 'win32') {
+    try {
+      const candidate = execSync(
+        `for %I in ("${longRoot}") do @echo %~sI`,
+        { shell: 'cmd.exe', encoding: 'utf8' }
+      ).trim();
+      if (candidate && fsSync.existsSync(candidate)) {
+        watchProjectRoot = candidate;
+      }
+    } catch {
+      watchProjectRoot = longRoot;
+    }
+  }
+
+  const watchedDirs = [];
+  const originalWatch = fsSync.watch;
+  fsSync.watch = function patchedWatch(targetDir, ...rest) {
+    watchedDirs.push(String(targetDir));
+    return originalWatch.call(this, targetDir, ...rest);
+  };
+
+  const registry = new DynamicToolRegistry();
+  try {
+    const pluginManager = makePluginManager([
+      makeManifest('ShortPathWatchTool', 'Verify canonicalized directory watching.')
+    ]);
+    await registry.initialize({
+      pluginManager,
+      projectBasePath: watchProjectRoot,
+      watchConfigFiles: true,
+      config: testConfig({ maxBriefListItems: 5 })
+    });
+
+    const canonicalToolConfigsDir = fsSync.realpathSync.native(path.join(longRoot, 'ToolConfigs'));
+    const canonicalPrivateDir = fsSync.realpathSync.native(privateConfigDir);
+    assert.equal(watchedDirs.includes(canonicalToolConfigsDir), true);
+    assert.equal(watchedDirs.includes(canonicalPrivateDir), true);
+    for (const dir of watchedDirs) {
+      assert.equal(dir.includes('~'), false, `watched directory should not retain 8.3 short segment: ${dir}`);
+    }
+
+    const configPath = path.join(watchProjectRoot, 'ToolConfigs', 'dynamic_tool_bridge.config.json');
+    await fs.writeFile(configPath, JSON.stringify({
+      ...registry.getAdminState().config,
+      maxBriefListItems: 19
+    }, null, 2), 'utf8');
+
+    const deadline = Date.now() + 1500;
+    while (Date.now() < deadline && registry.getAdminState().config.maxBriefListItems !== 19) {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    }
+    assert.equal(registry.getAdminState().config.maxBriefListItems, 19);
+
+    await registry.initialize({
+      pluginManager,
+      projectBasePath: watchProjectRoot,
+      watchConfigFiles: false,
+      config: testConfig({ maxBriefListItems: 19 })
+    });
+    assert.equal(registry._configWatchers.length, 0);
+  } finally {
+    fsSync.watch = originalWatch;
+    registry.destroy();
+  }
 });

@@ -1,0 +1,43 @@
+{
+  "executable": ".tools/vcp-native-delivery/WorldlineBox-win32-x64/WorldlineBox.exe",
+  "executableSha256": "07947c8c971b0fb2a85c741519c0b6dccbd844e58efec26aea963f6ccbf62016",
+  "asarSha256": "ab3473f8e12a750d7e290adb46e0c19986df72d218e41a582cb019e2747cac71",
+  "compiledFiles": 246,
+  "compiledBytes": 27041519,
+  "compiledManifestSha256": "666d36c3930930988ebfd6f353d8077f08ae716e1b1525ab17ef6cdad71b23ea",
+  "runtimeSourceManifestSha256": "a307aaf839f8387c8e3d4f4b2bbe9c282c153a9934937bb76faa87f421ac13c2",
+  "runtimeSourceTreeSha256": "068443f8b3b22692ff67790d20825c4e8745c7522ed105fde1a947574aa06740",
+  "runtimeSourceFiles": 528,
+  "runtime": {
+    "version": "v24.15.0",
+    "abi": "137",
+    "platform": "win32",
+    "arch": "x64"
+  },
+  "pinnedToolbox": "fd1eec0dfe25507c22a42232b4b64cac8c0c7768",
+  "toolboxFiles": 404,
+  "memoMasterSha256": "f6eea48c3c71bffacc5177ca86f9c7237f9ad0c480419e572839167c364b2701",
+  "markers": {
+    "deepclean": ".vite/build/call-models-BpnJ6-3T.js",
+    "idle_organize_version": ".vite/build/data-cleanup-Cop1Szmb.js",
+    "companion-bot.retire-legacy-memory": ".vite/build/main.js",
+    ".vcp-v5-legacy-memory-retired": ".vite/build/memory-generation-G9yOvzOb.js",
+    "includeTurnReadiness": ".vite/build/memory-service-CU4n1z8P.js",
+    "bot_maintenance_idle_pending": ".vite/build/service-DVRp7hX3.js",
+    "等待应用的聊天模型可用。": ".vite/build/service-DVRp7hX3.js",
+    "bot_retired_memory_events": ".vite/build/service-DVRp7hX3.js",
+    "确认深度清理": ".vite/renderer/main_window/assets/BotWorkspace-CaP2xiok.js",
+    "查看下一批进度": ".vite/renderer/main_window/assets/BotWorkspace-CaP2xiok.js",
+    "项目或关注点": ".vite/renderer/main_window/assets/BotWorkspace-CaP2xiok.js"
+  },
+  "changesSinceSecondBenchmark": [
+    "lib/runtime.cjs",
+    "lib/warped-chunk-recovery.cjs"
+  ],
+  "bridgeFiles": {
+    "index.js": "0693de6df40a7b2f2509529befa51919d0c061eabc2d95bb8789fffb7ca94ecd",
+    "idle.js": "4a3c49cb577a9acc6d5a368440c418b46a8188c653b7d3e28e94d864bf50aae9",
+    "sessions.js": "c16f645ea879433b9f5ec38d638e4dda75375f0e4f992f65a758428e089c19aa",
+    "workspace.js": "c6c844d2508f48c45f8c30e3f58f1ba4d9c1ebdf00eb55667a4c0ec9e5b0daf8"
+  }
+}

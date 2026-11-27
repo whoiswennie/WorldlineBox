@@ -1,5 +1,7 @@
 # Super Agent 伙伴运行说明
 
+2026-11-27 记忆链路更新。普通聊天使用当前 DSH 话题的原生会话，每轮由 VCP 预处理上下文并提交回复回执。下文关于 AppBrain 和旧 VCP 适配层的说明记录了此前架构。当前模型绑定、自动召回、数据目录与验收命令见[内置 VCP 集成说明](../../resources/vcp-memory/INTEGRATION.md)。
+
 2026-11-08 执行环境更新：所有伙伴共用启动器选定的一个 DSH，账号、API、插件和技能统一配置；Router、聊天、记忆、任务与独立 Worker Session 的归属仍按伙伴保持。旧任务固定原环境，升级保留同实例数据。当前迁移与测试见[共享 DSH 执行实例](shared-dsh-execution-2026-11-08.md)。
 
 基线更新：2026年11月5日。主脑由世界线盒子自身运行，DSH仅作委派执行器；新增每伙伴统一事件账本、授权任务与结构化业务报告。当前重构范围和验收见[伙伴持续主脑重构方案](companion-superagent-refactor-2026-11-05.md)。早期[实施方案](superagent-bot-implementation-plan-2026-11-02.md)与[调研报告](superagent-bot-research-2026-11-02.md)保留为历史记录，不再据其DSH承载主脑的决定解释新实现。
@@ -23,7 +25,7 @@
 | `world.ts` / `world-physics.ts` | 物理位置、A* 路径、出入口、家具占用、动作和见证者事件。 |
 | `src/renderer/companion-bot` | 会话投影、有限流式覆盖、任务／记忆面板和世界视图。 |
 
-数据根为 `app.getPath('userData')/companion-bot-v2`。`bot.sqlite`管理消息/任务，`router/app-brain.sqlite`管理主脑turn/step/tool journal，均独立于资产库；`memory/`按伙伴和受众安全域隔离。DSH只管理执行任务的原生会话/日志。主脑逻辑session哈希沿用旧回执格式，不表示创建同名DSH Session。
+数据根为 `app.getPath('userData')/companion-bot-v2`。`bot.sqlite`管理消息/任务，`router/app-brain.sqlite`管理主脑turn/step/tool journal，均独立于资产库；`vcp-memory-v5/`按伙伴和受众安全域隔离。DSH只管理执行任务的原生会话/日志。主脑逻辑session哈希沿用旧回执格式，不表示创建同名DSH Session。
 
 同一伙伴跨聊天保持同一个brain ID和事件序列。各lane保留自己的原话、模型摘要及VCP资料，作为该主脑按受众裁剪的视图。用户私聊可协调该伙伴在用户参与的direct/group中的任务；群、伙伴私聊和世界仅提供当前受众视图，跨会话元数据不授予新的工作权限。
 

@@ -30,6 +30,7 @@ if (process.argv.includes('--verify')) { verify(); return; }
 const sourceArg = process.argv.indexOf('--toolbox');
 const source = path.resolve(sourceArg >= 0 ? process.argv[sourceArg + 1] : path.join(root, '..', '..', 'VCPToolBox'));
 function git(...args) { return cp.execFileSync('git', ['-C', source, ...args], {encoding:'utf8'}).trim(); }
+if (git('status', '--porcelain', '--untracked-files=no')) throw new Error('A clean VCPToolBox checkout is required');
 const tracked = new Set(git('ls-files', '-z').split('\0').filter(Boolean));
 const pluginNames = [
   'RAGDiaryPlugin','DailyNote','DailyNoteManager','DailyNotePanel','DailyNoteSearcher',
@@ -39,8 +40,8 @@ const pluginNames = [
 const initialFiles = [
   'KnowledgeBaseManager.js','TagMemoEngine.js','TagMemoV10Engine.js','RiverMemoEngine.js',
   'ResultDeduplicator.js','TextChunker.js','EmbeddingUtils.js','TDBKnowledge.js','rag_params.json',
-  'config.env.example','LICENSE','Plugin.js',
-  'modules/messageProcessor.js','modules/associativeDiscovery.js','modules/contextManager.js',
+  'config.env.example','LICENSE','Plugin.js','routes/memorySearch.js','Plugin/DailyNote/config.env','Agent/MemoMaster.txt',
+  'modules/messageProcessor.js','modules/associativeDiscovery.js','modules/contextManager.js','modules/pluginBridgeRegistry.js',
   'modules/finalContextStore.js','modules/roleDivider.js','modules/jevContextPruner.js',
   'modules/vcpLoop/toolCallParser.js','modules/vcpLoop/toolMarkerFuzzyMatcher.js',
   'modules/chatCompletionHandler.js','vcpInfoHandler.js','preprocessor_order.json',
@@ -67,7 +68,8 @@ const selection = new Set();
 const queue = [];
 function add(file, allowUntracked = false) {
   file = slash(file);
-  if (blocked.test(file) || !allowedExt.test(file) || selection.has(file)) return false;
+  if (selection.has(file)) return false;
+  if (file !== 'Plugin/DailyNote/config.env' && (blocked.test(file) || !allowedExt.test(file))) return false;
   if (!allowUntracked && !tracked.has(file)) return false;
   if (!fs.existsSync(safeResolve(source, file)) || !fs.statSync(safeResolve(source,file)).isFile()) return false;
   selection.add(file); queue.push(file); return true;
@@ -102,7 +104,7 @@ for (let i = 0; i < queue.length; ++i) {
   const file = queue[i];
   if (!/\.(?:c?js|mjs|ts)$/.test(file) || file.startsWith('tests/') || hostFiles.has(file) || file.endsWith('.bak.js')) continue;
   const sourceText = fs.readFileSync(path.join(source, file), 'utf8');
-  for (const match of sourceText.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+  for (const match of sourceText.matchAll(/\b(?:require|import)\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) {
     const specifier = match[1];
     if (specifier.startsWith('.')) {
       const resolved = resolveRelative(file, specifier);
@@ -121,16 +123,17 @@ for (let i = 0; i < queue.length; ++i) {
 fs.mkdirSync(path.join(out, 'toolbox'), {recursive:true});
 const files = [];
 for (const file of [...selection].sort()) {
-  const bytes = fs.readFileSync(safeResolve(source,file));
+  const bytes = file === 'Agent/MemoMaster.txt' ? cp.execFileSync('git', ['-C', source, 'show', 'HEAD:' + file])
+    : fs.readFileSync(safeResolve(source,file));
   const dest = safeResolve(path.join(out, 'toolbox'), file);
   fs.mkdirSync(path.dirname(dest), {recursive:true});
-  fs.writeFileSync(dest,bytes);
+  if (!fs.existsSync(dest) || !fs.readFileSync(dest).equals(bytes)) fs.writeFileSync(dest,bytes);
   files.push({project:'toolbox',path:file,sha256:hash(bytes),bytes:bytes.length});
 }
 const manifest = {
-  schemaVersion:1, createdAt:new Date().toISOString(),
-  sources:{toolbox:{path:source,commit:git('rev-parse','HEAD'),dirty:git('status','--porcelain').length > 0}},
-  selection:{initialFiles,initialDirs,policy:'Tracked, explicitly selected source and static dependencies; shipped native binaries; no private env, runtime state, diaries, agents or TVStxt data. Host implementation preserved for traceability and supplied by standalone adapter at runtime.'},
+  schemaVersion:1, sourceDate:git('log','-1','--format=%cI'),
+  sources:{toolbox:{repository:'https://github.com/lioensky/VCPToolBox',commit:git('rev-parse','HEAD'),dirty:git('status','--porcelain').length > 0}},
+  selection:{initialFiles,initialDirs,policy:'Explicitly selected tracked source, the official MemoMaster agent instructions, static dependencies and shipped native binaries. Private configuration, runtime diaries and personal agent data are excluded.'},
   files,hostBoundaries,missingRequires,optionalPlatformRequires,retiredMaintenanceRequires,externalPackages:[...external].sort()
 };
 manifest.selection.pluginCompleteness = pluginNames.map(name => {
